@@ -231,7 +231,14 @@ def test_every_shape_this_field_actually_takes_is_kept(tmp_path: Path):
     xenia.write_bytes(b"MZ")
     _shortcuts(library, [2573626021], exe=f'"{xenia}" "/home/deck/Emulation/roms/xbox360/Lost Odyssey"')
     _shortcuts(library, [2812140668], user="2", exe="ibus-ui-emojier-plasma")
-    _shortcuts(library, [2589385289], user="3", exe='"/usr/bin/flatpak"' if Path("/usr/bin/flatpak").exists() else "flatpak")
+    # Made here rather than borrowed from the host. Reading the machine's own
+    # `/usr/bin/flatpak` made this case prove one thing on a device that has it
+    # and another on a runner that does not, which is the kind of pass that
+    # reports a host rather than a behaviour.
+    wrapper = home / "usr/bin/flatpak"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_bytes(b"#!/bin/sh\n")
+    _shortcuts(library, [2589385289], user="3", exe=f'"{wrapper}"')
 
     assert local_library(home)["shortcut_app_ids"] == [2573626021, 2589385289, 2812140668]
 
@@ -373,7 +380,14 @@ def test_an_application_steam_was_told_about_is_not_a_game(tmp_path: Path):
     _shortcuts(library, [2573626021], exe=f'"{game}"')
     _shortcuts(library, [2812140668], user="2", exe='"ibus-ui-emojier-plasma"',
                shortcut_path="/usr/share/applications/org.kde.plasma.emojier.desktop")
-    _shortcuts(library, [2589385289], user="3", exe='"/usr/bin/flatpak"',
+    # The wrapper is made here rather than borrowed from the host: an absolute
+    # path that is not on the machine is excluded for being absent, so a runner
+    # without flatpak would pass this test without ever reaching the rule it is
+    # about, which is the `.desktop` entry beside it.
+    wrapper = home / "usr/bin/flatpak"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_bytes(b"#!/bin/sh\n")
+    _shortcuts(library, [2589385289], user="3", exe=f'"{wrapper}"',
                shortcut_path="/var/lib/flatpak/exports/share/applications/com.moonlight_stream.Moonlight.desktop")
 
     assert local_library(home)["shortcut_app_ids"] == [2573626021]
@@ -388,6 +402,9 @@ def test_a_shortcut_somebody_pointed_steam_at_stays_whatever_it_runs(tmp_path: P
     """
     home = tmp_path / "home"
     library = _library(home)
-    _shortcuts(library, [4093505389], exe='"/usr/bin/flatpak"', shortcut_path="")
+    wrapper = home / "usr/bin/flatpak"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_bytes(b"#!/bin/sh\n")
+    _shortcuts(library, [4093505389], exe=f'"{wrapper}"', shortcut_path="")
 
     assert local_library(home)["shortcut_app_ids"] == [4093505389]
