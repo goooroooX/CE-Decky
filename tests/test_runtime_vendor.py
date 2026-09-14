@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -55,6 +56,32 @@ def test_no_bytecode_is_shipped():
     ).stdout.split()
     assert tracked, "the vendor tree is not committed"
     assert [name for name in tracked if name.endswith(".pyc") or "__pycache__" in name] == []
+
+
+def test_the_interpreter_running_this_is_used_when_it_has_pip():
+    assert vendor._installer_python() == sys.executable
+
+
+def test_the_cached_environment_is_borrowed_when_it_does_not(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """SteamOS ships a python3 with no pip, which is how this is met in practice."""
+    venv = tmp_path / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").write_text("", encoding="utf-8")
+    monkeypatch.setattr(vendor, "ROOT", tmp_path)
+    monkeypatch.setattr(vendor.importlib.util, "find_spec", lambda name: None)
+
+    assert vendor._installer_python() == str(venv / "python")
+
+
+def test_no_interpreter_with_pip_is_one_sentence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Not a traceback out of a failed pip subprocess, which is what it was."""
+    monkeypatch.setattr(vendor, "ROOT", tmp_path)
+    monkeypatch.setattr(vendor.importlib.util, "find_spec", lambda name: None)
+
+    with pytest.raises(SystemExit) as refused:
+        vendor._installer_python()
+
+    assert "--bootstrap" in str(refused.value)
 
 
 def _recorded(root: Path, lock: str, tree: str) -> None:

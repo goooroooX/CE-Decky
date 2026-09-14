@@ -24,6 +24,8 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 import argparse
+import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -75,10 +77,32 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _installer_python() -> str:
+    """An interpreter that actually has `pip`, or a sentence saying none does.
+
+    SteamOS ships a system `python3` with no `pip` module at all, so running
+    this helper the way every command here is written starts it under an
+    interpreter that cannot install. It could create the environment, because
+    `venv` and `ensurepip` are both there, which is why `qa.py --bootstrap`
+    works from it and only this helper does not. That used to surface as a pip
+    traceback about a failed subprocess; the development environment this
+    project already caches is the answer, and its absence is one line.
+    """
+    if importlib.util.find_spec("pip") is not None:
+        return sys.executable
+    venv = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if venv.is_file():
+        return str(venv)
+    raise SystemExit(
+        "this interpreter has no pip and there is no .venv to borrow one from: "
+        "run `python scripts/qa.py --bootstrap` first"
+    )
+
+
 def _install(target: Path) -> None:
     """Install the locked distributions into `target` and make them shippable."""
     subprocess.run([
-        sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+        _installer_python(), "-m", "pip", "install", "--disable-pip-version-check",
         "--require-hashes", "--no-deps", "--no-compile", "--only-binary=:all:",
         "--target", str(target), "-r", str(LOCK),
     ], check=True)

@@ -343,6 +343,13 @@ from the hash-pinned lock with:
 python scripts/update_runtime_vendor.py
 ```
 
+It needs an interpreter that has `pip`. SteamOS ships a system `python3`
+without one, so the rebuild borrows the cached `.venv` when the interpreter
+that started it cannot install, and says which command creates that
+environment when there is none. Only the rebuild needs this: `--check` reads
+the tree, and `qa.py --bootstrap` works from the system interpreter because
+`venv` and `ensurepip` are both present there.
+
 It installs `requirements-runtime.lock` with `--require-hashes --no-deps
 --only-binary=:all:`, drops `bin/`, bytecode and `__pycache__`, refuses a
 non-pure artifact (`.so`, `.dll`, `.pyd`, `.exe`, `.dylib`), retains
