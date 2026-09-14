@@ -145,6 +145,12 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Is a live Decky holding this plugin reachable, and what exact plugin root, `user_home` and `settings_dir` does it report | `scripts/target_plugin_install.py authority`, which is also where the probes below get those paths |
 | Install or replace the exact verified ZIP, and prove the reload | `scripts/target_plugin_install.py install` |
 | Is this ZIP the exact installable artifact | `scripts/target_package_probe.py` |
+| Is this what the official Decky Store would ship, which is a different build from ours | `python scripts/qa.py --profile store`, which runs `scripts/check_store_artifact.py --build` |
+| Does Cheat Engine actually start on this device, through the production launch path rather than a description of it | `scripts/target_ce_launch_probe.py` |
+| Which exact compatibility prefix does this AppID have here | `scripts/target_prefix_probe.py`; read only, and it refuses an ambiguous answer rather than choosing |
+| What does Steam's own JavaScript say this device's library holds, and does it agree with the device's own files | `scripts/target_steam_library_probe.py` |
+| Can this device's own 7-Zip open what the production adapter hands it | `scripts/target_archive_probe.py` |
+| Does the device reach a provider over TLS through the production transport | `scripts/target_tls_probe.py` |
 | Make the live backend do something, rather than reading what it holds | `scripts/target_plugin_rpc.py`; one bounded call through Decky's own socket, for behaviour that only exists in the loaded process |
 | What does this plugin hold for a game right now: selected and previous table SHA, consent, auto-load, pins, remembered state, sessions, owned launches, and which AppIDs are running | `scripts/target_state_probe.py` |
 | What do the provider caches hold: how much of the FearLess listing is indexed, how stale it is, how much it still owes, and whether its background pass is armed | `scripts/target_state_probe.py`, in `provider_caches` |
@@ -153,7 +159,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | What did the backend do in a session an install has already rotated away | `scripts/target_plugin_log.py --journal`; the system journal keeps this plugin's records across a reload, a webhelper restart and a reboot, and returns only ours |
 | What did the panel do before it stopped | `scripts/target_plugin_log.py --frontend`; the panel's live record dies with its renderer, and restarting the webhelper to recover a wedged panel is what destroys it |
 | What is this plugin's panel showing right now, and can a row be reached | `scripts/target_panel_read.py`; it reads each row, its controls and their state out of the page as text, and `--open` opens this plugin's own panel through Steam's and Decky's own calls. Prefer it to a capture for anything a layout question turns on |
-| What is actually on the screen | `scripts/target_screenshot.py`; `--region qam`/`center`, `--remote USER@HOST` for the other device, `--tile` for a published cut |
+| What is actually on the screen | `scripts/target_screenshot.py`; `--region qam`/`center`, `--remote USER@HOST` for the other device, `--tile` for a published cut, which `scripts/build_screenshot_collage.py` then assembles into the strip `README.md` shows |
 | What viewport, pixel ratio and panel height does Game Mode give a screen | `scripts/target_ui_layout_probe.py` |
 | Has Steam's UI stopped running JavaScript, and what wedged it | `scripts/target_ui_freeze_probe.py` |
 | CEF will not answer that probe at all: what are the webhelper's own threads doing | `scripts/target_webhelper_threads.py`; reads `/proc`, so it needs no debugger and is safe while the UI is wedged |
@@ -164,6 +170,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Routed repository QA, and pinned browser UI QA | `scripts/qa.py`, `scripts/browser_harness.py` |
 | What are the providers actually serving, and what is in real tables | `scripts/provider_probe.py`, `scripts/provider_search_survey.py`, `scripts/provider_corpus_survey.py` |
 | Add a changelog entry to the current version without anchoring an edit on text that changes every round | `python scripts/changelog.py add` |
+| The runtime dependency lock moved, so what ships has to move with it | `python scripts/update_runtime_vendor.py`; `py_modules/vendor` is committed because the Store builder installs nothing, and the gate refuses a tree that does not match its recorded digest |
 | Where the pinned Cheat Engine installer's URL went after it rotated, and whether the artifact it now serves carries the reviewed publisher key | `tools/inno_setup_reader.py urls` reads the stub's own Inno Setup metadata without executing it; `tools/authenticode_verify.py verify` checks the signature against the pinned key; `tools/ce77_extract.py` extracts the reviewed installer's payload. These are maintainer steps feeding a reviewed manifest change, never an automatic source for one |
 | Any other reusable development or target helper under `scripts/` or `tools/` | read its `--help` and module docstring, and use it only for the behavior they name. `docs/DEVELOPMENT.md` carries a row for the helpers that need a standing procedure of their own. `scripts/` is where a helper for this repository or this device goes; `tools/` holds the few that read a third-party artifact and are run by hand rather than by a gate. Enforcement and release scripts such as `verify_repo.py` and `check_release.py` are reached through a QA profile or through the release procedure that documents them, so they have no row here |
 
