@@ -125,9 +125,28 @@ Take at least three windows, unattached either side of attached. What decides wh
 
 What the numbers mean is in the probe's own module docstring, and the results belong in `docs/FIELD_NOTES.md` section 1 with the machine that produced them.
 
+## Driving this plugin's own screens
+
+A question about a row, a control's state or what a footer says is answered from the device without anybody touching it, and without a picture. `target_panel_read.py` runs on the device like every other target helper, so over SSH it runs from the mirror:
+
+```bash
+ssh <user>@<target-ip> 'cd <mirror>; python3 scripts/target_panel_read.py --open --press Manage --metrics'
+```
+
+`--open` opens the quick access menu on this plugin's page through Steam's own `MenuStore.OpenQuickAccessMenu` and Decky's own `setActivePlugin`, which is the route `@decky/ui` gives every plugin. `--press` then opens one of this plugin's screens by the name on its control, repeated to go deeper, and activates the handler the plugin wrote for it. It reads back each row, its controls, their state and the text actually rendered, which is a fraction of what a frame costs to read and answers more.
+
+Two bounds are what make it safe to have. The name has to be one of the presses that opens a screen, and anything that authorizes, downloads, writes or destroys is refused by name, so **Use this table**, **Delete these** and **Apply** are not reachable through it. And a disabled control is reported as disabled rather than activated, because a press Steam would have refused is not evidence about anything.
+
+This is not synthetic input and it is not the exception to the rule below: nothing fabricates a controller event, and nothing reaches Steam's own interface. Everything outside that list is still a person with a controller.
+
+Two other helpers drive rather than read, and they differ in where they run:
+
+- `target_screenshot.py --remote <user>@<target-ip>` runs on the development machine and captures the device across the network. Only the capture belongs to the device; the cropping and scaling are image work and stay here. Use it when the question is about the whole screen, Steam's own interface or a game, which is what the panel reader cannot see.
+- `target_plugin_rpc.py` makes the live backend do something, rather than reading what it holds, and runs on the device from the mirror like the readers.
+
 ## What the maintainer still has to do
 
-Reaching a running game and a live attached session needs a person at the device, and no amount of tooling changes that. Never inject synthetic input to get to a screen. Ask, then measure:
+Reaching a running game and a live attached session needs a person at the device, and no amount of tooling changes that. What the section above reaches is this plugin's own screens, through its own handlers; a game, Steam's own interface and anything that authorizes or writes are outside it. Never fabricate controller input to get to a screen. Ask, then measure:
 
 - start the game and bring it to a steady frame rate;
 - install Cheat Engine through the plugin, and attach the session from the quick access menu;

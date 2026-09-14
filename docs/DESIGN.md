@@ -63,13 +63,13 @@ CE Decky should reuse known working mechanisms from current Decky, SteamOS, Prot
 | CE startup and Lua APIs | public Cheat Engine source and `celua.txt` | `.CT` argv load, autorun ordering, process and MemoryRecord API names | Behavioral evidence only; exact CE binary SHA must pass target probes |
 | Host archive tool | SteamOS/Arch 7-Zip package | Existing `7z`/`7za`/`7zr` CLI | Discover once, use absolute argv, enforce pre/post extraction bounds |
 
-Every reused mechanism records its origin with the code that adapts it: the upstream repository, the exact commit or tag, the path, and whether the code was copied, adapted, or used only as behavioral evidence. Licensing and attribution obligations are recorded in `THIRD_PARTY_NOTICES.md`.
+Every reused mechanism records its origin with the code that adapts it: the upstream repository, the exact commit or tag, the path, and whether the code was copied, adapted, or used only as behavioral evidence. Licensing and attribution obligations are recorded in `defaults/THIRD_PARTY_NOTICES.md`.
 
 ### Reuse rules
 
 1. Prefer the current pinned mechanism over tutorials or recalled API behavior.
 2. Inspect the upstream license before copying code.
-3. Preserve attribution in source and `THIRD_PARTY_NOTICES.md` where required.
+3. Preserve attribution in source and `defaults/THIRD_PARTY_NOTICES.md` where required.
 4. Copy or adapt the smallest coherent unit that preserves the proven behavior.
 5. Add regression tests for every behavior relied upon.
 6. Do not copy known weaknesses: partial VDF parsing, guessed AppIDs, hard-coded home paths, unchecked writes, or private UI dependencies.

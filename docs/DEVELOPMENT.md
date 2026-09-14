@@ -58,7 +58,7 @@ The official build remains `pnpm run build` / `rollup -c`. `rollup.config.js` st
 
 ## Validation profiles
 
-Use the smallest profile that covers the change.
+Use the smallest profile that covers the change. One profile is documented elsewhere because it belongs with what it builds: `--profile store` is under **The artifact the Store builds**.
 
 ### Automatic iteration profile
 
@@ -208,7 +208,7 @@ Before creating a tag:
 python scripts/qa.py --profile release
 ```
 
-`release` is the only full gate, and it creates and verifies the deterministic plugin archive as part of itself. Runtime vendoring is cached by the runtime lock SHA, so unchanged packaging does not repeat pip installation. The tag workflow repeats this profile on Ubuntu; a local pass is preparation, not a substitute for GitHub Actions or on-target validation on SteamOS.
+`release` is the only full gate, and it creates and verifies the deterministic plugin archive as part of itself. It installs nothing while doing so: the runtime dependencies are the committed `py_modules/vendor`, and packaging refuses a tree that does not match its recorded digest rather than rebuilding one. The tag workflow repeats this profile on Ubuntu; a local pass is preparation, not a substitute for GitHub Actions or on-target validation on SteamOS.
 
 ### Authoritative CI results
 

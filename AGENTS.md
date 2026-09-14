@@ -108,12 +108,13 @@ Keep the version and its date synchronized in `package.json`, `py_modules/ce_dec
 | A regression proved against the revision it was written for | `python3 scripts/qa_baseline_check.py --rev <sha> --vitest/--pytest <selection>` |
 | Whole backend/frontend | `--profile backend` / `--profile frontend` |
 | Full product gate, including the package | `--profile release` |
+| The archive the official Decky Store builds, which `release` never sees | `--profile store`; it needs podman or docker and reports INCOMPLETE without one |
 | Browser UI | SteamOS/Linux: `scripts/browser_harness.py`; other hosts: `qa.py --profile browser` |
 | Mutable provider diagnostics | `--profile live` or `--profile direct`; never ordinary CI evidence |
 | Prototype | only its README commands |
 | Target integration | local regressions plus exact on-target evidence |
 
-GitHub Actions (`.github/workflows/ci.yml`, release profile) is the authoritative complete Linux backend gate, and green exact-head CI is what makes a pushed production, build, dependency, test, packaging, or release change ready.
+GitHub Actions (`.github/workflows/ci.yml`) is the authoritative complete Linux gate, and green exact-head CI is what makes a pushed production, build, dependency, test, packaging, or release change ready. It is two jobs: `validate` runs the release profile, and `store-artifact` builds and checks the archive the official Decky Store would ship, which is a different build path and the one a submission is judged by.
 
 Do not wait for CI. A push ends the work: report the exact head, say CI was not awaited, ask the maintainer to check it, and stop. Until green exact-head CI is read, call the head pushed, not ready; repeat the check request whenever readiness matters, always for a release. Documentation-only changes need repository QA rather than CI.
 
