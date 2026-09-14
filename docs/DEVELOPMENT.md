@@ -304,6 +304,26 @@ repository cannot install there fails the Store build and nothing else.
 directory. In `decky-plugin-database` that is the submodule directory, which is
 why it has to be added there as `CE-Decky`.
 
+### Where a helper has to be registered
+
+A helper is registered in two places, and `scripts/verify_repo.py` refuses a
+tree that skips either.
+
+This document is the authority for what a helper guarantees and how it is run:
+every helper under `scripts/` and `tools/` is named here, or listed in
+`UNDOCUMENTED_HELPERS` with the documented helper that runs it, for the few that
+have no command of their own.
+
+`AGENTS.md` is where a helper is found. Its tracked-helper table and its route
+table are what an agent reads before writing a command, so a helper has a row in
+one of them phrased as the question it answers, or an entry in
+`HELPERS_OUTSIDE_THE_AGENT_TABLE` with the reason it stays out. Prose elsewhere
+in the contract does not count, and that is deliberate: being mentioned
+somewhere is how a helper becomes technically present and practically invisible.
+Both rules exist because being documented and being findable turned out to be
+different things: eleven helpers satisfied the first and none of them the
+second, while the gate stayed green.
+
 ### The committed runtime dependency tree
 
 `py_modules/vendor` is third-party code and it is committed on purpose, which is

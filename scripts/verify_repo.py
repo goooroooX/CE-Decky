@@ -763,8 +763,99 @@ UNDOCUMENTED_HELPERS = {
 }
 
 
+HELPERS_OUTSIDE_THE_AGENT_TABLE = {
+    # Reached through a QA profile on purpose: `AGENTS.md` states that a passing
+    # `release` has already packaged and says not to invoke the packaging helper
+    # again, so a row inviting an agent to run it would contradict the contract.
+    "package_plugin.py": "a release profile packages; the contract says not to run it again",
+    # Named in the QA section's own prose, which is where the question it
+    # answers - where a timing figure goes - is actually being asked.
+    "qa_durations.py": "named where the question it answers arises, in the QA section",
+    # Routed by description rather than by name: the validation section sends a
+    # constrained environment to `docs/DEVELOPMENT.md` for the fallback.
+    "frontend_fallback.py": "routed by description in the validation section",
+    # A one-off asset build with no question an agent holds mid-task.
+    "build_mascot_asset.py": "an asset build; docs/DEVELOPMENT.md is its home",
+}
+
+
+def _helpers() -> list[Path]:
+    """Every helper a person or an agent runs, in both directories that hold one."""
+    found: list[Path] = []
+    for directory in ("scripts", "tools"):
+        for suffix in ("*.py", "*.mjs"):
+            found.extend(
+                path for path in sorted((ROOT / directory).glob(suffix))
+                if not path.name.startswith("_")
+            )
+    return sorted(found)
+
+
+def _verify_helpers_are_in_the_agent_table() -> None:
+    """Every helper is findable from the file an agent reads first.
+
+    `docs/DEVELOPMENT.md` being the authority for what a helper guarantees is
+    not the same as the helper being findable, and this project proved the
+    difference: eleven helpers were documented there, the documentation rule was
+    green, and none of them appeared in the table `AGENTS.md` sends an agent to
+    before it writes a command of its own. A question with no row is exactly
+    where the `find` or the `python3 -c` gets written.
+
+    So the surfaces that count here are the two tables an agent reads for that
+    purpose, not the whole of `AGENTS.md`: a passing mention in prose is how a
+    helper becomes technically present and practically invisible. A helper that
+    deliberately stays out of them goes in `HELPERS_OUTSIDE_THE_AGENT_TABLE`
+    with the reason, so that it is a decision somebody recorded rather than a
+    row somebody forgot.
+    """
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    surfaces = []
+    heading = "## Tracked helpers"
+    if heading not in agents:
+        raise SystemExit(f"AGENTS.md has no {heading!r} section for helpers to be found in")
+    start = agents.index(heading)
+    end = agents.find("\n## ", start + len(heading))
+    surfaces.append(agents[start:end if end != -1 else len(agents)])
+    header = "| Surface | Minimum route |"
+    if header not in agents:
+        raise SystemExit(f"AGENTS.md has no {header!r} table for helpers to be found in")
+    start = agents.index(header)
+    end = agents.find("\n\n", start)
+    surfaces.append(agents[start:end if end != -1 else len(agents)])
+    text = "\n".join(surfaces)
+
+    missing: list[str] = []
+    for path in _helpers():
+        name = path.name
+        if name in UNDOCUMENTED_HELPERS or name in HELPERS_OUTSIDE_THE_AGENT_TABLE:
+            continue
+        if not re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w])", text):
+            missing.append(path.relative_to(ROOT).as_posix())
+    stale = [
+        name for name in HELPERS_OUTSIDE_THE_AGENT_TABLE
+        if not any(path.name == name for path in _helpers())
+    ]
+    if stale:
+        raise SystemExit(
+            f"HELPERS_OUTSIDE_THE_AGENT_TABLE names helpers that are gone: {stale}. "
+            "Remove the entry with the helper it was written for."
+        )
+    listed = {path.name for path in _helpers()}
+    both = sorted(set(HELPERS_OUTSIDE_THE_AGENT_TABLE) & set(UNDOCUMENTED_HELPERS) & listed)
+    if both:
+        raise SystemExit(
+            f"these helpers are excused twice, which hides which reason is the live one: {both}"
+        )
+    if missing:
+        raise SystemExit(
+            f"helpers are not in the AGENTS.md tables an agent reads first: {missing}. "
+            "Give each one a row phrased as the question it answers, or add it to "
+            "HELPERS_OUTSIDE_THE_AGENT_TABLE with the reason it stays out."
+        )
+
+
 def _verify_helpers_are_documented() -> None:
-    """Every helper under `scripts/` is named in `docs/DEVELOPMENT.md`.
+    """Every helper under `scripts/` and `tools/` is named in `docs/DEVELOPMENT.md`.
 
     `AGENTS.md` sends an agent to the tracked helpers before it writes a command
     of its own, and the whole value of that table is that the helper it needs is
@@ -786,12 +877,12 @@ def _verify_helpers_are_documented() -> None:
     """
     development = (ROOT / "docs" / "DEVELOPMENT.md").read_text(encoding="utf-8")
     missing: list[str] = []
-    for path in sorted((ROOT / "scripts").glob("*.py")) + sorted((ROOT / "scripts").glob("*.mjs")):
+    for path in _helpers():
         name = path.name
-        if name.startswith("_") or name in UNDOCUMENTED_HELPERS:
+        if name in UNDOCUMENTED_HELPERS:
             continue
         if not re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w])", development):
-            missing.append(f"scripts/{name}")
+            missing.append(path.relative_to(ROOT).as_posix())
     stale = [name for name in UNDOCUMENTED_HELPERS if not (ROOT / "scripts" / name).is_file()]
     if stale:
         raise SystemExit(
@@ -1071,6 +1162,7 @@ def main() -> None:
     _verify_ci_source_snapshot()
     _verify_agents_last_section()
     _verify_helpers_are_documented()
+    _verify_helpers_are_in_the_agent_table()
     _verify_python_runtime_syntax()
     _verify_focusable_flows()
     _verify_no_comments_between_props()
