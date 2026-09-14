@@ -1,0 +1,50 @@
+# Python
+.venv/
+.venv-wsl/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+.cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+*.egg-info/
+
+# Node and frontend tooling
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/.ce-decky-source.sha256
+
+# Build and local artifacts
+build/
+tmp/
+py_modules/vendor.tmp/
+out/
+artifacts/
+*.log
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# Machine-specific target evidence; a durable conclusion belongs in docs/FIELD_NOTES.md.
+target-snapshot*.json

@@ -1,0 +1,15508 @@
+//: `unknown` is the weakest positive state and not an absence: a table nobody
+//: has tried carries no glyph at all. It says this device proved these exact
+//: bytes and this screen cannot say whether the proof is about the build in
+//: front of the reader, which is what Manage opened with no game selected can
+//: honestly claim.
+/**
+ * The durable causes that are a statement about whether this exact table works.
+ *
+ * `unusable`, `encrypted` and `gone` are about the bytes or about the source
+ * that served them: a file nobody could open never failed at anything, and a
+ * file the provider no longer has is not about this device at all. They keep
+ * their own cause-specific chip and never colour this glyph.
+ */
+const COMPATIBILITY_FAILURE_CAUSES = ["refused", "unknown"];
+function isCompatibilityFailure(mark) {
+    return Boolean(mark) && COMPATIBILITY_FAILURE_CAUSES.includes(mark.cause);
+}
+/**
+ * What a row should show, from the two durable records about the table on it.
+ *
+ * `blocked` is the durable record the row is carrying, which the caller picks:
+ * the record on these exact bytes where there is one. A cause that is not about
+ * whether the table works leaves no claim in either direction rather than
+ * turning into a verdict here.
+ */
+function compatibilityGlyph(evidence, blocked) {
+    if (isCompatibilityFailure(blocked))
+        return "failed";
+    // Everything else a record can say is about the bytes that were downloaded or
+    // about the source that served them, and none of it is evidence about whether
+    // a table that did load worked for a game. It has a chip of its own and
+    // leaves proven history where it is.
+    if (!evidence)
+        return null;
+    if (evidence.invalidated || evidence.state === "retest")
+        return "retest";
+    return evidence.state === "matching" ? "matching" : "unknown";
+}
+// `unknown` is green because it is a success: this device ran a cheat from
+// these exact bytes and they worked. What it does not carry is the comparison
+// with the build in front of the reader, and that is said by the ring around
+// the check rather than by taking the colour away - a grey mark on a list where
+// an untried table carries no mark at all reads as ignorance about a table that
+// has in fact been proven.
+const GLYPH_COLOR = {
+    failed: "hsl(9, 74%, 62%)",
+    retest: "#e6bb64",
+    matching: "#8ddc75",
+    unknown: "#8ddc75",
+};
+const GLYPH_LABEL = {
+    failed: "Marked as not working",
+    retest: "Worked before; retest needed",
+    matching: "Worked on this build",
+    unknown: "Worked before; current build unknown",
+};
+function glyphBody(state) {
+    if (state === "matching")
+        return SP_JSX.jsx("path", { d: "M4.5 8l2.2 2.2 4.8-4.8", fill: "none", stroke: "currentColor", strokeWidth: "1.6" });
+    if (state === "failed")
+        return SP_JSX.jsx("path", { d: "M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2", fill: "none", stroke: "currentColor", strokeWidth: "1.6" });
+    if (state === "retest") {
+        // A closed turn with a head on it: the same "go round again" idea the row's
+        // own wording used to carry, in the space a chip used to take.
+        return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("path", { d: "M10.8 6.1a3.4 3.4 0 1 0 .5 2.5", fill: "none", stroke: "currentColor", strokeWidth: "1.5" }), SP_JSX.jsx("path", { d: "M8.2 5.6l2.8.3-.4 2.7", fill: "none", stroke: "currentColor", strokeWidth: "1.5" })] });
+    }
+    // Worked before, and this screen cannot compare it with the build in front of
+    // the reader. The check is the same check and is drawn whole: a broken one is
+    // a check that is hard to read rather than a qualified statement. What is
+    // qualified is the ring, and `CompatibilityMark` draws that.
+    return SP_JSX.jsx("path", { d: "M4.5 8l2.2 2.2 4.8-4.8", fill: "none", stroke: "currentColor", strokeWidth: "1.6" });
+}
+/**
+ * One passive, non-focusable statement about an exact table.
+ *
+ * Everything readable is in `title` and `aria-label`: the visible surface is
+ * the glyph, so a row keeps its height and its single controller focus stop.
+ */
+function CompatibilityMark({ evidence, blocked }) {
+    const state = compatibilityGlyph(evidence, blocked);
+    if (!state)
+        return null;
+    const label = state === "failed" && blocked?.reason
+        ? `${GLYPH_LABEL.failed}: ${blocked.reason}`
+        : GLYPH_LABEL[state];
+    return SP_JSX.jsx("span", { role: "img", title: label, "aria-label": label, style: { color: GLYPH_COLOR[state], whiteSpace: "nowrap", flexShrink: 0, lineHeight: 0 }, children: SP_JSX.jsxs("svg", { width: "16", height: "16", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", style: { verticalAlign: "middle" }, children: [SP_JSX.jsx("circle", { cx: "8", cy: "8", r: "6.5", fill: "none", stroke: "currentColor", strokeDasharray: state === "unknown" ? "2.6 2.2" : undefined }), glyphBody(state)] }) });
+}
+/**
+ * What Manage shows for every row it lists, whichever game each one belongs to.
+ *
+ * This screen is one list of two groups: the tables this game has, and the
+ * tables the device holds for its other games. Filtering the evidence to the
+ * selected game answered for the first group and left the second with no mark
+ * at all, so a table that had been proven to work showed exactly what a table
+ * nobody has ever tried shows.
+ *
+ * Every row here keeps the state the backend computed for it, including the
+ * rows of the other group. That state is not a claim about the selected game
+ * and never was: it is computed per record, against the profile and the current
+ * build of the game that record belongs to, and every row in that group names
+ * its own game. Downgrading it to "worked before, current build unknown" would
+ * be throwing away an answer that is already correct for the game the row is
+ * about.
+ *
+ * `deviceCompatibilityHistory` does drop it, and is still right to: that is the
+ * Manage opened with no game at all, where the rows are one per set of bytes
+ * rather than one per game, so a build claim would be made on behalf of a game
+ * the row does not name.
+ */
+function manageCompatibility(entries, appId) {
+    if (appId === null)
+        return deviceCompatibilityHistory(entries);
+    const mine = entries.filter((entry) => entry.app_id === appId);
+    const claimed = new Set(mine.map((entry) => entry.table_sha256));
+    // Newest first, so one table proven by two games is represented by the
+    // record that was most recently true.
+    const others = new Map();
+    for (const entry of [...entries].sort((a, b) => b.last_working_at - a.last_working_at || a.app_id - b.app_id)) {
+        if (claimed.has(entry.table_sha256) || others.has(entry.table_sha256))
+            continue;
+        others.set(entry.table_sha256, entry);
+    }
+    return [...mine, ...others.values()];
+}
+/**
+ * What one exact table's record is, on a screen that is about one game.
+ *
+ * Search lists candidates for the game it was opened for, so it looked only for
+ * that game's own record and showed nothing at all for a table another game on
+ * this device had proven. That is the same hole `manageCompatibility` exists to
+ * close, in the screen next door: a table this device has proven showed exactly
+ * what a table nobody has ever tried shows.
+ *
+ * This game's record is used as it stands, because it is a claim about the game
+ * in front of the reader. Another game's is kept and demoted: the success is
+ * real and the build comparison behind it is not about this game, so it comes
+ * through as the weakest positive state, which says worked before and nothing
+ * about the build. `invalidated` survives either way - a record a later failure
+ * retired is a retest whichever game is asking.
+ */
+function gameCompatibility(entries, appId, sha256) {
+    // No table, no record: a row that has not resolved to exact bytes yet has
+    // nothing this could be about.
+    if (!sha256)
+        return undefined;
+    // A screen with no game of its own has only the demoted answer to give, which
+    // is what the fallback below produces.
+    const mine = appId === null || appId === undefined
+        ? undefined
+        : entries.find((entry) => entry.app_id === appId && entry.table_sha256 === sha256);
+    if (mine)
+        return mine;
+    const others = entries
+        .filter((entry) => entry.table_sha256 === sha256)
+        .sort((a, b) => b.last_working_at - a.last_working_at || a.app_id - b.app_id);
+    return others.length ? { ...others[0], state: "unknown" } : undefined;
+}
+/**
+ * The newest success per exact table, for a Manage with no game selected.
+ *
+ * No current game can establish a current-build match, so the comparison is
+ * dropped and what is left is history. Whether that history was superseded is
+ * not a build claim and is kept: a success a later failure invalidated is a
+ * table to retest whichever screen is asking, and dropping the flag here made
+ * device-wide Manage say "current build unknown" about the same exact SHA that
+ * Search was calling out for a retest.
+ */
+function deviceCompatibilityHistory(entries) {
+    const newest = new Map();
+    for (const entry of [...entries].sort((a, b) => b.last_working_at - a.last_working_at || a.app_id - b.app_id)) {
+        if (!newest.has(entry.table_sha256))
+            newest.set(entry.table_sha256, { ...entry, state: "unknown" });
+    }
+    return [...newest.values()];
+}
+
+/**
+ * One human-readable sentence for anything that can reach a toast or a Field.
+ *
+ * Decky Loader 3.2.6 loses the backend message on the way to the frontend: its
+ * `WSRouter._call_route()` sends `{name, message, traceback}` while
+ * `wsrouter.ts` builds `new PyError(data.error.name, data.error.error, ...)`,
+ * so `PyError.message` is the empty string for *every* backend exception and
+ * CE Decky showed an empty notification instead of the cause. The exact Python
+ * text still arrives inside `pythonTraceback`, whose last line is
+ * `<ExceptionClass>: <message>`, so recover it from there and fall back to the
+ * exception class only when even that is unavailable.
+ */
+const GENERIC_FALLBACK = "CE Decky failed without reporting a reason.";
+const PYTHON_NAME_PREFIX = "Python ";
+/** Last `<ExceptionClass>: <message>` line of a Python traceback, if any. */
+function pythonTracebackSummary(traceback) {
+    if (typeof traceback !== "string")
+        return null;
+    const lines = traceback.split("\n").map((line) => line.trimEnd());
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index].trim();
+        if (!line || line.startsWith("Traceback (") || lines[index].startsWith("  "))
+            continue;
+        const separator = line.indexOf(": ");
+        if (separator > 0) {
+            const exceptionClass = line.slice(0, separator);
+            const message = line.slice(separator + 2).trim();
+            // Only treat this as an exception line when the left side really looks
+            // like a dotted Python class name; a stray sentence with a colon is not.
+            if (message && /^[A-Za-z_][A-Za-z0-9_.]*$/.test(exceptionClass))
+                return message;
+        }
+        if (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(line))
+            return line;
+        return line;
+    }
+    return null;
+}
+/**
+ * The exception class of a Python traceback, without its module path.
+ *
+ * The message is what a person reads; the class is what the backend uses to say
+ * which kind of failure this was. A durable write that failed after the new
+ * content was already in place is a different fact from one the backend refused
+ * outright, and only the class carries it across the RPC boundary.
+ */
+function pythonExceptionClass(traceback) {
+    if (typeof traceback !== "string")
+        return null;
+    const lines = traceback.split("\n").map((line) => line.trimEnd());
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index].trim();
+        if (!line || line.startsWith("Traceback (") || lines[index].startsWith("  "))
+            continue;
+        const separator = line.indexOf(": ");
+        const candidate = separator > 0 ? line.slice(0, separator) : line;
+        if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(candidate))
+            return null;
+        const parts = candidate.split(".");
+        return parts[parts.length - 1];
+    }
+    return null;
+}
+function describeError(cause, fallback = GENERIC_FALLBACK) {
+    if (typeof cause === "string" && cause.trim())
+        return cause.trim();
+    if (cause instanceof Error) {
+        const message = typeof cause.message === "string" ? cause.message.trim() : "";
+        if (message)
+            return message;
+        const recovered = pythonTracebackSummary(cause.pythonTraceback);
+        if (recovered)
+            return recovered;
+        const name = typeof cause.name === "string" ? cause.name.trim() : "";
+        if (name && name !== "Error") {
+            // `PyError` names itself `Python ValueError`; report the exception rather
+            // than nothing when no message survived the loader.
+            return name.startsWith(PYTHON_NAME_PREFIX)
+                ? `${name.slice(PYTHON_NAME_PREFIX.length)} (the backend reported no message)`
+                : name;
+        }
+        return fallback;
+    }
+    if (cause === null || cause === undefined)
+        return fallback;
+    const text = String(cause).trim();
+    if (!text || text === "[object Object]")
+        return fallback;
+    return text;
+}
+
+/**
+ * A bounded in-memory record of what the panel did, for the support bundle.
+ *
+ * The backend writes to Decky's plugin log, so every backend fact survives a
+ * bug report. Nothing on the frontend did: a modal that opened on the wrong
+ * state, a press that produced an error, a poll that stopped, all of it existed
+ * only in the browser console of a device nobody can reach. A UI bug therefore
+ * arrived as a screenshot and a sentence, with no way to say what the panel had
+ * been told at the time.
+ *
+ * This is deliberately a ring buffer and not a file. It costs nothing while
+ * nothing goes wrong, and it cannot grow without bound during a long session.
+ * It is read for a support bundle, when the entries are handed to the backend
+ * to be written into the archive.
+ *
+ * It is also drained as it goes, which is a second thing entirely. A panel that
+ * wedges is recovered by restarting Steam's webhelper, and that destroys the
+ * renderer this array lives in: the bundle collected afterwards carries an
+ * empty one, which is precisely the case the evidence was wanted for. So
+ * `drainSupportLog` hands new entries to the backend while the panel still
+ * works, and the backend writes them where they outlive it. The cursor is
+ * separate from the ring, so draining costs nothing and takes nothing away
+ * from a bundle collected in the same session.
+ */
+/** Entries kept before the oldest are dropped. */
+const MAX_SUPPORT_LOG_ENTRIES = 500;
+/** Longest single field value kept, in characters. */
+const MAX_FIELD_CHARS = 240;
+/** Longest stack excerpt kept for one failure, in characters. */
+const MAX_STACK_CHARS = 1600;
+/**
+ * Field names whose value is never recorded, only their presence.
+ *
+ * An archive password is the one secret the panel handles, and this log is
+ * written into a file that gets attached to a public issue, so the name of the
+ * field is all that survives. The list matches the backend's own, because a
+ * caller should not have to remember which side of the RPC it is logging on.
+ */
+const REDACTED_FIELD = /(?:password|passwd|token|secret|cookie|authorization|api[_-]?key)/i;
+const ring = [];
+let dropped = 0;
+/**
+ * Evictions this session's durable record has not been told about yet.
+ *
+ * Separate from `dropped` above, which is the session's own total and is what a
+ * support bundle asks for. The durable record is appended to in batches, and
+ * every record of a batch carries the count it was handed as `dropped_before`:
+ * a cumulative total there stamps every record written for the rest of the
+ * session with the same number, so one burst of loss reads as loss that never
+ * stopped, and nothing says when it happened. What that field can honestly say
+ * is what was lost before this batch, which is this.
+ */
+let droppedPending = 0;
+/** What the batch currently in flight was told, so a confirmed one clears it. */
+let droppedReported = 0;
+/** The cursor that batch carried, so only its own confirmation clears it. */
+let droppedReportedAt = -1;
+/** Entries pushed since this frontend started, including those already evicted. */
+let pushed = 0;
+/** How many of `pushed` have been handed to the backend for durable keeping. */
+let handedOver = 0;
+/** Called when an entry lands, so a failure can be flushed without waiting. */
+let listener = null;
+/** Fields whose value is bounded by `MAX_STACK_CHARS` rather than the ordinary field bound. */
+const LONG_FIELDS = new Set(["stack"]);
+/** Strip control characters and bound the length of one recorded value. */
+function safeValue(value, limit = MAX_FIELD_CHARS) {
+    let text;
+    if (value === null || value === undefined)
+        text = "none";
+    else if (typeof value === "boolean")
+        text = value ? "true" : "false";
+    else if (typeof value === "number")
+        text = Number.isFinite(value) ? String(value) : "nan";
+    else if (typeof value === "string")
+        text = value;
+    else {
+        try {
+            text = JSON.stringify(value) ?? String(value);
+        }
+        catch {
+            text = "<unserializable>";
+        }
+    }
+    // Control characters, and the bidirectional overrides that let a recorded
+    // value reorder the line it is read in, never survive into the archive.
+    text = text.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ");
+    text = text.replace(/\s+/g, " ").trim();
+    return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+function push(level, event, fields) {
+    const recorded = {};
+    for (const name of Object.keys(fields).sort()) {
+        const value = fields[name];
+        if (value === undefined)
+            continue;
+        // A stack is the whole of the evidence for a frontend defect, so it is
+        // bounded by its own limit rather than by the ordinary field bound. It is
+        // sanitised exactly like every other value; only the length differs.
+        recorded[safeValue(name)] = REDACTED_FIELD.test(name)
+            ? (value === null || value === "" ? "none" : "<redacted>")
+            : safeValue(value, LONG_FIELDS.has(name) ? MAX_STACK_CHARS : MAX_FIELD_CHARS);
+    }
+    ring.push({ at: new Date().toISOString(), level, event: safeValue(event), fields: recorded });
+    pushed += 1;
+    // Oldest first: a session long enough to overflow this is one where what just
+    // happened matters more than what happened an hour ago.
+    while (ring.length > MAX_SUPPORT_LOG_ENTRIES) {
+        ring.shift();
+        dropped += 1;
+        droppedPending += 1;
+    }
+    // Notified after the ring has settled, so a listener that drains immediately
+    // sees this entry. Never allowed to throw into the caller: this is a log
+    // statement inside whatever was already going wrong.
+    if (listener !== null) {
+        try {
+            listener(level);
+        }
+        catch {
+            /* a diagnostics listener never breaks the path it is observing */
+        }
+    }
+}
+/** Record one ordinary panel event. */
+function logUi(event, fields = {}) {
+    push("info", event, fields);
+}
+/** Record something the panel handled but that should not have happened. */
+function logUiWarning(event, fields = {}) {
+    push("warning", event, fields);
+}
+/**
+ * Record a failure with everything that survived the RPC boundary.
+ *
+ * Decky loses a backend exception's message on the way to the frontend and
+ * carries the real text inside `pythonTraceback`, so the message a person saw,
+ * the Python exception class and the JavaScript stack are three different
+ * facts. A bug report that has all three can be read without the device.
+ */
+function logUiFailure(event, cause, fields = {}) {
+    const traceback = cause?.pythonTraceback;
+    const stack = cause instanceof Error && typeof cause.stack === "string" ? cause.stack : null;
+    push("error", event, {
+        ...fields,
+        message: describeError(cause),
+        error_type: cause instanceof Error ? cause.name : typeof cause,
+        python_error: pythonExceptionClass(traceback),
+        python_message: pythonTracebackSummary(traceback),
+        // The stack is the only field allowed past the ordinary field bound: for a
+        // frontend defect it is the entire evidence. Sanitising bounds it again on
+        // the way into the ring, to the same limit.
+        stack: stack === null ? undefined : stack.replace(/\s+/g, " ").slice(0, MAX_STACK_CHARS),
+    });
+}
+/**
+ * Every entry held right now, oldest first, plus how many were dropped.
+ *
+ * Reading does not clear: a user who collects a bundle twice for the same
+ * problem should get the same history in both, and the second collection is
+ * usually the one taken after reproducing it again.
+ */
+function readSupportLog() {
+    return { entries: [...ring], dropped, capacity: MAX_SUPPORT_LOG_ENTRIES };
+}
+/**
+ * Entries recorded since the last successful hand-over, oldest first.
+ *
+ * Taking them does not remove them from the ring: the ring still answers a
+ * support bundle collected in this session, and this is a second copy for the
+ * case that session does not survive to be asked. What it does move is the
+ * cursor, so the next drain returns only what is new.
+ *
+ * A drain that outruns the ring returns what the ring still holds rather than
+ * what was recorded: entries evicted before they were ever handed over are gone,
+ * and `dropped` is what says so. That only happens if 500 entries land between
+ * two flushes, which is a panel in a loop and is itself the finding.
+ *
+ * The `dropped` reported here is what has been lost since the last hand-over
+ * the backend kept, not the session's total: it is stamped on every record of
+ * the batch as `dropped_before`, and a total would put the same number on every
+ * record written for the rest of the session. The total is still what
+ * `readSupportLog` answers with, because a bundle is asking a different
+ * question - how much this session lost altogether.
+ */
+function drainSupportLog() {
+    const outstanding = Math.min(pushed - handedOver, ring.length);
+    const cursor = pushed;
+    if (outstanding <= 0)
+        return { entries: [], dropped: droppedPending, cursor };
+    droppedReported = droppedPending;
+    droppedReportedAt = cursor;
+    return { entries: ring.slice(ring.length - outstanding), dropped: droppedPending, cursor };
+}
+/**
+ * Mark everything up to `cursor` as durably kept.
+ *
+ * Separate from the drain so a rejected hand-over leaves the cursor where it
+ * was and the next flush carries the same entries again. The cursor only ever
+ * moves forward: two flushes in flight at once must not let the older one
+ * retire what the newer already retired.
+ */
+function confirmSupportLogFlush(cursor) {
+    if (cursor <= handedOver)
+        return;
+    handedOver = cursor;
+    // Only what that batch was told about, and only for the batch that was told:
+    // an eviction between the drain and this confirmation belongs to the next
+    // batch, and a confirmation for some other batch clears nothing, because the
+    // count is the one a particular hand-over carried.
+    if (cursor === droppedReportedAt) {
+        droppedPending = Math.max(0, droppedPending - droppedReported);
+        droppedReported = 0;
+        droppedReportedAt = -1;
+    }
+}
+/** How many recorded entries have not yet been handed over. */
+function unflushedSupportLogCount() {
+    return Math.max(0, pushed - handedOver);
+}
+/**
+ * Watch entries as they land, so a failure can be kept without waiting for the
+ * next tick of a timer.
+ *
+ * One listener, because there is one flush loop for this module's record: two
+ * panels from one loaded module share it rather than starting one each.
+ */
+function observeSupportLog(observer) {
+    listener = observer;
+}
+/**
+ * Give the slot up, and only if it is still this observer's.
+ *
+ * One loaded module can hold two panels, so the one that stops first must not
+ * take the other's listener with it: what that costs is the fast flush for a
+ * failure, which is the entry most worth having and the least able to wait for
+ * the next tick of a timer.
+ */
+function unobserveSupportLog(observer) {
+    if (listener === observer)
+        listener = null;
+}
+
+const active$1 = (op) => ["downloading", "extracting", "verifying"].includes(op.state);
+const resumable = (op) => active$1(op) || op.state === "completed";
+/** One mounted frontend owner. Cancel interrupts a read, never creates a second
+ * monitor or completion consumer. Superseded RPC replies have no side effects. */
+class ManagedSetupOwner {
+    constructor(deps) {
+        this.deps = deps;
+        this.operation = null;
+        this.interrupts = new Set();
+        this.completion = null;
+        this.cancellation = null;
+    }
+    publish(op) {
+        if (op?.operation_id !== this.operation?.operation_id || op?.state !== this.operation?.state) {
+            logUi("managed_setup.observed", { operation_id: op?.operation_id ?? this.operation?.operation_id, state: op?.state ?? "consumed" });
+        }
+        this.operation = op;
+        if (!this.deps.signal.aborted)
+            this.deps.publish(op);
+    }
+    async complete(operationId) {
+        if (this.completion?.operationId === operationId)
+            return this.completion.receipt;
+        const receipt = await this.deps.complete(operationId);
+        this.completion = { operationId, receipt };
+        return receipt;
+    }
+    handoff(previous, capability) {
+        const next = capability.operation;
+        if (!next || next.operation_id === previous.operation_id)
+            return false;
+        logUi("managed_setup.owner_handoff", { previous: previous.operation_id, previous_state: previous.state, previous_error: previous.error, operation_id: next.operation_id });
+        this.publish(next);
+        return true;
+    }
+    cancel() {
+        if (this.deps.signal.aborted || !this.operation || !active$1(this.operation) || this.cancellation) {
+            return Promise.reject(new Error("Managed setup is not cancellable."));
+        }
+        return new Promise((resolve, reject) => {
+            // Capture the exact operation before sending, and attach a rejection
+            // observer now even if an outstanding read has not yielded yet.
+            const receipt = this.deps.cancel(this.operation.operation_id);
+            void receipt.catch(() => undefined);
+            this.cancellation = { receipt, resolve, reject, received: false };
+            for (const interrupt of this.interrupts)
+                interrupt();
+        });
+    }
+    // Only read-only requests may abandon a deadline. Decky callables cannot be
+    // cancelled by this race; mutations below retain their actual promises.
+    async read(request, interruptible = false) {
+        let timer;
+        let abort;
+        let interrupt;
+        try {
+            if (this.deps.signal.aborted)
+                throw new Error("Managed setup observer closed.");
+            return await Promise.race([
+                request,
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("Managed setup did not answer in time.")), 8000);
+                    abort = () => reject(new Error("Managed setup observer closed."));
+                    this.deps.signal.addEventListener("abort", abort, { once: true });
+                }),
+                ...(interruptible ? [new Promise((_, reject) => {
+                        interrupt = () => reject(new Error("Managed setup cancellation requested."));
+                        this.interrupts.add(interrupt);
+                    })] : []),
+            ]);
+        }
+        finally {
+            clearTimeout(timer);
+            this.deps.signal.removeEventListener("abort", abort);
+            if (interrupt)
+                this.interrupts.delete(interrupt);
+        }
+    }
+    async pause(ms) {
+        let timer;
+        try {
+            await this.read(new Promise((resolve) => { timer = setTimeout(resolve, ms); }), true);
+        }
+        catch (cause) {
+            if (!this.cancellation && !this.deps.signal.aborted)
+                throw cause;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    async reconcile(cause, previousTerminalId) {
+        // Unavailable truth is not terminal truth. Keep this owner, with capped
+        // backoff, until the backend answers or the frontend deliberately unmounts.
+        let attempts = 0;
+        while (!this.deps.signal.aborted) {
+            if (this.cancellation && !this.cancellation.received)
+                return this.operation;
+            if (this.operation && this.completion?.operationId === this.operation.operation_id) {
+                return { ...this.operation, state: "completed", installed: this.completion.receipt };
+            }
+            try {
+                const capability = await this.read(this.deps.capability(), !this.cancellation?.received);
+                if (this.cancellation && !this.cancellation.received)
+                    return this.operation;
+                const next = capability.operation;
+                if (next) {
+                    // A start refused before creating anything leaves the previous
+                    // failed/cancelled operation visible. Its old error is not this press.
+                    if (!this.operation && next.operation_id === previousTerminalId && !resumable(next))
+                        throw cause;
+                    if (this.operation && next.operation_id !== this.operation.operation_id) {
+                        logUi("managed_setup.owner_handoff", { previous: this.operation.operation_id, operation_id: next.operation_id });
+                    }
+                    return next;
+                }
+                if (!this.operation)
+                    throw cause;
+                const operation = this.operation;
+                let receipt;
+                try {
+                    // This exact-ID call is idempotent even after another frontend has
+                    // consumed the operation. Registration heuristics cannot prove it.
+                    receipt = await this.complete(operation.operation_id);
+                }
+                catch (failure) {
+                    if (this.cancellation && !this.cancellation.received)
+                        return operation;
+                    // The service explicitly refuses an ID for which it has neither a
+                    // live reservation nor a retained completion receipt. A transport
+                    // error proves neither and must keep reconciling.
+                    if (describeError(failure) !== "managed CE setup changed; refresh before completing it")
+                        throw failure;
+                    return { ...operation, state: "failed", progress: null, error: describeError(cause) };
+                }
+                logUi("managed_setup.completion_reconciled", { operation_id: operation.operation_id, completed_now: receipt.completed_now });
+                // Let the main owner consume pending cancellation first, then finish
+                // from this cached exact receipt without repeating the mutation.
+                return { ...operation, state: "completed", installed: receipt };
+            }
+            catch (failure) {
+                if (this.cancellation && !this.cancellation.received)
+                    return this.operation;
+                if (!this.operation && failure === cause)
+                    throw cause;
+                attempts += 1;
+                if (attempts === 1 || attempts === 3)
+                    logUiFailure("managed_setup.reconciliation_retry", failure, { operation_id: this.operation?.operation_id, attempt: attempts });
+                await this.pause(Math.min(500 * attempts, 5000));
+            }
+        }
+        throw new Error("Managed setup observer closed.");
+    }
+    async run(force, initial) {
+        let retry = 0;
+        try {
+            if (this.deps.signal.aborted)
+                return;
+            let first = initial.operation && resumable(initial.operation) ? initial.operation : null;
+            if (!first) {
+                const previousTerminalId = initial.operation?.operation_id;
+                try {
+                    first = await this.deps.start(force);
+                }
+                catch (cause) {
+                    logUiFailure("managed_setup.start_receipt_lost", cause);
+                    first = await this.reconcile(cause, previousTerminalId);
+                }
+            }
+            this.publish(first);
+            while (this.operation && !this.deps.signal.aborted) {
+                let cancellation = this.cancellation;
+                if (cancellation && !cancellation.received) {
+                    cancellation.received = true;
+                    try {
+                        let next;
+                        try {
+                            next = await cancellation.receipt;
+                        }
+                        catch (cause) {
+                            logUiFailure("managed_setup.cancel_receipt_lost", cause, { operation_id: this.operation?.operation_id });
+                            next = await this.reconcile(cause);
+                            if (next && (active$1(next) || next.operation_id !== this.operation?.operation_id)) {
+                                this.publish(next);
+                                cancellation.reject(cause);
+                                this.cancellation = null;
+                                continue;
+                            }
+                        }
+                        this.publish(next);
+                    }
+                    catch (cause) {
+                        cancellation.reject(cause);
+                        this.cancellation = null;
+                        throw cause;
+                    }
+                }
+                const operation = this.operation;
+                if (!operation) {
+                    cancellation?.resolve("completed");
+                    this.cancellation = null;
+                    return;
+                }
+                if (!active$1(operation)) {
+                    if (operation.state === "completed") {
+                        let refreshed = null;
+                        try {
+                            const receipt = await this.complete(operation.operation_id);
+                            this.publish(null);
+                            // These reads cannot undo the durable completion receipt.
+                            const [, capability] = await Promise.allSettled([this.read(this.deps.status()), this.read(this.deps.capability())]);
+                            this.deps.completed(receipt, Boolean(cancellation));
+                            if (capability.status === "fulfilled")
+                                refreshed = capability.value;
+                        }
+                        catch (cause) {
+                            retry += 1;
+                            if (retry === 1 || retry === 3)
+                                logUiFailure("managed_setup.completion_retry", cause, { operation_id: operation.operation_id, attempt: retry });
+                            const next = await this.reconcile(cause);
+                            if (next && next.operation_id !== operation.operation_id) {
+                                // Cancel already returned completed for this exact predecessor.
+                                // A newer operation cannot revoke that terminal receipt.
+                                cancellation?.resolve("completed");
+                                this.cancellation = null;
+                            }
+                            this.publish(next);
+                            if (next) {
+                                await this.pause(Math.min(500 * retry, 5000));
+                                continue;
+                            }
+                        }
+                        cancellation?.resolve("completed");
+                        this.cancellation = null;
+                        if (refreshed && this.handoff(operation, refreshed)) {
+                            retry = 0;
+                            continue;
+                        }
+                        return;
+                    }
+                    // A known cancellation stays cancelled even if this advisory read
+                    // fails. No failed refresh may relabel a durable terminal result.
+                    if (operation.state === "cancelled") {
+                        cancellation?.resolve("cancelled");
+                        this.cancellation = null;
+                    }
+                    const capability = await this.read(this.deps.capability()).catch(() => null);
+                    if (capability && this.handoff(operation, capability)) {
+                        if (operation.state === "cancelled")
+                            cancellation?.resolve("cancelled");
+                        else
+                            cancellation?.reject(new Error(operation.error || operation.message));
+                        this.cancellation = null;
+                        retry = 0;
+                        continue;
+                    }
+                    this.publish(operation);
+                    if (operation.state === "cancelled") {
+                        cancellation?.resolve("cancelled");
+                        this.cancellation = null;
+                        return;
+                    }
+                    throw new Error(operation.error || operation.message || "Cheat Engine setup did not complete.");
+                }
+                if (cancellation) {
+                    cancellation.reject(new Error("Cheat Engine setup is still active; cancellation was not confirmed."));
+                    this.cancellation = null;
+                }
+                await this.pause(Math.min(500 * (retry + 1), 5000));
+                if (this.cancellation || this.deps.signal.aborted)
+                    continue;
+                try {
+                    const next = await this.read(this.deps.poll(operation.operation_id), true);
+                    if (this.cancellation)
+                        continue;
+                    this.publish(next);
+                    retry = 0;
+                }
+                catch (cause) {
+                    if (this.cancellation || this.deps.signal.aborted)
+                        continue;
+                    retry += 1;
+                    if (retry === 1 || retry === 3)
+                        logUiFailure("managed_setup.poll_retry", cause, { operation_id: operation.operation_id, attempt: retry });
+                    this.publish(await this.reconcile(cause));
+                }
+            }
+        }
+        catch (cause) {
+            this.cancellation?.reject(cause);
+            this.cancellation = null;
+            if (!this.deps.signal.aborted)
+                throw cause;
+        }
+        finally {
+            this.cancellation?.reject(new Error("Managed setup observer ended before cancellation was confirmed."));
+            this.cancellation = null;
+        }
+    }
+}
+
+/**
+ * The clock every bounded wait in this panel measures with.
+ *
+ * `Date.now()` is the wall clock and it is corrected: NTP, a manual change, or
+ * a device that booted with a bad clock and learned the real one. A deadline
+ * computed from it is not a duration at all. A correction backwards of five
+ * minutes turns a twelve second wait for a busy bridge into five minutes of a
+ * panel whose every other press is refused with "Another CE Decky operation is
+ * still running", because the press holding that latch is still inside its own
+ * wait; a correction forwards ends the same wait at once and reports a bridge
+ * that was working as gone. This project already treats a persisted moment in
+ * its own future as a clock that moved rather than as a fact, in the install
+ * helper's webhelper spacing and in the Search marker it loads, so this is the
+ * host's known behaviour rather than a hypothetical one.
+ *
+ * `performance.now()` is monotonic and is what the platform provides for
+ * exactly this. It is read through the global rather than through `window`, for
+ * the same reason the support-log timers are: this module is evaluated by the
+ * packaging smoke check in bare Node as well as by the panel.
+ *
+ * Wall time stays wall time. A moment that has to line up with a timestamp from
+ * somewhere else, a record's `at` or a provider's reported age, is still
+ * `Date.now()`, and nothing here changes that.
+ */
+const clock = globalThis;
+/** Milliseconds since an arbitrary fixed point, never moved by a clock change. */
+function monotonicNow() {
+    const now = clock.performance?.now;
+    // A host without it is not a host this panel runs on, but the fallback is
+    // still the wall clock rather than an exception: a diagnostics-grade wait
+    // that throws would be worse than one that can be skewed.
+    return typeof now === "function" ? now.call(clock.performance) : Date.now();
+}
+/** How long since a moment `monotonicNow` returned. */
+function elapsedSince(started) {
+    return Math.max(0, Math.round(monotonicNow() - started));
+}
+/**
+ * When this renderer started, as a wall-clock moment.
+ *
+ * The one value that says which side of a frontend reload a panel row belongs
+ * to, and it has to be a moment rather than an age: an age recorded once and
+ * compared against how long a reader has been waiting classifies the same
+ * fixed record differently on two reads, and a row from the frontend being
+ * replaced then turns into the row that replaced it. Two fixed moments, the
+ * renderer's start and the reload's request, compare the same way for ever.
+ *
+ * Wall clock deliberately, because the other side of the comparison is the
+ * install helper's own `time.time()` and the two are seconds apart on one
+ * machine. A correction inside those seconds is the limit of this, and it is
+ * a limit rather than a mechanism: the alternative is another handshake for a
+ * case worth less than the machinery it costs.
+ */
+function rendererStartedAt() {
+    return Math.round(Date.now() - monotonicNow());
+}
+
+let sequence$1 = 0;
+let current;
+let lastEdit;
+/** Capture at an operation's entry, before its first await. Never a global async context. */
+function currentUiAction() { return current; }
+/** The owner calls exactly one terminal method after its actual work settles. */
+function startUiOperation(operation, fields = {}) {
+    const context = { ...current, operation, ...fields };
+    const started = monotonicNow();
+    logUi("ui.operation_started", context);
+    return {
+        completed: (result = {}) => logUi("ui.operation_completed", { ...context, ...result, duration_ms: elapsedSince(started) }),
+        failed: (cause, result = {}) => logUiFailure("ui.operation_failed", cause, { ...context, ...result, duration_ms: elapsedSince(started) }),
+    };
+}
+/**
+ * Trace the actual controller/mouse callback, including navigation and dismissals.
+ * Arguments are deliberately never inspected: they may contain passwords, table
+ * code, typed values or provider URLs. Callers supply only safe identities.
+ * This records a request, not a successful mutation. The operation that owns
+ * the async work records its outcome, even when this callback returns void.
+ */
+function traceUiAction(action, handler, fields = {}) {
+    return (...args) => {
+        const previous = current;
+        lastEdit = undefined;
+        const context = { action, interaction: ++sequence$1 };
+        current = context;
+        try {
+            logUi("ui.action", { ...(typeof fields === "function" ? fields(...args) : fields), ...context });
+            const result = handler(...args);
+            // Keep the original return value and rejection for the caller. Observe
+            // promises too: a detached async callback may have no outer error owner.
+            if (result && typeof result.then === "function") {
+                void Promise.resolve(result).catch((cause) => logUiFailure("ui.handler_failed", cause, context));
+            }
+            return result;
+        }
+        catch (cause) {
+            logUiFailure("ui.handler_failed", cause, context);
+            throw cause;
+        }
+        finally {
+            current = previous;
+        }
+    };
+}
+/** Log an editing burst, never each keystroke or the field's value. */
+function traceUiEdit(action, handler, fields = {}) {
+    return (...args) => {
+        const key = JSON.stringify([action, fields]);
+        const now = monotonicNow();
+        if (!lastEdit || lastEdit.key !== key || now - lastEdit.at > 1500) {
+            logUi("ui.edit", { ...fields, action, interaction: ++sequence$1 });
+        }
+        lastEdit = { key, at: now };
+        try {
+            return handler(...args);
+        }
+        catch (cause) {
+            logUiFailure("ui.handler_failed", cause, { action });
+            throw cause;
+        }
+    };
+}
+
+const manifest = {"name":"CE Decky"};
+const API_VERSION = 2;
+const internalAPIConnection = window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit;
+if (!internalAPIConnection) {
+    throw new Error('[@decky/api]: Failed to connect to the loader as as the loader API was not initialized. This is likely a bug in Decky Loader.');
+}
+let api;
+try {
+    api = internalAPIConnection.connect(API_VERSION, manifest.name);
+}
+catch {
+    api = internalAPIConnection.connect(1, manifest.name);
+    console.warn(`[@decky/api] Requested API version ${API_VERSION} but the running loader only supports version 1. Some features may not work.`);
+}
+if (api._version != API_VERSION) {
+    console.warn(`[@decky/api] Requested API version ${API_VERSION} but the running loader only supports version ${api._version}. Some features may not work.`);
+}
+const callable = api.callable;
+const toaster = api.toaster;
+const openFilePicker = api.openFilePicker;
+const useQuickAccessVisible = api.useQuickAccessVisible;
+const definePlugin = (fn) => {
+    return (...args) => {
+        return fn(...args);
+    };
+};
+
+const getStatus = callable("get_status");
+const runSelfTest = callable("run_self_test");
+const importCE = callable("import_ce");
+const importCEArchive = callable("import_ce_archive");
+const clearCEImport = callable("clear_ce_import");
+const inspectTableSource = callable("inspect_table_source");
+const importTable = callable("import_table");
+const inspectTableSha = callable("inspect_table_sha");
+// A table's own executable content, read and never run. Two calls because one
+// table on this device carries half a megabyte of scripts: the index says what
+// is in it, and a section is fetched when the user opens it.
+const listTableCode = callable("list_table_code");
+const readTableCode = callable("read_table_code");
+callable("list_profiles");
+const listBlockedTables = callable("list_blocked_tables");
+const blockTable = callable("block_table");
+const unblockTable = callable("unblock_table");
+/** Destroy one stored table on an explicit press. Refused while a game has it selected. */
+const deleteTable = callable("delete_table");
+const revokeTable = callable("revoke_table");
+const clearBlockedTables = callable("clear_blocked_tables");
+const getManagedCECapability = callable("get_managed_ce_capability");
+const startManagedCEInstall = callable("start_managed_ce_install");
+const pollManagedCEInstall = callable("poll_managed_ce_install");
+const completeManagedCEInstall = callable("complete_managed_ce_install");
+const cancelManagedCEInstall = callable("cancel_managed_ce_install");
+callable("get_provider_capabilities");
+const searchTables = callable("search_tables");
+const pollTableSearch = callable("poll_table_search");
+const startTableAcquisition = callable("start_table_acquisition");
+const pollTableAcquisition = callable("poll_table_acquisition");
+const completeTableAcquisition = callable("complete_table_acquisition");
+const cancelTableAcquisition = callable("cancel_table_acquisition");
+callable("plan_provider_search");
+callable("evaluate_provider_candidates");
+callable("get_provider_diagnostics");
+callable("clear_provider_diagnostics");
+const getProviderSources = callable("get_provider_sources");
+const setProviderEnabled = callable("set_provider_enabled");
+const resetProviderSources = callable("reset_provider_sources");
+const resetProviderDiagnostics = callable("reset_provider_diagnostics");
+const getRemovalReadiness = callable("get_removal_readiness");
+const deleteManagedData = callable("delete_managed_data");
+const getDiagnosticsSnapshot = callable("diagnostics_snapshot");
+const createSupportBundle = callable("create_support_bundle");
+// Diagnostics only, and deliberately not awaited by anything a user is waiting
+// on: the panel hands over what it has recorded so the record outlives the
+// renderer it lives in. A rejected flush is dropped, never retried.
+const recordPanelLog = callable("record_panel_log");
+callable("get_session_inventory");
+const saveProfile = callable("save_profile");
+callable("delete_profile");
+const setExecutionConsent = callable("set_execution_consent");
+callable("set_startup_preference");
+const clearStartupPreference = callable("clear_startup_preference");
+const associateTable = callable("associate_table");
+const setAutoload = callable("set_autoload");
+const setRememberedCheats = callable("set_remembered_cheats");
+const setConfiguredValues = callable("set_configured_values");
+const setPinnedControl = callable("set_pinned_control");
+callable("clear_pinned_controls");
+callable("prepare_session");
+const getRuntimeStatus = callable("get_runtime_status");
+const repairSessionState = callable("repair_session_state");
+const validateEffectiveStartupPlan = callable("validate_effective_startup_plan");
+const repairProfileState = callable("repair_profile_state");
+const repairOwnedLaunchState = callable("repair_owned_launch_state");
+callable("retire_session");
+const writeRuntimeCommands = callable("write_runtime_commands");
+callable("prepare_private_ce_runtime");
+const getCELaunchCapability = callable("get_ce_launch_capability");
+const listRunningAppIds = callable("list_running_app_ids");
+/**
+ * The Windows executables in one installed game's own folder.
+ *
+ * The weakest evidence about a target process and the only kind available
+ * before the game has ever been started, which is exactly when a table that
+ * names no process leaves Review with nothing to offer.
+ */
+const listGameExecutables = callable("list_game_executables");
+const readLocalLibrary = callable("local_library");
+const startCESelfTest = callable("start_ce_self_test");
+const pollCELaunch = callable("poll_ce_launch");
+callable("stop_ce_launch");
+const launchCEForGame = callable("launch_ce_for_game");
+const stopCEForGame = callable("stop_ce_for_game");
+const confirmTableWorking = callable("confirm_table_working");
+
+const NON_STEAM_APP_TYPE = 1 << 30;
+async function readAppDetails(appId, timeoutMs = 3000) {
+    requireAppId(appId);
+    requireTimeout(timeoutMs);
+    const steamClient = requireSteamClient();
+    return await new Promise((resolve, reject) => {
+        let finished = false;
+        let registration;
+        let deferredUnregister = false;
+        const unregister = () => {
+            if (!registration) {
+                deferredUnregister = true;
+                return;
+            }
+            try {
+                registration.unregister();
+            }
+            catch {
+                // Steam cleanup failures must not strand an otherwise completed read.
+            }
+        };
+        const cleanup = () => {
+            clearTimeout(timer);
+            unregister();
+        };
+        const timer = setTimeout(() => {
+            if (finished)
+                return;
+            finished = true;
+            cleanup();
+            reject(new Error(`Steam AppDetails timed out for AppID ${appId}`));
+        }, timeoutMs);
+        try {
+            registration = steamClient.Apps.RegisterForAppDetails(appId, details => {
+                if (finished)
+                    return;
+                try {
+                    const snapshot = snapshotDetails(appId, details);
+                    finished = true;
+                    cleanup();
+                    resolve(snapshot);
+                }
+                catch (error) {
+                    finished = true;
+                    cleanup();
+                    reject(error);
+                }
+            });
+            if (deferredUnregister)
+                unregister();
+        }
+        catch (error) {
+            if (!finished) {
+                finished = true;
+                cleanup();
+                reject(error);
+            }
+        }
+    });
+}
+async function observeRunningAppIds_(steamClient, fallback) {
+    const getter = steamClient.GameSessions?.GetRunningApps;
+    if (typeof getter === "function") {
+        try {
+            const raw = await getter.call(steamClient.GameSessions);
+            if (Array.isArray(raw)) {
+                const ids = new Set();
+                for (const item of raw) {
+                    const appId = runningAppId(item);
+                    if (appId !== null)
+                        ids.add(appId);
+                }
+                // A non-empty answer none of whose entries parse is schema drift, not
+                // an empty machine. Returning "no games are running" from it would be a
+                // claim this source cannot support, so fall through to the backend.
+                if (raw.length > 0 && ids.size === 0)
+                    return null;
+                return ids;
+            }
+        }
+        catch {
+            // Fall through to the backend observation below.
+        }
+    }
+    // Steam build 1785799196 exposes no running-app query to the frontend at all,
+    // so without a fallback every user would have to pick the game by hand.
+    if (!fallback)
+        return null;
+    const observed = await fallback();
+    if (observed === null)
+        return null;
+    const ids = new Set();
+    for (const appId of observed) {
+        if (isValidAppId(appId))
+            ids.add(appId);
+    }
+    return ids;
+}
+async function listRunningGames(known = [], observeRunningAppIds) {
+    const steamClient = requireSteamClient();
+    const runningIds = await observeRunningAppIds_(steamClient, observeRunningAppIds);
+    if (runningIds === null)
+        return { available: false, games: [] };
+    if (runningIds.size === 0)
+        return { available: true, games: [] };
+    let byId = new Map(known.map((game) => [game.appId, game]));
+    if (![...runningIds].every((appId) => byId.has(appId))) {
+        byId = new Map((await listInstalledGames()).map((game) => [game.appId, game]));
+    }
+    const games = [];
+    const unresolved = [];
+    for (const appId of runningIds) {
+        const game = byId.get(appId);
+        if (game)
+            games.push(game);
+        else
+            unresolved.push(appId);
+    }
+    games.sort((left, right) => (left.sortAs || left.name).localeCompare(right.sortAs || right.name));
+    // Dropping an AppID that a fresh library enumeration still could not resolve
+    // turned an explicitly ambiguous observation into an unambiguous one: two
+    // games running, one resolvable, and the caller auto-selected it. Identity is
+    // never guessed here, so the ambiguity is reported instead.
+    return { available: true, games, unresolvedAppIds: unresolved };
+}
+async function listInstalledGames() {
+    const steamClient = requireSteamClient();
+    const byId = new Map();
+    const folders = await steamClient.InstallFolder?.GetInstallFolders?.();
+    for (const folder of folders ?? []) {
+        for (const app of folder.vecApps ?? []) {
+            if (!isValidAppId(app.nAppID))
+                continue;
+            insertGame(byId, {
+                appId: app.nAppID,
+                name: app.strAppName || `App ${app.nAppID}`,
+                sortAs: app.strSortAs || app.strAppName || "",
+                isShortcut: false,
+            });
+        }
+    }
+    for (const app of libraryApps()) {
+        if (app.app_type !== NON_STEAM_APP_TYPE)
+            continue;
+        const appId = Number(app.appid ?? app.nAppID);
+        if (!isValidAppId(appId))
+            continue;
+        const name = app.display_name || app.strAppName || `Shortcut ${appId}`;
+        insertGame(byId, { appId, name, sortAs: app.sort_as || name, isShortcut: true });
+    }
+    return [...byId.values()].sort((left, right) => (left.sortAs || left.name).localeCompare(right.sortAs || right.name));
+}
+function runningAppId(value) {
+    if (typeof value === "number")
+        return isValidAppId(value) ? value : null;
+    if (!value || typeof value !== "object")
+        return null;
+    const item = value;
+    for (const key of ["appid", "appId", "nAppID", "unAppID", "unAppId"]) {
+        const candidate = item[key];
+        if (typeof candidate === "number" && isValidAppId(candidate))
+            return candidate;
+    }
+    return null;
+}
+function requireSteamClient() {
+    const candidate = globalThis.SteamClient;
+    if (!candidate?.Apps || typeof candidate.Apps.RegisterForAppDetails !== "function") {
+        throw new Error("SteamClient Apps API is unavailable");
+    }
+    return candidate;
+}
+function libraryApps() {
+    const candidate = globalThis.window?.appStore?.allApps;
+    return Array.isArray(candidate) ? candidate : [];
+}
+function insertGame(byId, candidate) {
+    const existing = byId.get(candidate.appId);
+    if (!existing) {
+        byId.set(candidate.appId, candidate);
+        return;
+    }
+    if (existing.isShortcut !== candidate.isShortcut) {
+        throw new Error(`Steam library identity collision for AppID ${candidate.appId}`);
+    }
+    // Duplicate install-folder/app-store observations are normal. Keep the first
+    // stable identity rather than letting enumeration order rename the profile.
+}
+function snapshotDetails(appId, details) {
+    if (details.unAppID !== undefined && details.unAppID !== appId) {
+        throw new Error(`Steam AppDetails identity mismatch: requested ${appId}, received ${details.unAppID}`);
+    }
+    const shortcutExe = details.strShortcutExe ?? "";
+    return {
+        appId,
+        displayName: details.strDisplayName ?? `App ${appId}`,
+        shortcutExe,
+        isShortcut: shortcutExe.trim().length > 0,
+        compatToolName: details.strCompatToolName ?? "",
+        compatToolDisplayName: details.strCompatToolDisplayName ?? "",
+        compatToolPriority: Number.isFinite(details.nCompatToolPriority) ? Number(details.nCompatToolPriority) : 0,
+        platforms: Array.isArray(details.vecPlatforms) ? details.vecPlatforms.filter(value => typeof value === "string") : [],
+    };
+}
+function isValidAppId(appId) {
+    return Number.isSafeInteger(appId) && appId >= 1 && appId <= 0xFFFFFFFF;
+}
+function requireAppId(appId) {
+    if (!isValidAppId(appId))
+        throw new Error("AppID must be an integer between 1 and 4294967295");
+}
+function requireTimeout(timeoutMs) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 50 || timeoutMs > 60000) {
+        throw new Error("timeoutMs must be a finite value between 50 and 60000 milliseconds");
+    }
+}
+
+let sequence = 0;
+/** Also observes a host-driven unmount that did not call one of our buttons. */
+function useUiSurface(surface, identity) {
+    const instance = SP_REACT.useRef(null);
+    if (instance.current === null)
+        instance.current = ++sequence;
+    SP_REACT.useEffect(() => {
+        const fields = { surface, identity, surface_instance: instance.current };
+        logUi("ui.surface_opened", fields);
+        return () => logUi("ui.surface_closed", fields);
+    }, [surface, identity]);
+}
+
+/**
+ * Whether these served bytes could hold more than one table.
+ *
+ * The backend accepts exactly `.CT`, `.zip` and `.7z`/`.7zip` sources, so
+ * anything that is not a direct `.CT` is treated as an archive here - an
+ * unrecognized extension is the conservative case, not the permissive one.
+ */
+function isArchiveFilename(filename) {
+    return !/\.ct$/i.test(filename.trim());
+}
+/**
+ * Whether the one member can be imported without asking the user anything yet.
+ *
+ * An encrypted single member qualifies for exactly one attempt: the provider
+ * often publishes the archive password in the public text beside the file and
+ * the backend already tries that hint when no password is supplied, so
+ * demanding one up front dead-ended a completed download at a field the user
+ * had no way to fill. If the hint does not work, the attempt fails with a
+ * password error and the prompt is what comes next.
+ */
+/**
+ * Whether this member can never be imported however the user answers.
+ *
+ * Encrypted 7z is refused on purpose: the external `7z` tool would take the
+ * password on its process argv, so CE Decky does not transport one. Inspection
+ * still reports the member, and both controller paths were treating it like a
+ * supported password workflow - asking for a password no entry can satisfy.
+ */
+/** Archive kinds only 7-Zip opens, which takes a password on its argv alone. */
+const ARGV_PASSWORD_FORMATS = new Set(["7z", "rar"]);
+function isUnsupportedEncryptedMember(member) {
+    return Boolean(member?.encrypted && ARGV_PASSWORD_FORMATS.has(member.format));
+}
+/**
+ * The one explanation every surface that can select such a member shows.
+ *
+ * Hiding the password field and disabling the action was not enough on the
+ * provider paths: with no explanation the archive simply looked broken, and
+ * because the action was disabled the backend path that makes the acquisition
+ * terminal was unreachable, so it sat in `needs_selection` with Cancel as the
+ * only valid move.
+ */
+const UNSUPPORTED_MEMBER_EXPLANATION = "CE Decky does not open password-protected 7z or rar archives, because the password would have "
+    + "to be passed to another program on its command line. Re-pack the table as a zip, or open the "
+    + ".CT directly.";
+/**
+ * Whether the user now has to supply the archive password themselves.
+ *
+ * The backend tries the password the provider published beside the artifact
+ * when none is given, so the first attempt is deliberately password-less. An
+ * acquisition that comes back asking about a password has already spent it -
+ * which is also true for a state restored from the backend rather than
+ * observed here, so the answer is derived from the reported error as well.
+ */
+function passwordPromptRequired(status, hintTried) {
+    return hintTried || /password/i.test(status.error ?? "");
+}
+function canAutoImportTableMember(members, hintAlreadyTried = false) {
+    if (members.length !== 1)
+        return false;
+    return !members[0].encrypted || !hintAlreadyTried;
+}
+/**
+ * Whether a file the user opened themselves can be imported without asking.
+ *
+ * Deliberately not the rule above with its default argument. That rule allows
+ * one password-less attempt at a single encrypted member because the backend
+ * may hold a password the provider published beside that exact artifact - and a
+ * file the user picked from their own device has no such hint, so the attempt
+ * can only fail. Reusing it there imported with no password and reported the
+ * refusal, which meant one encrypted ZIP could never reach its password prompt
+ * and one encrypted 7z never reached the explanation of why it cannot be used.
+ */
+function canAutoImportLocalMember(members) {
+    return members.length === 1 && !members[0].encrypted;
+}
+/**
+ * Artifacts whose exact bytes are a damaged table. Retrying one costs another
+ * provider countdown and can never succeed, so the catalog stops offering it
+ * for as long as the search results it came from stay cached.
+ *
+ * The mark belongs to the exact result snapshot that proved the bytes bad, not
+ * to the session. A single global set meant refreshing one game's search
+ * cleared the marks of every other game whose cached results were untouched,
+ * so switching back to that game offered the damaged artifact again and the
+ * user paid another countdown and download for bytes already known unusable.
+ */
+const rejectedArtifacts = new Map();
+function artifactKey(provider, artifactId) {
+    return `${provider}:${artifactId}`;
+}
+/** Returns true when this outcome newly retires the artifact for that search. */
+function rememberRejectedArtifact(searchScope, status) {
+    if (!status.artifact_rejected)
+        return false;
+    const key = artifactKey(status.provider, status.artifact_id);
+    let scoped = rejectedArtifacts.get(searchScope);
+    if (!scoped) {
+        scoped = new Set();
+        rejectedArtifacts.set(searchScope, scoped);
+    }
+    if (scoped.has(key))
+        return false;
+    scoped.add(key);
+    return true;
+}
+function isRejectedArtifact(searchScope, provider, artifactId) {
+    return rejectedArtifacts.get(searchScope)?.has(artifactKey(provider, artifactId)) ?? false;
+}
+/**
+ * Forget exactly one retired artifact within a search snapshot.
+ *
+ * The retry press acts on the rows a user can see, and a search snapshot spans
+ * pages: clearing the whole scope from a press that named one row freed rows on
+ * every other page too, which is the same overreach that made the durable half
+ * of this count rows nobody was looking at.
+ */
+function forgetRejectedArtifact(searchScope, provider, artifactId) {
+    const scoped = rejectedArtifacts.get(searchScope);
+    if (!scoped)
+        return;
+    scoped.delete(artifactKey(provider, artifactId));
+    if (scoped.size === 0)
+        rejectedArtifacts.delete(searchScope);
+}
+/** Drop every retirement mark. Test isolation only. */
+function forgetAllRejectedArtifacts() {
+    rejectedArtifacts.clear();
+}
+
+/**
+ * How much room Steam's Game Mode has actually given this plugin.
+ *
+ * Game Mode never hands the frontend physical pixels. Steam picks a device
+ * pixel ratio for the display and scales its whole UI, so what a layout has to
+ * fit into is the CSS viewport, and that is not derivable from the resolution:
+ * a 4K television and a 1280x800 handheld differ here by hundreds of CSS pixels
+ * of height and by none at all of width. Measured with
+ * `scripts/target_ui_layout_probe.py` on both devices this plugin is developed
+ * against:
+ *
+ * | Page                  | Steam Machine, 4K | Steam Deck LCD |
+ * |-----------------------|-------------------|----------------|
+ * | Quick Access panel    | 855 x 765         | 854 x 454      |
+ * | The page modals open in | 1500 x 844      | 854 x 534      |
+ * | Device pixel ratio    | 2.56              | 1.5            |
+ *
+ * The width is the same on both, near enough that no layout here has ever
+ * needed to care. The height is not: a handheld gives a modal 534 CSS pixels
+ * where the television gives 844, and a screen built to the second number
+ * simply hangs off the first one, top and bottom, with no controller press that
+ * can reach what went past the edge.
+ *
+ * So height is the whole of what this module reports, and it reports it as one
+ * question with one answer. `SHORT_SCREEN_MAX_HEIGHT` sits in the wide gap
+ * between the two columns above rather than close to either, because what a
+ * future display reports is unknown and the cost of the two mistakes is not
+ * equal: treating a tall screen as short spends vertical room it had, while
+ * treating a short screen as tall puts content where nothing can reach it.
+ */
+/**
+ * Above this many CSS pixels of height, a screen is laid out as it always was.
+ *
+ * Every measurement above is either near 500 or near 800, and this is the
+ * middle of that gap. It is a height and never a width or a resolution: the
+ * same 1280x800 panel reports a different CSS viewport depending on the ratio
+ * Steam chose, and the ratio is exactly what a layout cannot see.
+ */
+const SHORT_SCREEN_MAX_HEIGHT = 640;
+/**
+ * The height of the page this code is running in, or `null` where there is none.
+ *
+ * A modal and the quick access panel are separate Steam pages with separate
+ * viewports, so each one measures its own rather than the display's. Under a
+ * test renderer or any host without a window there is no measurement, and the
+ * callers below treat that as the full-size screen this plugin was built for
+ * rather than inventing a number.
+ */
+const MIN_CREDIBLE_PAGE_HEIGHT = 200;
+/**
+ * The window a rendered node actually belongs to, which is not this one.
+ *
+ * A Decky plugin's code runs in Steam's shared JavaScript context, and that
+ * context's own window is one pixel by one: `window.innerHeight` there is `1`,
+ * and so is `window.screen.height`. The plugin's DOM is not there. It is
+ * rendered into the page the user is looking at, which on a Steam Deck LCD is
+ * 854x534 CSS pixels and on a 4K television 1500x844, and the only way to reach
+ * that page from here is through a node that is in it.
+ *
+ * This cost three attempts at the code screen to find. Every one of them
+ * corrected the arithmetic on the assumption that the height was right: the
+ * height was `1`, so a page of one row was the arithmetic working. Reading it
+ * from the node is what makes the number mean the display.
+ */
+function pageOf(node) {
+    const view = node?.ownerDocument?.defaultView;
+    if (view)
+        return view;
+    return typeof window === "undefined" ? null : window;
+}
+/**
+ * The height of the page a node is rendered in, or `null` where there is none.
+ *
+ * `node` is how a caller asks about the page it is actually on. Without one
+ * this can only ask its own context, which for anything inside a modal is the
+ * shared context and answers `1`.
+ *
+ * A height below `MIN_CREDIBLE_PAGE_HEIGHT` is not a display. It is a context
+ * that renders nothing, and it is reported as no measurement rather than as a
+ * very small screen, because a layout fitted to one pixel is not a layout.
+ */
+function viewportHeight(node) {
+    const view = pageOf(node);
+    const height = view?.innerHeight;
+    return typeof height === "number" && height >= MIN_CREDIBLE_PAGE_HEIGHT ? height : null;
+}
+/**
+ * Whether this page is one of the short ones, and has to be laid out for it.
+ *
+ * Unmeasurable reads as not short. A layout that keeps its full-size shape on a
+ * screen nobody could measure is the same layout this plugin has always shipped;
+ * one that switches to the handheld shape there would change every screen on
+ * every host that cannot answer, which is the larger of the two mistakes.
+ */
+function isShortScreen(node) {
+    const height = viewportHeight(node);
+    return height !== null && height <= SHORT_SCREEN_MAX_HEIGHT;
+}
+/**
+ * Fit a count of fixed-height rows into what this screen actually has.
+ *
+ * `full` is what the screen was built with and stays the answer wherever there
+ * is room for it, which is what keeps a television's screens exactly as they
+ * were. `chrome` is everything on the screen that is not those rows: the
+ * heading, the row that heads the list, the notes a section can carry, the
+ * pager, the button below it and the padding Steam's own modal adds around all
+ * of it. The result is never below `minimum`, because a page of two lines is
+ * not a smaller version of this screen, it is a different and worse one.
+ */
+function rowsThatFit({ full, rowHeight, chrome, minimum, node }) {
+    const height = viewportHeight(node);
+    if (height === null)
+        return full;
+    const fitted = Math.floor((height - chrome) / rowHeight);
+    if (fitted >= minimum)
+        return Math.min(full, fitted);
+    // Below the readable minimum, and the measurement still decides.
+    //
+    // This briefly refused to believe a viewport that left less than half a page,
+    // on the ground that no display is that small, and returned the readable
+    // minimum instead. That is drawing past the edge of a measured display on
+    // purpose, which is the failure this exists to prevent, and it treated a
+    // symptom of the caller's own estimate as a fact about the screen. The
+    // uncertain number is `chrome`; a caller that cannot pin it measures it
+    // rather than asking this to disregard the height.
+    //
+    // Never zero, because a page of no rows is not a page and leaves the reader
+    // nothing to page through.
+    return Math.max(1, fitted);
+}
+/**
+ * The strip of Game Mode a window may not draw into.
+ *
+ * Steam paints its own bar along the bottom of the page, over whatever is
+ * behind it. A window measured against `window.innerHeight` therefore fits the
+ * page and is still cut: the last rows of it are behind that bar.
+ *
+ * Measured on both machines this is developed against, 2026-09-14, by asking
+ * the page what element is under the middle of its bottom edge: the same
+ * element on each, 41 pixels tall, at the bottom of the page. A Steam Deck
+ * reports a 534 pixel page with the bar starting at 493, and a 4K Steam Machine
+ * an 844 pixel page with it starting at 803. So it is the same reserve on both
+ * rather than a share of the height, which is what makes it a constant here.
+ */
+const STEAM_BOTTOM_BAR_HEIGHT = 41;
+/**
+ * What sits under a screen's own footer before the display ends.
+ *
+ * Steam's own modal padding plus the bar above, because a page is only usable
+ * down to where that bar starts and a window's last pixel is not its footer's.
+ * One number for every screen that measures itself, rather than one per screen:
+ * it is a property of the window both are drawn in, and two copies of it drift.
+ *
+ * The padding is Steam's and not this plugin's, so it is measured rather than
+ * chosen: `scripts/target_panel_read.py --metrics` reports it at both ends of
+ * each window, and on a Steam Deck on 2026-09-14 both of this plugin's paged
+ * windows read the same 26 pixels above this plugin's box and 26 below it. It
+ * was 16 here, which is this plugin's own padding and ten short of Steam's, so
+ * a screen that fitted itself ended ten pixels into the bar. That is under a
+ * row, which is the size of mistake that hides: it does not clip a control, it
+ * takes the bottom off one.
+ *
+ * Nothing is counted twice. What is above a list is measured from the top of
+ * the page, so Steam's padding above is already in it; this is the other end,
+ * where a footer's own height stops and the window still has Steam's 26 and
+ * then the bar's 41 under it.
+ */
+const MODAL_BOTTOM_PADDING = 26 + STEAM_BOTTOM_BAR_HEIGHT;
+// How far up from a footer this looks for the box a window is drawn in.
+const MAX_ANCESTORS_SEARCHED = 12;
+/**
+ * How much of this screen the box Steam draws it in is keeping out of sight.
+ *
+ * The outermost ancestor that is still a box rather than the page, because that
+ * is the one a window has to fit inside. Measured on a Steam Deck: 452 pixels
+ * tall, spanning 40 to 492 on a 534 pixel page whose bar starts at 493 - so it
+ * is the usable page, and asking it is asking the only thing that knows.
+ *
+ * What it hides is exactly what has to go, and that is the whole of what it is
+ * asked. What is left under a footer inside it is deliberately never read as
+ * room: Steam's own padding is in there under the window, so a screen that
+ * counted it took a row that did not fit and went straight back to scrolling.
+ *
+ * Zero where there is no such box, which is a test renderer, a host with no
+ * layout, and a node not in a document.
+ */
+function hiddenByTheBoxItIsDrawnIn(node) {
+    const height = viewportHeight(node);
+    if (height === null)
+        return 0;
+    let parent = node.parentElement ?? null;
+    for (let step = 0; parent !== null && step < MAX_ANCESTORS_SEARCHED; step += 1) {
+        const box = parent;
+        parent = box.parentElement;
+        const holds = box.clientHeight;
+        // Not laid out, and not the page: a box as tall as the display is what the
+        // window is drawn on rather than what it is drawn in.
+        if (holds <= 1 || holds >= height)
+            continue;
+        const hides = box.scrollHeight - holds;
+        // The first box actually keeping something out of sight, rather than the
+        // first box that could: a wrapper sized by its own content hides nothing
+        // and does not answer for the box around it.
+        if (hides > 1)
+            return hides;
+    }
+    return 0;
+}
+/**
+ * How far a screen's window ended from Steam's bar, in whole rows.
+ *
+ * Positive is rows it has to give up, negative is rows of room it did not use.
+ *
+ * `chromeAround` is arithmetic on measurements taken while a screen was being
+ * laid out, and those can be of a layout the reader never settles on. Manage
+ * measured what was above its list before the control that filters that list
+ * had been drawn, sized a page 52 pixels taller than there was room for, and
+ * ended 27 pixels behind Steam's bar - stable, and wrong, with nothing in the
+ * arithmetic able to notice.
+ *
+ * So the same statement is checked afterwards against where the screen actually
+ * ended up. It is deliberately the same statement: a footer's bottom plus what
+ * a window may not use is where this screen ends, and it has to be above the
+ * page. The footer is asked rather than the window because the footer is the
+ * last thing a screen of this shape draws and every one of them already holds a
+ * node for it, while Steam's own box around them is nobody's to hang a ref on.
+ *
+ * Answered in rows because rows are what a caller can do anything about, and
+ * in both directions because the arithmetic is wrong in both: the same
+ * transient that made Manage's page too long by a row leaves the code view's
+ * section list a row short of what its window has room for. What a caller does
+ * with that, and how many times it may act on it, is the caller's rule:
+ * `useFittedRows` is the one every screen here uses.
+ *
+ * Zero wherever there is nothing to measure, which is the first render and any
+ * host without layout.
+ */
+function rowsOffTheBar(footer, rowHeight) {
+    if (footer === null || rowHeight <= 0)
+        return 0;
+    const height = viewportHeight(footer);
+    if (height === null)
+        return 0;
+    if (typeof footer.getBoundingClientRect !== "function")
+        return 0;
+    const bottom = footer.getBoundingClientRect().bottom;
+    if (!(bottom > 0))
+        return 0;
+    // What the box this window is drawn in is keeping out of sight, which is the
+    // one statement about fitting that rests on nothing. The cheats window ended
+    // 15 pixels clear of the bar by the arithmetic below and that box was hiding
+    // 10 of its content anyway, so a screen that "fitted" moved under the
+    // reader's thumb. Only this direction: what is left under the footer inside
+    // that box is not room, because Steam's own padding is in there with it, and
+    // reading it as room offered a row that did not fit.
+    // A quarter of a row is the least that is worth a whole row. Steam's own
+    // rounding leaves a pixel or two hidden on a window nobody would call
+    // scrolling, and giving up a result to reclaim two pixels is a worse screen
+    // than the two pixels are.
+    const hidden = hiddenByTheBoxItIsDrawnIn(footer);
+    if (hidden * 4 > rowHeight)
+        return Math.ceil(hidden / rowHeight);
+    const over = bottom + MODAL_BOTTOM_PADDING - height;
+    if (!Number.isFinite(over))
+        return 0;
+    // Past the bar, rounded up: half a row behind it is a row behind it.
+    if (over > 0)
+        return Math.ceil(over / rowHeight);
+    // Short of it, rounded down: only whole rows of room are room, and a screen
+    // that rounded this one up would be asking for the row it just refused.
+    // Written out rather than negated in place, because negating a floor of zero
+    // is `-0`, and `-0` is not `0` to anything comparing with `Object.is`.
+    const room = Math.floor(-over / rowHeight);
+    return room > 0 ? -room : 0;
+}
+/**
+ * How many fixed-height rows fit between a list's own top and the page's bottom.
+ *
+ * `rowsThatFit` takes `chrome` as a figure somebody measured on a device, which
+ * is right for a screen whose chrome is a fixed block of known parts. Two of
+ * this plugin's lists are not that: the cheats list sits under a section picker
+ * and a filter whose heights are Steam's, and the results list sits under a
+ * query field, a source summary and a banner that is there only sometimes. A
+ * number estimated for those is a number that is wrong on one of the screens.
+ *
+ * So it is read instead of estimated, from two nodes the caller already has:
+ * everything above the list is its own distance from the top of the page, and
+ * everything below it is the footer's height plus whatever the modal pads with.
+ * Neither depends on how many rows the answer turns out to be, so this settles
+ * rather than oscillating: what is above a list does not move when the list gets
+ * shorter, and the footer keeps its height.
+ *
+ * `null` where there is nothing to measure yet, which is the first render and
+ * any host without layout. The caller then uses the page it was built for.
+ */
+function chromeAround(list, footer, bottomPadding = 0) {
+    const height = viewportHeight(list ?? footer);
+    if (height === null || list === null)
+        return null;
+    if (typeof list.getBoundingClientRect !== "function")
+        return null;
+    // The distance down the page, and not down the window the list is in. Steam
+    // starts a modal at the same place whatever height it is - measured on a
+    // Steam Deck, two of this plugin's windows 53 pixels apart in height both
+    // began 64 pixels down - so what is above a list really is chrome and does
+    // not move when the list does.
+    const top = list.getBoundingClientRect().top;
+    const below = footer && typeof footer.getBoundingClientRect === "function"
+        ? footer.getBoundingClientRect().height
+        : 0;
+    // A list with nothing above it has not been laid out yet: it is rendered
+    // under a heading and a control or two on every screen that asks this, and a
+    // top of zero is the measurement arriving before the layout rather than a
+    // screen that is all list. That is the one answer refused, because believing
+    // it hands the caller a chrome of almost nothing and a page too long for the
+    // display.
+    //
+    // A chrome that fills the page is NOT refused. It is the honest answer for a
+    // screen with no room left, and refusing it was backwards: both callers read
+    // `null` as "use the page I was built for", so the one measurement proving
+    // there was no room produced the largest page. `rowsThatFit` takes it from
+    // here and lets the measurement decide, down to a single row.
+    //
+    // Rounded, because a fraction of a pixel is not a row.
+    const chrome = Math.round(top + below + bottomPadding);
+    if (!Number.isFinite(chrome) || top <= 0)
+        return null;
+    return chrome;
+}
+/**
+ * The room a list has, measured while the screen is in the state it settles in.
+ *
+ * The measurement is only stable while what it measures is: the distance from
+ * the top of the page to the list is a fact about the controls above it, and
+ * those do not move when the number of rows changes - unless the modal they are
+ * in is centred, in which case a shorter list re-centres everything and the
+ * next measurement reads a larger top.
+ *
+ * Measuring again on every content change turned that into a ratchet. A filter
+ * keystroke changed the row count, the re-measure read the layout the previous
+ * answer had already shrunk, and the page stepped down again on the next
+ * keystroke until it hit the caller's own minimum, with nothing to bring it
+ * back.
+ *
+ * So a measurement is taken and held, and the only thing that may replace it is
+ * a smaller one. That direction is safe from the ratchet, which only ever reads
+ * larger, and it is the one the search screen needs: its own status rows sit
+ * above the list while a search runs, and a search starts the moment the screen
+ * opens. Latching the first answer there sized the page against a layout that
+ * exists for a few seconds. Measured on a Steam Deck's 534 pixel page: chrome
+ * 371 while searching against 289 once the results were in, which is two rows
+ * of results against four, on the same screen and the same game.
+ *
+ * `settled` says the transient is over, and the caller names what its own
+ * transient is. A measurement taken then is final, because the layout it read
+ * is the one the reader is going to be looking at.
+ */
+function latchChrome(held, list, footer, bottomPadding = 0, settled = true) {
+    if (held?.settled)
+        return held;
+    const measured = chromeAround(list, footer, bottomPadding);
+    if (measured === null)
+        return held;
+    if (held === null)
+        return { value: measured, settled };
+    // The first settled measurement wins outright. What was held before it was
+    // taken against a layout the reader never sees, and that layout is not
+    // reliably the taller one: a list showing a row that says it is still loading
+    // has less above it than the same list with its controls in place, so a rule
+    // that only ever took the smaller kept the transient's answer and sized the
+    // window four pixels past the bottom of a Steam Deck's display.
+    if (settled)
+        return { value: measured, settled: true };
+    // While the transient is still up, only a smaller reading replaces the held
+    // one: a larger one is the re-centring this latch was written for.
+    return { value: Math.min(held.value, measured), settled: false };
+}
+
+const DENSE_PANEL_CLASS = "ce-decky-dense";
+const ELLIPSIS_CLASS = "ce-decky-ellipsis";
+const WRAP_CLASS = "ce-decky-wrap";
+const HEADING_CLASS = "ce-decky-heading";
+const HEADING_TRAILING_CLASS = "ce-decky-heading-trailing";
+const MARQUEE_CLASS = "ce-decky-marquee";
+const MARQUEE_ANIMATION = "ce-decky-marquee-shift";
+/** How long a line that is actually cut takes to show its end. */
+const REVEAL_SECONDS = 7;
+/**
+ * How fast a paced line is allowed to travel, in CSS pixels per second.
+ *
+ * One duration for every distance is one speed per line, and the longest line
+ * is the fastest: a table's recorded reason overflows a 460 pixel sheet by well
+ * over a thousand pixels, which the flat seven seconds turned into roughly two
+ * hundred pixels a second. That is a line moving past the reader rather than a
+ * line being read. Halved once on the device and then taken down another fifth,
+ * both times because it was still faster than it reads. A paced line takes as
+ * long as its own length needs, so every one of them moves at this speed and
+ * the longest is no longer the fastest.
+ *
+ * The seven seconds stay the floor, so a line that only just overflows is not
+ * made brisk by the same rule: it already had the whole window to reveal a
+ * couple of words and still does. The panel's own pinned cheats are unpaced and
+ * unchanged - two short lines in a 300 pixel column never reach this speed.
+ */
+const MARQUEE_PACE_PX_PER_SECOND = 80;
+/**
+ * The longest a paced reveal may take, whatever the line's own length says.
+ *
+ * A recorded reason is bounded at a kilobyte, which is thousands of pixels and
+ * over a minute of travel at the speed above. That is not a slow reveal, it is a
+ * line that reads as not moving at all, and no marquee is the way to read a
+ * paragraph anyway: a row that long is opened instead, which wraps it. The cap
+ * keeps the extreme case visibly alive rather than pretending it is readable.
+ */
+const MARQUEE_PACE_MAX_SECONDS = 30;
+/** The measured overflow of one line, published to the animation as a length. */
+const MARQUEE_SHIFT_VAR = "--ce-marquee-shift";
+/** How long this line's own travel takes, for a paced one. */
+const MARQUEE_SECONDS_VAR = "--ce-marquee-seconds";
+/** Marks the row whose focus drives its own marquee. */
+const FOCUS_SCROLL_CLASS = "ce-decky-focusscroll";
+/**
+ * Marks a row whose control sits under its label rather than beside it.
+ *
+ * The dense field padding is four pixels top and bottom, which is right for a
+ * control the row centres vertically and cramped for one the row stacks: the
+ * control ends where the block does, with the label's own breathing room above
+ * it and none underneath. The game picker's dropdown sat on the bottom edge of
+ * its own block because of it.
+ */
+const BELOW_FIELD_CLASS = "ce-decky-fieldbelow";
+const HEADER_ROW_CLASS = "ce-decky-rowhead";
+/**
+ * A row that belongs to something other than the list it is being shown in.
+ *
+ * Darker ground and nothing else: no accent, which is what marks the row that
+ * heads a list, and no extra gap, because these come in runs rather than one at
+ * a time. It answers which group a row is in before the row is read, which a
+ * few words at the end of one label cannot do on a page that opens in the
+ * middle of the second group.
+ */
+const ASIDE_ROW_CLASS = "ce-decky-rowaside";
+/**
+ * A row that belongs to the game the reader has in front of them.
+ *
+ * Marked rather than merely left alone. Manage lists this game's tables above
+ * every other table on the device, and the only thing separating them was that
+ * the others were set a step darker - so this game's own read as the plain
+ * ones and the list read as one run of grey.
+ *
+ * Ground only, and grey-blue rather than grey. Three versions were drawn on the
+ * screen before this one: the accent edge the row heading a list carries, which
+ * made an ordinary row read as a second heading in the middle of the list; a
+ * wash of that accent, which reads as one tinted block rather than as rows; and
+ * a step lighter in plain grey, which is invisible next to rows a step darker in
+ * plain grey, because a list read in one column reads the step and not which way
+ * it went. A hue is the dimension nothing else in this list is using.
+ */
+const OWN_ROW_CLASS = "ce-decky-rowown";
+/**
+ * One cheat's closed block in the Configure cheats list.
+ *
+ * Marks the row so its header keeps one height whatever it is called. Both
+ * lines are clamped to one line each by the marquee, which settles the tall
+ * case; this settles the short one, so a record with no context line is the
+ * same height as a record with one and a page of them is a fixed number of
+ * pixels rather than a number that depends on which records are on it.
+ */
+const CHEAT_ROW_CLASS = "ce-decky-cheatrow";
+/**
+ * The row a paged screen ends with, for the one rule that has to reach it.
+ *
+ * It is drawn outside the dense wrapper, because what a screen puts below its
+ * list is not part of the list, so the scoped rules above cannot see it. This
+ * class is how a short screen reaches it anyway, and it is the only thing here
+ * that is not scoped.
+ */
+const PAGER_FOOTER_CLASS = "ce-decky-pager";
+/**
+ * Marks a screen whose rows give their controls less room than the default.
+ *
+ * Everything a control takes on a row comes out of the name beside it, and on
+ * one screen those names are what the reader is there to compare. This is not
+ * a rule for every dense row: the quick access panel carries the same controls
+ * in a far narrower column, and tightening it there moved every button on the
+ * panel. A screen opts in.
+ */
+const TIGHT_ROWS_CLASS = "ce-decky-tightrows";
+/** The detail block a row reveals under itself. */
+const REVEAL_CLASS = "ce-decky-reveal";
+const NOTE_CLASS = "ce-decky-note";
+/** Marks a row that is currently showing its revealed block. */
+const OPEN_ROW_CLASS = "ce-decky-open";
+/**
+ * Repeat a class so a rule outranks Steam's own multi-class selectors.
+ *
+ * Steam styles a field's padding through `.Field.<context>.<padding>`, which is
+ * three classes; a plain `.ce-decky-dense .Field` is two and loses. Repeating
+ * the class raises specificity deterministically instead of relying on
+ * `!important` or on this stylesheet happening to come last.
+ */
+function outrank(className, times = 3) {
+    return Array.from({ length: times }, () => `.${className}`).join("");
+}
+/**
+ * Scoped CSS that tightens Steam's own quick-access metrics.
+ *
+ * Steam sizes a quick-access row for a handheld read at arm's length: a 16px
+ * label, a 12px description, 10px of padding above and below, a 6px row margin
+ * and 24px between sections. Nine such rows put the cheats CE Decky exists to
+ * control below the fold. The exact class names come from Decky's class finders
+ * at runtime rather than being guessed, and every rule is scoped to this
+ * plugin's own wrapper so no other panel changes.
+ *
+ * Padding is deliberately not touched horizontally: Steam's `compact` field
+ * padding in the quick-access column is a full-bleed variant that removes the
+ * inline padding and pulls the row 16px outside the section, which hangs labels
+ * off the left and pushes controls past the right edge of the panel.
+ */
+function densityCss() {
+    const field = DFL.gamepadDialogClasses?.Field;
+    const label = DFL.gamepadDialogClasses?.FieldLabel;
+    const description = DFL.gamepadDialogClasses?.FieldDescription;
+    const leftColumn = DFL.gamepadDialogClasses?.FieldLeftColumn;
+    const separators = [DFL.gamepadDialogClasses?.WithBottomSeparatorStandard, DFL.gamepadDialogClasses?.WithBottomSeparatorThick]
+        .filter((name) => Boolean(name));
+    if (!field || !label || !description)
+        return null;
+    const scope = `.${DENSE_PANEL_CLASS}`;
+    // Every value the section heading and the accent beside a header row are made
+    // of, declared once on the panel itself. They were literals spread through
+    // the rules below, so changing how a heading looks meant finding each of them
+    // and keeping them in step; now one line here changes every screen, and a
+    // single screen can override any of them on its own wrapper.
+    const tokens = [
+        "--ce-heading-font-size: 12px",
+        "--ce-heading-font-weight: 700",
+        "--ce-heading-line-height: 16px",
+        "--ce-heading-letter-spacing: 0.5px",
+        "--ce-heading-text-transform: uppercase",
+        "--ce-heading-color: hsla(0, 0%, 100%, 0.7)",
+        "--ce-heading-gap: 8px",
+        // The gap under a heading is part of the heading: without it the first row
+        // of the list is drawn against the rule, and the two read as one block
+        // instead of as a caption over what it names. Steam's own is 8px, which is
+        // more than this panel can spend per heading; this is what separates them.
+        "--ce-heading-padding: 0 0 6px",
+        "--ce-heading-rule-height: 3px",
+        "--ce-heading-rule-radius: 2px",
+        "--ce-heading-rule-color: hsla(0, 0%, 100%, 0.38)",
+        // The accent CE Decky marks its own emphasis with, shared by the row that
+        // heads a list and available to anything else that needs it.
+        "--ce-accent: hsla(203, 89%, 66%, 0.85)",
+        // The row that heads a list is the list's first row of data, not the
+        // caption above it: it is set a step darker than the panel and holds the
+        // rows that follow off itself.
+        "--ce-header-row-background: hsla(0, 0%, 0%, 0.28)",
+        "--ce-header-row-radius: 4px",
+        "--ce-header-row-gap: 6px",
+        // The ground under a row from another group. Between the panel and the row
+        // that heads a list, so a run of them reads as a block set back rather than
+        // as a stack of headings.
+        "--ce-aside-row-background: hsla(0, 0%, 0%, 0.16)",
+        // And the ground under a row that is this game's own: grey-blue, desaturated
+        // far enough to sit beside grey and hued far enough to be told from it.
+        // `OWN_ROW_CLASS` carries why it is a hue rather than another step of grey.
+        "--ce-own-row-background: hsla(205, 38%, 58%, 0.20)",
+    ].join("; ");
+    // Every direct child of this wrapper is one of CE Decky's own panel sections.
+    // Steam's section class carries `margin: 0 0 24px` and its name is a bare
+    // content hash on the shipped client - `quickAccessControlsClasses` resolves
+    // it through a heuristic over Steam's own modules that can simply not match -
+    // so the spacing is reached structurally instead of by name.
+    const sectionSelector = `${outrank(DENSE_PANEL_CLASS)} > div`;
+    return [
+        `${scope} { ${tokens}; }`,
+        `${scope} ${outrank(field)} { margin-top: 1px; padding-top: 4px; padding-bottom: 4px; }`,
+        // One screen's rows, tightened. The quick access panel is not this screen:
+        // its rows carry the same controls in a much narrower column, and pulling
+        // them toward the edge there moved every button on the panel. So the
+        // tightening is a wrapper a screen opts into rather than a rule every dense
+        // row obeys, and it is expressed as the two lengths the rows read, so the
+        // inline styles that use them need no override.
+        `${scope}.${TIGHT_ROWS_CLASS} { --ce-row-trailing-gap: 6px; --ce-row-action-gap: 4px; --ce-row-mark-width: 16px; }`,
+        `${scope}.${TIGHT_ROWS_CLASS} ${outrank(field)} { padding-right: 8px; }`,
+        // Air under a stacked control, which the four pixels above do not give it.
+        `${scope} .${BELOW_FIELD_CLASS} ${outrank(field)} { padding-bottom: 10px; }`,
+        `${scope} .${label} { font-size: 14px; line-height: 17px; }`,
+        `${scope} .${description} { font-size: 11px; line-height: 14px; margin-top: 1px; }`,
+        // A row's own controls cannot shrink, so unless the label column may, a long
+        // label - a Cheat Engine version, a game name, a table filename - widens the
+        // whole row and pushes its buttons past the panel instead of being cut short
+        // by the ellipsis the label already asks for.
+        leftColumn ? `${scope} .${leftColumn} { min-width: 0; }` : null,
+        // A table filename or a deep cheat path must cost one line, never three.
+        `${scope} .${ELLIPSIS_CLASS} { display: block; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }`,
+        // An installation path has no spaces to break at, so it needs an explicit
+        // rule or it runs straight past the right edge once the row expands.
+        `${scope} .${WRAP_CLASS} { display: block; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }`,
+        // A pinned cheat costs exactly two lines. A Cheat Engine record is named by
+        // whoever wrote the table - "Reduction % (100 = immune, 0 = no reduction)"
+        // is one real example - and letting that wrap took four lines out of a
+        // single-column panel that has to hold every other cheat too.
+        //
+        // A pinned cheat's name is often longer than the row, so the focused row
+        // scrolls its own text far enough to show the end of it. A name that fits
+        // does not move at all.
+        //
+        // Which of the two it is used to be arranged rather than measured: the
+        // shift was `left: 100%` (the container's width) plus `translateX(-100%)`
+        // (the track's own), a difference that is the overflow when there is one
+        // and zero when there is not, so no width had to be read. What that costs
+        // is that the animation's endpoint is a live function of two box widths,
+        // re-resolved as they change, and one of the things that changes them is
+        // the clamp this rule takes off at the moment the animation starts. An
+        // endpoint that moves under an `alternate infinite` animation is a jitter,
+        // which is what the device showed: both lines of a focused pinned cheat
+        // twitching, including on rows whose text fits and has nothing to reveal.
+        //
+        // `FocusScrollText` measures the overflow once and publishes it as a
+        // length. The travel is that one number now, and a line with nothing to
+        // reveal carries no animation at all rather than one that resolves to zero.
+        `${scope} .${MARQUEE_CLASS} { display: block; min-width: 0; overflow: hidden; white-space: nowrap; font: inherit; line-height: inherit; }`,
+        `${scope} .${MARQUEE_CLASS} > span { display: inline-block; position: relative; left: 0; vertical-align: top; min-width: 100%; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }`,
+        // Steam moves real DOM focus and adds its own `gpfocuswithin`; either is
+        // enough, and neither costs anything when the other is what fires. The
+        // delay is what keeps a row the stick merely passes through still.
+        `${scope} .${FOCUS_SCROLL_CLASS}:focus-within .${MARQUEE_CLASS}[data-clipped] > span,`
+            + ` ${scope} .${FOCUS_SCROLL_CLASS}.gpfocuswithin .${MARQUEE_CLASS}[data-clipped] > span`
+            + ` { max-width: none; overflow: visible;`
+            + ` animation: ${MARQUEE_ANIMATION} var(${MARQUEE_SECONDS_VAR}, ${REVEAL_SECONDS}s) ease-in-out 0.7s infinite alternate; }`,
+        // The same rule for the row whose focus Steam marks on a control inside it
+        // rather than on the row. A row here is a plain element and Steam adds
+        // `gpfocuswithin` to its own `Focusable`, which on these lists is the group
+        // holding the row's buttons: that group is inside the row and beside the
+        // text, so neither selector above reaches it. Its own rule, because a
+        // parser that does not know `:has()` drops the rule it is written in, and
+        // dropping this one costs nothing while dropping the pair above would cost
+        // the panel's pinned cheats their reveal as well.
+        `${scope} .${FOCUS_SCROLL_CLASS}:has(.gpfocuswithin) .${MARQUEE_CLASS}[data-clipped] > span`
+            + ` { max-width: none; overflow: visible;`
+            + ` animation: ${MARQUEE_ANIMATION} var(${MARQUEE_SECONDS_VAR}, ${REVEAL_SECONDS}s) ease-in-out 0.7s infinite alternate; }`,
+        `@keyframes ${MARQUEE_ANIMATION} { from { transform: translateX(0); } to { transform: translateX(var(${MARQUEE_SHIFT_VAR}, 0px)); } }`,
+        `@media (prefers-reduced-motion: reduce) { ${scope} .${FOCUS_SCROLL_CLASS}:focus-within .${MARQUEE_CLASS} > span,`
+            + ` ${scope} .${FOCUS_SCROLL_CLASS}.gpfocuswithin .${MARQUEE_CLASS} > span { animation: none; } }`,
+        `@media (prefers-reduced-motion: reduce) { ${scope} .${FOCUS_SCROLL_CLASS}:has(.gpfocuswithin) .${MARQUEE_CLASS} > span`
+            + ` { animation: none; } }`,
+        // Reduced motion asks for no movement, not for less to read. Taking the
+        // animation away on its own left the line clipped and one line tall, so the
+        // half of a filename past the cut, and the recorded reason a table did not
+        // work, could only ever show their beginning. These rows carry controls, so
+        // `PanelRow` gives them no press-to-wrap focusable of their own either:
+        // there was no second route to the rest of the text at all.
+        //
+        // So the focused line that is cut wraps instead. It is the same reveal, in
+        // the one form that is not motion: the row grows while it holds focus and
+        // shrinks back when it loses it, and every word of the value is readable in
+        // between.
+        `@media (prefers-reduced-motion: reduce) { ${scope} .${FOCUS_SCROLL_CLASS}:focus-within .${MARQUEE_CLASS}[data-clipped],`
+            + ` ${scope} .${FOCUS_SCROLL_CLASS}.gpfocuswithin .${MARQUEE_CLASS}[data-clipped]`
+            + ` { overflow: visible; white-space: normal; } }`,
+        `@media (prefers-reduced-motion: reduce) { ${scope} .${FOCUS_SCROLL_CLASS}:focus-within .${MARQUEE_CLASS}[data-clipped] > span,`
+            + ` ${scope} .${FOCUS_SCROLL_CLASS}.gpfocuswithin .${MARQUEE_CLASS}[data-clipped] > span`
+            + ` { max-width: none; overflow: visible; white-space: normal; text-overflow: clip; transform: none; } }`,
+        // The row whose focus Steam marks on a control inside it, in its own rule
+        // for the same reason the animated pair above splits: a parser that does
+        // not know `:has()` drops the rule it is written in, and this is the one
+        // that can be lost without costing the others.
+        `@media (prefers-reduced-motion: reduce) { ${scope} .${FOCUS_SCROLL_CLASS}:has(.gpfocuswithin) .${MARQUEE_CLASS}[data-clipped]`
+            + ` { overflow: visible; white-space: normal; } }`,
+        `@media (prefers-reduced-motion: reduce) { ${scope} .${FOCUS_SCROLL_CLASS}:has(.gpfocuswithin) .${MARQUEE_CLASS}[data-clipped] > span`
+            + ` { max-width: none; overflow: visible; white-space: normal; text-overflow: clip; transform: none; } }`,
+        // One closed cheat is the label's line, the description's line and the
+        // field's own padding, and it stays that whether it has a description or
+        // not. The number is the sum of everything above it: the 17 and 14 pixel
+        // line heights, the 1 pixel between them, and the field's own 4 above and
+        // below - so a change to any of those is a change here. A record at the top
+        // level of a table has no group to name and no value shown, which leaves it
+        // with no second line at all, and it is the reason this exists.
+        // An open row is exempt: `More` is a press that says show me the whole of
+        // this, and its block is as tall as what it holds.
+        `${scope} .${CHEAT_ROW_CLASS}:not(.${OPEN_ROW_CLASS}) ${outrank(field)} { min-height: 40px; box-sizing: border-box; }`,
+        // The live-state line introduces the cheats under it rather than being one
+        // more row among them, so it carries the section's own tint and accent.
+        // Without that the panel is an undifferentiated column and the first pinned
+        // cheat reads as the status row's continuation.
+        `${scope} ${outrank(HEADER_ROW_CLASS)} .${field} { background: var(--ce-header-row-background);`
+            + ` border-radius: var(--ce-header-row-radius); margin-bottom: var(--ce-header-row-gap);`
+            + ` box-shadow: inset 2px 0 0 var(--ce-accent); }`,
+        `${scope} ${outrank(ASIDE_ROW_CLASS)} .${field} { background: var(--ce-aside-row-background);`
+            + ` border-radius: var(--ce-header-row-radius); }`,
+        // Ground only. The accent edge is what the row heading a list is marked
+        // with, and an ordinary row wearing it reads as a second heading.
+        `${scope} ${outrank(OWN_ROW_CLASS)} .${field} { background: var(--ce-own-row-background);`
+            + ` border-radius: var(--ce-header-row-radius); }`,
+        // What a row reveals under itself belongs to that row, so it is indented
+        // behind a rule and set one step down in the type scale. Steam's own text
+        // input is the reason this needs rules at all: every `Field` carries
+        // `padding: 0 20px`, and `DialogInputLabelGroup` carries none, so the value
+        // editor ran the full width of the block while the labels around it stayed
+        // inset - the editor read as a separate full-bleed panel rather than as
+        // part of the cheat above it.
+        // What made an open row read as one card was never a border, it was the
+        // step in tone: Steam paints the focused field lighter, so a focused row
+        // had a lit heading over a darker body while an unfocused one was flat -
+        // its heading is opaque and its revealed rows show the block's tint, and
+        // the two land close enough to cancel each other out. Both surfaces are put
+        // on the block's own tint and the heading alone is lifted, so the row reads
+        // the same whether or not the controller is on it. Focus still wins, and a
+        // border would not survive here anyway: the opaque field rectangles do not
+        // line up with the block, so one showed as stray strips on three sides.
+        `${scope} ${outrank(OPEN_ROW_CLASS)} > ${outrank(field, 4)}:not(.gpfocus):not(.gpfocuswithin)`
+            + ` { background: hsla(0, 0%, 100%, 0.06); }`,
+        `${scope} .${REVEAL_CLASS} { padding: 0 0 3px 12px; }`,
+        // Steam paints a field opaque, and those rectangles do not line up with the
+        // row's own block, so anything drawn around them showed as a stray strip of
+        // block tint down the left, right and bottom - and a border of this block's
+        // own added a second line beside the block's inset outline. The revealed
+        // rows are made one continuous surface with the row instead, and only the
+        // indent says they belong to it. The focused field keeps Steam's own
+        // highlight: that rectangle is the controller's position, not decoration.
+        `${scope} .${REVEAL_CLASS} ${outrank(field, 4)} { padding-top: 3px; padding-bottom: 3px; margin-top: 0; }`,
+        `${scope} .${REVEAL_CLASS} ${outrank(field, 4)}:not(.gpfocus):not(.gpfocuswithin) { background: transparent; }`,
+        `${scope} .${REVEAL_CLASS} .${label} { font-size: 13px; line-height: 16px; }`,
+        `${scope} .${REVEAL_CLASS} .${description} { font-size: 11px; line-height: 14px; }`,
+        // Steam's text input is `DialogInputLabelGroup > label > (DialogLabel +
+        // DialogInput_Wrapper > DialogInput)`. Those names are Steam's own stable
+        // ones, not content hashes, and every rule here is scoped to this block, so
+        // a renamed class costs the alignment and nothing else.
+        // Steam's input group also carries a 22px bottom margin, which is right
+        // for a dialog full of them and is a hole when one sits between two rows.
+        `${scope} .${REVEAL_CLASS} .DialogInputLabelGroup { padding: 2px 20px 5px; margin-bottom: 0; }`,
+        `${scope} .${REVEAL_CLASS} .DialogLabel { font-size: 11px; line-height: 14px; opacity: 0.75; }`,
+        `${scope} .${REVEAL_CLASS} .DialogInput { height: 32px; min-height: 32px; font-size: 13px; padding: 0 10px; }`,
+        // An aside about what Apply will do is not a setting, so it is not given a
+        // label and a control's worth of height. It is inset like the fields around
+        // it and set at description weight.
+        `${scope} .${NOTE_CLASS} { padding: 2px 20px 5px; font-size: 11px; line-height: 15px; color: hsla(0, 0%, 100%, 0.62); }`,
+        `${sectionSelector} { margin-bottom: 6px; }`,
+        // Steam renders a section heading at 16px/22px with 8px beneath it; five
+        // headings on one diagnostics screen cost more than the rows they label.
+        `${scope} .${HEADING_CLASS} { display: flex; align-items: center; gap: var(--ce-heading-gap); padding: var(--ce-heading-padding);`
+            + ` font-size: var(--ce-heading-font-size); font-weight: var(--ce-heading-font-weight); line-height: var(--ce-heading-line-height);`
+            + ` letter-spacing: var(--ce-heading-letter-spacing); text-transform: var(--ce-heading-text-transform); color: var(--ce-heading-color); }`,
+        // What follows the text sits between it and the rule, so a heading that
+        // carries a spinner keeps the rule spanning whatever is left.
+        `${scope} .${HEADING_CLASS} > .${HEADING_TRAILING_CLASS} { flex: 0 0 auto; display: inline-flex; align-items: center; }`,
+        // The rule that separates one section from the next runs beside the heading
+        // rather than under it, so the split costs no height at all - which matters
+        // once a few pinned cheats are competing for the same column. It spans the
+        // full width and is deliberately heavier than a row separator.
+        `${scope} .${HEADING_CLASS}::after { content: ""; flex: 1 1 auto; order: 1; height: var(--ce-heading-rule-height); border-radius: var(--ce-heading-rule-radius); background: var(--ce-heading-rule-color); }`,
+        // Steam draws a row's own separator edge to edge, which is the same shape as
+        // the section rule above and turns a column of rows into a stack of equally
+        // weighted lines. Inside a section a separator only has to say "next row",
+        // so it stops short of both edges, and the division between
+        // sections is the only line that reaches the edges. Steam's own rule is four
+        // classes deep, so this one is deliberately deeper.
+        ...separators.map((name) => `${outrank(DENSE_PANEL_CLASS, 4)} .${name}::after { display: none; }`),
+        // What a short screen does differently, in a media query rather than in a
+        // branch: the rules belong to the page this plugin's DOM is rendered in,
+        // and that page is the one whose height decides. The code runs in Steam's
+        // shared context, whose window is one pixel tall, so a rule that asked the
+        // window would ask the wrong one; a media query asks the right one by
+        // construction, on every screen, without a re-render.
+        //
+        // Steam draws a text field's label above its input, which is two lines for
+        // one control. On a 534 pixel page a search screen spent 371 of it on
+        // chrome, and this is part of what that was. The label goes beside the
+        // input there, where it costs the field's own height and nothing more.
+        `@media (max-height: ${SHORT_SCREEN_MAX_HEIGHT}px) {`
+            + ` ${scope} .DialogInputLabelGroup > label { display: flex; align-items: center; gap: 10px; }`
+            + ` ${scope} .DialogInputLabelGroup .DialogLabel { flex: 0 0 auto; margin: 0; white-space: nowrap; }`
+            + ` ${scope} .DialogInputLabelGroup .DialogInput_Wrapper { flex: 1 1 auto; min-width: 0; }`
+            + ` ${scope} .DialogInputLabelGroup { padding-top: 2px; padding-bottom: 4px; margin-bottom: 0; }`
+            // And a row gives up two pixels at each end. Four rows of results is what
+            // a Steam Deck fits, and the fifth is inside ten pixels of arriving; the
+            // page that divides the room by a row measures the row rather than
+            // reading a constant, so this cannot put the arithmetic out.
+            + ` ${scope} ${outrank(field, 4)} { padding-top: 2px; padding-bottom: 2px; }`
+            // Except under a control that is stacked below its own label, which is
+            // the one shape that needs the air: the block such a control opens is as
+            // wide as the row and lands directly under it, so with the row's padding
+            // gone it sits flat on whatever follows. The rule above outranks the
+            // ordinary one for this class by two levels of specificity, so it took
+            // that air away on exactly the screens with the least of it, and the
+            // game picker and the Approve screen both lost it without either file
+            // changing. This puts it back, outranking the rule that removed it.
+            + ` ${scope} .${BELOW_FIELD_CLASS} ${outrank(field, 5)} { padding-bottom: 10px; }`
+            // And then the rest of what a screen is made of, because giving a page a
+            // row fewer is not fitting it. Every length below was read off a Steam
+            // Deck with `scripts/target_panel_read.py --metrics` and is the same
+            // thing said in a smaller hand, not a different screen: the heading, the
+            // two lines a row is, the gap between one cheat and the next, and the
+            // height Steam's own controls take when nobody tells them otherwise.
+            + ` ${outrank(DENSE_PANEL_CLASS)} {`
+            + " --ce-heading-line-height: 14px;"
+            + " --ce-heading-padding: 0 0 4px;"
+            + " --ce-header-row-gap: 4px;"
+            + " --ce-cheat-row-gap: 3px;"
+            + " }"
+            + ` ${scope} ${outrank(label, 2)} { font-size: 13px; line-height: 16px; }`
+            + ` ${scope} ${outrank(description, 2)} { font-size: 10px; line-height: 13px; }`
+            + ` ${scope} .${CHEAT_ROW_CLASS}:not(.${OPEN_ROW_CLASS}) ${outrank(field, 4)} { min-height: 34px; }`
+            // Steam's own controls size themselves for a television. A button or an
+            // input this plugin drew carries its own padding inline, and an inline
+            // length outranks a stylesheet, so this reaches exactly the ones nobody
+            // here has sized: the dropdown a section is chosen from, the box a filter
+            // is typed into. Padding only, and no floor under it: a floor would
+            // reach this plugin's own small buttons as well, which have no inline
+            // height to outrank it with, and would make the rows holding them taller
+            // on the one screen size this whole block exists to shorten.
+            + ` ${scope} ${outrank(field, 4)} button { padding-top: 4px; padding-bottom: 4px; }`
+            + ` ${scope} ${outrank(field, 4)} input { padding-top: 4px; padding-bottom: 4px; }`
+            // And the row a paged screen ends with, which is drawn outside the dense
+            // wrapper and so is the one rule here that is not scoped to it. Ten
+            // pixels of padding around a row of small buttons is a cheat on a
+            // handheld and nothing at all on a television.
+            + ` .${PAGER_FOOTER_CLASS} { --ce-footer-padding: 0 16px 2px; --ce-footer-row-padding: 2px 0 0; }`
+            + " }",
+    ].filter(Boolean).join("\n");
+}
+/** Injects the density rules once for the surface that wraps its children. */
+function DensePanel({ children, tightRows }) {
+    const css = densityCss();
+    return (SP_JSX.jsxs("div", { className: tightRows ? `${DENSE_PANEL_CLASS} ${TIGHT_ROWS_CLASS}` : DENSE_PANEL_CLASS, children: [css ? SP_JSX.jsx("style", { children: css }) : null, children] }));
+}
+/**
+ * A section heading with its separating rule beside the text.
+ *
+ * Steam's own `PanelSection title` renders the text inside a shrink-to-fit
+ * element whose class is a bare content hash on the shipped client, so a rule
+ * that has to span the remaining width cannot be attached to it. CE Decky
+ * therefore renders the heading itself as the section's first child, where the
+ * section's own 16px inline padding already aligns it with every row below.
+ */
+function SectionHeading({ children, trailing }) {
+    return (SP_JSX.jsxs("div", { className: HEADING_CLASS, children: [children, trailing ? SP_JSX.jsx("span", { className: HEADING_TRAILING_CLASS, style: { order: 2 }, children: trailing }) : null] }));
+}
+/** A label that costs exactly one line however long its text is. */
+function OneLine({ children }) {
+    return SP_JSX.jsx("span", { className: ELLIPSIS_CLASS, children: children });
+}
+/**
+ * One line of text that scrolls itself while its row has controller focus.
+ *
+ * Off focus it is an ordinary ellipsised line, and a line the reader can
+ * already finish never moves at all. Only a row carrying `FOCUS_SCROLL_CLASS`
+ * animates, so the panel is never moving in more than one place.
+ *
+ * The overflow is read here rather than expressed as a pair of percentages in
+ * the stylesheet, for the reason the stylesheet records: percentages resolve
+ * against boxes, and an animation whose endpoint is a live function of a box
+ * width has an endpoint that moves when the width does. This measures it while
+ * the line is clamped, which is a state the animation cannot disturb, and
+ * publishes one length.
+ */
+function FocusScrollText({ children, paced }) {
+    const trackRef = SP_REACT.useRef(null);
+    const [overflow, setOverflow] = SP_REACT.useState(0);
+    SP_REACT.useLayoutEffect(() => {
+        const track = trackRef.current;
+        if (!track)
+            return;
+        const row = typeof track.closest === "function" ? track.closest(`.${FOCUS_SCROLL_CLASS}`) : null;
+        const reduced = typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+        // Whether this row is showing the whole of its value right now, which under
+        // reduced motion is a wrapped line rather than a moving one.
+        const revealing = () => {
+            if (!reduced?.matches || row === null)
+                return false;
+            if (row.classList.contains("gpfocuswithin"))
+                return true;
+            if (typeof row.querySelector === "function" && row.querySelector(".gpfocuswithin"))
+                return true;
+            const active = row.ownerDocument?.activeElement ?? null;
+            return active !== null && row.contains(active);
+        };
+        const measure = () => {
+            // A wrapped line measures as having nothing to reveal, and withdrawing
+            // the mark on that answer unwraps it, which makes it overflow again: the
+            // same flip-flop the window below exists to avoid, driven this time by
+            // the reveal itself. The answer from before the reveal is the true one
+            // and it is kept until the row gives focus back.
+            if (revealing())
+                return;
+            // Against the window this line is shown through, never against the line's
+            // own box. The rule that reveals a focused line takes the clamp off that
+            // box - `max-width: none; overflow: visible` - so while the row has
+            // focus the line's own width *is* its content width and it measures as
+            // having nothing to reveal. Answering that with zero withdraws the mark
+            // the reveal rule matches on, which stops the reveal, re-clamps the line
+            // and leaves the next measurement to do the same thing again: the line
+            // never moves. That window is the parent, which no rule here touches, so
+            // it gives the same answer focused or not.
+            //
+            // Rounded, because a sub-pixel difference is not a cut line: it is the
+            // same line, and treating it as cut would start a scroll over a distance
+            // nobody can see.
+            const shownThrough = track.parentElement ?? track;
+            const cut = Math.max(0, Math.round(track.scrollWidth - shownThrough.clientWidth));
+            setOverflow((current) => (current === cut ? current : cut));
+        };
+        measure();
+        // One measurement on mount is a measurement of whatever the layout was at
+        // that instant, and a line measured before its box has a width is a line
+        // with nothing to reveal: it publishes no overflow, so it never animates,
+        // and nothing asks again until the row is rebuilt. A row on a list that
+        // opens already populated is exactly that case, which is why the first row
+        // of Manage would sit still while a row reached later moved.
+        //
+        // Three things ask again, and none of them costs anything while the answer
+        // does not change: the frame after this one, the row taking focus, which
+        // is the only moment the answer is about to matter, and a box that resizes.
+        const frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(measure) : null;
+        row?.addEventListener("focusin", measure);
+        // And once it is given back, because the answer held above is only true
+        // while the reveal is on the screen.
+        row?.addEventListener("focusout", measure);
+        // The track is clamped to its parent, so its own box stops changing once
+        // the parent has one: the parent is what actually resizes. Both are watched
+        // for that reason. Where there is no observer, the asks above are the whole
+        // of it.
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+        observer?.observe(track);
+        if (track.parentElement)
+            observer?.observe(track.parentElement);
+        return () => {
+            if (frame !== null)
+                cancelAnimationFrame(frame);
+            row?.removeEventListener("focusin", measure);
+            row?.removeEventListener("focusout", measure);
+            observer?.disconnect();
+        };
+    }, [children]);
+    const travel = overflow > 0
+        ? {
+            [MARQUEE_SHIFT_VAR]: `${-overflow}px`,
+            ...(paced
+                ? {
+                    [MARQUEE_SECONDS_VAR]: `${Math.min(MARQUEE_PACE_MAX_SECONDS, Math.max(REVEAL_SECONDS, overflow / MARQUEE_PACE_PX_PER_SECOND)).toFixed(1)}s`,
+                }
+                : {}),
+        }
+        : undefined;
+    return (SP_JSX.jsx("span", { className: MARQUEE_CLASS, "data-clipped": overflow > 0 ? "" : undefined, children: SP_JSX.jsx("span", { ref: trackRef, style: travel, children: children }) }));
+}
+/**
+ * A refusal, drawn so it is not read as one more row of the list it sits under.
+ *
+ * Every screen here is rows, so a failure rendered as a row is a failure that
+ * looks like data: the Configure cheats screen reported "Cannot apply cheats"
+ * in the same weight and colour as the cheats above it. This is its own block,
+ * on the colour the rest of the product refuses things in, and it is shared
+ * rather than styled per screen so a second one cannot drift from the first.
+ */
+function RefusalBlock({ children, testId }) {
+    return SP_JSX.jsx("div", { style: refusalBlockStyle, "data-testid": testId, children: children });
+}
+/**
+ * Styled inline rather than through this module's scoped stylesheet.
+ *
+ * A refusal is shown where the press that earned it was made, and on this
+ * plugin's screens that is often outside the dense wrapper the stylesheet is
+ * scoped to - the cheat picker's is below its own, beside Apply. Reaching it
+ * with a class meant wrapping that block in a second `DensePanel`, which mounts
+ * a second copy of the whole stylesheet for one border. These are five
+ * declarations and they belong to the component.
+ */
+const refusalBlockStyle = {
+    margin: "4px 0 2px",
+    borderRadius: 4,
+    // The colour the rest of the product refuses things in, the same one search
+    // marks a refused row with, so no screen invents a second red.
+    borderLeft: "3px solid hsla(9, 74%, 62%, 0.82)",
+    background: "hsla(9, 74%, 40%, 0.22)",
+    padding: "2px 10px",
+};
+/**
+ * The height a whole page of uniform rows takes, held for the pages that are
+ * shorter than one.
+ *
+ * A paged list whose last page is short made its window change height, so
+ * paging to the end moved every control below the list and the way out of the
+ * screen arrived somewhere new. This holds the height a whole page takes.
+ *
+ * An earlier version of it answered only once a full page had actually been on
+ * screen, and two things were wrong with that. A device holding three tables
+ * has one short page and never a full one, so there was nothing to hold and the
+ * window changed size on every filter. And the height it did hold outlived the
+ * page size it was measured for: these screens settle on their page a commit
+ * after they open, so a window kept the height of the page it started with and
+ * stood four pixels past the bottom of a Steam Deck's display.
+ *
+ * So a full page is measured where there is one, and estimated from a row where
+ * there is not. The measurement is the whole box, because a row times a page is
+ * not quite a page: what separates two rows belongs to neither of them, and
+ * counting rows alone left Manage's last page two pixels short of its first and
+ * moved the window by exactly that. The estimate is the shortest row times a
+ * page, which is as close as anything can come to a page that has never been
+ * drawn.
+ *
+ * For a list whose rows are one fixed height: one line of name over one line of
+ * state, clipped rather than wrapped. That is what makes a page of them worth
+ * measuring once, and it is what a caller has to be sure of, because a list
+ * whose rows can be opened in place would have this hold the height of the page
+ * with the opened row on it.
+ *
+ * Measuring the box the height is put on is safe. `min-height` never changes
+ * how tall the children are, and on a full page the box is at least as tall as
+ * whatever is already held, so it reports what those rows actually take.
+ */
+function usePageHeight(node, rows, pageSize) {
+    const [held, setHeld] = SP_REACT.useState(null);
+    // A page that was measured for six rows is not the height of a page of three.
+    // The screens that measure their own page size settle on it a commit after
+    // they open, so the first answer here can belong to the page they started
+    // with, and holding that one padded the window to a page nobody is on.
+    const height = held !== null && held.pageSize === pageSize ? held.height : null;
+    const setHeight = (next) => setHeld((current) => {
+        const value = next(current !== null && current.pageSize === pageSize ? current.height : null);
+        return value === null ? current : { height: value, pageSize };
+    });
+    SP_REACT.useLayoutEffect(() => {
+        if (!node || rows <= 0 || pageSize <= 0 || typeof node.getBoundingClientRect !== "function")
+            return;
+        let page = 0;
+        if (rows >= pageSize) {
+            page = Math.round(node.getBoundingClientRect().height);
+        }
+        else {
+            const measured = [];
+            for (const child of Array.from(node.children)) {
+                if (typeof child.getBoundingClientRect !== "function")
+                    continue;
+                const box = Math.round(child.getBoundingClientRect().height);
+                if (box > 0)
+                    measured.push(box);
+            }
+            if (measured.length === 0)
+                return;
+            page = Math.min(...measured) * pageSize;
+        }
+        if (page <= 0)
+            return;
+        // A page is never shortened by a later measurement: rows carry marks and
+        // second lines that come and go, and a window that tracked the shortest of
+        // them would move for exactly the reason this exists to stop.
+        setHeight((current) => (current !== null && current >= page ? current : page));
+    }, [node, rows, pageSize]);
+    return height;
+}
+/**
+ * How tall one row of a list actually is, rather than what a constant says.
+ *
+ * A page is fitted to a screen by dividing the room by a row, and the row was a
+ * number written beside the stylesheet that draws it. Those two drift, and the
+ * drift is silent: trim a row's padding for a short screen and the arithmetic
+ * goes on dividing by the old height, so the page is a row short or a row long
+ * and nothing says which.
+ *
+ * The shortest row on screen, for the reason `usePageHeight` takes the same
+ * one: a row the reader has opened is several lines tall and is not the row a
+ * page is made of. Never larger than what it has already held, so a page cannot
+ * grow under a reader who opened something.
+ *
+ * The fallback is the caller's own constant, for the first render and for any
+ * host with no layout.
+ *
+ * Measured on every render rather than on a dependency list, because what
+ * changes a row's height is the content in it and there is no value to watch
+ * for that. It settles rather than looping: an unchanged measurement sets the
+ * same number, and React stops there.
+ */
+function useRowHeight(node, fallback) {
+    const [height, setHeight] = SP_REACT.useState(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    SP_REACT.useLayoutEffect(() => {
+        if (!node)
+            return;
+        const measured = [];
+        for (const child of Array.from(node.children)) {
+            if (typeof child.getBoundingClientRect !== "function")
+                continue;
+            const box = Math.round(child.getBoundingClientRect().height);
+            if (box > 0)
+                measured.push(box);
+        }
+        if (measured.length === 0)
+            return;
+        const row = Math.min(...measured);
+        setHeight((held) => (held !== null && held <= row ? held : row));
+    });
+    return height ?? fallback;
+}
+/** A short aside inside a revealed block: no label, no control, no row height. */
+function PanelNote({ children }) {
+    return SP_JSX.jsx("div", { className: NOTE_CLASS, children: children });
+}
+/** Text that wraps inside the row even when it is one unbroken path. */
+function WrapText({ children }) {
+    return SP_JSX.jsx("span", { className: WRAP_CLASS, children: children });
+}
+/**
+ * A rare or secondary action, sized so it never owns a whole row.
+ *
+ * Decky's `ButtonItem` is a full-width row roughly as tall as a two-line field,
+ * which is right for the one action a screen is about and wrong for everything
+ * else on it.
+ */
+const smallActionStyle = {
+    // Steam's DialogButton grows to fill its flex line, which is right for a
+    // dialog's primary action and wrong for a secondary control that must stay
+    // beside a label, so this one is sized by its own text.
+    flex: "0 0 auto",
+    minWidth: 0,
+    width: "auto",
+    padding: "4px 10px",
+    fontSize: 12,
+    lineHeight: "16px",
+    whiteSpace: "nowrap",
+    // Steam's button leaves its label top-aligned at this height, so centre the
+    // text in the box and the box against the row it belongs to.
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+};
+/**
+ * A horizontal group of small actions with stable controller navigation.
+ *
+ * A `Focusable` is itself a focus target, so wrapping a lone button in one
+ * gives Steam a container to land on whose activation does nothing - the button
+ * looks focused and pressing A is silently ignored. Only group two or more.
+ *
+ * Held across a press for the reason `PanelRow` holds which element wraps a
+ * row: an action that disables itself for the length of the press it started
+ * takes the count of reachable controls below two, and swapping the wrapper for
+ * a plain `div` unmounts every button inside it and mounts a new one when the
+ * press finishes. The user loses the focus ring off the button under their
+ * thumb, twice per press, and a caller holding the button it just pressed is
+ * holding a detached element that stays disabled forever.
+ *
+ * Held only while the controls are still there, though. A group whose second
+ * control is disabled is a group mid-press; a group whose second control is
+ * gone is a different row, and keeping the wrapper there would put back exactly
+ * the dead focus target this rule exists to avoid.
+ */
+function ActionGroup({ children, style, navEntryPreferPosition }) {
+    const baseStyle = { display: "flex", alignItems: "center", alignSelf: "center", ...style };
+    const everGrouped = SP_REACT.useRef(false);
+    if (availableActionCount(children) > 1)
+        everGrouped.current = true;
+    else if (renderedActionCount(children) <= 1)
+        everGrouped.current = false;
+    if (!everGrouped.current) {
+        return SP_JSX.jsx("div", { style: baseStyle, children: children });
+    }
+    return (SP_JSX.jsx(DFL.Focusable, { "flow-children": "row", navEntryPreferPosition: navEntryPreferPosition, style: { justifyContent: "flex-end", gap: 8, ...baseStyle }, children: children }));
+}
+/**
+ * A box a ref can be hung on without changing the layout around it.
+ *
+ * Steam works out which control is beside which from the geometry the layout
+ * produces, so an ordinary wrapper around one control in a row is a box in the
+ * middle of that row. `contents` leaves the control exactly where its group put
+ * it and still gives the caller somewhere to hang a ref that finds it.
+ */
+const CONTENTS_ONLY = { display: "contents" };
+/**
+ * Put the focus ring on the first of these boxes that still holds a control.
+ *
+ * For a row that rebuilds itself under the user's thumb. `ActionGroup` is a
+ * plain box while one control can be pressed and a navigation container once
+ * two can, which is the right rule and also means the press that enables the
+ * second control replaces both of them: a pager sitting on page one has
+ * Previous disabled, so the first press of Next unmounts the button that press
+ * was made on and the ring goes with it.
+ *
+ * The caller says which control the reader was working and what to fall back to
+ * when that one has just disabled itself, which is the other half of the same
+ * problem: the first page turns Previous off exactly as the last turns Next
+ * off, and either way the ring has to land somewhere the reader can see it.
+ *
+ * Says whether the ring landed. A caller acting on a request that outlives the
+ * press it came from has to be able to tell "not yet" from "done": every box
+ * here can be empty or hold nothing that can be pressed, and a request retired
+ * on that is a request spent on nothing.
+ */
+function focusFirstEnabled(...boxes) {
+    for (const box of boxes) {
+        const control = box.current?.querySelector("button:not([disabled])");
+        if (control) {
+            control.focus();
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Read-only facts about one thing, two to a line where the screen is short.
+ *
+ * A screen that opens with four lines of identity - the file, where it came
+ * from, what is in it, what it can execute - spends four rows on text nobody
+ * presses, and on a handheld those four rows are most of what the display has.
+ * Each of them is a short label over a short value, so two of them fit a line
+ * with room to spare: the panel is the same width on every display measured,
+ * and it is the height that is scarce.
+ *
+ * Only where the screen is short. A display with the room keeps the rows it
+ * had, one fact to a line, which is the shape those screens were designed and
+ * looked at in.
+ */
+function InfoValue({ children }) {
+    return SP_JSX.jsx("span", { style: { display: "block", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "14px", height: 14 }, children: children });
+}
+function InfoFields({ items }) {
+    const present = items.filter((item) => item.description !== null && item.description !== undefined);
+    // A node of this screen, because this plugin's code runs in Steam's shared
+    // context, whose window is one pixel tall, while its DOM is rendered in the
+    // page the user is looking at. Asking without one answered that every screen
+    // is short, which was right on a handheld by accident and wrong on a
+    // television. The callback ref lands in the commit that mounts it, so the
+    // layout settles before the frame is painted rather than after it.
+    const [pageNode, setPageNode] = SP_REACT.useState(null);
+    const probe = SP_JSX.jsx("div", { ref: setPageNode, style: CONTENTS_ONLY });
+    if (!isShortScreen(pageNode)) {
+        return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [probe, present.map((item, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: item.label, description: SP_JSX.jsx(InfoValue, { children: item.description }) }) }, index)))] }));
+    }
+    const pairs = [];
+    for (let index = 0; index < present.length; index += 2)
+        pairs.push(present.slice(index, index + 2));
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [probe, pairs.map((pair, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: index === pairs.length - 1 ? infoLastPairStyle : infoPairStyle, children: [pair.map((item, column) => (
+                        // Each half is its own minimum-width-zero column, so a long value
+                        // clips inside its half instead of widening the row and pushing
+                        // the other one off the panel.
+                        SP_JSX.jsx("div", { style: infoHalfStyle, children: SP_JSX.jsx(DFL.Field, { label: item.label, description: SP_JSX.jsx(InfoValue, { children: item.description }), bottomSeparator: "none" }) }, column))), pair.length === 1 ? SP_JSX.jsx("div", { style: infoHalfStyle }) : null] }) }, index)))] }));
+}
+/** The air between one fact and the fact beside it, and under the group. */
+const INFO_PAIR_GAP = 12;
+const infoPairStyle = { display: "flex", alignItems: "flex-start", gap: INFO_PAIR_GAP };
+const infoLastPairStyle = { ...infoPairStyle, marginBottom: INFO_PAIR_GAP };
+const infoHalfStyle = { flex: "1 1 0", minWidth: 0 };
+/**
+ * Two of Steam's own controls in the height of one row, where height is scarce.
+ *
+ * Steam gives a dropdown and a text field a row each, which is right on a
+ * television and expensive on a handheld: the cheats screen spent 80 of its 534
+ * pixels on a section picker and a filter that between them hold one word. Side
+ * by side they cost the taller of the two and nothing more.
+ *
+ * Only where that trade is worth making. A row halved is a control halved, and
+ * Steam sets a dropdown's label beside its value, so on a screen with the
+ * height for two rows the pair bought nothing and cost the picker its text -
+ * `All supported controls` came out as `All su...` on a 4K television. There
+ * each control takes the row it was drawn for.
+ *
+ * Side by side it is a navigation container rather than a plain box, so the
+ * controller moves between them the way it moves along any row here, and each
+ * column is its own zero-minimum-width box so a long section name clips inside
+ * its half instead of pushing the filter off the screen.
+ */
+function SideBySide({ children, testId }) {
+    // A node of this screen, because this plugin's code runs in Steam's shared
+    // context, whose window is one pixel tall, while its DOM is rendered in the
+    // page the user is looking at. The callback ref lands in the commit that
+    // mounts it, so the layout settles before the frame is painted.
+    const [pageNode, setPageNode] = SP_REACT.useState(null);
+    const probe = SP_JSX.jsx("div", { ref: setPageNode, style: CONTENTS_ONLY });
+    const columns = SP_REACT.Children.toArray(children);
+    if (!isShortScreen(pageNode)) {
+        return (SP_JSX.jsxs("div", { style: sideBySideStyle, "data-testid": testId, children: [probe, columns.map((child, row) => SP_JSX.jsx("div", { children: child }, row))] }));
+    }
+    return (SP_JSX.jsxs(DFL.Focusable, { "flow-children": "row", style: sideBySideRowStyle, "data-testid": testId, children: [probe, columns.map((child, column) => (SP_JSX.jsx("div", { style: sideBySideHalfStyle, children: child }, column)))] }));
+}
+// Air under the pair, because what follows it is the list these two narrow and
+// not another control: without it the row reads as the first thing in the list
+// rather than as the thing that decides what the list holds. The same ten
+// pixels a stacked control gets under it, so the panel has one measure for
+// "this block is finished" rather than two.
+const sideBySideStyle = { marginBottom: 10 };
+const sideBySideRowStyle = { ...sideBySideStyle, display: "flex", alignItems: "center", gap: 12 };
+const sideBySideHalfStyle = { flex: "1 1 0", minWidth: 0 };
+/**
+ * A filter, labelled inside itself.
+ *
+ * Steam draws a text field's label above its input on a full-size screen and,
+ * under this panel's own rules, beside it on a short one. Both spend width or
+ * height on a word that stops being worth anything the moment the reader is
+ * typing. The word goes in the box instead, as the placeholder, where it is
+ * gone while there is anything to read and back as soon as the box is empty.
+ *
+ * Still named for anything that is not looking at it: the accessible name is
+ * the same word, so a controller's own reading of the control and this
+ * repository's tests both still find it by name.
+ */
+function FilterField({ value, onChange, disabled, placeholder = "Filter" }) {
+    // Steam's own control, resolved out of its bundle at runtime, and its props
+    // are declared as `HTMLAttributes` rather than `InputHTMLAttributes` - so
+    // `placeholder` is a perfectly ordinary input attribute the declaration does
+    // not list. Spread rather than cast, because a spread is the one form that
+    // says "this goes to the input underneath" without claiming the declaration
+    // is wrong about anything else.
+    const inInput = { placeholder };
+    return (SP_JSX.jsx(DFL.TextField, { ...inInput, "aria-label": placeholder, value: value, disabled: disabled, onChange: onChange }));
+}
+// How many times a page may give rows up before it stops trying.
+const MAX_SHRINKS = 2;
+/**
+ * The rows this screen owes its window, or the ones it can still take back.
+ *
+ * `rowsOffTheBar` is the measurement; this is the rule around it. `footer` is
+ * the screen's own footer box and `ready` is the caller's own "this layout is
+ * the one", because until that is true there is nothing worth measuring and an
+ * early answer is the transient this exists to correct.
+ *
+ * `more` is whether growing the page would actually show anything: a list
+ * shorter than its own page has room under it that no page size can fill, and
+ * asking for rows there would grow the held page height and walk the window
+ * into the bar chasing rows that do not exist.
+ *
+ * Bounded, and that is the whole of what keeps it from oscillating. Each
+ * correction re-reads the layout its own change produced, because one
+ * correction is an estimate and the measurement after it is what says whether
+ * the estimate was right. Past the bound the cause is not the rows - a screen
+ * whose own chrome is taller than the display cannot be paged out of that - and
+ * a rule that kept going would walk the page down to one and take the list away
+ * as well. It stops as soon as a measurement asks for nothing, which is the
+ * ordinary ending.
+ */
+function useFittedRows(footer, rowHeight, ready, more, layout = 0) {
+    const [adjustment, setAdjustment] = SP_REACT.useState(0);
+    const spent = SP_REACT.useRef({ grew: false, shrinks: 0 });
+    const drawn = SP_REACT.useRef(layout);
+    SP_REACT.useLayoutEffect(() => {
+        // A block that appears above or below the list after this screen has
+        // settled moves the footer without changing its identity or its size, so
+        // nothing here noticed and a page that fitted went behind Steam's bar.
+        // `layout` is every such block on this screen's vertical path as one
+        // number - a failure row, a confirmation, whatever is added next - and the
+        // caller composes it rather than this taking a flag per block, because a
+        // second parameter per block is a parameter somebody forgets to pass. A
+        // change to it is a new layout, and a new layout gets the budget again
+        // rather than the remains of the one spent on the layout before it.
+        if (drawn.current !== layout) {
+            drawn.current = layout;
+            spent.current = { grew: false, shrinks: 0 };
+        }
+        if (!ready)
+            return;
+        const off = rowsOffTheBar(footer, rowHeight);
+        if (off === 0)
+            return;
+        // Shrinking has the last word, and growing does not get one after it.
+        // A screen drawn behind Steam's bar is a failure; a screen with a row of
+        // room it did not take is a cost. Ordered the other way round - one of
+        // each, in whatever order the layout produced them - a correction that
+        // shrank and then grew ended behind the bar with nothing left to fix it,
+        // which is exactly what a Steam Deck did.
+        if (off > 0 && spent.current.shrinks >= MAX_SHRINKS)
+            return;
+        if (off < 0 && (spent.current.grew || spent.current.shrinks > 0 || !more))
+            return;
+        if (off > 0)
+            spent.current.shrinks += 1;
+        else
+            spent.current.grew = true;
+        setAdjustment((held) => held - off);
+    }, [footer, rowHeight, ready, more, adjustment, layout]);
+    return adjustment;
+}
+/** A row that carries only actions, right-aligned like a row's own controls. */
+function ActionRow({ children, testId, navEntryPreferPosition }) {
+    return (SP_JSX.jsx("div", { style: { padding: "4px 0" }, "data-testid": testId, children: SP_JSX.jsx(ActionGroup, { navEntryPreferPosition: navEntryPreferPosition, children: children }) }));
+}
+/**
+ * Count the controls that are here at all, disabled ones included.
+ *
+ * What separates a group mid-press from a group that has lost a control: the
+ * first still renders both and one of them is disabled, the second renders one.
+ */
+function renderedActionCount(children) {
+    return SP_REACT.Children.toArray(children).reduce((count, child) => {
+        if (!SP_REACT.isValidElement(child))
+            return count;
+        const props = child.props;
+        const actionable = typeof props.onActivate === "function"
+            || typeof props.onChange === "function"
+            || typeof props.onClick === "function";
+        return actionable ? count + 1 : count + renderedActionCount(props.children);
+    }, 0);
+}
+/** Count controls Steam can actually focus, including ones inside layout wrappers. */
+function availableActionCount(children) {
+    return SP_REACT.Children.toArray(children).reduce((count, child) => {
+        if (!SP_REACT.isValidElement(child))
+            return count;
+        const props = child.props;
+        const actionable = typeof props.onActivate === "function"
+            || typeof props.onChange === "function"
+            || typeof props.onClick === "function";
+        if (actionable)
+            return count + (props.disabled === true ? 0 : 1);
+        return count + availableActionCount(props.children);
+    }, 0);
+}
+/**
+ * One piece of a row's text, in the shape this row shows it in.
+ *
+ * A status row wraps rather than merely being left alone, because leaving it
+ * alone only wraps at spaces: a process name or an installation path is one
+ * token with none, and it would run straight past the right edge of a 300 pixel
+ * panel instead of being cut, which is worse than either. `WrapText` carries
+ * the rule that breaks such a token, and it is the same one an opened row uses.
+ */
+function readable(text, clip, open, status, scroll) {
+    if (clip) {
+        if (open)
+            return SP_JSX.jsx(WrapText, { children: text });
+        // Paced: these rows carry whole sentences rather than the two short lines a
+        // pinned cheat does, and one flat duration over a much longer distance is
+        // what made them unreadable.
+        return scroll === true ? SP_JSX.jsx(FocusScrollText, { paced: true, children: text }) : SP_JSX.jsx(OneLine, { children: text });
+    }
+    return status === true ? SP_JSX.jsx(WrapText, { children: text }) : text;
+}
+/** One status line with its own secondary actions on the same row. */
+function PanelRow({ label, description, trailing, mark, leadingMark, actions, help, truncate, scroll, tone, status, testId, fillWithActions }) {
+    const [helpOpen, setHelpOpen] = SP_REACT.useState(false);
+    const [expanded, setExpanded] = SP_REACT.useState(false);
+    const header = tone === "header";
+    const aside = tone === "aside";
+    const own = tone === "own";
+    // Read in place wins over cut to one line: see `status`. Nothing that is
+    // reached and opened is affected, because such a row is not a status row.
+    const clip = truncate === true && status !== true;
+    // Whether this row already has something Steam can put focus on. `trailing`
+    // is static text and never counts, and a row whose only action is disabled
+    // has nothing reachable on it either.
+    //
+    // Latched, because the answer decides which element wraps the row and a row
+    // that changes its mind about that unmounts everything inside it. Almost
+    // every action here disables itself while the press it started is running:
+    // pressing Use in the imported-table list, or Read in the code view, took
+    // the row from "has a control" to "has none", so the button the user had
+    // just pressed was unmounted under the focus that was on it and the ring
+    // went somewhere else, twice per press. A row that has ever had a control is
+    // a row with a control; one whose only action is disabled from the start,
+    // which is what a Debug row is, keeps the wrapper that makes it reachable.
+    const everReachable = SP_REACT.useRef(false);
+    if (Boolean(help) || availableActionCount(actions) > 0)
+        everReachable.current = true;
+    const reachable = everReachable.current;
+    // Either way of opening a row wraps its text. Only the help block takes the
+    // separator with it, because it renders its own underneath; wrapping renders
+    // nothing, so suppressing it there merged the row with the one below.
+    const open = helpOpen || expanded;
+    const body = (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.Field, { label: leadingMark
+                    ? SP_JSX.jsxs("span", { style: leadingMarkRowStyle, children: [leadingMark, readable(label, clip, open, status, scroll)] })
+                    : readable(label, clip, open, status, scroll), description: description ? readable(description, clip, open, status, scroll) : undefined, bottomSeparator: helpOpen || header ? "none" : "standard", childrenLayout: "inline", childrenContainerWidth: fillWithActions ? "max" : "min", verticalAlignment: "center", children: trailing || mark || actions || help ? (SP_JSX.jsxs("div", { style: fillWithActions ? trailingRowFillStyle : trailingRowStyle, children: [trailing ? SP_JSX.jsx("div", { style: trailingTextStyle, children: trailing }) : null, mark ? SP_JSX.jsx("div", { style: markStyle, children: mark }) : null, actions || help ? (
+                        // The smallest gap that still reads as two controls rather than
+                        // one wide one. Every pixel here is a pixel the row's own text
+                        // does not get, and these rows are named by something the reader
+                        // has to finish reading.
+                        SP_JSX.jsxs(ActionGroup, { style: fillWithActions ? rowActionGroupFillStyle : rowActionGroupStyle, children: [actions, help ? (SP_JSX.jsx(SmallButton, { onClick: traceUiAction("panel_row.help", () => setHelpOpen((isOpen) => !isOpen), { row: typeof label === "string" ? label.slice(0, 80) : testId, open: !helpOpen }), children: helpOpen ? "\u00d7" : "?" })) : null] })) : null] })) : undefined }), helpOpen && help ? (SP_JSX.jsx(DFL.Field, { description: help, bottomSeparator: "standard", indentLevel: 1 })) : null] }));
+    return (SP_JSX.jsx("div", { "data-testid": testId, className: [
+            header ? HEADER_ROW_CLASS : aside ? ASIDE_ROW_CLASS : own ? OWN_ROW_CLASS : null,
+            // Only the row the ring is on animates, and only while it is there, so
+            // the class goes on the element that holds both this row's text and the
+            // controls focus actually lands on.
+            scroll && clip ? FOCUS_SCROLL_CLASS : null,
+        ].filter(Boolean).join(" ") || undefined, children: reachable || status ? body : (SP_JSX.jsx(DFL.Focusable, { onActivate: traceUiAction("panel_row.expand", () => setExpanded((isOpen) => !isOpen), { row: typeof label === "string" ? label.slice(0, 80) : testId, open: !expanded }), style: { padding: 0 }, children: body })) }));
+}
+/**
+ * The gap between a row's own controls, and between them and its mark.
+ *
+ * Read from the row rather than fixed here, so a screen that wants its rows
+ * tighter can say so once on its wrapper: see `TIGHT_ROWS_CLASS`.
+ *
+ * The fallback is the eight pixels `ActionGroup` sets on the group it builds,
+ * and it has to be, because this is spread over that: a fallback of zero read
+ * as a deliberate `gap: 0px` and overrode it, which stuck every pair of buttons
+ * on every screen together.
+ */
+const rowActionGroupStyle = { gap: "var(--ce-row-action-gap, 8px)" };
+// And the same group for a row that asked for the width: it grows, and what is
+// in it is what decides how, which on the one row using this is a filter.
+const rowActionGroupFillStyle = { ...rowActionGroupStyle, flex: "1 1 auto", minWidth: 0 };
+/** A leading mark and the label it belongs to, on one line that can still clip. */
+const leadingMarkRowStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
+};
+const trailingRowStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--ce-row-trailing-gap, 8px)",
+};
+// The same row, given the width the label is not using. Only for a row that
+// asked: everywhere else a control column that grew would be taking the room
+// from the name the reader is there to read.
+const trailingRowFillStyle = { ...trailingRowStyle, width: "100%" };
+// Held to its own size against the controls beside it, and never shrunk: a
+// 16 pixel glyph squeezed by a flex row is the mark being unreadable rather
+// than the row being narrower.
+//
+// On a screen that opts into `TIGHT_ROWS_CLASS` the width is fixed whether or
+// not there is a glyph to put in it, so the controls beside it start at the
+// same place on every row: a list where some rows carry a mark and some do not
+// otherwise has its buttons in two columns, which is what Manage looked like,
+// with Use and Delete stepped left on exactly the rows that had something to
+// say.
+//
+// Everywhere else it is the glyph's own width and nothing when there is no
+// glyph, which is what every screen did before there was a choice. Reserving it
+// everywhere took 22 pixels out of the quick access panel's one narrow row for
+// a mark that is often not there, and moved Search and Manage for nothing.
+const markStyle = {
+    flex: "0 0 auto",
+    width: "var(--ce-row-mark-width, auto)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    lineHeight: 0,
+};
+// A block rather than an inline span: a row may put more than a word here, and
+// this download's countdown stacks the spinner under it.
+const trailingTextStyle = {
+    flex: "0 0 auto",
+    fontSize: 12,
+    lineHeight: "16px",
+    opacity: 0.75,
+    whiteSpace: "nowrap",
+};
+/**
+ * A step up for a control that is a screen's own action rather than an aside.
+ *
+ * Search is not a rare secondary press: it is the reason its screen exists, and
+ * at the diagnostics size it reads as one. It stays a row-level control rather
+ * than becoming a full-width button, which is what cost that screen its results.
+ */
+const mediumActionStyle = {
+    ...smallActionStyle,
+    padding: "6px 14px",
+    fontSize: 13,
+    lineHeight: "18px",
+};
+function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small" }) {
+    const style = size === "medium" ? mediumActionStyle : smallActionStyle;
+    // Never hand Steam's controller click event to a workflow callback: several
+    // of them forward their argument, and an event reaching Steam's game list is
+    // exactly the leak the panel tests guard against.
+    return (SP_JSX.jsx(DFL.DialogButton, { style: grow ? { ...style, flex: "1 1 auto" } : style, disabled: disabled, preferredFocus: preferredFocus, onClick: () => onClick(), children: children }));
+}
+
+/**
+ * How a modal's own bottom actions are sized.
+ *
+ * They were a full-width row: `flex: 1 1 0` each, so two buttons took half the
+ * dialog apiece and one took the whole of it. That is Steam's shape for a
+ * dialog whose only content is a question, and these dialogs are screens, where
+ * the same treatment makes the way out as loud as the decision above it and
+ * costs a handheld a band of height it does not have.
+ *
+ * There are two sizes and the difference between them is what the row is for.
+ * A screen that ends in a decision - authorize this exact table, cancel this
+ * download - carries it here, at this size. A screen that ends in a list
+ * carries `PagerFooter` instead, where the way out sits beside the paging
+ * controls and is the same size as they are: those are one row of navigation,
+ * and a row mixing an 18 pixel line with a 16 pixel one reads as two kinds of
+ * control where there is only one.
+ */
+const modalActionStyle = mediumActionStyle;
+/**
+ * The one action on a screen that destroys something, marked as that.
+ *
+ * The same red the rest of the product refuses things in, and the same one a
+ * refusal block is drawn with, so no screen invents a second one. Tinted rather
+ * than filled: a solid red button reads as the screen's primary action, and on
+ * a screen whose other press is the way out that is exactly backwards. What
+ * this says is which of the two presses cannot be taken back.
+ *
+ * The mark is a frame around the button and not the button's own background,
+ * which is the whole point of it being a component rather than a style. Steam
+ * shows a focused button by painting it light and its label dark, through a
+ * class; an inline background and box shadow outrank that class, so the button
+ * kept its red while the label went dark on it - which on this tint is a label
+ * nobody can read, on the one press in the product that cannot be taken back.
+ * Marking the box behind it leaves Steam's focused appearance untouched: the
+ * red is a ring around the button either way, and the label is Steam's to
+ * colour.
+ */
+function DestructiveAction({ children, disabled, onClick }) {
+    return (SP_JSX.jsx("div", { style: destructiveFrameStyle, children: SP_JSX.jsx(DFL.DialogButton, { style: mediumActionStyle, disabled: disabled, onClick: () => onClick(), children: children }) }));
+}
+const destructiveFrameStyle = {
+    display: "inline-flex",
+    padding: 2,
+    borderRadius: 4,
+    background: "hsla(9, 74%, 40%, 0.30)",
+    boxShadow: "inset 0 0 0 1px hsla(9, 74%, 62%, 0.75)",
+};
+/**
+ * A modal's bottom actions, as one horizontal controller group.
+ *
+ * Steam derives which control is beside which from the geometry, but two
+ * siblings in a plain box are two separate steps, so the stick moved down from
+ * one to the other rather than across: on the review screen "Use this table"
+ * and "Cancel" sit side by side and behaved as if they were stacked. The group
+ * `ActionGroup` builds is the same one the panel's own action rows use, and it
+ * carries the rule that matters here too: a lone action is not wrapped, because
+ * a `Focusable` around one button is a focus target whose activation does
+ * nothing, and a group is kept across a press that disables one of its members.
+ */
+function ModalActions({ children, containerRef }) {
+    return (SP_JSX.jsx("div", { ref: containerRef, "data-testid": "modal-actions", style: { padding: "0 16px 8px" }, children: SP_JSX.jsx(ActionGroup, { style: { justifyContent: "flex-end", gap: 8 }, children: children }) }));
+}
+
+/**
+ * What failed, where the user can actually read it.
+ *
+ * Every failed press used to go to a Steam notification, which is a banner that
+ * slides away on its own timer: on a handheld the user is holding, the whole
+ * message is gone before it has been read, and the only place the text still
+ * existed was a panel row that the workflow had usually already replaced. A
+ * dialog stays until it is closed, which is the point.
+ *
+ * The backend's own detail is kept on a second row rather than folded into the
+ * sentence. A Python exception class and its last frame are what a bug report
+ * needs and are noise to everyone else, and this screen is read by both.
+ */
+function ActionFailureModal({ subject, message, details, onClose }) {
+    useUiSurface("ActionFailureModal");
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("action_failure_modal.on_close", onClose), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Something did not work" }), SP_JSX.jsx(PanelRow, { tone: "header", testId: "action-failure", label: subject, description: message }), details ? SP_JSX.jsx(PanelRow, { truncate: true, testId: "action-failure-details", label: "Details", description: details }) : null] }) }), SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("action_failure_modal.close", onClose), children: "Close" }) })] }) }));
+}
+/**
+ * Show one failed action, and record it where a support bundle will find it.
+ *
+ * Returns whether the dialog opened. Steam can refuse to open one, and a
+ * failure that cannot be shown must still reach the caller's own fallback
+ * rather than being swallowed by the reporting of it.
+ */
+function showActionFailure(subject, cause) {
+    // One failure, one dialog. A press routinely crosses two of these boundaries:
+    // the panel's own `runAction` reports and rethrows, and the search screen that
+    // called it reports again, so a failed import or a failed Clear opened two
+    // dialogs the user had to dismiss in turn. Marking the cause is exact where
+    // counting open dialogs would not be: two genuinely different failures at the
+    // same moment still each get one. A primitive thrown value cannot be marked
+    // and is shown, which is the safe direction.
+    if (typeof cause === "object" && cause !== null) {
+        const marked = cause;
+        if (marked.ceDeckyFailureShown === true)
+            return true;
+    }
+    const message = describeError(cause);
+    const traceback = cause?.pythonTraceback;
+    const details = pythonTracebackSummary(traceback);
+    try {
+        // Recorded as one line, not as a second copy of the failure: every caller
+        // has already written the cause and its traceback through `logUiFailure`,
+        // and the ring buffer this shares is bounded at 500 entries.
+        logUi("panel.failure_shown", { subject });
+        let close = () => undefined;
+        const handle = DFL.showModal(SP_JSX.jsx(ActionFailureModal, { subject: subject, message: message, details: details && details !== message ? details : null, onClose: () => close() }));
+        close = () => handle.Close();
+        // Only once the dialog is actually up: a `showModal` Steam refused must
+        // leave the caller's own fallback, and the next reporter of the same cause,
+        // free to say something.
+        if (typeof cause === "object" && cause !== null) {
+            try {
+                Object.defineProperty(cause, "ceDeckyFailureShown", {
+                    value: true, enumerable: false, configurable: true, writable: true,
+                });
+            }
+            catch {
+                // A frozen thrown value cannot be marked; the worst case is the pair of
+                // dialogs this avoids, which is not worth failing the report over.
+            }
+        }
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+
+// One 1280x800 Game Mode viewport fits roughly six compact record rows beside
+// the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
+// screen and clipped the modal title on the target.
+const CONTROL_PAGE_SIZE = 6;
+const PROVIDER_PAGE_SIZE = 6;
+/**
+ * The most tables Manage draws on one page, before the screen is measured.
+ *
+ * It has a filter, a section heading, an explanatory row and a footer beside
+ * its tables, which is different chrome from the search results, and a value
+ * that happens to match today is not a reason to share a name.
+ *
+ * Six was written as the answer for a handheld and it is not: the screen was
+ * the one paged list here that never measured anything, and on a Steam Deck's
+ * 534 pixel page a page of six ran off the bottom. It is the starting point
+ * now, and what the screen actually fits is read from the screen, the way the
+ * results list and the cheat picker already read theirs.
+ *
+ * One budget for the whole screen, not one per list. Two sections paging six
+ * each is twelve rows plus two pagers, two headings, the file row, the filter
+ * and the way out, which is the unreachable screen the paging was added to
+ * prevent, and is why Manage shows one ordered sequence rather than two lists.
+ */
+const MANAGE_PAGE_SIZE = 6;
+/**
+ * How tall one table row is, for fitting a page of them to the screen.
+ *
+ * A constant because the row is a constant: one line of name over one line of
+ * state, both clipped to one line and revealed under the controller ring, with
+ * the row's own controls beside them.
+ */
+const MANAGE_ROW_HEIGHT = 58;
+/**
+ * The fewest tables a page may hold before the measurement stops taking any.
+ *
+ * A list of two is still a list to page through. One is a screen that shows a
+ * table at a time, which is worse than a page that runs a little long.
+ */
+const MIN_MANAGE_ROWS = 2;
+/**
+ * A release, labelled the way the source wrote it.
+ *
+ * Three screens each put a `v` in front of whatever the provider advertised,
+ * and GitHub advertises a tag verbatim: a repository tagged `v2` was shown as
+ * `vv2` on every one of them. Prefixing is only right for a bare number, and it
+ * is wrong for a tag that already carries a letter, a word or its own prefix.
+ *
+ * It formats what is stored rather than what is ingested, because origins
+ * written before any of this are on devices now and will be read for as long as
+ * those tables are kept.
+ */
+function releaseLabel(version) {
+    const text = (version ?? "").trim();
+    if (!text)
+        return null;
+    // Already a version label: `v2`, `V2.1`. Left as the source wrote it, apart
+    // from the case of the marker itself, so two rows do not disagree on it.
+    if (/^[vV]\d+(\.\d+)*$/.test(text))
+        return `v${text.slice(1)}`;
+    // A bare release number, which is the one shape the prefix was written for.
+    // Deliberately the whole string and not merely its first character: a tag
+    // that starts with a digit is not necessarily a version, and `2026-08` is a
+    // date the source chose to release under. Decorating it made this function
+    // do the same kind of thing to a source's own label that it exists to stop.
+    if (/^\d+(\.\d+)*$/.test(text))
+        return `v${text}`;
+    // Anything else is a name rather than a number: `release-42`, `latest`,
+    // `2026-08`, `1.2-rc1`.
+    return text;
+}
+const MAX_REMEMBERED_CONTROLS = 1024;
+const MAX_EFFECTIVE_STARTUP_ACTIONS = 2048;
+// How long after a panel first has state to show it asks the authority once
+// more, for the mutation the panel it replaced had already started.
+//
+// A panel Steam recreates while the quick-access panel is open never sees a
+// visibility change, so reading again the moment its first status arrives is
+// the only catch-up it gets, and that read is issued one round trip after the
+// first one rather than at a moment related to the write. On the target the
+// withdrawal landed 340 ms after the replacement panel had read the profile, so
+// two reads that close together both miss it. This is one further read, once
+// per panel, past the far side of the window that was actually observed. It is
+// not polling: nothing repeats it, and a panel hidden or dismounted before it
+// fires cancels it, because the next time this panel is shown it re-reads
+// anyway.
+const PANEL_CATCH_UP_DELAY_MS = 1200;
+const PROCESS_BASENAME_RE = /^[^\\/:*?"<>|\x00-\x1f]{1,255}\.exe$/iu;
+const UNSAFE_PROCESS_DISPLAY_CONTROL_RE = /[\p{Cc}\p{Cf}]/u;
+const MAX_PROCESS_NAME_BYTES = 1024;
+/**
+ * Ownership of the one Cheat Engine CE Decky may run is launcher-global, but the
+ * panel used to read it three different ways: a same-AppID filter that dropped
+ * malformed owners, a per-game live-operation test that only recognized
+ * recovered/live records, and a snapshot that could belong to a different game
+ * entirely. Each of them could report "clear" while the backend guard treated
+ * the same state as owned, so Home offered install, import, forget and Start
+ * actions that were guaranteed to be rejected. This is the single authority.
+ *
+ * `scopeAppId` is the AppID the capability was actually fetched for: launcher
+ * scope is `null`, and a snapshot fetched for another game contributes only its
+ * launcher-global facts.
+ */
+function launchOwnership(input) {
+    const { capability, scopeAppId, selectedAppId } = input;
+    if (!capability) {
+        const reason = input.readError
+            ? `Cheat Engine launch state could not be read: ${input.readError}`
+            : "Cheat Engine launch state could not be read. Refresh and try again.";
+        return {
+            blockedReason: reason,
+            identityBlockedReason: reason,
+            ownedBySelected: false,
+            ambiguous: true,
+            repairHint: "Advanced → Refresh",
+        };
+    }
+    const name = (appId) => input.nameOf?.(appId) ?? `AppID ${appId}`;
+    const owners = capability.owned_launch_owners ?? [];
+    const unreadable = owners.find((owner) => owner.state === "invalid" || owner.state === "unreadable");
+    if (capability.ownership_state_error) {
+        const reason = `Cheat Engine ownership cannot be read: ${capability.ownership_state_error}`;
+        return {
+            blockedReason: reason,
+            identityBlockedReason: reason,
+            ownedBySelected: false,
+            ambiguous: true,
+            repairHint: "Advanced → Launch ownership",
+        };
+    }
+    if (unreadable) {
+        // A malformed record for the selected game used to fall through both
+        // guards: the live-operation test did not recognize it and the owner
+        // filter dropped it for having the selected AppID.
+        const reason = `The Cheat Engine ownership record for ${name(unreadable.app_id)} is malformed and cannot be trusted.`;
+        return {
+            blockedReason: reason,
+            identityBlockedReason: reason,
+            ownedBySelected: false,
+            ambiguous: true,
+            repairHint: "Advanced → Launch ownership cannot be read",
+        };
+    }
+    const elsewhere = owners.find((owner) => owner.app_id !== selectedAppId);
+    if (elsewhere) {
+        const reason = `Cheat Engine is still running for ${name(elsewhere.app_id)}. Select that game and stop it first.`;
+        return {
+            blockedReason: reason,
+            identityBlockedReason: reason,
+            ownedBySelected: false,
+            ambiguous: false,
+            repairHint: null,
+        };
+    }
+    const sameScope = scopeAppId !== null && scopeAppId === selectedAppId;
+    const ownedBySelected = Boolean(selectedAppId !== null
+        && (owners.some((owner) => owner.app_id === selectedAppId)
+            || (sameScope && capability.recovered?.app_id === selectedAppId)
+            || (sameScope && capability.operations.some((operation) => operation.app_id === selectedAppId && ["starting", "running", "connected"].includes(operation.state)))));
+    return {
+        blockedReason: null,
+        // Only one Cheat Engine may run at a time, and replacing the registered one
+        // means replacing what a running process is executing from.
+        identityBlockedReason: ownedBySelected
+            ? "Cheat Engine is running for this game. Stop it before changing the registered Cheat Engine."
+            : null,
+        ownedBySelected,
+        ambiguous: false,
+        repairHint: null,
+    };
+}
+function isExactRuntimeSession(envelope, appId, tableSha256) {
+    if (!envelope?.connected || !envelope.session_current || !envelope.prepared || !envelope.status)
+        return false;
+    if (envelope.prepared.app_id !== appId || envelope.status.app_id !== appId)
+        return false;
+    if (envelope.prepared.table_sha256 !== tableSha256 || envelope.status.table_sha256 !== tableSha256)
+        return false;
+    if (envelope.prepared.session_id !== envelope.status.session_id)
+        return false;
+    if (envelope.prepared.ce_sha256 !== envelope.status.ce_sha256)
+        return false;
+    if (envelope.prepared.descriptor_sha256 !== envelope.status.descriptor_sha256)
+        return false;
+    return true;
+}
+/**
+ * The live bridge holding this exact table, attached, with the table in it.
+ *
+ * Attached is not loaded. A Cheat Engine that could not open the table attaches
+ * to the game anyway and reports itself perfectly healthy, with an address list
+ * that answers "missing" for every record: nothing to switch on, nothing to
+ * pin, and no live value to read. Every caller here means "this session can be
+ * used now", so a stated load failure is not one of them - Home says so in its
+ * own words, and an activation that finds this false starts Cheat Engine again
+ * rather than quietly doing nothing. A bridge that states nothing is an older
+ * one that never reported this at all, and is unchanged.
+ */
+function isExactAttachedRuntime(envelope, appId, tableSha256) {
+    return isExactRuntimeSession(envelope, appId, tableSha256)
+        && Boolean(envelope?.status?.attached)
+        && (envelope?.status?.opened_process_id ?? 0) > 0
+        && envelope?.status?.table_load_state !== "failed";
+}
+/**
+ * The live bridge target when it is not the one the profile will use next time.
+ *
+ * Advanced -> Retry attach updates the bridge's live target and PID only. The
+ * prepared descriptor and the durable profile keep the old basename, so Home
+ * could return to a healthy connected state while displaying one target and
+ * actually controlling another - and the next session started from the old name
+ * and repeated the attachment failure. Returns `null` when they agree.
+ */
+function divergentLiveTarget(envelope, profileTargetProcess) {
+    const live = envelope?.status?.target_process;
+    if (!live || !profileTargetProcess)
+        return null;
+    if (!envelope?.status?.attached)
+        return null;
+    return live.toLowerCase() === profileTargetProcess.toLowerCase() ? null : live;
+}
+/**
+ * The cap the backend puts on the executables it reports for one game.
+ *
+ * A list that reached it is a list that may have been cut, and a cut list
+ * cannot prove anything is absent from it. The backend's own target-state
+ * answer refuses to say `absent` on one for the same reason, and this is that
+ * rule again on the panel side rather than a second opinion about it.
+ */
+const MAX_OBSERVED_WINDOWS_EXECUTABLES = 32;
+/**
+ * Whether this game is running its own programs and the saved target is not one.
+ *
+ * The check that catches a target chosen before the game had ever run. A table
+ * can be authorized against an executable read out of the game's own folder,
+ * which is the only evidence there is when nothing is running, and this is what
+ * turns the first real start into the answer: the game is up, these are the
+ * Windows programs it started, and the one saved for it is not among them.
+ *
+ * `divergentLiveTarget` is the other half and a different question: it is about
+ * a Cheat Engine that has already attached to something else. This one fires
+ * before anything attaches, which is where the wrong name actually costs a
+ * press that does nothing.
+ *
+ * It takes the observation rather than the capability that holds it, because
+ * the caller is the only thing that knows whether the snapshot it has was
+ * fetched for the game it is describing. Handing it the capability invited the
+ * panel to answer about whichever AppID was read last, which is the mistake
+ * `index.tsx` records beside its own scoped observation.
+ *
+ * Everything that could make the absence unprovable answers `null`, because a
+ * warning a user cannot act on is worse than none and the press it offers
+ * overwrites a working target:
+ *
+ * - the observation saw nothing, which is a prefix that has not got going;
+ * - the raw list reached the backend's own collection cap, so it may have been
+ *   cut and cannot prove anything is missing from it. Counted before the
+ *   validity filter, because the cap is about what was collected: filtering
+ *   first let a full list of 32 lose one malformed name and pass as 31;
+ * - nothing is left once the Wine and Proton machinery is dropped. That is the
+ *   important one. It is what a prefix mid-startup looks like, and it is also
+ *   what a game that has *exited* looks like, because `running` stays true
+ *   while `wineserver`, the Proton chain and Steam's reaper still report the
+ *   AppID. Returning the unfiltered list there offered `explorer.exe` as a
+ *   one-press repair for a game that was not running at all.
+ */
+function absentLiveTarget(game, profileTargetProcess) {
+    const target = (profileTargetProcess ?? "").trim();
+    if (!game?.running || !target)
+        return null;
+    const collected = game.windows_executables ?? [];
+    if (collected.length === 0 || collected.length >= MAX_OBSERVED_WINDOWS_EXECUTABLES)
+        return null;
+    const observed = collected.filter(isValidProcessBasename);
+    if (observed.some((name) => name.toLowerCase() === target.toLowerCase()))
+        return null;
+    // What it did start, which is the repair. The Wine and Proton machinery is
+    // dropped for the same reason the Review screen drops it: none of it ever
+    // owns a game's memory, and a dozen of them turns a fix into a search.
+    const candidates = withoutWineRuntimeProcesses(observed);
+    return candidates.length > 0 ? candidates : null;
+}
+function isValidProcessBasename(value) {
+    return value.normalize("NFC") === value
+        && new TextEncoder().encode(value).length <= MAX_PROCESS_NAME_BYTES
+        && !UNSAFE_PROCESS_DISPLAY_CONTROL_RE.test(value)
+        && PROCESS_BASENAME_RE.test(value);
+}
+function stableProcessDisplayName(current, candidate, key) {
+    if (current === key)
+        return current;
+    if (candidate === key)
+        return candidate;
+    return candidate < current ? candidate : current;
+}
+function runtimeAttachCandidates(processes) {
+    const byName = new Map();
+    for (const [pid, name] of processes) {
+        if (!Number.isSafeInteger(pid) || pid < 1 || !isValidProcessBasename(name))
+            continue;
+        const key = name.toLowerCase();
+        const existing = byName.get(key);
+        if (existing) {
+            existing.name = stableProcessDisplayName(existing.name, name, key);
+            existing.pids.push(pid);
+            continue;
+        }
+        byName.set(key, { name, pids: [pid], runtimeNoise: isWineRuntimeExecutable(name) });
+    }
+    return [...byName.entries()]
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        // The bridge's process snapshot is deliberately broad, so Wine services,
+        // Proton helpers, crash reporters and store launchers all appear here. This
+        // is the recovery route for an attachment that chose wrongly, so offering
+        // them as equally valid targets is what made that recovery unstable. They
+        // stay selectable - one of them can be the right answer for an unusual
+        // game - but they are marked and ranked last so the exact-PID list opens on
+        // something that can actually own game memory.
+        .map(([, candidate]) => ({ ...candidate, pids: [...candidate.pids].sort((a, b) => a - b) }))
+        .sort((left, right) => Number(left.runtimeNoise ?? false) - Number(right.runtimeNoise ?? false));
+}
+function pathStartsWith(path, prefix) {
+    return prefix.length < path.length && prefix.every((segment, index) => path[index] === segment);
+}
+/**
+ * How long one section may name itself in the picker.
+ *
+ * The picker is a full-width list and a name past this wraps, so nine of them
+ * fill the screen. Measured against that list rather than picked: on the
+ * development device an option of 95 characters fills the line exactly, so this
+ * is where the line ends rather than a budget with room to spare in it.
+ */
+const MAX_SECTION_LABEL = 96;
+/**
+ * How many times two options that read alike may be given back a group.
+ *
+ * A bound rather than a loop to exhaustion: every pass is another walk of the
+ * whole list, the paths that reach it are pathological already, and a picker
+ * that renders is worth more than one that is provably unambiguous. Two rows
+ * that still read alike select what their own key says, never the wrong one.
+ */
+const MAX_SECTION_LABEL_PASSES = 8;
+/**
+ * One space where the author left several, and nothing at either end.
+ *
+ * A table author writes a heading, not a label: two spaces before a bracketed
+ * note is the ordinary way one of these reads, and on a proportional list that
+ * is a gap in the middle of a name rather than emphasis. It also costs
+ * characters against the width of the line, which is the thing that decides
+ * whether a name has to be cut at all.
+ */
+function tidySegment(text) {
+    return text.replace(/\s+/g, " ").trim();
+}
+/**
+ * How many leading groups every section here has in common.
+ *
+ * A table author's own structure routinely begins with instructions rather
+ * than with a category: one real table nests every one of its groups under
+ * "[STEP 1] Auto Attach Process - Wait until FULLY loaded into game world" and
+ * "[STEP 2] Enable / Initialize Table (Enable this SECOND)", so every option in
+ * the picker opened with the same hundred and ten characters and the part that
+ * told them apart was at the end of the third line.
+ *
+ * Never the whole of any path, because a section still has to name itself: with
+ * one group the shared prefix is that group, and dropping it would leave the
+ * option blank.
+ */
+function sharedSectionDepth(paths) {
+    // Nothing is repeated when there is only one of them. Read as "what this
+    // section has in common with itself" it is the whole path, and the single
+    // group in one real table lost the group it sits under for no gain at all.
+    if (paths.length < 2)
+        return 0;
+    const limit = Math.min(...paths.map((path) => path.length)) - 1;
+    let depth = 0;
+    while (depth < limit && paths.every((path) => path[depth] === paths[0][depth]))
+        depth += 1;
+    return depth;
+}
+/**
+ * How much of a path is a section that the picker already lists above this one.
+ *
+ * A group whose own parent is an option two rows up was spelling that parent
+ * out again on every child, which is the same repetition `sharedSectionDepth`
+ * removes, one branch down: it is what pushed three of this device's eight
+ * Neon Bazaar options past the width of the list and made them read
+ * `... > <leaf>`. A CT holds a group's descendants directly under it, so the
+ * ancestor is always visible immediately above, and the row below reads as
+ * what it is - the next level of the same outline.
+ *
+ * Deepest first: an option nested three groups down drops all of them, not the
+ * outermost one.
+ */
+function listedAncestorDepth(path, listed) {
+    for (let depth = path.length - 1; depth > 0; depth -= 1) {
+        if (listed.has(JSON.stringify(path.slice(0, depth))))
+            return depth;
+    }
+    return 0;
+}
+/**
+ * What one section is called, once the picker has stopped repeating itself.
+ *
+ * What is left after the groups this section shares with the ones above it, and
+ * then whole groups off the front while it does not fit the line. Nothing marks
+ * that: what is dropped is either on the screen already, as the option this one
+ * sits under, or is a heading with no cheats of its own that the picker never
+ * offers, so a leading `... >` pointed at nothing a reader could go and look
+ * at, and it cost two characters of the name to say so.
+ *
+ * The leaf is the part that tells one section from another, so it is the part
+ * that survives. Length is marked once, at the end, and only when the leaf
+ * alone is longer than the line: a name past that width wraps and pushes every
+ * option below it down the screen, so it is cut where a reader has already
+ * stopped rather than allowed to reflow the window.
+ */
+function sectionLabel(path, shared, max = MAX_SECTION_LABEL) {
+    const rest = path.slice(shared);
+    const segments = (rest.length > 0 ? rest : path.slice(-1)).map(tidySegment).filter(Boolean);
+    // The separator between two levels of one path is the one this product
+    // already uses for that, in the cheat rows on the panel behind this list.
+    // What went is the *leading* mark, which was not a path at all.
+    for (let start = 0; start < segments.length; start += 1) {
+        const candidate = segments.slice(start).join(" \u203a ");
+        if (candidate.length <= max)
+            return candidate;
+    }
+    // Every group in front of it is gone and the section's own name still does
+    // not fit the line. Only now is anything actually lost, and it is lost off
+    // the end, where a reader has already stopped.
+    const leaf = segments[segments.length - 1] ?? "";
+    return `${leaf.slice(0, max - 1)}\u2026`;
+}
+/**
+ * How many leading groups every one of these paths repeats, the whole of the
+ * shortest included.
+ *
+ * The picker's own rule stops one short, because a section still has to name
+ * itself there. A path shown as context beside a name it does not provide has
+ * no such floor: what every row repeats tells the reader nothing, and a row
+ * left with no context at all is exactly as informative as the row above it
+ * that never had any. Paths with nothing in them are ignored rather than
+ * making the answer zero, since a row showing no context repeats nothing.
+ */
+function sharedContextDepth(paths) {
+    const present = paths.filter((path) => path.length > 0);
+    if (present.length < 2)
+        return 0;
+    const limit = Math.min(...present.map((path) => path.length));
+    let depth = 0;
+    while (depth < limit && present.every((path) => path[depth] === present[0][depth]))
+        depth += 1;
+    return depth;
+}
+function controlSections(inspection, safeControls) {
+    const sections = [
+        { key: "all", label: "All supported controls", path: null, pinnedOnly: false },
+        { key: "pinned", label: "Pinned controls", path: null, pinnedOnly: true },
+    ];
+    if (!inspection)
+        return sections;
+    const descendantGroupPaths = new Set();
+    for (const candidate of safeControls) {
+        for (let depth = 1; depth < candidate.path.length; depth += 1) {
+            descendantGroupPaths.add(JSON.stringify(candidate.path.slice(0, depth)));
+        }
+    }
+    const seenGroupPaths = new Set();
+    const groups = [];
+    inspection.controls.forEach((control, index) => {
+        if (control.kind !== "group" && !control.group_header)
+            return;
+        const pathKey = JSON.stringify(control.path);
+        if (!descendantGroupPaths.has(pathKey))
+            return;
+        if (seenGroupPaths.has(pathKey))
+            return;
+        seenGroupPaths.add(pathKey);
+        groups.push({ key: `group:${index}`, path: control.path });
+    });
+    // Named after every group is known, because what a section can leave out
+    // depends on what the others say. Dropping the groups they all share and
+    // keeping the leaf is what turns nine options that each fill three lines
+    // into nine that each name themselves.
+    const shared = sharedSectionDepth(groups.map((group) => group.path));
+    // And what one section has in common with the section it sits inside, when
+    // that one is an option of its own. Measured over the ten tables on the
+    // development device: with this and the tidying above, none of their eighty
+    // options has to be cut at all, where eight did.
+    const listed = new Set(groups.map((group) => JSON.stringify(group.path)));
+    const from = groups.map((group) => Math.max(shared, listedAncestorDepth(group.path, listed)));
+    // Two options that read the same select different things, and a picker is
+    // the one place that cannot be lived with: the row says nothing about which
+    // of them it is. Each is given back one more group of its own path until they
+    // differ, which is the same rule the table inspector uses for two cheat
+    // values that clean down to the same text.
+    for (let attempt = 0; attempt < MAX_SECTION_LABEL_PASSES; attempt += 1) {
+        const seen = new Map();
+        const labels = groups.map((group, index) => sectionLabel(group.path, from[index]));
+        for (const label of labels)
+            seen.set(label, (seen.get(label) ?? 0) + 1);
+        let grew = false;
+        labels.forEach((label, index) => {
+            if ((seen.get(label) ?? 0) > 1 && from[index] > 0) {
+                from[index] -= 1;
+                grew = true;
+            }
+        });
+        if (!grew)
+            break;
+    }
+    groups.forEach((group, index) => {
+        sections.push({
+            key: group.key,
+            label: sectionLabel(group.path, from[index]),
+            path: group.path,
+            pinnedOnly: false,
+        });
+    });
+    return sections;
+}
+function controlsForSection(controls, section, pinned) {
+    if (section.pinnedOnly) {
+        const pinnedIds = new Set(pinned);
+        return controls.filter((control) => control.id !== null && pinnedIds.has(control.id));
+    }
+    if (!section.path)
+        return [...controls];
+    return controls.filter((control) => pathStartsWith(control.path, section.path));
+}
+/**
+ * The selection to persist for this exact table after a verified Apply.
+ *
+ * `pluginManaged` names the records CE Decky decided about itself, which carry
+ * no user intent: a script switched on only because a cheat inside it was
+ * selected is machinery, not a choice. Remembering one meant a later session
+ * restored a running script with every cheat under it off - and it was never
+ * needed, because auto-load already derives the scripts a remembered record
+ * requires from the table's own structure.
+ */
+function rememberedSelection(controls, states, previous, touchedActive, touchedValues, pluginManaged = new Set()) {
+    const controlById = new Map(controls.flatMap((control) => control.id === null ? [] : [[control.id, control]]));
+    const stateById = new Map(states.flatMap((state) => state.record_id === null ? [] : [[state.record_id, state]]));
+    const previousById = new Map(previous.map((item) => [item.record_id, item]));
+    const ids = new Set([...previousById.keys(), ...touchedActive, ...touchedValues]);
+    const remembered = [];
+    for (const recordId of [...ids].sort((a, b) => a - b)) {
+        if (pluginManaged.has(recordId))
+            continue;
+        const control = controlById.get(recordId);
+        const state = stateById.get(recordId);
+        if (!control)
+            continue;
+        const prior = previousById.get(recordId);
+        if (!state) {
+            // The record has no state row because it no longer exists - its enclosing
+            // script was switched off, which is what destroys the records it created.
+            // Dropping the entry here would silently keep a stale "active" preference
+            // for an ID the user just switched off, and the next session would put it
+            // back. An explicitly touched record therefore keeps its deliberate
+            // inactive choice; an untouched one keeps whatever it had.
+            if (touchedActive.has(recordId)) {
+                remembered.push({ record_id: recordId, active: false, value: prior?.value ?? null });
+            }
+            else if (prior) {
+                remembered.push(prior);
+            }
+            continue;
+        }
+        const active = touchedActive.has(recordId) ? state.active : prior?.active ?? null;
+        // Cheat Engine reports `??` for a record it cannot read yet. Remembering
+        // that would replay a meaningless write on the next session and would erase
+        // the value the user actually chose, so keep the previous one instead.
+        const observed = touchedValues.has(recordId)
+            ? (control.kind === "value" || control.kind === "dropdown" ? displayableControlValue(state.value) : null)
+            : null;
+        const value = touchedValues.has(recordId) ? observed ?? prior?.value ?? null : prior?.value ?? null;
+        if (active !== null || value !== null)
+            remembered.push({ record_id: recordId, active, value });
+    }
+    return remembered;
+}
+/**
+ * The startup action Cheat Engine refused to switch **on**, if any.
+ *
+ * Startup runs without anyone watching, so its refusals never reached the one
+ * place that records a table as not working - and a table written for a
+ * different build of the game fails here first, every launch, before the user
+ * ever opens the picker.
+ *
+ * Only a refused enable qualifies, for the same reason it does in the picker: a
+ * cheat that would not switch off is very likely still running in the game, and
+ * calling the table unusable there misdescribes it.
+ *
+ * The direction comes from the result, not from the saved selection. The bridge
+ * emits `activation_rejected` only after reading the record back and finding it
+ * in the state that was *not* asked for, so the reported state is the exact
+ * negation of the attempted one: `active: false` is a refused enable. Reading
+ * it from the profile instead was wrong twice over - session preparation adds
+ * the enclosing scripts a remembered cheat needs, and it also overrides a
+ * parent saved as off to on when an active child requires it, so a saved
+ * `false` is not evidence that off is what startup attempted.
+ */
+function refusedStartupEnable(results) {
+    return results.find((result) => result.generation === 0
+        && !result.ok
+        && result.error_code === "activation_rejected"
+        && result.record_id !== null
+        // Never `!== true`: a record that reported no state at all says nothing
+        // about which direction was attempted.
+        && result.active === false) ?? null;
+}
+function effectiveStartupPreferences(startup, remembered) {
+    const byId = new Map(startup.map((item) => [item.record_id, { ...item }]));
+    for (const item of remembered) {
+        const base = byId.get(item.record_id);
+        byId.set(item.record_id, {
+            record_id: item.record_id,
+            active: item.active !== null ? item.active : base?.active ?? null,
+            value: item.value !== null ? item.value : base?.value ?? null,
+        });
+    }
+    return [...byId.values()].sort((a, b) => a.record_id - b.record_id);
+}
+function rememberedSelectionBudgetError(startup, remembered) {
+    if (remembered.length > MAX_REMEMBERED_CONTROLS) {
+        return `This selection would remember ${remembered.length} controls; the safe per-table limit is ${MAX_REMEMBERED_CONTROLS}. Narrow the remembered selection before applying.`;
+    }
+    const actionCount = effectiveStartupPreferences(startup, remembered)
+        .reduce((count, item) => count + Number(item.active !== null) + Number(item.value !== null), 0);
+    if (actionCount > MAX_EFFECTIVE_STARTUP_ACTIONS) {
+        return `This selection would create ${actionCount} autoload actions; the safe per-session limit is ${MAX_EFFECTIVE_STARTUP_ACTIONS}. Reduce startup/remembered fields before applying.`;
+    }
+    return null;
+}
+function pageCount(total, pageSize) {
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1)
+        throw new Error("page size must be a positive integer");
+    return Math.ceil(Math.max(0, total) / pageSize);
+}
+function clampPage(page, total, pageSize) {
+    const pages = pageCount(total, pageSize);
+    if (!Number.isFinite(page))
+        return 0;
+    return Math.max(0, Math.min(Math.trunc(page), pages - 1));
+}
+function pageItems(items, page, pageSize) {
+    const safePage = clampPage(page, items.length, pageSize);
+    const start = safePage * pageSize;
+    return items.slice(start, start + pageSize);
+}
+function stepPage(page, total, pageSize, direction) {
+    const current = clampPage(page, total, pageSize);
+    return clampPage(current + direction, total, pageSize);
+}
+/**
+ * Whether a script this control cannot exist without cannot be addressed.
+ *
+ * A record inside a script does not exist until that script has run, so
+ * switching the record on means switching its enclosing scripts on first. When
+ * two MemoryRecords in the exact table share an enclosing script's ID, no
+ * command names one of them - and the child was still offered, because
+ * ambiguity was only ever checked on the record itself. Switching it on then
+ * waits for something Cheat Engine never creates and reports the child as the
+ * failure. A dependency that cannot be addressed makes the descendant
+ * unactionable, exactly as the backend's startup plan now refuses it.
+ */
+function hasUnaddressableEnclosingScript(control, controls, ambiguous) {
+    for (let depth = 1; depth < control.path.length; depth += 1) {
+        const prefix = control.path.slice(0, depth);
+        const ancestor = controls.find((candidate) => candidate.id !== null
+            && candidate.id !== control.id
+            && candidate.kind !== "group"
+            && !candidate.group_header
+            && candidate.path.length === prefix.length
+            && candidate.path.every((segment, index) => segment === prefix[index]));
+        if (ancestor && ancestor.id !== null && ambiguous.has(ancestor.id))
+            return true;
+    }
+    return false;
+}
+function safeActionableControls(inspection) {
+    if (!inspection)
+        return [];
+    const ambiguous = new Set(inspection.ambiguous_record_ids);
+    return inspection.controls.filter((control) => control.id !== null && control.kind !== "group" && !control.group_header && !ambiguous.has(control.id)
+        && !hasUnaddressableEnclosingScript(control, inspection.controls, ambiguous));
+}
+function filterControls(controls, query) {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized)
+        return [...controls];
+    return controls.filter((control) => `${control.description} ${control.path.join(" ")} ${control.id ?? ""}`
+        .toLowerCase()
+        .includes(normalized));
+}
+/**
+ * Above this many declared values, a dropdown gets a search box of its own.
+ *
+ * The parser's ceiling on a value list was raised to 16384 for a real table
+ * whose pickers declare 6508 items each, and that made those tables parse
+ * without giving anyone a way to use them: the values went straight into one
+ * Decky dropdown, which a controller walks one item at a time and offers no
+ * search, no paging and no jump. A list this size is still walkable; past it
+ * the list is narrowed by typing first.
+ */
+const DROPDOWN_SEARCH_THRESHOLD = 24;
+/** How many values are ever handed to one dropdown at once. */
+const DROPDOWN_VALUE_LIMIT = 24;
+/**
+ * The values of one large dropdown that are worth offering right now.
+ *
+ * Matching is on the label and on the value itself, because a table's own item
+ * list is written as `1:Fire` and a user looking for item 4211 has the number
+ * rather than the name. The chosen value is always among the options even when
+ * it does not match, so the dropdown can show what this record is set to; the
+ * selection therefore stays one of the table's own declared values, which is
+ * the only thing that may be written back to a read-only picker.
+ */
+function matchingDropdownValues(values, query, selected, limit = DROPDOWN_VALUE_LIMIT) {
+    const normalized = query.trim().toLowerCase();
+    const matches = [];
+    let matched = 0;
+    let chosen = null;
+    for (const [value, label] of values) {
+        if (selected !== null && value === selected)
+            chosen = [value, label];
+        if (normalized && !`${label} ${value}`.toLowerCase().includes(normalized))
+            continue;
+        matched += 1;
+        if (matches.length < limit)
+            matches.push([value, label]);
+    }
+    if (!chosen || matches.some(([value]) => value === chosen[0])) {
+        return { options: matches, shown: matches.length, matched, total: values.length, selectionKept: false };
+    }
+    // The record's own value goes at the top and takes a slot rather than an
+    // extra one, so the number of options stays bounded. What it costs is one
+    // matching value, and that is counted separately from the total number
+    // rendered, because a screen that says it is showing all the matches while
+    // one of them was dropped for the selection is telling the user something
+    // that is not true about a list they cannot see the end of.
+    if (matches.length >= limit)
+        matches.pop();
+    return {
+        options: [chosen, ...matches],
+        shown: matches.length,
+        matched,
+        total: values.length,
+        selectionKept: true,
+    };
+}
+/** What a narrowed value list is showing, and out of how much. */
+function describeValueChoices(choices) {
+    const kept = choices.selectionKept
+        ? " The value this record is set to is kept at the top."
+        : "";
+    if (choices.matched === 0) {
+        return `Nothing matches. This record declares ${choices.total} values.${kept}`;
+    }
+    const shown = choices.shown < choices.matched
+        ? `Showing ${choices.shown} of ${choices.matched} matching`
+        : `Showing all ${choices.matched} matching`;
+    return `${shown} \u00b7 ${choices.total} declared. Type above to narrow the list.${kept}`;
+}
+function latestRuntimeResult(results, recordId) {
+    for (let index = results.length - 1; index >= 0; index -= 1) {
+        if (results[index].record_id === recordId)
+            return results[index];
+    }
+    return null;
+}
+// Third-party stores are often present in the Steam library as their own entry,
+// so a game started through one leaves two library apps reporting as running and
+// the automatic selection has to give up. These are the launcher executables
+// themselves - never a game - so dropping them can leave exactly one real
+// candidate. Matching is only on the executable basename: a game can live
+// below a store-owned directory such as `GOG Galaxy/Games`, so a parent path is
+// not identity evidence and must never make CE Decky drop that game.
+const KNOWN_LAUNCHER_EXECUTABLES = [
+    "epicgameslauncher.exe",
+    "galaxyclient.exe",
+    "gog galaxy.exe",
+    "origin.exe",
+    "eadesktop.exe",
+    "ealauncher.exe",
+    "battle.net.exe",
+    "battle.net launcher.exe",
+    "upc.exe",
+    "ubisoftconnect.exe",
+    "ubisoftgamelauncher.exe",
+    "uplay.exe",
+    "rockstarlauncher.exe",
+    "socialclubhelper.exe",
+    "playgameslauncher.exe",
+    "amazon games.exe",
+    "itch.exe",
+    "playnite.desktopapp.exe",
+    "playnite.fullscreenapp.exe",
+    "steam.exe",
+    "bethesdanetlauncher.exe",
+    "glyphclient.exe",
+    "riotclientservices.exe",
+];
+function normalizedPath(value) {
+    // Steam stores a shortcut target with its surrounding quotes, so an unquoted
+    // basename comparison would silently never match.
+    return value.trim().replace(/^"+|"+$/g, "").replace(/\\/g, "/").toLowerCase();
+}
+/** True when this executable is a store/launcher client rather than a game. */
+function isKnownLauncherExecutable(executable) {
+    if (!executable)
+        return false;
+    const path = normalizedPath(executable);
+    const basename = path.slice(path.lastIndexOf("/") + 1);
+    return KNOWN_LAUNCHER_EXECUTABLES.includes(basename);
+}
+// A Proton prefix runs a full Windows environment, so the live process table for
+// one game also contains Wine's own services, Proton's helpers and the game's
+// crash reporter. None of them ever owns the game's memory, and offering a dozen
+// of them turns a controller choice into a guessing game.
+//
+// The backend already drops everything running out of the prefix's own Windows
+// directory, which covers Wine's built-in programs whatever a future Proton
+// names them. This list covers only what that rule cannot see: Proton helpers
+// that live in the tool directory rather than in the prefix, the crash and
+// telemetry helpers a game ships beside its own binary, and the same built-in
+// names again as a second net. Names taken from the executables in the
+// installed GE-Proton11-2 tree, not from recollection.
+//
+// Matching is only on the exact executable basename, never a path: a real game
+// binary can live anywhere. Generic built-in names such as `find.exe` or
+// `net.exe` are deliberately absent, because a game could plausibly ship one and
+// the directory rule already covers them.
+const WINE_RUNTIME_EXECUTABLES = [
+    // Wine services and identity-bearing programs.
+    "explorer.exe",
+    "services.exe",
+    "winedevice.exe",
+    "plugplay.exe",
+    "rpcss.exe",
+    "svchost.exe",
+    "spoolsv.exe",
+    "dllhost.exe",
+    "conhost.exe",
+    "ntoskrnl.exe",
+    "winmgmt.exe",
+    "wuauserv.exe",
+    "wineboot.exe",
+    "winebrowser.exe",
+    "winecfg.exe",
+    "wineconsole.exe",
+    "winedbg.exe",
+    "winefile.exe",
+    "winemenubuilder.exe",
+    "winemine.exe",
+    "winemsibuilder.exe",
+    "winepath.exe",
+    "winevdm.exe",
+    "winver.exe",
+    "winhelp.exe",
+    "winhlp32.exe",
+    // Windows utilities Wine provides; none is ever a game binary.
+    "rundll32.exe",
+    "regsvr32.exe",
+    "regedit.exe",
+    "taskmgr.exe",
+    "control.exe",
+    "uninstaller.exe",
+    "msiexec.exe",
+    "tabtip.exe",
+    "presentationfontcache.exe",
+    "iexplore.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "mshta.exe",
+    "powershell.exe",
+    "notepad.exe",
+    "wordpad.exe",
+    "wmplayer.exe",
+    "progman.exe",
+    "oleview.exe",
+    "dxdiag.exe",
+    "msinfo32.exe",
+    // Proton helpers that run from the tool directory, outside the prefix.
+    "xalia.exe",
+    "bridge.exe",
+    "umu.exe",
+    "belauncher.exe",
+    "steamerrorreporter.exe",
+    "steamwebhelper.exe",
+    "steamservice.exe",
+    "gameoverlayui.exe",
+    // Crash and telemetry helpers games ship beside their own binary.
+    "crashpad_handler.exe",
+    "crashreportclient.exe",
+    "unrealcefsubprocess.exe",
+    "epicwebhelper.exe",
+];
+/**
+ * Executables that positively identify a known anti-cheat as part of this game.
+ *
+ * Exact basenames only, taken from the launcher this project has actually
+ * observed. Nothing here is inferred from a game title, and nothing acts on the
+ * anti-cheat itself: this list exists so a security-relevant observation the UI
+ * already makes reaches the policy layer instead of being consumed as
+ * target-selection noise and discarded.
+ */
+const KNOWN_ANTI_CHEAT_EXECUTABLES = [
+    "belauncher.exe",
+];
+/** The known anti-cheat basename observed in this process set, if any. */
+function observedAntiCheat(processNames) {
+    for (const name of processNames) {
+        const path = normalizedPath(name);
+        const basename = path.slice(path.lastIndexOf("/") + 1);
+        if (KNOWN_ANTI_CHEAT_EXECUTABLES.includes(basename))
+            return basename;
+    }
+    return null;
+}
+/**
+ * The refusal text for a game observed running a known anti-cheat.
+ *
+ * The documented boundary is offline/single-player use with warning or refusal
+ * rather than bypass automation, and this is that refusal. It never disables,
+ * hides from, or interferes with the anti-cheat in any way.
+ */
+function antiCheatBlockedReason(processNames) {
+    const observed = observedAntiCheat(processNames);
+    if (!observed)
+        return null;
+    return `This game is running ${observed}, a known anti-cheat. CE Decky is for offline and single-player use and will not attach Cheat Engine to it.`;
+}
+/** True when this executable belongs to the Wine/Proton runtime rather than the game. */
+function isWineRuntimeExecutable(executable) {
+    if (!executable)
+        return false;
+    const path = normalizedPath(executable);
+    const basename = path.slice(path.lastIndexOf("/") + 1);
+    return WINE_RUNTIME_EXECUTABLES.includes(basename) || isKnownLauncherExecutable(basename);
+}
+/**
+ * Drop Wine/Proton runtime processes from an observed target-process list.
+ *
+ * Filtering to nothing is a real answer, not a failure to hand back. Both lists
+ * this classifies against are exact basenames, so an empty result means every
+ * process observed so far is one that never owns a game's memory - normally
+ * because Review was opened during startup, before the game's own binary
+ * appeared. Returning the unfiltered list there let an ordinary race default
+ * the target to a helper like `xalia.exe`, persist it to the profile on
+ * `Use this table`, and then attach the table to that helper in later sessions
+ * until the user repaired it by hand. The caller shows "not observed yet"
+ * instead, and manual entry stays available as an explicit override.
+ */
+function withoutWineRuntimeProcesses(candidates) {
+    return candidates.filter((candidate) => !isWineRuntimeExecutable(candidate));
+}
+/**
+ * Programs that ship inside a game's folder and never own the game's memory.
+ *
+ * Only for executables read off the disk. The live-process lists above answer
+ * the same question for what is actually running, and none of these ever
+ * appears there in a healthy session, which is why they were never needed: a
+ * crash handler runs after the game has stopped and a redistributable runs once
+ * at install. Walking the folder is what puts them in front of a reader, and
+ * `UnityCrashHandler64.exe` sits in the root of a Unity title beside the game's
+ * own binary, which is the position that otherwise decides a default.
+ *
+ * Exact basenames, like every other list here, and deliberately short. A name
+ * this does not know costs one more row in a picker the user is reading; a name
+ * wrongly on it would hide a real game binary, which is the expensive mistake.
+ */
+const INSTALLED_HELPER_EXECUTABLES = [
+    "unitycrashhandler32.exe",
+    "unitycrashhandler64.exe",
+    "ueprereqsetup_x64.exe",
+    "ueprereqsetup_x86.exe",
+    "dxsetup.exe",
+    "vcredist_x64.exe",
+    "vcredist_x86.exe",
+    "vc_redist.x64.exe",
+    "vc_redist.x86.exe",
+    "oalinst.exe",
+    "dotnetfx.exe",
+    "directx_setup.exe",
+    "touchup.exe",
+];
+/**
+ * The library entries this device can actually do anything with.
+ *
+ * Steam's library belongs to an account, so a second device lists every title
+ * the first one has: a Steam Deck beside a Steam Machine offered 39 non-Steam
+ * shortcuts while its own store held 6, and each of the other 33 is a game
+ * whose files are on the other machine. Nine of its 22 installed Steam apps
+ * were Proton builds and Steam Linux Runtimes, which are installed and are not
+ * games. All of that is a thumbstick's worth of scrolling to reach the title
+ * somebody actually came for.
+ *
+ * What is kept is what the device's own files say it has: an `appmanifest` that
+ * says fully installed, or an entry in this device's own `shortcuts.vdf`. What
+ * Steam calls a tool rather than a game is dropped even though it is installed.
+ *
+ * A library the backend could not read keeps everything. Hiding a game the user
+ * has is the worse mistake of the two, and an unreadable answer is not evidence
+ * that a game is missing.
+ */
+function gamesOnThisDevice(games, library) {
+    if (!library)
+        return games;
+    const installed = new Set(library.steam_app_ids ?? []);
+    const unstartable = new Set(library.unstartable_app_ids ?? []);
+    const shortcuts = new Set(library.shortcut_app_ids ?? []);
+    return games.filter((game) => {
+        if (game.isShortcut) {
+            // The shortcut store is the only thing that knows a shortcut is this
+            // device's, so an unreadable one means every shortcut stays.
+            return library.shortcuts_reason !== null || shortcuts.has(game.appId);
+        }
+        if (library.reason !== null)
+            return true;
+        return installed.has(game.appId) && !unstartable.has(game.appId);
+    });
+}
+/**
+ * Whether an executable found in a game's folder is one worth offering at all.
+ *
+ * The Wine and launcher rule first, because a game folder can hold a store
+ * client, and then the installers and crash handlers above.
+ */
+function isInstalledGameExecutable(name) {
+    return isValidProcessBasename(name)
+        && !isWineRuntimeExecutable(name)
+        && !INSTALLED_HELPER_EXECUTABLES.includes(name.toLowerCase());
+}
+/**
+ * The game's own executables, worth offering, best evidence first.
+ *
+ * Where Steam's own record answered, the order is Steam's: it lists what it
+ * starts first and its options after, and `game/bin/win64/cs2.exe` being three
+ * directories down says nothing against it.
+ *
+ * Where a walk of the folder is all there is, depth is the whole of the ranking
+ * and it is not a guess about names: the executable that owns a game's memory
+ * is at the root far more often than not, and Half-Life 2 is the case that
+ * shows what the alternative costs. Its root holds exactly `hl2.exe` while
+ * `bin/` holds thirty-odd SDK compilers, all of which read like plausible
+ * programs and none of which is the game.
+ */
+function installedGameExecutables(listing) {
+    // What Steam declares is kept whatever it is called. The list below exists to
+    // clean up a walk of a folder, where a crash handler and a redistributable sit
+    // beside the game and read exactly like it, and none of those is ever a launch
+    // entry. Steam does start some games through a store client of its own, and
+    // dropping that left a screen with Steam's answer taken and no walk behind it:
+    // no candidates at all, for a game whose program is perfectly well known.
+    if (listing?.source === "steam") {
+        return (listing.executables ?? []).filter((item) => isValidProcessBasename(item.name));
+    }
+    const found = (listing?.executables ?? []).filter((item) => isInstalledGameExecutable(item.name));
+    return [...found].sort((left, right) => left.depth - right.depth
+        || left.directory.localeCompare(right.directory)
+        || left.name.localeCompare(right.name));
+}
+/**
+ * The executable Steam itself starts for this game, where Steam says so.
+ *
+ * This is the strongest thing that can be known about a game that has never
+ * run, and it is not read off a disk: the client cannot start a game without
+ * knowing what to start, and this is that same record, for the branch this
+ * device actually has installed. Half-Life 2 is why it matters. Its folder
+ * holds twenty-eight Windows executables and Steam's record holds one line,
+ * `hl2.exe`.
+ *
+ * It is still not a claim that this executable owns the game's memory: a game
+ * that starts through a launcher of its own declares the launcher, which is
+ * exactly what Steam starts. So it is a default the reader confirms with the
+ * press that uses the table, and the first real launch checks it - the panel
+ * says so when the game is running and the saved process is not among what it
+ * started.
+ */
+function declaredLaunchExecutable(listing) {
+    if (listing?.source !== "steam")
+        return null;
+    return installedGameExecutables(listing).find((item) => item.declared)?.name ?? null;
+}
+/**
+ * The one executable in a game's own root, where the root holds exactly one.
+ *
+ * This is the only thing read off a disk that may preselect anything, and the
+ * condition is deliberately the strictest one available: one candidate at the
+ * top level of the game's own folder, with nothing else there to be confused
+ * with. Two of them is not a weaker version of this case, it is a question, and
+ * the reader answers it.
+ *
+ * It is still not a claim that this executable owns the game's memory. Nothing
+ * off a disk can be: the game has never run. What it is, is a choice the reader
+ * confirms with the press that uses the table, on a screen that says where the
+ * name came from, and which the first real launch checks - the panel says so
+ * when the game is running and the saved process is not among what it started.
+ */
+function soleInstalledExecutable(listing) {
+    const root = installedGameExecutables(listing).filter((item) => item.depth === 0);
+    return root.length === 1 ? root[0].name : null;
+}
+/**
+ * Choose the target process the Review modal starts on.
+ *
+ * The user should not have to know which of a game's Windows executables owns
+ * its memory, so a default is always offered when anything at all is known;
+ * only a table that names nothing for a game that is not running leaves the
+ * manual entry selected.
+ *
+ * Ranked by how exact the evidence is, never by how a name reads. Matching a
+ * game's display name against its executables was considered and rejected on
+ * target evidence: for `Lumen Hollow: Voyage 12` it scores the launcher
+ * `Voyage12_Steam.exe` highest while the executable that actually owns the
+ * game's memory, `LumenHollow-Win64-Shipping.exe`, shares nothing with the title.
+ * The launch executable is used as the inverse signal instead, which is exact.
+ */
+function defaultTargetProcess(input) {
+    const tableHints = (input.tableHints ?? []).filter(isValidProcessBasename);
+    const observed = (input.observed ?? []).filter(isValidProcessBasename);
+    const launcher = input.launchExecutable ? processBasename(input.launchExecutable) : "";
+    const notTheLauncher = (candidates) => candidates.find((candidate) => candidate.toLowerCase() !== launcher) ?? candidates[0] ?? "";
+    // A process the user already confirmed for this game normally stays
+    // confirmed. The one exception is stronger fresh evidence that the saved
+    // choice is the exact executable Steam asked Proton to launch and another
+    // game process is running beside it. This repairs an older automatically
+    // accepted launcher default without guessing from names. A table that
+    // explicitly names that launcher can still select it in the hinted branch.
+    const confirmed = input.confirmed && isValidProcessBasename(input.confirmed) ? input.confirmed : "";
+    const confirmedIsLauncher = Boolean(confirmed && launcher && confirmed.toLowerCase() === launcher);
+    const runningAlternative = observed.some((candidate) => candidate.toLowerCase() !== launcher);
+    if (confirmed && (!confirmedIsLauncher || !runningAlternative))
+        return confirmed;
+    if (observed.length > 0) {
+        // A name the table carries that is also running right now. Cheat Engine
+        // matches process names case-insensitively, so use the observed spelling.
+        const hinted = new Set(tableHints.map((hint) => hint.toLowerCase()));
+        const running = observed.filter((candidate) => hinted.has(candidate.toLowerCase()));
+        if (running.length > 0)
+            return notTheLauncher(running);
+        // The table names something, but nothing running answers to it. Two tables
+        // for the same reviewed game name `LumenHollowEos-Win64-Shipping.exe`, which is
+        // the Epic build; what the user is running is the truth, not the hint.
+        return notTheLauncher(observed);
+    }
+    // Nothing is running, so the table's own hint is the best evidence there is.
+    if (tableHints.length > 0)
+        return notTheLauncher(tableHints);
+    // And where the table names nothing either, what Steam starts for this game,
+    // which is the exact program the client would run rather than something read
+    // off a disk. Failing that, the game's own files under the one condition that
+    // leaves no question to answer: exactly one executable in the root of the
+    // game's folder.
+    return declaredLaunchExecutable(input.installed) ?? soleInstalledExecutable(input.installed) ?? "";
+}
+function processBasename(value) {
+    const path = normalizedPath(value);
+    return path.slice(path.lastIndexOf("/") + 1);
+}
+/**
+ * The executable name inside a launch target, with the spelling it was written
+ * with.
+ *
+ * `processBasename()` exists for evidence matching and lower-cases for it.
+ * Steam records a shortcut's target and Proton reports a launch target as the
+ * user or the packager spelled it, and that spelling is what a person
+ * recognises in a list and what gets stored as the target process.
+ */
+function launchExecutableBasename(value) {
+    if (!value)
+        return "";
+    const text = value.trim().replace(/^"+|"+$/g, "").replace(/\\/g, "/");
+    return text.slice(text.lastIndexOf("/") + 1);
+}
+/**
+ * Short display names for the providers CE Decky knows by id.
+ *
+ * A provider id is a lowercase token and reads like one, and a screen that
+ * names a provider must never name the wrong one: the download screen was
+ * titled after Playground whatever provider the artifact came from, which on
+ * this device was FearLess for the whole session.
+ */
+const SHORT_PROVIDER_NAMES = {
+    fearless: "FearLess",
+    playground: "Playground",
+    github: "GitHub",
+    thecheatscript: "The Cheat Script",
+    vgtimes: "VGTimes",
+    // Searched by no version of this plugin any more. The name stays because a
+    // table imported while it was still a source keeps its origin, and a row that
+    // names where it came from should keep saying it in words.
+    opencheattables: "OpenCT",
+};
+/** The provider's short name, or the best fallback the caller has. */
+function providerShortName(provider, fallback) {
+    return SHORT_PROVIDER_NAMES[provider] ?? (fallback || provider);
+}
+/**
+ * What one blocked record is identified and cleared by.
+ *
+ * The backend sends it, and this derives it anyway: the panel and the backend
+ * are briefly out of step across a plugin reload, and a record from before this
+ * field existed still has to be clearable rather than throwing on a row.
+ */
+function blockedKey(entry) {
+    return entry.key ?? entry.sha256 ?? entry.origins?.[0] ?? "";
+}
+const BLOCKED_CAUSES = ["refused", "unusable", "encrypted", "gone", "unknown"];
+/**
+ * What one entry in the not-working list is called, game first.
+ *
+ * A file name is not an answer to "what is this table for". The list spans
+ * every game and is read months later, and it was showing rows like
+ * `winmm-x64.zip` and a raw `provider:artifact_id` key, neither of which named
+ * a game or a table: the user could not tell whether the rows they had just
+ * marked in one game's search were even in it. The game leads because that is
+ * what the list is scanned by.
+ *
+ * The fallbacks are what identity the entry actually has: the downloaded file
+ * name, else the digest that is its identity, else the provider row that is.
+ */
+function blockedRowLabel(entry) {
+    const name = entry.filename
+        ?? (entry.sha256 ? entry.sha256.slice(0, 12) : entry.origins?.[0] ?? blockedKey(entry));
+    return entry.game_name ? `${entry.game_name} · ${name}` : name;
+}
+/**
+ * The longest a shortened recorded reason may be before it is cut.
+ *
+ * Long enough for the whole of the sentence the runtime writes for the failure
+ * this record is almost always about, and short enough that a status line puts
+ * the reason and the release in front of the reader together.
+ */
+const SHORT_REASON_MAX = 120;
+/**
+ * The head of a recorded reason, for a row that has to lead with something else.
+ *
+ * Two screens show these records and both of them are lists: a row is scanned
+ * rather than read, and the durable sentence is written to be read once, in
+ * full, by whoever is answering a bug report. The one the runtime writes for a
+ * cheat that came straight back off is 230 characters, of which the first
+ * clause says what happened and the rest explains why it usually happens - so a
+ * row led with a paragraph, and the date, the release and the game it belongs
+ * to were past the end of the line.
+ *
+ * This takes the first sentence and nothing else. The record itself is not
+ * touched: it is evidence, the archive carries it whole, and the row still
+ * reveals the rest of its own line under focus.
+ */
+function shortBlockedReason(reason) {
+    const text = (reason ?? "").trim();
+    if (!text)
+        return null;
+    // A sentence end is a full stop followed by a space, never a full stop on its
+    // own: a version, a file name and a digest all carry one with no space after
+    // it, and cutting there would end a row in the middle of `1.05.01`.
+    const end = text.search(/\.\s/);
+    const first = end >= 0 ? text.slice(0, end + 1) : text;
+    if (first.length <= SHORT_REASON_MAX)
+        return first;
+    // Still too long for a row, so it is cut at a word rather than mid-token, and
+    // marked as cut. The whole of it is one press or one reveal away.
+    const cut = first.slice(0, SHORT_REASON_MAX);
+    const space = cut.lastIndexOf(" ");
+    return `${(space > SHORT_REASON_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
+}
+/**
+ * The release a source stated for a stored table's newest download.
+ *
+ * One implementation of a rule three screens and the backend all needed, and
+ * which the backend's own copy had already drifted from: the newest origin and
+ * no other, because a version belonging to an earlier download is a different
+ * table's release. A table opened from a local file has no origin and therefore
+ * no release, which is the honest answer rather than a gap to fill from the
+ * file itself - the `.CT` carries only `CheatEngineTableVersion`, which is the
+ * version of Cheat Engine's table format.
+ */
+function advertisedRelease(table) {
+    const origins = table?.origins ?? [];
+    const newest = origins.length ? origins[origins.length - 1] : null;
+    return releaseLabel(newest?.version);
+}
+/**
+ * The release a not-working record was offered under, from wherever it is known.
+ *
+ * The record's own field first, because it is what was true when the mark was
+ * written and it is the only one that survives the table being deleted. A copy
+ * still on this device is the fallback, for a record written before the field
+ * existed, and it is looked up by digest so it can only ever answer about these
+ * exact bytes.
+ */
+function blockedRelease(entry, tables = []) {
+    const recorded = releaseLabel(entry.table_version);
+    if (recorded)
+        return recorded;
+    if (!entry.sha256)
+        return null;
+    return advertisedRelease(tables.find((table) => table.sha256 === entry.sha256));
+}
+/**
+ * What one not-working row says under its name, in the order it is scanned in.
+ *
+ * When it happened, which release it was, which build of the game it was tried
+ * against, and only then what happened. It used to open with the reason, which
+ * for the failure this list is almost always about is a 230 character sentence
+ * whose second half explains why that failure is usual: the row therefore led
+ * with a paragraph and the three facts that place the record were past the end
+ * of the line. The reason is still here and still reveals itself under focus,
+ * shortened to its first sentence, and the whole of it is in the support
+ * archive where a bug report reads it.
+ */
+function blockedRowDetail(entry, tables = []) {
+    return [
+        blockedRecordedOn(entry.recorded_at),
+        blockedRelease(entry, tables),
+        // The build it was tried against is what dates the evidence: a game update
+        // is the ordinary reason a table stops working, and the same one is the
+        // ordinary reason it starts working again.
+        entry.game_version ? `game ${entry.game_version}` : null,
+        shortBlockedReason(entry.reason),
+    ].filter(Boolean).join(" \u00b7 ");
+}
+/** The day a record was made, which is all a user needs to place it. */
+function blockedRecordedOn(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0)
+        return null;
+    const when = new Date(seconds * 1000);
+    return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
+}
+function blockedTableLookups(tables) {
+    const byDigest = {};
+    const byArtifact = {};
+    for (const entry of tables) {
+        // A record written before the cause was tracked, and one naming a cause
+        // this panel does not know, both say only that the table does not work,
+        // which is what the panel then says about it. The backend fails soft on the
+        // same question for the same reason: the mark is a label on a record that
+        // is refusing an import either way.
+        const cause = entry.cause !== undefined && BLOCKED_CAUSES.includes(entry.cause)
+            ? entry.cause
+            : "unknown";
+        // A record whose file the source no longer has never produced bytes, so it
+        // has no digest to look up by: the provider row is the whole of it. What a
+        // row carries here is what clears it, which for those entries is the key.
+        const recordedAt = Number.isFinite(entry.recorded_at) ? entry.recorded_at : 0;
+        if (entry.sha256)
+            byDigest[entry.sha256] = { sha256: entry.sha256, reason: entry.reason, cause, recordedAt };
+        for (const origin of entry.origins ?? []) {
+            (byArtifact[origin] ?? (byArtifact[origin] = [])).push({
+                sha256: entry.sha256 ?? blockedKey(entry), reason: entry.reason, cause, recordedAt,
+            });
+        }
+    }
+    // Newest first, decided here rather than inherited from the order the record
+    // arrived in: which of a row's marks drives its badge, its reason and its
+    // download is a question about when they were written, and a reader that
+    // depends on the caller having sorted them answers it by accident.
+    for (const marks of Object.values(byArtifact))
+        marks.sort((left, right) => right.recordedAt - left.recordedAt);
+    return { byDigest, byArtifact };
+}
+/**
+ * The records that stop a download of a row that has not said what it serves.
+ *
+ * Not every not-working record does. `refused` is a statement about exact
+ * bytes: Cheat Engine ran them and the record came straight back off, which is
+ * what a table written for an older build of the game does, and which stops
+ * being true when the game updates or the author republishes. The provider row
+ * those bytes arrived through is how search recognises the post again; it is
+ * not a claim that the post still holds them. `unknown` is the same statement
+ * from a record that could not say more, and is read the same way.
+ *
+ * The other three describe what came through the row. The file is gone from it,
+ * or what it served was not a table at all, or was an archive nothing here can
+ * open. On a source that publishes no digest there is nothing to tell those
+ * apart from what the row holds today, so they stop the download and
+ * **Retry** is what says to try anyway.
+ */
+const SOURCE_LEVEL_BLOCKS = ["gone", "unusable", "encrypted"];
+/**
+ * The records that survive the source naming the bytes it will serve.
+ *
+ * `unusable` and `encrypted` are written against the exact digest of what was
+ * downloaded, so a fresh result advertising a different digest is direct
+ * evidence that the record is not about these bytes: the row was replaced, and
+ * refusing the new file over the old one is refusing bytes nothing here has
+ * ever seen. `gone` is the one cause with no digest of its own, because nothing
+ * was ever downloaded for it, so it stays a fact about the row.
+ */
+const ROW_LEVEL_BLOCKS = ["gone"];
+/**
+ * Which half of a row a durable refusal actually refuses.
+ *
+ * One record is projected into both lookups: a table proven not to work is
+ * keyed by its exact SHA and again by every provider row it was downloaded
+ * from, so that the mark is visible on a source that advertises no digest.
+ * Read as one answer, that projection said two different things at once. The
+ * saved copy was refused, correctly, and the download was refused with it,
+ * which is wrong: the bytes on this device are not the bytes the row would
+ * serve next, and re-downloading is the only way the user finds out that the
+ * source has published a fix.
+ *
+ * So the two are decided apart, and by what each record is about rather than
+ * by which revision of the row happens to be on this device now. A row that
+ * has served several revisions carries a record per revision, and an exact-byte
+ * refusal of any of them, the one currently saved or an older one, refuses only
+ * those bytes.
+ *
+ * What refuses the download depends on whether the source has said what it will
+ * serve. Where it advertises a digest, that digest is the answer: bytes already
+ * recorded as not working are refused, and every record naming other bytes is
+ * about a revision this row no longer offers, so it refuses nothing. Only a
+ * record with no digest of its own, which is the file being gone, is still
+ * about the row. Where the source advertises nothing, there is nothing to tell
+ * an old failure from the current file, so the newest failure of what came
+ * through the row stands and **Retry** is what says to try it anyway.
+ *
+ * `history` is the third answer, and it refuses nothing. It is the newest
+ * exact-byte refusal this row has earned that is neither of the other two: a
+ * revision that came straight back off, on a row whose source has not been
+ * accused of anything. A row that has only that and nothing on this device to
+ * offer is worth naming and not worth pressing, because pressing it spends a
+ * download to be told by the importer what its own badge already says, and
+ * **Retry** is the press that says to try it anyway. A row that does hold a
+ * usable copy is a different thing entirely, and this must never reach it.
+ */
+function tableRowRefusals(lookups, row) {
+    const saved = row.savedSha256 ? lookups.byDigest[row.savedSha256.toLowerCase()] ?? null : null;
+    const origin = row.artifactKey ? lookups.byArtifact[row.artifactKey] ?? [] : [];
+    const advertisedKey = row.advertisedSha256 ? row.advertisedSha256.toLowerCase() : null;
+    // The source has named the bytes it will serve and they are already known not
+    // to work. Nothing else here is that specific about a download.
+    const advertised = advertisedKey ? lookups.byDigest[advertisedKey] ?? null : null;
+    const blocks = advertisedKey ? ROW_LEVEL_BLOCKS : SOURCE_LEVEL_BLOCKS;
+    const download = advertised ?? origin.find((mark) => blocks.includes(mark.cause)) ?? null;
+    // History names a row that is not worth pressing. A row whose source has
+    // named unblocked bytes is worth pressing whatever happened to the revisions
+    // before them, so it has none.
+    const history = download || (advertisedKey && !advertised)
+        ? null
+        : origin.find((mark) => mark.sha256.toLowerCase() !== (row.savedSha256 ?? "").toLowerCase()) ?? null;
+    return { download, saved, history };
+}
+function withoutKnownLaunchers(candidates, executableOf) {
+    const games = candidates.filter((candidate) => !isKnownLauncherExecutable(executableOf(candidate)));
+    return games.length > 0 ? games : candidates;
+}
+/** Leaf name of a control: the part that identifies it inside its group. */
+function controlRowLabel(control) {
+    const leaf = control.path.length ? control.path[control.path.length - 1] : "";
+    return leaf.trim() || control.description.trim() || `Record ${control.id ?? "?"}`;
+}
+/** Parent breadcrumb of a control, empty when it has no enclosing group. */
+function controlRowContext(control) {
+    return control.path.slice(0, -1).join(" \u203a ");
+}
+/** True when this exact control accepts a typed value. */
+function controlAcceptsTypedValue(control) {
+    return control.kind === "value" || (control.kind === "dropdown" && !control.dropdown_read_only);
+}
+/**
+ * How many names a refusal about empty values lists before it stops.
+ *
+ * Enough to find them on a page, short enough to stay one sentence. Past this
+ * the count is the useful part: a user who switched on twelve of these is not
+ * reading twelve names off a toast, they are going back to the list.
+ */
+const MISSING_VALUE_NAMES = 3;
+/**
+ * The cheats this Apply would switch on without the value they do nothing
+ * without.
+ *
+ * A value or dropdown record is not finished by being switched on: Cheat Engine
+ * freezes whatever the game happens to hold at that address, which is not what
+ * the user asked for and is indistinguishable, afterwards, from a cheat that
+ * did not work. Apply took it anyway, committed it to this table's startup
+ * state, and reported success.
+ *
+ * Scoped to the records this Apply actually switches on. Two states are
+ * deliberately outside it. A record that was already on and already had no
+ * value is one this screen did not create, and refusing every Apply until it is
+ * dealt with would block every other change the user came here to make. And
+ * clearing the field of a record that is already on is a supported thing to
+ * ask for: it drops the value this table has stored for the next session, and
+ * it never writes a blank into a game that is holding a real number right now.
+ */
+function controlsMissingRequiredValue(controls, desired, switchedOn) {
+    return controls.filter((control) => {
+        if (control.id === null || !switchedOn.has(control.id))
+            return false;
+        const state = desired.get(control.id);
+        if (!state || state.active !== true)
+            return false;
+        return controlNeedsValueInput(control) && displayableControlValue(state.value) === null;
+    });
+}
+/**
+ * How many of a picker's staged records actually differ from what was confirmed.
+ *
+ * Counted by comparing, not by counting what the reader touched. Switching a
+ * cheat on and off again leaves it in the touched set for the rest of the
+ * screen's life, so a form returned to exactly the state it opened in still
+ * said "1 unapplied change" and offered to discard it, which is a prompt about
+ * nothing and teaches the reader to dismiss the one that matters.
+ *
+ * A value is compared through `displayableControlValue`, so an empty field, a
+ * field of spaces and Cheat Engine's own unreadable placeholder are all the
+ * same absence rather than three different edits.
+ */
+function unsavedChangeCount(staged, confirmed, touched) {
+    let changed = 0;
+    for (const recordId of new Set(touched)) {
+        const now = staged[recordId];
+        const before = confirmed[recordId];
+        const activeChanged = (now?.active ?? null) !== (before?.active ?? null);
+        const valueChanged = displayableControlValue(now?.value ?? null)
+            !== displayableControlValue(before?.value ?? null);
+        if (activeChanged || valueChanged)
+            changed += 1;
+    }
+    return changed;
+}
+/**
+ * The cheats pinned onto the panel that have no value to send when pressed.
+ *
+ * A pinned control is a switch on the quick access panel and nothing else:
+ * there is no field on it, and there is nowhere to put one in a 300 pixel
+ * column. So a value or dropdown record pinned without a value can only ever be
+ * switched on empty, which writes nothing and freezes whatever the game holds
+ * - the same thing Apply refuses for a cheat switched on here, reached from a
+ * screen that has no field to fix it on.
+ *
+ * Asked of every pinned record rather than only the ones this press touched,
+ * and without regard to whether it is switched on, because the press that will
+ * switch it on happens somewhere else and later. Pinning itself is never
+ * refused: it is committed on its own and is only metadata about which cheats
+ * the panel shows, and Apply is the one place on this screen that reports a
+ * missing value.
+ */
+function pinnedMissingRequiredValue(controls, desired, pinned) {
+    const shown = new Set(pinned);
+    return controls.filter((control) => {
+        if (control.id === null || !shown.has(control.id))
+            return false;
+        return controlNeedsValueInput(control)
+            && displayableControlValue(desired.get(control.id)?.value ?? null) === null;
+    });
+}
+/** The refusal a caller reports for those, naming them where naming helps. */
+function missingRequiredValueReason(missing) {
+    if (missing.length === 0)
+        return null;
+    const names = missing.slice(0, MISSING_VALUE_NAMES).map(controlRowLabel);
+    const rest = missing.length - names.length;
+    const named = rest > 0 ? `${names.join(", ")} and ${rest} more` : names.join(", ");
+    // Short enough to read as one line on a handheld, because that is what it is
+    // shown as. Where to do it is not said: a record that is switched on and
+    // needs a value keeps its editor open whatever else the list is doing, so the
+    // field is already on screen on the row this names.
+    return missing.length === 1
+        ? `${named} needs a value. Enter one, or switch it back off.`
+        : `${named} need values. Enter them, or switch them back off.`;
+}
+/**
+ * True when this control does nothing until the user supplies a value.
+ *
+ * A script record is complete once it is active, but a value or dropdown record
+ * only takes effect after something is written to it, so its editor must be on
+ * screen the moment the record is switched on rather than behind More.
+ */
+function controlNeedsValueInput(control) {
+    return controlAcceptsTypedValue(control)
+        || (control.kind === "dropdown" && control.dropdown_values.length > 0);
+}
+/**
+ * A runtime value worth showing, or `null`.
+ *
+ * Cheat Engine writes the literal `??` for a record it cannot read yet, which
+ * is a state, not a value; repeating it on every compact row is noise.
+ */
+function displayableControlValue(value) {
+    const text = (value ?? "").trim();
+    return !text || text === "??" ? null : text;
+}
+/** Invisible and bidirectional formatting characters, replaced before display. */
+const UNSAFE_DISPLAY_CONTROL_RE = /[\p{Cc}\p{Cf}]/gu;
+const MAX_DISPLAYED_VALUE_LENGTH = 96;
+/**
+ * A runtime value in a form that is safe to put inside a sentence.
+ *
+ * Table labels, descriptions and process hints are already rejected by the
+ * inspector when they carry invisible or bidirectional formatting, but values
+ * are deliberately preserved byte for byte: normalizing one would change what
+ * Cheat Engine receives. That exact string must therefore never be interpolated
+ * into visible text directly - a value carrying RLO/RLI or zero-width
+ * characters can reorder the compact line it sits in and misrepresent which
+ * cheat a number belongs to. This is the display copy only; comparisons,
+ * persistence and `set_value` keep the semantic string.
+ */
+function presentableControlValue(value) {
+    const text = displayableControlValue(value);
+    if (text === null)
+        return null;
+    const safe = text.replace(UNSAFE_DISPLAY_CONTROL_RE, "\uFFFD");
+    return safe.length > MAX_DISPLAYED_VALUE_LENGTH
+        ? `${safe.slice(0, MAX_DISPLAYED_VALUE_LENGTH)}\u2026`
+        : safe;
+}
+/**
+ * The one value a pinned control is about.
+ *
+ * Its row shows this, its switch may not be pressed without it where the record
+ * needs one, and pressing that switch writes it. Those were three separate
+ * resolutions reading three different sources, so a row could show `100` while
+ * the press sent nothing and activated on whatever the game held, or show `40`
+ * while the press wrote `100`. A switch has to mean what the row above it says.
+ *
+ * What is running comes first, then the choice this table confirmed, then the
+ * one Configure stored: a value Cheat Engine can read is the truth about this
+ * record, and the stored ones are what to say when it cannot read one yet.
+ *
+ * Displayability chooses which of the three answers; the answer itself comes
+ * back exactly as it was stored. The two are not the same string: a record's
+ * value is preserved byte for byte here, because it is what gets written into
+ * the game, while `displayableControlValue` trims for a row. Returning the
+ * trimmed one meant a switch that only re-applies what the row already shows
+ * could rewrite ` 100 ` as `100`.
+ */
+function pinnedControlValue(live, remembered, configured) {
+    for (const source of [live, remembered, configured]) {
+        if (source != null && displayableControlValue(source) !== null)
+            return source;
+    }
+    return null;
+}
+/**
+ * Pinned controls promoted onto the CE Decky panel, in table order.
+ *
+ * Only a live exact-session result can be shown here: an unqueried or failed
+ * record must never render as a real toggle state, so it is dropped rather than
+ * guessed. The list is bounded because the panel is one Decky QAM column.
+ */
+function pinnedCheatRows(controls, pinned, results, remembered = [], configured = [], limit = CONTROL_PAGE_SIZE) {
+    const pinnedIds = new Set(pinned);
+    const rememberedById = new Map(remembered.map((item) => [item.record_id, item]));
+    const configuredById = new Map(configured.map((item) => [item.record_id, item]));
+    const rows = [];
+    for (const control of controls) {
+        if (rows.length >= limit)
+            break;
+        if (control.id === null || !pinnedIds.has(control.id))
+            continue;
+        const latest = latestRuntimeResult(results, control.id);
+        if (!latest || !latest.ok)
+            continue;
+        const context = controlRowContext(control);
+        // A value CE cannot read yet still has a confirmed choice behind it, so show
+        // what this table was set to rather than nothing. Resolved once, where the
+        // press on this row resolves it too.
+        const value = presentableControlValue(pinnedControlValue(latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
+        rows.push({
+            recordId: control.id,
+            label: controlRowLabel(control),
+            summary: [context, value ? `= ${value}` : null].filter(Boolean).join(" · "),
+            active: latest.active,
+        });
+    }
+    return rows;
+}
+/**
+ * The nearest enclosing control that is switched off, if any.
+ *
+ * A value inside a Cheat Engine group only has a resolvable address once the
+ * script that creates it is enabled. Writing to it first fails verification -
+ * Cheat Engine answers `??` - which reads to a user as "my value was ignored".
+ * Naming the exact control they have to enable is the difference between a
+ * dead end and an obvious next step.
+ */
+function inactiveAncestorControl(control, controls, activeById) {
+    const chain = inactiveAncestorControls(control, controls, activeById);
+    return chain.length ? chain[chain.length - 1] : null;
+}
+/**
+ * IDs of the controls whose group encloses at least one other control.
+ *
+ * These are the scripts a table uses to build its real cheats. CE Decky
+ * switches them on by itself, so listing them beside the cheats a user
+ * recognises just doubles the list they have to page through.
+ */
+function enclosingControlIds(controls) {
+    const prefixes = new Set();
+    for (const control of controls) {
+        for (let depth = 1; depth < control.path.length; depth += 1) {
+            prefixes.add(JSON.stringify(control.path.slice(0, depth)));
+        }
+    }
+    const ids = new Set();
+    for (const control of controls) {
+        if (control.id !== null && prefixes.has(JSON.stringify(control.path)))
+            ids.add(control.id);
+    }
+    return ids;
+}
+/**
+ * Controls listed with the scripts rather than with the cheats.
+ *
+ * Two different things belong here for the same reason: neither is a choice a
+ * user makes. An enclosing script is the machinery a table uses to build its
+ * real cheats, and CE Decky switches it on by itself. An attach-only record is
+ * the table author's own "attach to the game" button, which changes nothing in
+ * the game and duplicates what CE Decky already did by exact PID.
+ *
+ * This is the view, not the dependency rule: only enclosing scripts are ever
+ * switched on to reach something else, and that stays keyed off
+ * `enclosingControlIds`.
+ */
+function scriptListedControlIds(controls) {
+    const ids = enclosingControlIds(controls);
+    for (const control of controls) {
+        if (control.id !== null && control.attach_only)
+            ids.add(control.id);
+    }
+    return ids;
+}
+/**
+ * Enclosing scripts that are on with nothing under them on, deepest first.
+ *
+ * A script exists to create the records inside it, so one left running after
+ * the last cheat that needed it was switched off is pure residue: it keeps its
+ * patch in the game and, once remembered, switched itself back on in the next
+ * session with every cheat under it off. Deepest first is what makes one pass
+ * enough - an inner script counts as a user of the one around it, so it has to
+ * be released before its parent is judged.
+ */
+function unusedActiveScripts(controls, activeById) {
+    const enclosing = enclosingControlIds(controls);
+    const scripts = controls
+        .filter((control) => control.id !== null && enclosing.has(control.id))
+        .sort((left, right) => right.path.length - left.path.length);
+    const active = new Map(activeById);
+    const released = [];
+    for (const script of scripts) {
+        if (active.get(script.id) !== true)
+            continue;
+        const used = controls.some((candidate) => candidate.id !== null
+            && candidate.id !== script.id
+            && candidate.path.length > script.path.length
+            && script.path.every((segment, index) => candidate.path[index] === segment)
+            && active.get(candidate.id) === true);
+        if (used)
+            continue;
+        active.set(script.id, false);
+        released.push(script.id);
+    }
+    return released;
+}
+/**
+ * Every enclosing control that is switched off, outermost first.
+ *
+ * Switching a cheat on has to switch on the scripts that create it, and a
+ * script two levels up is as necessary as the one directly above. Outermost
+ * first is the order Cheat Engine has to receive them in, because an inner
+ * script does not exist until the one enclosing it has run.
+ */
+function inactiveAncestorControls(control, controls, activeById) {
+    const chain = [];
+    for (let depth = 1; depth < control.path.length; depth += 1) {
+        const prefix = control.path.slice(0, depth);
+        const ancestor = controls.find((candidate) => candidate.id !== null
+            && candidate.id !== control.id
+            && candidate.path.length === prefix.length
+            && candidate.path.every((segment, index) => segment === prefix[index]));
+        if (ancestor && ancestor.id !== null && activeById.get(ancestor.id) === false)
+            chain.push(ancestor);
+    }
+    return chain;
+}
+const PROVIDER_DISPLAY_NAMES = {
+    fearless: "FearLess Cheat Engine",
+    playground: "Playground",
+    github: "GitHub",
+    thecheatscript: "The Cheat Script",
+    vgtimes: "VGTimes",
+    // Retired as a source; kept as a name, for the tables it already provided.
+    opencheattables: "Open Cheat Tables",
+};
+/**
+ * A provider's own name, or its stored identifier when it has no known one.
+ *
+ * A table's origin records the provider identifier, which is a lookup key and
+ * not something to show a user: "fearless" is not what that site calls itself.
+ */
+function providerDisplayName(provider) {
+    return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
+}
+/**
+ * Which provider digests already resolve to a table this device already holds.
+ *
+ * Scoped to the store and deliberately not to the game's own library, which is
+ * what it used to ask. "Local" answers whether these bytes have to be fetched
+ * again, and content identity settles that on its own: the same table published
+ * for two games, the same game reached through a second shortcut, and a first
+ * import whose profile step failed after the bytes were already stored all made
+ * the user sit through another provider countdown for a file on disk. Which
+ * tables a game actually uses is a different question, answered by its imported
+ * list and by Home. This screen already treats the other content-addressed fact
+ * this way: a table marked as not working is marked in every game's search.
+ *
+ * The provider's advertised digest identifies the bytes it served. For a direct
+ * `.CT` that is the table itself; for an archive it is the archive, whose
+ * extracted `.CT` has its own SHA - which is why an already-imported archive
+ * result used to be offered for download again. Both are content identity, so
+ * both may resolve to this table. A provider artifact ID is not: the same ID can
+ * serve changed bytes.
+ *
+ * An archive holding several tables is the exception: its digest is not the
+ * identity of whichever member was imported first, and collapsing it to one made
+ * the other members unreachable, because the row opened that table instead of
+ * reopening member selection.
+ *
+ * An origin recorded before cardinality was persisted declares nothing, and
+ * reading that silence as "one member" reintroduces exactly that bug for every
+ * archive already imported. Only bytes that cannot hold a second table - a
+ * direct `.CT` download - are unambiguous without a declared count; an archive
+ * without one is reacquired and reinspected.
+ */
+function localTableArtifacts(tables) {
+    const result = {};
+    for (const table of tables) {
+        if (!table.available)
+            continue;
+        result[`sha:${table.sha256.toLowerCase()}`] = table.sha256;
+        for (const origin of table.origins) {
+            const unambiguous = origin.member_count === undefined || origin.member_count === null
+                ? !isArchiveFilename(origin.original_filename)
+                : origin.member_count <= 1;
+            // Keyed in lower case at both ends. Recorded digests are normalised, but
+            // what a provider advertises is whatever its page said, and a row whose
+            // digest arrives in upper case is the same bytes: reading the two in
+            // different cases hid a local copy behind a download.
+            if (origin.advertised_sha256 && unambiguous)
+                result[`sha:${origin.advertised_sha256.toLowerCase()}`] = table.sha256;
+        }
+    }
+    return result;
+}
+/**
+ * Which provider rows a table on this device was actually imported from.
+ *
+ * The weaker of the two answers, and a separate one on purpose. `localTableArtifacts`
+ * answers "these are those bytes" and is what lets a press skip the download;
+ * this answers only "a table on this device came from this exact row", which
+ * two sources of four cannot say any other way: FearLess and every other phpbb
+ * attachment advertise no digest at all, so every table already imported from
+ * them was offered back with no mark on it and downloaded again to reach a
+ * table the device already had.
+ *
+ * It never becomes the stronger answer, and it is a set of rows rather than a
+ * lookup to the table each one produced so that it cannot be made into one. The
+ * same artifact ID can serve changed bytes, so a row known only this way is
+ * still reacquired on a press and the import still turns on the SHA of what
+ * actually arrives; if the bytes have not
+ * changed the store recognizes them and nothing is duplicated. What this buys
+ * is the one thing the user could not get otherwise: knowing, before pressing,
+ * which of twenty rows they have already been through.
+ */
+function importedTableArtifacts(tables) {
+    const result = new Set();
+    for (const table of tables) {
+        if (!table.available)
+            continue;
+        for (const origin of table.origins) {
+            result.add(`${origin.provider}:${origin.artifact_id}`);
+        }
+    }
+    return result;
+}
+/**
+ * What a self-test result actually says, as opposed to what its `ok` says.
+ *
+ * The backend's `ok` means "nothing blocking failed", and several checks are
+ * deliberately not blocking: the ones that answer whether a later bug report
+ * will have any evidence in it, whether the managed root still has room, and
+ * whether the registered Cheat Engine is still the one that was registered.
+ * A screen that renders `ok` alone says PASS while one of those has failed,
+ * and the detail that names the failure is then displayed nowhere at all -
+ * which is the diagnostic detecting exactly the condition it was added for and
+ * telling the user everything is fine.
+ *
+ * So there are three states rather than two, and the failed checks travel with
+ * them. `ok === false` stays a failure even if no check says it is blocking,
+ * because the backend is the authority on its own verdict and a disagreement
+ * here must resolve towards the worse answer rather than the better one.
+ */
+function selfTestSummary(result) {
+    const checks = Array.isArray(result.checks) ? result.checks : [];
+    // Blocking unless it says otherwise, which is the rule the backend derives
+    // `ok` by: a check from a newer backend that carries no flag is not a
+    // warning by default.
+    const failures = checks.filter((check) => !check.ok);
+    const blockers = failures.filter((check) => check.blocking !== false);
+    const warnings = failures.length - blockers.length;
+    const counts = `${checks.filter((check) => check.ok).length}/${checks.length} checks`;
+    if (blockers.length > 0 || result.ok === false) {
+        return {
+            verdict: "fail",
+            label: "Self-test FAIL",
+            counts,
+            failures: [...blockers, ...failures.filter((check) => check.blocking === false)],
+            toast: "Plugin self-test found a blocker.",
+        };
+    }
+    if (warnings > 0) {
+        return {
+            verdict: "warn",
+            label: "Self-test WARN",
+            counts,
+            failures,
+            toast: `Plugin self-test found ${warnings} warning${warnings === 1 ? "" : "s"}.`,
+        };
+    }
+    return { verdict: "pass", label: "Self-test PASS", counts, failures: [], toast: "Plugin self-test passed." };
+}
+/**
+ * A self-test check's name as a person reads it.
+ *
+ * Derived rather than mapped, so a check a later backend adds is readable here
+ * without this file knowing about it: a mapping that has to be kept in step
+ * would show an unknown check as nothing at all, which is the failure mode this
+ * whole summary exists to remove.
+ */
+function selfTestCheckLabel(name) {
+    const words = name.replace(/[_-]+/g, " ").trim();
+    return words === "" ? "unnamed check" : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * How many refused status reads in a row are allowed before this window gives
+ * up on the acquisition behind them.
+ *
+ * A read that fails says nothing about the transfer: the backend can be moving
+ * bytes perfectly well behind one refused RPC. So the first few are retried,
+ * widening, and only a run of them is treated as the acquisition being beyond
+ * reach. The budget is the length of the delay list plus the attempt that ends
+ * it.
+ */
+const POLL_FAILURE_BUDGET = 4;
+const POLL_RETRY_DELAYS_MS = [500, 1500, 3000];
+/**
+ * Whether the backend has said, authoritatively, that it no longer has this
+ * acquisition.
+ *
+ * That answer is terminal the moment it arrives, and it is also the one answer
+ * that must never make this window try again: there is nothing to poll, nothing
+ * to cancel, and a Close that cancels first would re-raise it and shut the user
+ * in. Every other failure is a failure to observe, not an outcome.
+ *
+ * Matched on the backend's own sentence, which is the only thing a Decky RPC
+ * rejection carries across. `acquisition.py` raises it in exactly two places
+ * and `tests/test_acquisition_prod.py` holds the wording, so a change to it
+ * fails there rather than quietly turning this back into a trap.
+ */
+function describesForgottenAcquisition(cause) {
+    return /acquisition is unknown or expired/i.test(describeError(cause));
+}
+function active(status) {
+    return status.state === "waiting_provider" || status.state === "downloading";
+}
+function terminal(status) {
+    return status.state === "imported" || status.state === "failed" || status.state === "cancelled";
+}
+function TableAcquisitionModal({ initialStatus, searchScope, onImported, onClose }) {
+    useUiSurface("TableAcquisitionModal", initialStatus.acquisition_id);
+    const [status, setStatus] = SP_REACT.useState(initialStatus);
+    const [memberPath, setMemberPath] = SP_REACT.useState(null);
+    const [password, setPassword] = SP_REACT.useState("");
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const statusRef = SP_REACT.useRef(initialStatus);
+    const busyRef = SP_REACT.useRef(false);
+    const completingRef = SP_REACT.useRef(false);
+    // Whether the one password-less attempt that lets the backend try the
+    // provider's published password has already been spent for this acquisition.
+    const hintTriedRef = SP_REACT.useRef(false);
+    const members = SP_REACT.useMemo(() => status.inspection?.members ?? [], [status.inspection]);
+    const selectedMember = members.find((member) => member.path === memberPath) ?? members[0] ?? null;
+    const needsTypedPassword = passwordPromptRequired(status, hintTriedRef.current);
+    const unsupportedMember = isUnsupportedEncryptedMember(selectedMember);
+    // The manual row appears exactly when something is still left to decide: a
+    // choice of member, or a password that the backend's own attempt could not
+    // supply. Before that attempt a single encrypted member is auto-imported.
+    // One password-less attempt is allowed first so the backend can try the
+    // password the provider published beside this exact artifact; only after
+    // that fails does the user have to know it themselves.
+    const manualImportNeeded = members.length > 0 && !canAutoImportTableMember(members, needsTypedPassword);
+    /** Whether the one press this window can still be asked for is available. */
+    const importable = !busy
+        && (status.state === "ready_to_import" || status.state === "needs_selection")
+        && manualImportNeeded
+        && Boolean(selectedMember)
+        && !unsupportedMember
+        && !(selectedMember?.encrypted && !password && needsTypedPassword);
+    // Set once the backend has said it no longer has this acquisition. Nothing
+    // can be cancelled or polled after that, and Close must not depend on it.
+    const forgottenRef = SP_REACT.useRef(false);
+    /**
+     * Why this window cannot currently read the acquisition's state, and nothing
+     * while it can.
+     *
+     * Kept apart from the acquisition's own state on purpose. A run of refused
+     * status reads says nothing whatever about the transfer behind them, and
+     * writing `failed` into the status was not a label but an action: a terminal
+     * status turns the only press here into Close, and Close cancels what it
+     * closes, so a download that was proceeding normally was cancelled because
+     * this window had stopped being able to look at it.
+     */
+    const [readError, setReadError] = SP_REACT.useState(null);
+    /** Bumped by Retry, to start the loop the exhausted budget stopped. */
+    const [readAttempt, setReadAttempt] = SP_REACT.useState(0);
+    const remember = (next) => {
+        statusRef.current = next;
+        rememberRejectedArtifact(searchScope, next);
+        setStatus(next);
+        const nextMembers = next.inspection?.members ?? [];
+        setMemberPath((current) => current && nextMembers.some((member) => member.path === current)
+            ? current
+            : nextMembers[0]?.path ?? null);
+    };
+    // An acquisition that already retired the artifact before this modal opened
+    // never reaches the poll loop, so record its outcome on mount as well.
+    SP_REACT.useEffect(() => {
+        rememberRejectedArtifact(searchScope, initialStatus);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    SP_REACT.useEffect(() => {
+        if (!active(status))
+            return;
+        let disposed = false;
+        let timer;
+        let consecutiveFailures = 0;
+        const poll = async () => {
+            try {
+                const next = await pollTableAcquisition(status.acquisition_id);
+                if (disposed)
+                    return;
+                consecutiveFailures = 0;
+                setReadError(null);
+                remember(next);
+                if (active(next))
+                    timer = window.setTimeout(() => void poll(), 750);
+            }
+            catch (cause) {
+                if (disposed)
+                    return;
+                // A failed read of the state is not a failed download. The backend may
+                // be transferring perfectly well behind one refused RPC, and writing
+                // `failed` here does not only mislabel it: unmounting this window
+                // cancels anything not terminal, so an observation that failed for a
+                // moment became the abort of a healthy transfer. Every provider
+                // download goes through this window, so that was the whole of Search.
+                //
+                // Two answers are not the same. The backend saying it does not have
+                // this acquisition is authoritative and terminal at once. Anything else
+                // is retried, and only a run of them is allowed to give up.
+                const forgotten = describesForgottenAcquisition(cause);
+                if (forgotten) {
+                    // The one authoritative answer: there is no such acquisition, so it
+                    // is terminal on arrival and there is nothing left to poll or cancel.
+                    logUiFailure("acquisition.poll_failed", cause, {
+                        acquisition: status.acquisition_id.slice(0, 8), forgotten: true,
+                    });
+                    forgottenRef.current = true;
+                    remember({ ...statusRef.current, state: "failed", error: describeError(cause) });
+                    return;
+                }
+                consecutiveFailures += 1;
+                if (consecutiveFailures < POLL_FAILURE_BUDGET) {
+                    logUiWarning("acquisition.poll_retrying", {
+                        acquisition: status.acquisition_id.slice(0, 8),
+                        attempt: consecutiveFailures,
+                        reason: describeError(cause),
+                    });
+                    timer = window.setTimeout(() => void poll(), POLL_RETRY_DELAYS_MS[consecutiveFailures - 1] ?? 2000);
+                    return;
+                }
+                // The budget is exhausted, and that is a statement about this window's
+                // ability to look, never about the acquisition. The last state the
+                // backend actually reported stays exactly as it was: the download is
+                // very likely still running, and the user is told that rather than
+                // being handed a Close that would cancel it.
+                logUiFailure("acquisition.poll_unreadable", cause, {
+                    acquisition: status.acquisition_id.slice(0, 8),
+                    attempts: consecutiveFailures,
+                });
+                setReadError(describeError(cause));
+            }
+        };
+        timer = window.setTimeout(() => void poll(), 250);
+        return () => {
+            disposed = true;
+            if (timer !== undefined)
+                window.clearTimeout(timer);
+        };
+    }, [status.acquisition_id, active(status), readAttempt]);
+    SP_REACT.useEffect(() => () => {
+        const current = statusRef.current;
+        // Nothing to cancel where the backend has already said it has nothing.
+        if (forgottenRef.current)
+            return;
+        if (current.state !== "imported" && current.state !== "cancelled") {
+            // Best effort, and the failure matters: this modal is gone, so a
+            // cancellation that did not land leaves acquisition work running with
+            // nothing on screen that could report or stop it.
+            void cancelTableAcquisition(current.acquisition_id).catch((cause) => {
+                logUiWarning("acquisition.unmount_cancel_failed", {
+                    acquisition: current.acquisition_id.slice(0, 8),
+                    reason: describeError(cause),
+                });
+            });
+        }
+    }, []);
+    const complete = async (chosenMember = memberPath) => {
+        if (busyRef.current || completingRef.current)
+            return;
+        let handoffStarted = false;
+        const operation = startUiOperation("acquisition.complete", { acquisition: statusRef.current.acquisition_id });
+        completingRef.current = true;
+        busyRef.current = true;
+        setBusy(true);
+        try {
+            let next;
+            try {
+                next = await completeTableAcquisition(statusRef.current.acquisition_id, null, chosenMember, password || null);
+            }
+            catch (cause) {
+                // Import can already have reached its terminal state when the reply is
+                // lost, and painting that as failed both redoes the work and leaves an
+                // imported table undiscovered by this flow. The acquisition ID is the
+                // exact authority, so ask it before believing the rejection.
+                if (pythonTracebackSummary(cause?.pythonTraceback) !== null)
+                    throw cause;
+                next = await pollTableAcquisition(statusRef.current.acquisition_id);
+                if (!next.imported)
+                    throw cause;
+                logUiWarning("acquisition.receipt_reconciled", { acquisition: next.acquisition_id, table_sha: next.imported.sha256 });
+            }
+            remember(next);
+            if (next.imported) {
+                toaster.toast({ title: "CE Decky", body: `Imported ${next.imported.filename}. Execution remains disabled.` });
+                // Close this top modal before the parent Search modal closes and opens
+                // Review. Otherwise controller focus depends on asynchronous unmount
+                // timing instead of the intended serial modal handoff.
+                handoffStarted = true;
+                onClose();
+                await onImported(next.imported.sha256);
+            }
+            operation.completed({ state: next.state, table_sha: next.imported?.sha256 });
+        }
+        catch (cause) {
+            operation.failed(cause, { handoff_started: handoffStarted });
+            // Logged either way. After the handoff this modal is gone and Search owns
+            // the error on screen, but the record of what failed belongs in the ring
+            // regardless of which surface ends up showing it.
+            logUiFailure("acquisition.complete_failed", cause, {
+                acquisition: statusRef.current.acquisition_id.slice(0, 8),
+                handoff_started: handoffStarted,
+            });
+            // Search owns errors after the handoff begins. This modal is already
+            // closed and must not repaint an imported acquisition as failed because
+            // later Review preparation failed.
+            if (!handoffStarted) {
+                remember({ ...statusRef.current, state: "failed", error: describeError(cause) });
+            }
+        }
+        finally {
+            completingRef.current = false;
+            busyRef.current = false;
+            setBusy(false);
+        }
+    };
+    SP_REACT.useEffect(() => {
+        // `needs_selection` is also where a single encrypted member arrives: the
+        // backend classifies any encrypted member that way, whether or not there is
+        // anything to select. Running only for `ready_to_import` meant that archive
+        // showed no password field - nothing was left to decide until the hint had
+        // been tried - while nothing ever tried it, so the download dead-ended.
+        if ((status.state !== "ready_to_import" && status.state !== "needs_selection")
+            || !canAutoImportTableMember(members, needsTypedPassword)
+            || completingRef.current)
+            return;
+        if (members.length === 1 && members[0].encrypted)
+            hintTriedRef.current = true;
+        void complete(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [status.acquisition_id, status.state]);
+    // Where focus belongs once the download stops being the thing on screen.
+    //
+    // Steam draws the focus ring on the element it last moved to and repaints it
+    // when input moves. A row that was focused while the download ran can change
+    // underneath it - the countdown and the spinner go, a failure appears below -
+    // and the ring stays where it was until the user pushes the stick, which
+    // reads as the dialog having broken rather than finished. Moving focus onto
+    // the action that now matters is the same thing the user was about to do, and
+    // it repaints the ring as a side effect of being an honest handoff.
+    const actionsRef = SP_REACT.useRef(null);
+    const settledRef = SP_REACT.useRef(terminal(initialStatus));
+    SP_REACT.useEffect(() => {
+        if (!terminal(status)) {
+            settledRef.current = false;
+            return;
+        }
+        if (settledRef.current)
+            return;
+        settledRef.current = true;
+        const button = actionsRef.current?.querySelector("button:not([disabled])");
+        button?.focus();
+    }, [status.state]);
+    const cancel = async () => {
+        if (busyRef.current)
+            return;
+        if (statusRef.current.state === "imported" || statusRef.current.state === "cancelled") {
+            onClose();
+            return;
+        }
+        // An acquisition the backend has forgotten cannot be cancelled, and asking
+        // it to fails the same way the read did. Close has to be a way out of this
+        // window rather than a second attempt at the object that is not there:
+        // failing here left the only two presses this window has, Close and the
+        // controller's Back, both re-raising the same error, with the user shut in.
+        if (forgottenRef.current) {
+            onClose();
+            return;
+        }
+        busyRef.current = true;
+        setBusy(true);
+        const cancellation = startUiOperation("acquisition.cancel", { acquisition: statusRef.current.acquisition_id });
+        try {
+            remember(await cancelTableAcquisition(statusRef.current.acquisition_id));
+            logUi("acquisition.cancelled", { acquisition: statusRef.current.acquisition_id });
+            onClose();
+            cancellation.completed({ state: statusRef.current.state });
+        }
+        catch (cause) {
+            const forgotten = describesForgottenAcquisition(cause);
+            cancellation.failed(cause, { forgotten });
+            logUiFailure("acquisition.cancel_failed", cause, {
+                acquisition: statusRef.current.acquisition_id.slice(0, 8),
+                forgotten,
+            });
+            if (forgotten) {
+                // The same answer, arriving on this press instead of on a poll: there
+                // is nothing left to cancel, so the press does what it says.
+                forgottenRef.current = true;
+                onClose();
+                return;
+            }
+            remember({ ...statusRef.current, state: "failed", error: describeError(cause) });
+        }
+        finally {
+            busyRef.current = false;
+            setBusy(false);
+        }
+    };
+    // A provider countdown and a provider rate limit are both a wait with a
+    // number on it and nothing else about them is the same: one was promised and
+    // ends in a download, the other is the provider refusing right now and being
+    // given time. Naming Playground for both was wrong twice over, because the
+    // rate limit was first seen on a different provider entirely.
+    //
+    // The number is kept apart from the sentence and put on the right of the same
+    // block as the file it belongs to: it is the only part of this row that
+    // changes every second, and reading a countdown means finding it again at the
+    // end of a sentence that never changes.
+    const waiting = status.state === "waiting_provider" && status.provider_wait_seconds !== null;
+    const phase = waiting
+        ? status.provider_wait_reason === "rate_limited"
+            // Named as the wait it is. "Rate limiting" says what the source is
+            // doing; what a user staring at a countdown needs is that nothing has
+            // failed and the download goes ahead by itself when it reaches zero.
+            ? "Waiting out the source's download cooldown"
+            : status.provider_wait_reason === "busy"
+                ? `${providerShortName(status.provider)} serves one download at a time and is busy`
+                : `${providerShortName(status.provider)} is preparing the download`
+        : status.state === "downloading"
+            ? "Downloading"
+            : status.state.replace(/_/g, " ");
+    const counter = waiting
+        ? status.provider_wait_reason === "rate_limited" || status.provider_wait_reason === "busy"
+            ? `retrying in ${status.provider_wait_seconds}s`
+            : `${status.provider_wait_seconds}s remaining`
+        : status.state === "downloading"
+            ? `${status.bytes_received} byte(s)`
+            : null;
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_acquisition_modal.cancel_back", () => void cancel(), { acquisition: status.acquisition_id }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: `Download table from ${providerShortName(status.provider)}` }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: status.filename, description: phase, trailing: counter || active(status) ? (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }, children: [counter, active(status) ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : null] })) : undefined }) }), status.error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: status.state === "failed" ? "Acquisition failed" : "Import needs attention", description: status.error }) }), readError && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "acquisition-status-unreadable", status: true, label: "Cannot read this download's progress", description: `${readError} The download itself has not been stopped and may still be running. Retry status looks again; Cancel acquisition stops it.` }) }), (status.state === "ready_to_import" || status.state === "needs_selection") && manualImportNeeded && SP_JSX.jsxs(SP_JSX.Fragment, { children: [members.length > 1 && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Table in downloaded archive", rgOptions: members.map((member) => ({ data: member.path, label: member.path })), selectedOption: selectedMember?.path ?? "", onChange: traceUiAction("table_acquisition_modal.table_in_downloaded_archive", (option) => { setMemberPath(String(option.data)); setPassword(""); }, { acquisition: status.acquisition_id }), disabled: busy }) }), unsupportedMember && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "This entry cannot be imported", description: UNSUPPORTED_MEMBER_EXPLANATION }) })), selectedMember?.encrypted && !unsupportedMember && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: needsTypedPassword ? "Archive password (not stored)" : "Archive password (optional; not stored)", value: password, onChange: traceUiEdit("table_acquisition_modal.password", (event) => setPassword(String(event.target.value ?? "")), { acquisition: status.acquisition_id }), disabled: busy }) }))] })] }) }), SP_JSX.jsxs(ModalActions, { containerRef: actionsRef, children: [(status.state === "ready_to_import" || status.state === "needs_selection") && manualImportNeeded && SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: importable, disabled: !importable, onClick: traceUiAction("table_acquisition_modal.import_selected_table", () => void complete(selectedMember?.path ?? null), { acquisition: status.acquisition_id }), children: "Import selected table" }), readError && SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: busy, onClick: traceUiAction("table_acquisition_modal.retry_status", () => { setReadError(null); setReadAttempt((attempt) => attempt + 1); }, { acquisition: status.acquisition_id }), children: "Retry status" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !importable, disabled: busy, onClick: traceUiAction("table_acquisition_modal.cancel", () => void cancel(), { acquisition: status.acquisition_id }), children: terminal(status) ? "Close" : "Cancel acquisition" })] })] }) }));
+}
+
+/**
+ * The row a paged screen ends with: paging in the middle, the way out at the
+ * right edge.
+ *
+ * Both used to be full-width buttons stacked under each other, so a screen that
+ * shows six rows spent three rows of its height on two presses and a third that
+ * is the same press on every screen in the product. They are one row of small
+ * controls, and one row is also what keeps the window still: a screen whose
+ * pager comes and goes on its own line changes height while it is being read,
+ * and the way out moves with it.
+ *
+ * A grid rather than `space-between`, because what has to be centred is centred
+ * on the row and not on whatever is left over beside the button: the two outer
+ * tracks are equal whether or not either of them holds anything. The grid is
+ * also the one ActionGroup for the whole footer, so Previous, Next and the
+ * screen's own action all stay on one left/right controller path.
+ */
+const FOOTER_FOCUS_ROW = {
+    display: "grid",
+    gridTemplateColumns: "1fr auto 1fr",
+    alignItems: "center",
+    gap: 8,
+    // Read from the row rather than written here, so a short screen can close it
+    // up: an inline length outranks a stylesheet, and this row is drawn outside
+    // the dense wrapper where the scoped rules cannot reach it anyway.
+    padding: "var(--ce-footer-row-padding, 6px 0 2px)",
+};
+const FOOTER_PAGER = { display: "flex", alignItems: "center", justifyContent: "center", gap: 8 };
+// The same eight pixels the row itself uses. A screen can put more than one
+// control here - Configure cheats ends in Apply and the way out - and a box with
+// no gap in it stuck them together, which is the same mistake a row's own action
+// group was carrying until its fallback gap was written back in.
+const FOOTER_TRAILING = { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 };
+// Between the two paging controls, which is where a reader looks for it and the
+// only place it does not cost a line of its own. Tabular figures so the row
+// does not shift under the thumb as the page number changes width.
+const FOOTER_PAGE_COUNT = {
+    flex: "0 0 auto",
+    fontSize: 12,
+    lineHeight: "16px",
+    opacity: 0.75,
+    whiteSpace: "nowrap",
+    fontVariantNumeric: "tabular-nums",
+};
+/**
+ * One footer row, shared by every paged screen so they page the same way.
+ *
+ * The pager is drawn as soon as there is a list, including a list of one page,
+ * where both controls are simply disabled. A pager that appears with the second
+ * page is a control the reader has to find twice, and on a screen whose list
+ * shrinks under a filter it is one that moves the row under their thumb.
+ */
+function PagerFooter({ testId, page, pages, onPage, disabled, trailing, preferNext, containerRef, style, previousRef, nextRef, focusOnTurn = true, fallbackRef, }) {
+    // Where the ring goes when a page is turned.
+    //
+    // The two paging controls share one action group, which is a plain box while
+    // only one of them can be pressed and a navigation container once both can,
+    // so the first press of Next on page one rebuilds the row and unmounts the
+    // button that press was made on. Which control turned the page is recorded at
+    // the press and the ring is put back after it, on the control beside it when
+    // that one has just disabled itself.
+    //
+    // Only after a press. A page number also moves when a fresh search puts the
+    // list back to its first page, and focus is elsewhere by then: taking it down
+    // to the pager would move the user off the screen they are using.
+    const turnedRef = SP_REACT.useRef(null);
+    const ownPreviousRef = SP_REACT.useRef(null);
+    const ownNextRef = SP_REACT.useRef(null);
+    const previousPageRef = previousRef ?? ownPreviousRef;
+    const nextPageRef = nextRef ?? ownNextRef;
+    SP_REACT.useEffect(() => {
+        const turned = turnedRef.current;
+        turnedRef.current = null;
+        if (!turned || !focusOnTurn)
+            return;
+        const pressed = turned === "previous" ? previousPageRef : nextPageRef;
+        const beside = turned === "previous" ? nextPageRef : previousPageRef;
+        const boxes = [pressed, beside];
+        if (fallbackRef)
+            boxes.push(fallbackRef);
+        focusFirstEnabled(...boxes);
+    }, [page]);
+    return (SP_JSX.jsx("div", { ref: containerRef, className: PAGER_FOOTER_CLASS, "data-testid": testId, style: style, children: SP_JSX.jsxs(ActionGroup, { style: FOOTER_FOCUS_ROW, navEntryPreferPosition: preferNext ? DFL.NavEntryPositionPreferences.PREFERRED_CHILD : undefined, children: [SP_JSX.jsx("span", {}), pages > 0 ? (SP_JSX.jsxs("div", { style: FOOTER_PAGER, children: [SP_JSX.jsx("div", { ref: previousPageRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: disabled || page === 0, onClick: traceUiAction("pager.previous", () => { turnedRef.current = "previous"; onPage(Math.max(0, page - 1), "previous"); }, { screen: testId, page: page - 1 }), children: "\u2039 Previous" }) }), SP_JSX.jsx("span", { style: FOOTER_PAGE_COUNT, children: `${page + 1} / ${pages}` }), SP_JSX.jsx("div", { ref: nextPageRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: preferNext, disabled: disabled || page >= pages - 1, onClick: traceUiAction("pager.next", () => { turnedRef.current = "next"; onPage(Math.min(pages - 1, page + 1), "next"); }, { screen: testId, page: page + 1 }), children: "Next \u203a" }) })] })) : SP_JSX.jsx("span", {}), SP_JSX.jsx("div", { style: FOOTER_TRAILING, children: trailing })] }) }));
+}
+
+const SAME_TABLE_LABEL = "Same table bytes as another source";
+/**
+ * One passive glyph for a result whose exact final bytes are already known from
+ * a different origin.
+ *
+ * Provenance, never status: it is drawn in the panel's own accent rather than
+ * in any compatibility colour, so it cannot be read as a second verdict beside
+ * the green, amber, grey or red mark it sits next to. The word chip this
+ * replaces made a row carrying `Same table`, `Local` and a compatibility
+ * statement read like three separate findings about one table.
+ *
+ * The identity behind it is exact-final-CT-SHA equality with a distinct known
+ * origin, decided before this is rendered. Nothing here infers a duplicate from
+ * a filename, a URL, a provider row or an archive digest.
+ */
+function SameTableMark() {
+    return SP_JSX.jsx("span", { role: "img", title: SAME_TABLE_LABEL, "aria-label": SAME_TABLE_LABEL, style: { color: "var(--ce-accent, hsla(203, 89%, 66%, 0.85))", whiteSpace: "nowrap", flexShrink: 0, lineHeight: 0 }, children: SP_JSX.jsxs("svg", { width: "16", height: "16", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", style: { verticalAlign: "middle" }, children: [SP_JSX.jsx("rect", { x: "2.5", y: "2.5", width: "8", height: "9.5", rx: "1", fill: "none", stroke: "currentColor" }), SP_JSX.jsx("rect", { x: "5.5", y: "4.5", width: "8", height: "9.5", rx: "1", fill: "none", stroke: "currentColor" })] }) });
+}
+
+/**
+ * How long a search runs before the panel explains itself.
+ *
+ * An ordinary search answers well inside this, and a line that appears and
+ * vanishes again is worse than the spinner it sits beside. Past it the user is
+ * entitled to know what is still happening: one search measured on the
+ * development device took 45 seconds, of which Playground was 44.8 and 37 of
+ * those were its own 11.9 MB site index, while every other source had answered
+ * inside three. The panel said only "45s".
+ *
+ * Ten seconds was that machine's idea of a long search, and on a Steam Deck it
+ * meant the explanation never arrived: three searches measured there took 4.3,
+ * 6.7 and 12.4 seconds, so two of them finished before the threshold and the
+ * third reached it with about a poll to spare. The panel showed a spinner and a
+ * count of seconds for eleven of the twelve. Three seconds is past the point
+ * where a search reads as slow and short enough to still be explaining
+ * something the user is waiting on.
+ */
+const SEARCH_EXPLAIN_AFTER_SECONDS = 3;
+// And the first read happens as soon as the threshold is crossed rather than
+// after another interval, so what it says arrives while the wait is still on.
+const SEARCH_PROGRESS_POLL_MS = 2000;
+/**
+ * What this screen calls the search it just started.
+ *
+ * The backend keeps one progress record and nothing in it forbids two searches
+ * at once, so a reader with no name for its own search is simply told about
+ * whichever started last. It authorizes nothing and identifies nobody: it only
+ * has to be different from the last one this device made.
+ */
+function newSearchToken() {
+    return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+// The status line has to stay one short row on a QAM panel.
+// `flex: 1` with `minWidth: 0` is what keeps the mark beside it from widening
+// the panel: the title gives up its own width to an ellipsis first.
+const TITLE_TEXT = { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+// The title and its mark share one line, with the mark against the right edge.
+const TITLE_ROW = { display: "flex", alignItems: "center", gap: 6, minWidth: 0 };
+// One line, like the title above it. It asked for an ellipsis without asking to
+// stay on one line, so it wrapped instead: a row carrying a file name, a source,
+// a date and a size ran to three or four lines, and how tall a page of results
+// was depended on which results were on it. What it loses to the clamp it gets
+// back under the ring, the same reveal Manage's rows use.
+const SUBTLE_TEXT = { fontSize: "0.8em", opacity: 0.7, minWidth: 0 };
+// The block holding one result's two lines. Named because the row is a Steam
+// button and the marquee rule needs an element of this plugin's own around it.
+const RESULT_LINES = { display: "flex", flexDirection: "column", gap: 2, textAlign: "left", minWidth: 0 };
+/**
+ * How tall one result row is, for fitting a page to the screen.
+ *
+ * A constant because the row is now a constant: the title and the detail line
+ * are each clamped to one line and revealed under the ring instead of wrapping,
+ * so a row carrying a file name, a source, a date and a size is the same height
+ * as a row carrying a title alone. It used to be neither, which is why a page
+ * of six results took a different amount of the screen on every search.
+ */
+const RESULT_ROW_HEIGHT = 58;
+/**
+ * The fewest results a page may hold before the measurement stops taking any.
+ *
+ * A search that returns three rows a page is still a search. One that returns
+ * one is a list the reader pages through rather than reads.
+ */
+const MIN_RESULT_ROWS = 3;
+// One empty set for every render that was given none, rather than a fresh one
+// per render for a default that is only ever asked whether it holds something.
+const EMPTY_ARTIFACT_SET = new Set();
+const EMPTY_LOCAL_TABLES = [];
+/**
+ * What a row already is, said as a mark rather than as the first of nine
+ * fields.
+ *
+ * "Local" and the retirement marks are the only part of that line that decides
+ * whether the row can be pressed at all, and they were the first word of a
+ * run-on sentence of file name, source, date and size, set in the same dimmed
+ * grey as the rest of it. A filled chip is what the eye finds without reading,
+ * which is the whole job here: a list of twenty rows is scanned for the ones
+ * that are already on the device or already known not to work.
+ *
+ * It sits at the right of the title's own line rather than on a line of its
+ * own, so a marked row is exactly as tall as an unmarked one and the column of
+ * marks is in one place to scan down. Nothing about it may widen the panel: it
+ * is the fixed half of that line and the title is the half that gives way.
+ */
+const ROW_MARK_BASE = {
+    flex: "0 0 auto",
+    padding: "0 6px",
+    borderRadius: 3,
+    fontSize: "0.8em",
+    lineHeight: "16px",
+    fontWeight: 700,
+    letterSpacing: "0.3px",
+    textTransform: "uppercase",
+    whiteSpace: "nowrap",
+};
+// The accent this product marks its own emphasis with, declared on the panel so
+// one line changes it everywhere; the literal is the fallback for a tree that
+// is somehow rendered outside that panel.
+const ROW_MARK_LOCAL = {
+    ...ROW_MARK_BASE,
+    background: "var(--ce-accent, hsla(203, 89%, 66%, 0.85))",
+    color: "hsla(0, 0%, 0%, 0.86)",
+};
+// A row that cannot be pressed is stated in the colour of a refusal and not in
+// the accent, which on this screen means "here it is already".
+const ROW_MARK_REFUSED = {
+    ...ROW_MARK_BASE,
+    background: "hsla(9, 74%, 62%, 0.82)",
+    color: "hsla(0, 0%, 0%, 0.86)",
+};
+// The same accent, hollow, because it is the weaker of the two things this
+// column says. Filled means the press costs nothing; outlined means a table on
+// this device came from this row and the download still has to happen, which
+// has to look like less than "Local" without looking like a refusal.
+const ROW_MARK_IMPORTED = {
+    ...ROW_MARK_BASE,
+    padding: "0 5px",
+    boxShadow: "inset 0 0 0 1px var(--ce-accent, hsla(203, 89%, 66%, 0.85))",
+    color: "var(--ce-accent, hsla(203, 89%, 66%, 0.85))",
+};
+/**
+ * The whole of what a retired row says, in the two words a chip holds.
+ *
+ * A user scanning a list of twenty acts differently on each of these: a table
+ * that ran and did not work may work again after the game updates, bytes that
+ * were never a table never will, and a file the source no longer has is not
+ * about this device at all. One shared "marked as not working" said none of
+ * that, and repeated the word "marked" on a row whose greying already says it.
+ */
+const BLOCKED_MARK_TEXT = {
+    refused: "Failed",
+    unusable: "Not a table",
+    // Not "Not a table": these bytes may well hold a good one, and the user can
+    // do something about it, which is exactly what a separate status is for.
+    encrypted: "Encrypted",
+    gone: "Gone",
+    // An entry from a build that did not record the cause, and a cause a later
+    // backend knows and this panel does not. Both are true and neither is exact.
+    unknown: "Not working",
+};
+/** Publication date, which is what tells a user whether a table is current. */
+function formatPosted(value) {
+    if (!value)
+        return null;
+    const posted = new Date(value);
+    if (Number.isNaN(posted.getTime()))
+        return null;
+    return posted.toISOString().slice(0, 10);
+}
+/**
+ * When a table already on this device arrived, as a date and nothing finer.
+ *
+ * The download where there was one, and otherwise when the file was opened
+ * here. The same rule Manage's rows use, because the reader comparing a local
+ * row against the source rows beside it is comparing the same thing.
+ */
+function localArrived(table) {
+    const origin = table.origins.length ? table.origins[table.origins.length - 1] : null;
+    return formatPosted(origin?.retrieved_at ?? table.imported_at ?? null);
+}
+function formatSize(value) {
+    if (value === null)
+        return "size unknown";
+    if (value < 1024 * 1024)
+        return `${Math.ceil(value / 1024)} KiB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+// A provider search costs seconds of network work, and the modal remounts every
+// time it is opened. Reuse the last outcome for the same game and query so
+// reopening is instant; refreshing stays an explicit action.
+const SEARCH_CACHE_LIMIT = 8;
+const searchCache = new Map();
+/**
+ * Which set of table sources every cached outcome here was searched under.
+ *
+ * This cache is keyed by game and query alone, which was the whole of search
+ * identity until the user could choose sources. Switching one off then left
+ * reopening Search restoring rows from a source that is no longer asked, still
+ * looking downloadable and only refused by the backend on the press; switching
+ * one back on left the roster saying it was off until an explicit new search.
+ *
+ * Clearing on every change covers what is already stored. The revision covers
+ * what is still in flight: a search that began before the change is stamped
+ * with the revision it began under, so the outcome it writes afterwards is not
+ * restored as though it had been searched under the new choice.
+ */
+let sourceSelectionRevision = 0;
+/** Forget every cached outcome, because the set of sources searched has changed. */
+function forgetSearchOutcomes() {
+    sourceSelectionRevision += 1;
+    searchCache.clear();
+}
+/** The query half of a scope key, so a retry re-searches what produced the row. */
+function queryForScope(scope, gameIdentity, shortcutExecutable) {
+    const prefix = `${gameIdentity}\u0000`;
+    const suffix = `\u0000${shortcutExecutable ?? ""}`;
+    if (!scope.startsWith(prefix) || !scope.endsWith(suffix))
+        return null;
+    const value = scope.slice(prefix.length, scope.length - suffix.length);
+    return value || null;
+}
+function cacheKey(gameIdentity, query, shortcutExecutable) {
+    // The backend may retry an abbreviated library name against the install
+    // directory. That makes the shortcut target part of search identity: reusing
+    // an outcome after the target path changes can return tables for the old game.
+    return `${gameIdentity}\u0000${query.trim().toLowerCase()}\u0000${shortcutExecutable ?? ""}`;
+}
+function rememberSearch(key, value) {
+    searchCache.delete(key);
+    searchCache.set(key, value);
+    while (searchCache.size > SEARCH_CACHE_LIMIT) {
+        const oldest = searchCache.keys().next();
+        if (oldest.done)
+            break;
+        searchCache.delete(oldest.value);
+    }
+}
+function formatAge(milliseconds) {
+    const minutes = Math.floor(milliseconds / 60000);
+    if (minutes < 1)
+        return "just now";
+    if (minutes === 1)
+        return "1 minute ago";
+    if (minutes < 60)
+        return `${minutes} minutes ago`;
+    const hours = Math.floor(minutes / 60);
+    return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+}
+/** Results CE Decky can acquire on its own; a controller cannot browse the web. */
+const AUTOMATIC_DOWNLOAD_MODES = new Set(["direct_https"]);
+function isAutomatic(result) {
+    return AUTOMATIC_DOWNLOAD_MODES.has(result.download_mode);
+}
+function isTerminalAcquisition(status) {
+    return status.state === "imported" || status.state === "cancelled" || status.state === "failed";
+}
+const PROVENANCE_TEXT = {
+    digest_match: {
+        label: "Use the saved copy or ask the provider again",
+        description: "The provider's own checksum matches this copy, so downloading again returns the same bytes. Use saved copy is the default and works offline.",
+    },
+    origin_copy: {
+        label: "Use the copy you already downloaded, or ask the source again",
+        description: "This is a copy you downloaded from this source before. This source does not provide a checksum, so CE Decky cannot tell whether the online version has changed. You can use this saved copy now or download it again.",
+    },
+    different_digest: {
+        label: "Use the copy you already downloaded, or fetch the current version",
+        description: "This is a copy you downloaded from this source before. The source now advertises a different checksum for the online version. You can use this saved copy now or download the current version.",
+    },
+    local_only: {
+        label: "Use the saved copy or ask its source again",
+        description: "This table is on this device and needs no network. Download again asks its source for the file once more, and bytes that differ are validated and reviewed as a new exact table.",
+    },
+};
+/**
+ * The same window with the saved copy's own press off.
+ *
+ * Identity and provenance only: a copy the user has recorded as not working is
+ * still exactly the bytes it was, and every one of these used to end by saying
+ * it could be used now, two rows above the disabled press that would have done
+ * it. The row under this one carries the reason and the way to lift it.
+ */
+const BLOCKED_PROVENANCE_TEXT = {
+    digest_match: "The provider's own checksum matches this copy, so downloading again returns the same bytes. Clear the mark on this copy before it can be used again.",
+    origin_copy: "This is a copy you downloaded from this source before. This source does not provide a checksum, so CE Decky cannot tell whether the online version has changed. Clear the mark on this copy before it can be used again.",
+    different_digest: "This is a copy you downloaded from this source before, and the source now advertises a different checksum for the online version. Clear the mark on this copy before it can be used again, or download the current version.",
+    local_only: "This table is on this device and needs no network. Clear the mark on this copy before it can be used again.",
+};
+/** One small decision before network work replaces bytes already on the device. */
+function ExistingTableChoiceModal({ table, provenance, canUse, canDownload, useBlockedReason, downloadBlockedReason, onRetryDownload, onUse, onDownload, onClose, }) {
+    useUiSurface("ExistingTableChoiceModal", table.sha256);
+    const existingRef = SP_REACT.useRef(null);
+    const downloadRef = SP_REACT.useRef(null);
+    const retryRef = SP_REACT.useRef(null);
+    // The ring opens on the copy, which is the press this window exists for and
+    // the one that works with no network. Where that copy is the blocked half it
+    // opens on the download instead, so the window never opens on a dead control.
+    //
+    // Said twice, because once was not enough. `preferredFocus` is what Steam
+    // reads when it places the ring itself, and this effect is what puts it right
+    // if Steam has already placed it: a mount effect runs before Steam's own
+    // assignment, so on its own it was overwritten and the window opened on
+    // whichever button came first, marked as unavailable and unable to answer A.
+    //
+    // Retry is last and is reached the same way, because a window whose two
+    // presses are both off is exactly the window that opens on a dead control:
+    // it is then the only way out of the state the user is in, and a press
+    // nothing can reach is no press at all.
+    SP_REACT.useEffect(() => { focusFirstEnabled(existingRef, downloadRef, retryRef); }, [canUse, canDownload, onRetryDownload]);
+    const text = PROVENANCE_TEXT[provenance];
+    // What the copy is, never what can be done with it, while what can be done
+    // with it is off. The window was disabling Use saved copy and explaining, two
+    // rows above, that the saved copy could be used now.
+    const description = useBlockedReason ? BLOCKED_PROVENANCE_TEXT[provenance] : text.description;
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("catalog.saved_choice.cancel", onClose, { table_sha: table.sha256 }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 620 }, children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Table already on this device" }), SP_JSX.jsx(PanelRow, { tone: "header", truncate: true, label: table.filename, description: `${table.sha256.slice(0, 12)} · ${formatSize(table.size)}` }), SP_JSX.jsx(PanelRow, { truncate: true, label: text.label, description: description }), downloadBlockedReason ? (SP_JSX.jsx(PanelRow, { truncate: true, label: "Downloading again is not available", description: downloadBlockedReason, actions: onRetryDownload ? (SP_JSX.jsx("div", { ref: retryRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !canUse && !canDownload, onClick: traceUiAction("provider_catalog.retry_download", onRetryDownload, { table_sha: table.sha256, provenance }), children: "Retry" }) })) : undefined })) : null, useBlockedReason ? (SP_JSX.jsx(PanelRow, { truncate: true, label: "This saved copy is marked as not working", description: useBlockedReason })) : null] }), SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx("div", { ref: existingRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: canUse, disabled: !canUse, onClick: traceUiAction("provider_catalog.use_saved_copy", onUse, { table_sha: table.sha256, provenance }), children: "Use saved copy" }) }), SP_JSX.jsx("div", { ref: downloadRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !canUse && canDownload, disabled: !canDownload, onClick: traceUiAction("provider_catalog.download_again", onDownload, { table_sha: table.sha256, provenance }), children: "Download again" }) })] })] }) }));
+}
+function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], compatibility = [], onRefreshProvenance, appId, shortcutExecutable, initialQuery, autoSearch = false, localArtifacts = {}, localTables = EMPTY_LOCAL_TABLES, deviceTables = EMPTY_LOCAL_TABLES, importedArtifacts = EMPTY_ARTIFACT_SET, footerActions, blockedTables = {}, blockedArtifacts = {}, onClearMarks, onRefreshBlocked, onLocalSelected, onImported, }) {
+    useUiSurface("ProviderCatalog", appId);
+    const [query, setQuery] = SP_REACT.useState(initialQuery ?? gameName);
+    const [results, setResults] = SP_REACT.useState([]);
+    const [resultPage, setResultPage] = SP_REACT.useState(0);
+    const [failures, setFailures] = SP_REACT.useState([]);
+    const [sources, setSources] = SP_REACT.useState([]);
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const [searchFinished, setSearchFinished] = SP_REACT.useState(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const [searchedAt, setSearchedAt] = SP_REACT.useState(null);
+    const [rejectedGeneration, setRejectedGeneration] = SP_REACT.useState(0);
+    // The provider rows this screen has imported from while it has been open.
+    //
+    // The marks it is handed are read once, when it opens: a detached modal never
+    // sees its props change. That is normally enough, because a successful import
+    // goes straight to Review and closes this screen. It is not enough when
+    // something after the import fails, which is exactly when the user comes back
+    // here: the table is on the device, this screen does not know, and the row
+    // that produced it offers the same download over again.
+    const [importedHere, setImportedHere] = SP_REACT.useState(EMPTY_ARTIFACT_SET);
+    const noteImportedFrom = (status) => {
+        setImportedHere((rows) => new Set(rows).add(`${status.provider}:${status.artifact_id}`));
+    };
+    const [elapsedSeconds, setElapsedSeconds] = SP_REACT.useState(0);
+    // What the running search is doing, read from the backend rather than guessed
+    // at. Only asked for once the wait is long enough to be worth explaining.
+    const [progress, setProgress] = SP_REACT.useState(null);
+    // A search specifically, rather than the busy flag every press on this screen
+    // sets: a download is also a long wait, and asking the backend what a search
+    // is doing while one runs is a read per two seconds that answers nothing.
+    const [searching, setSearching] = SP_REACT.useState(false);
+    // The name of the search being watched, as state rather than as a ref: it is
+    // half of what the progress read is, so the read has to be rebuilt when it
+    // changes. Held in a ref, a context switch that left `searching` true across
+    // the change never re-ran the effect, and the poll went on asking for the
+    // search of the game the user had just left while the new game's search ran
+    // with nothing to show for itself.
+    const [searchToken, setSearchToken] = SP_REACT.useState(null);
+    const identityRef = SP_REACT.useRef(`${gameIdentity}\u0000${gameName}\u0000${shortcutExecutable ?? ""}`);
+    const contextGenerationRef = SP_REACT.useRef(0);
+    const busyRef = SP_REACT.useRef(false);
+    // The download window this screen opens, and closes when it leaves.
+    const ownedModalCloseRef = SP_REACT.useRef(null);
+    // The acquisition that window is holding, while it is holding one.
+    //
+    // The window cancels what it started when it unmounts, which is the ordinary
+    // way a download ends. This is the case that is not ordinary: the panel can
+    // change which game it is on while the window is open, and closing a modal
+    // is asking Steam to unmount it rather than unmounting it, so the guarantee
+    // that leaving a game takes its download with it should not rest on when that
+    // happens. It is cleared as soon as the window closes, so it never names an
+    // acquisition that has already imported.
+    const ownedAcquisitionRef = SP_REACT.useRef(null);
+    const dropOwnedAcquisition = () => {
+        const acquisitionId = ownedAcquisitionRef.current;
+        ownedAcquisitionRef.current = null;
+        ownedModalCloseRef.current?.();
+        ownedModalCloseRef.current = null;
+        if (acquisitionId)
+            void cancelTableAcquisition(acquisitionId).catch(() => undefined);
+    };
+    // Retirement marks belong to the exact cached result snapshot that proved the
+    // bytes damaged, so refreshing another game's search cannot resurrect them.
+    // The identity of the results on screen, not of the text field. Editing the
+    // query does not replace the displayed result set until Search is pressed, so
+    // deriving this from `query` moved retirement marks and the expired-authority
+    // retry onto a search that had not run: a damaged artifact from the visible
+    // results was recorded under the half-typed query, and the retry re-searched
+    // that text instead of the one that produced the row the user clicked. Only a
+    // completed search replaces both the results and their scope.
+    const [searchScope, setSearchScope] = SP_REACT.useState(() => cacheKey(gameIdentity, initialQuery ?? gameName, shortcutExecutable));
+    // The record as this screen currently understands it. Seeded from the props
+    // the modal was opened with and re-read whenever this screen is the thing
+    // that changed it, because a detached tree is never handed new props.
+    const [blockedView, setBlockedView] = SP_REACT.useState(() => ({ byDigest: blockedTables, byArtifact: blockedArtifacts }));
+    const [resolutionView, setResolutionView] = SP_REACT.useState(artifactResolutions);
+    // A record that a table did not work suppresses its own green here as well as
+    // in the backend, so the screen agrees with itself the moment a mark is
+    // written. Only that kind of record: a statement about a download or about a
+    // source answers nothing about a table that loaded and worked.
+    const [compatibilityView, setCompatibilityView] = SP_REACT.useState(compatibility.map((entry) => isCompatibilityFailure(blockedTables[entry.table_sha256]) ? { ...entry, invalidated: true } : entry));
+    const refreshBlocked = async () => {
+        const generation = contextGenerationRef.current;
+        if (onRefreshProvenance) {
+            const resolutions = await onRefreshProvenance().catch((cause) => {
+                logUiFailure("catalog.resolution_refresh_failed", cause);
+                return null;
+            });
+            if (resolutions && generation === contextGenerationRef.current) {
+                setResolutionView(resolutions.resolutions);
+                setCompatibilityView(resolutions.compatibility);
+            }
+        }
+        if (!onRefreshBlocked || generation !== contextGenerationRef.current)
+            return;
+        // Advisory: a lookup that cannot be re-read leaves the previous one in
+        // place rather than failing the action that asked for it.
+        const next = await onRefreshBlocked().catch(() => null);
+        if (next && generation === contextGenerationRef.current) {
+            setBlockedView(next);
+            setCompatibilityView((entries) => entries.map((entry) => isCompatibilityFailure(next.byDigest[entry.table_sha256]) ? { ...entry, invalidated: true } : entry));
+        }
+    };
+    SP_REACT.useLayoutEffect(() => {
+        const identity = `${gameIdentity}\u0000${gameName}\u0000${shortcutExecutable ?? ""}`;
+        if (identityRef.current === identity)
+            return;
+        // A layout effect runs in the same commit before promise continuations can
+        // resume after rerender. Invalidate old async work here rather than in a
+        // passive effect so a late acquisition cannot be adopted by the new game.
+        identityRef.current = identity;
+        contextGenerationRef.current += 1;
+        dropOwnedAcquisition();
+        busyRef.current = false;
+        setBusy(false);
+        setSearchFinished(false);
+        setQuery(initialQuery ?? gameName);
+        setResults([]);
+        setResultPage(0);
+        setFailures([]);
+        setSources([]);
+        setError(null);
+        setSearchedAt(null);
+        // The search this screen was watching belongs to the game it was opened
+        // for. A layout effect is where that has to be dropped, because the auto
+        // search for the new game starts from a passive effect in this same commit.
+        setSearching(false);
+        setSearchToken(null);
+        setProgress(null);
+    }, [gameIdentity, gameName, shortcutExecutable, initialQuery]);
+    // A provider search is tens of seconds of somebody else's network, so report
+    // the elapsed time rather than an invented completion figure.
+    SP_REACT.useEffect(() => {
+        if (!busy) {
+            setProgress(null);
+            setSearching(false);
+            return;
+        }
+        const started = Date.now();
+        setElapsedSeconds(0);
+        const timer = window.setInterval(() => setElapsedSeconds(Math.round((Date.now() - started) / 1000)), 500);
+        return () => window.clearInterval(timer);
+    }, [busy]);
+    // And once it has been long enough that a user is entitled to wonder, say
+    // what each source is actually doing. Deliberately not from the first second:
+    // an ordinary search answers well inside this, and a line that appears and
+    // disappears is more distracting than the spinner it sits beside. It is one
+    // bounded read every couple of seconds, and a read that fails leaves the
+    // elapsed time on screen rather than replacing it with an error: nothing
+    // about the search itself depends on this.
+    const explaining = searching && elapsedSeconds >= SEARCH_EXPLAIN_AFTER_SECONDS;
+    SP_REACT.useEffect(() => {
+        if (!explaining || !searchToken)
+            return;
+        const token = searchToken;
+        let live = true;
+        let timer;
+        // One entry per search, not one per poll: the backend being unreachable is
+        // the same fact fifteen times over a long search, and the panel's own log
+        // is a bounded ring that the support bundle carries.
+        let reported = false;
+        const read = async () => {
+            try {
+                const answer = await pollTableSearch(token);
+                // A record that is not running belongs to a search that has ended, and
+                // the one on this screen has not: the backend names the sources when
+                // the jobs are built, so an answer from before that describes the
+                // previous search and must not be shown as this one.
+                if (live)
+                    setProgress(answer?.running ? answer : null);
+            }
+            catch (cause) {
+                if (!reported) {
+                    reported = true;
+                    logUiWarning("catalog.search_progress_unreadable", { reason: describeError(cause) });
+                }
+                if (live)
+                    setProgress(null);
+            }
+            // Scheduled after the answer has landed rather than on a fixed interval.
+            // A read slower than the interval would otherwise have another started
+            // beside it, and two answers can arrive in the other order and put an
+            // older set of stages back on the screen; a backend that has stalled
+            // would also collect one outstanding call every two seconds.
+            if (live)
+                timer = window.setTimeout(() => void read(), SEARCH_PROGRESS_POLL_MS);
+        };
+        void read();
+        return () => {
+            live = false;
+            if (timer !== undefined)
+                window.clearTimeout(timer);
+        };
+    }, [explaining, searchToken]);
+    // Closing the window is what cancels the download: it owns the acquisition
+    // and cancels what it started when it unmounts, so this screen leaving takes
+    // the download with it without knowing anything about it.
+    SP_REACT.useEffect(() => () => {
+        contextGenerationRef.current += 1;
+        dropOwnedAcquisition();
+    }, []);
+    // A controller cannot usefully browse the web, so only results CE Decky can
+    // download itself are offered. The rest are still counted, so a provider that
+    // silently stops returning usable results is visible rather than absent.
+    const automaticResults = SP_REACT.useMemo(() => results.filter(isAutomatic), [results]);
+    // A provider row and a local table are related in two different ways, and the
+    // difference is what the press is told, never what the press is allowed to do.
+    // An advertised digest proves the bytes are the same ones. An origin says only
+    // that this row produced this local table before, and the same artifact ID can
+    // serve changed bytes, so it proves nothing about what the row holds now.
+    //
+    // It still offers the copy. Two of the four sources publish no digest at all,
+    // and a user who has already downloaded a table from one of them, and is now
+    // offline, is a user who owns those bytes: refusing to reach them because the
+    // source declines to publish a checksum decides something that is theirs to
+    // decide. What the missing proof changes is the wording of the choice, which
+    // says the bytes cannot be shown to be the same and offers the download.
+    const localBySha = SP_REACT.useMemo(() => new Map([...deviceTables, ...localTables].filter((table) => table.available).map((table) => [table.sha256, table])), [deviceTables, localTables]);
+    // The newest table this row produced, per row. Deterministic on purpose: the
+    // first one encountered was whichever the backend happened to list first, so
+    // one post that served several revisions offered an arbitrary one of them.
+    const localByOrigin = SP_REACT.useMemo(() => {
+        const newest = new Map();
+        for (const table of localTables) {
+            if (!table.available)
+                continue;
+            for (const origin of table.origins) {
+                const key = `${origin.provider}:${origin.artifact_id}`;
+                const retrievedAt = Date.parse(origin.retrieved_at);
+                const at = Number.isFinite(retrievedAt) ? retrievedAt : 0;
+                const held = newest.get(key);
+                if (!held || at > held.retrievedAt)
+                    newest.set(key, { table, retrievedAt: at });
+            }
+        }
+        return new Map([...newest].map(([key, held]) => [key, held.table]));
+    }, [localTables]);
+    const resolvedResults = SP_REACT.useMemo(() => {
+        const mappings = new Map(resolutionView.map((entry) => [`${entry.provider}:${entry.artifact_id}:${entry.artifact_sha256}`, entry.table_sha256]));
+        return new Map(automaticResults.map((result) => {
+            const advertised = result.advertised_sha256?.toLowerCase();
+            const digest = !advertised ? null
+                : mappings.get(`${result.provider}:${result.artifact_id}:${advertised}`)
+                    ?? localArtifacts[`sha:${advertised}`]
+                    ?? (!isArchiveFilename(result.filename) ? advertised : null);
+            return [result, digest];
+        }));
+    }, [automaticResults, resolutionView, localArtifacts]);
+    const resolvedDigest = (result) => resolvedResults.get(result) ?? null;
+    const sameContentOrigins = SP_REACT.useMemo(() => {
+        const origins = new Map();
+        const add = (digest, origin) => {
+            const keys = origins.get(digest) ?? new Set();
+            keys.add(`${origin.provider}:${origin.artifact_id}`);
+            origins.set(digest, keys);
+        };
+        for (const table of localBySha.values())
+            for (const origin of table.origins)
+                add(table.sha256, origin);
+        for (const entry of resolutionView)
+            add(entry.table_sha256, entry);
+        for (const [result, digest] of resolvedResults)
+            if (digest)
+                add(digest, result);
+        return origins;
+    }, [localBySha, resolutionView, resolvedResults]);
+    /**
+     * Everything one provider row passively says, decided in one place.
+     *
+     * The row, the chip beside it and the Retry count above the list were each
+     * working it out again from the records, and they drifted: a row could carry
+     * a mark the list counted and the row itself never showed, and a duplicate
+     * glyph calculated from the revision the source is offering could sit beside
+     * a compatibility mark and a Local about the copy this device holds. What a
+     * press can act on has to be what the user can see, so it is derived once.
+     */
+    const providerRowMarks = (result, localTable) => {
+        const refusals = rowRefusals(result, localTable);
+        const { damaged, presented } = refusals;
+        const blocked = presented;
+        // Availability is physical and is not an advisory's to take away: bytes that
+        // are on this device are on it whatever any record says about them. A copy
+        // in the library has been imported and verified as a table, so a record
+        // saying some download was not one, or that its archive is locked, or that
+        // a source no longer serves it, cannot redefine the copy as absent. Those
+        // are about the download side and belong to the press that goes there.
+        const localAvailable = Boolean(localTable);
+        // One exact table per mark, and both halves of what it says come from it. A
+        // row can be about two sets of bytes at once: the copy this device holds
+        // and the revision the source is offering now. Taking the failure from one
+        // and the success from the other described neither, and could paint a
+        // revision nobody has tried in the colour of an older one that failed. The
+        // copy the row is presenting is the subject where there is one, because
+        // that is the table the press in front of the user is about; otherwise it
+        // is what the source says it would serve.
+        const subjectDigest = localTable ? localTable.sha256 : resolvedDigest(result);
+        const subjectRecord = subjectDigest ? blockedView.byDigest[subjectDigest.toLowerCase()] ?? null : null;
+        // A row that can name no exact table at all has no positive claim for a
+        // record to contradict, and the record it carries is then the only thing
+        // there is to say about it. That is the ordinary case: most sources publish
+        // no checksum, and a mark recorded against the row is what stops the same
+        // table being downloaded and tried again every search.
+        const failureRecord = subjectDigest
+            ? subjectRecord
+            : (isCompatibilityFailure(blocked) ? blocked : null);
+        const carried = isCompatibilityFailure(failureRecord) ? failureRecord : null;
+        // Said once. The chip drops only the record the glyph is already carrying;
+        // a record about other bytes, such as a refused newer revision beside a
+        // saved copy that works, is a different statement and is explained in the
+        // window rather than in the row's one chip.
+        const condition = blocked && !(carried && blocked.sha256 === carried.sha256 && blocked.cause === carried.cause)
+            ? blocked
+            : null;
+        const artifactKey = `${result.provider}:${result.artifact_id}`;
+        const importedBefore = importedArtifacts.has(artifactKey) || importedHere.has(artifactKey);
+        const chip = localAvailable
+            ? { text: "Local", style: ROW_MARK_LOCAL }
+            : condition
+                ? { text: BLOCKED_MARK_TEXT[condition.cause], style: ROW_MARK_REFUSED }
+                : damaged
+                    ? { text: "Damaged", style: ROW_MARK_REFUSED }
+                    : importedBefore
+                        ? { text: "Imported", style: ROW_MARK_IMPORTED }
+                        : null;
+        // Same-content provenance is about the same table as the marks beside it.
+        // Where the subject is the saved copy, that copy's identity is this device's
+        // own; where it is the revision the source names, the resolution proves it.
+        // A saved copy never speaks for bytes a source is advertising and nobody has
+        // resolved, because an older copy is no evidence about those.
+        const duplicateSubject = localTable ? localTable.sha256 : resolvedDigest(result);
+        const duplicate = Boolean(duplicateSubject && (sameContentOrigins.get(duplicateSubject)?.size ?? 0) > 1);
+        // What a press that says "try these again" may act on: exactly the records
+        // this row is putting in front of the user. A row presenting a stored copy
+        // is showing that copy's mark and nothing else, whatever else it carries
+        // about the revision the source is offering now, and this device's memory
+        // that the last download from the row was damaged goes with the chip that
+        // says so rather than with a mark about other bytes entirely. What is not
+        // shown is cleared from the window that names the two revisions apart.
+        const shown = (localAvailable ? [carried] : [carried, condition])
+            .filter((mark) => Boolean(mark));
+        const clearDamaged = !localAvailable && damaged;
+        const visibleFailure = shown.length > 0 || clearDamaged;
+        return { ...refusals, artifactKey, localAvailable, subjectDigest, failureRecord, condition, chip, duplicate,
+            clearTargets: shown, clearDamaged, visibleFailure };
+    };
+    const catalogRows = SP_REACT.useMemo(() => {
+        const represented = new Set();
+        const providerRows = automaticResults.map((result) => {
+            const artifactKey = `${result.provider}:${result.artifact_id}`;
+            const finalSha = resolvedDigest(result);
+            const exactSha = finalSha && localBySha.has(finalSha) ? finalSha
+                : result.advertised_sha256 ? localArtifacts[`sha:${result.advertised_sha256.toLowerCase()}`] : undefined;
+            const exactLocal = exactSha
+                ? localBySha.get(exactSha) ?? { sha256: exactSha, filename: result.filename, size: result.size_bytes }
+                : undefined;
+            const local = exactLocal ?? localByOrigin.get(artifactKey) ?? null;
+            // Only the one table the row actually offers is folded into it. Every
+            // other revision this row produced keeps its own local row, so a post that
+            // has served several of them over time still reaches all of them.
+            if (local)
+                represented.add(local.sha256);
+            return {
+                kind: "provider",
+                result,
+                localTable: local,
+                // Three cases, not two. A source that publishes a checksum which does
+                // not resolve to this copy has said something about the online version;
+                // one that publishes none has said nothing at all, and telling the
+                // reader the second when the first is true is simply wrong.
+                provenance: exactLocal
+                    ? "digest_match"
+                    : result.advertised_sha256 ? "different_digest" : "origin_copy",
+            };
+        });
+        const localRows = (searchFinished ? localTables : EMPTY_LOCAL_TABLES)
+            .filter((table) => table.available && !represented.has(table.sha256))
+            .map((table) => ({ kind: "local", table }));
+        return [...providerRows, ...localRows];
+    }, [automaticResults, localArtifacts, localByOrigin, localBySha, localTables, searchFinished, resolvedResults]);
+    // What the sources are doing while the search is still running, in the same
+    // short form the finished tally uses. Sources that have answered are counted
+    // rather than listed one by one: a user waiting wants to know what is still
+    // out, and the row has to stay readable on a quick-access panel.
+    const searchProgressText = SP_REACT.useMemo(() => {
+        if (!progress)
+            return "";
+        const count = (state) => progress.sources.filter((source) => source.state === state).length;
+        const parts = progress.sources
+            .filter((source) => source.state === "running")
+            .map((source) => {
+            const name = providerShortName(source.provider, source.name);
+            return source.stage ? `${name}: ${source.stage}` : name;
+        });
+        const done = count("done");
+        const failed = count("failed");
+        // A source the user switched off is named for the same reason the finished
+        // tally names it: a deliberately narrowed search otherwise looks like a
+        // build that never had those sources, and this is the line that is on
+        // screen while the narrowing is actually costing the user something.
+        const off = count("off");
+        if (done > 0)
+            parts.push(`${done} answered`);
+        if (failed > 0)
+            parts.push(`${failed} could not`);
+        if (off > 0)
+            parts.push(`${off} off`);
+        return parts.join(" \u00b7 ");
+    }, [progress]);
+    // How many sources this search is actually asking. The completed roster
+    // beside it describes the search before this one, which is a different set
+    // whenever the user has switched one off since.
+    const searchingSourceCount = progress
+        ? progress.sources.filter((source) => source.state !== "off").length
+        : 0;
+    // Every searched source is listed with its own count, including the ones that
+    // answered with nothing: a provider that quietly stops returning results is
+    // otherwise indistinguishable from a game that simply has no tables. The
+    // backend supplies the roster because a source that neither produced a result
+    // nor failed leaves no trace in either list.
+    const sourceSummary = SP_REACT.useMemo(() => {
+        const shortName = (provider, fallback) => providerShortName(provider, fallback);
+        const automaticByProvider = new Map();
+        const namesByProvider = new Map();
+        for (const result of results) {
+            namesByProvider.set(result.provider, result.provider_display_name || result.provider);
+            if (isAutomatic(result))
+                automaticByProvider.set(result.provider, (automaticByProvider.get(result.provider) ?? 0) + 1);
+        }
+        // A cached outcome from before the roster existed still has to name its
+        // failed sources, so fall back to whichever providers left a trace.
+        const failed = new Map(failures.map((failure) => [failure.provider, failure.error]));
+        const roster = sources.length > 0
+            ? sources
+            : [...new Set([...namesByProvider.keys(), ...failed.keys()])].map((provider) => ({
+                provider,
+                provider_display_name: namesByProvider.get(provider) ?? provider,
+                results: 0,
+                status: failed.has(provider) ? "unavailable" : "ok",
+                error: failed.get(provider) ?? null,
+            }));
+        return roster.map((source) => {
+            const name = shortName(source.provider, source.provider_display_name || namesByProvider.get(source.provider) || source.provider);
+            const automatic = automaticByProvider.get(source.provider) ?? 0;
+            if (source.status === "indexing") {
+                const progress = source.total_pages
+                    ? `${source.indexed_pages ?? 0}/${source.total_pages}`
+                    : `${source.indexed_pages ?? 0} page(s)`;
+                return `${name}: indexing ${progress} · ${automatic}`;
+            }
+            // A source the user switched off is named and said to be off. Dropping
+            // it would leave a deliberately narrowed search looking like a build that
+            // never had those sources, which is exactly the question this line
+            // exists to answer.
+            if (source.status === "disabled")
+                return `${name}: off`;
+            if (source.status === "stale")
+                return `${name}: ${automatic} · stale index`;
+            // A source being told to wait is not a source with nothing for this game,
+            // and both used to read the same. What the cached listing still knows is
+            // in the row's own help text; the wait is what decides whether trying
+            // again in a moment is worth it.
+            if (source.status === "cooldown") {
+                const wait = source.retry_after_seconds ? ` · retry in ${source.retry_after_seconds}s` : "";
+                return `${name}: ${automatic} · rate limited${wait}`;
+            }
+            // A source can answer partly and then stop, and the rows it did return
+            // are on the screen. Reporting that as `n/a` contradicted the results
+            // immediately below it, and the count here is of fresh rows only, since
+            // a stale fallback row is not offered as a direct download.
+            if (source.status !== "ok")
+                return automatic > 0 ? `${name}: ${automatic} · partial` : `${name}: n/a`;
+            // Never let a roster/result disagreement render as a negative count.
+            const withheld = Math.max(0, source.results - automatic);
+            return `${name}: ${automatic}${withheld > 0 ? `+${withheld}` : ""}`;
+        }).join(" · ");
+    }, [results, sources, failures]);
+    // A search that asked nothing at all, which is not the same as a search that
+    // found nothing. Only true once a search has produced a roster: an empty
+    // roster is a screen that has not searched yet. Rows on screen rule it out
+    // too, because a stale row from a source no longer in the registry is not
+    // switched off and would leave this contradicting the results beneath it.
+    const allSourcesOff = SP_REACT.useMemo(() => results.length === 0
+        && sources.length > 0
+        && sources.every((source) => source.status === "disabled"), [results, sources]);
+    // Recomputed when an acquisition retires an artifact, including the detached
+    // Playground modal that owns its own acquisition and only reports on close.
+    const rejectedArtifactIds = SP_REACT.useMemo(() => new Set(results
+        .filter((result) => isRejectedArtifact(searchScope, result.provider, result.artifact_id))
+        .map((result) => `${result.provider}:${result.artifact_id}`)), [results, rejectedGeneration, searchScope]);
+    /**
+     * Everything one provider row's durable records decide, worked out once.
+     *
+     * The badge, the two presses and the retry count are four readings of the
+     * same records, and they were four separate readings: the row learned that a
+     * revision it has outlived says nothing about it while the retry count went
+     * on counting that revision, so the panel offered to clear a mark under a row
+     * that was not carrying one. They are one answer now.
+     */
+    const rowRefusals = (result, localTable) => {
+        const artifactKey = `${result.provider}:${result.artifact_id}`;
+        const refusals = tableRowRefusals(blockedView, {
+            advertisedSha256: resolvedDigest(result) ?? result.advertised_sha256,
+            artifactKey,
+            savedSha256: localTable?.sha256 ?? null,
+        });
+        const damaged = rejectedArtifactIds.has(artifactKey);
+        // The same rule the press itself keeps: only a record about whether this
+        // exact table works stops the copy being used. A row whose download half is
+        // refused for a condition of the source or of the bytes still has an
+        // offline half to offer, and retiring it took that away.
+        const savedUsable = Boolean(localTable) && !isCompatibilityFailure(refusals.saved);
+        const downloadDead = Boolean(refusals.download) || damaged;
+        // What the row is actually carrying. History is the record of a revision
+        // this row is not offering, so it says something only where there is
+        // nothing here to offer instead: a row holding a usable copy says Local and
+        // that history is invisible on it, which is exactly why it must not be
+        // counted as a mark the user could be asked to clear.
+        const presented = refusals.download ?? refusals.saved ?? (savedUsable ? null : refusals.history);
+        return { ...refusals, artifactKey, damaged, savedUsable, downloadDead, presented };
+    };
+    /**
+     * How many results this screen puts on one page, on the screen it is drawn on.
+     *
+     * `PROVIDER_PAGE_SIZE` is what a 1280x800 modal fits and stays the answer
+     * wherever there is room for it. A Steam Deck gives a modal 534 CSS pixels
+     * against a television's 844, and this screen's chrome is not a fixed block:
+     * the query field, the per-source summary and the banner a challenged source
+     * raises are all above the list and only sometimes there. So the room the
+     * list has is measured rather than estimated, from the list's own top and the
+     * footer under it, neither of which moves when the row count does.
+     */
+    const [listNode, setListNode] = SP_REACT.useState(null);
+    const [footerNode, setFooterNode] = SP_REACT.useState(null);
+    // Measured while the screen is in the state it settles in, and then held.
+    //
+    // This screen searches the moment it opens, and its own status rows sit above
+    // the list while it does. Latching the first credible answer therefore sized
+    // the page against a layout that exists for a few seconds: on a Steam Deck's
+    // 534 pixel page that was a chrome of 371 and two results a page, against 289
+    // and four once the results were in, for the same game on the same screen.
+    // The search ending is this screen's own settled moment.
+    const [chrome, setChrome] = SP_REACT.useState(null);
+    SP_REACT.useLayoutEffect(() => {
+        setChrome((held) => latchChrome(held, listNode, footerNode, MODAL_BOTTOM_PADDING, !searching));
+    }, [listNode, footerNode, searching, catalogRows.length]);
+    // Divided by a row that was measured rather than by a constant beside the
+    // stylesheet that draws it: a short screen trims a row's padding, and the
+    // two numbers drift silently.
+    const resultRowHeight = useRowHeight(listNode, RESULT_ROW_HEIGHT);
+    const pageSize = SP_REACT.useMemo(() => (chrome === null ? PROVIDER_PAGE_SIZE : rowsThatFit({
+        full: PROVIDER_PAGE_SIZE,
+        rowHeight: resultRowHeight,
+        chrome: chrome.value,
+        minimum: MIN_RESULT_ROWS,
+        node: listNode,
+    })), [listNode, chrome, resultRowHeight]);
+    const pages = pageCount(catalogRows.length, pageSize);
+    const safePage = clampPage(resultPage, catalogRows.length, pageSize);
+    const visibleRows = pageItems(catalogRows, safePage, pageSize);
+    // As in the cheat picker: a full page is measured once and its height held,
+    // so the last page of results does not shorten the window.
+    const fullPageHeight = usePageHeight(listNode, visibleRows.length, pageSize);
+    // The two numbers this page is sized from, so a page that comes out wrong on
+    // a screen nobody here has is answerable from a support bundle.
+    SP_REACT.useEffect(() => {
+        if (!listNode)
+            return;
+        logUi("catalog.page_sized", { viewport: viewportHeight(listNode), chrome: chrome?.value ?? null, settled: chrome?.settled ?? null, rows: pageSize });
+    }, [pageSize, listNode, chrome]);
+    /**
+     * The marked rows on the page in front of the user, and what clearing them
+     * has to forget.
+     *
+     * Scoped to what is actually rendered rather than to every row the search
+     * returned: results whose download mode a controller cannot drive are
+     * filtered out entirely and the rest paginate, so counting those named a
+     * number nothing on screen accounted for and would have cleared marks on
+     * tables the user had never seen. A row retired by a damaged download counts
+     * too: that is the same statement about the same row, and since a fresh
+     * search stopped clearing it, this press is the only thing that can.
+     *
+     * A row counts when it is actually presenting a mark, decided by exactly what
+     * decides its badge and its two presses. A record the row has outlived is not
+     * one: a source that has replaced its file and advertised a checksum for it
+     * leaves a row with nothing refused, nothing said on it and both presses
+     * live, and offering **Retry 1** over that asked the user to clear a record
+     * the screen was not showing them.
+     *
+     * What a counted row clears is exactly the records it is showing. A row can
+     * have earned one per revision over the years, and those are statements about
+     * different tables: clearing the one in front of the user is what the press
+     * says it does, and the rest stay in the device-wide list under Advanced
+     * until something names them. Clearing one exact table clears it everywhere,
+     * because what is cleared is bytes rather than a row.
+     */
+    const retryable = SP_REACT.useMemo(() => {
+        const digests = new Map();
+        // The subset whose green this press is allowed to take away, which is the
+        // subset that had taken it away in the first place.
+        const compatibility = new Set();
+        const rejected = [];
+        let rows = 0;
+        for (const row of visibleRows) {
+            // A saved table is shown on this screen in its own right, and a mark on
+            // its exact bytes is shown with it, so the press that clears marks has to
+            // reach it: the alternative was a red row on the screen whose only route
+            // to Retry was to leave the screen.
+            if (row.kind === "local") {
+                const mark = blockedView.byDigest[row.table.sha256.toLowerCase()];
+                if (!isCompatibilityFailure(mark))
+                    continue;
+                digests.set(mark.sha256, mark.reason);
+                compatibility.add(mark.sha256);
+                rows += 1;
+                continue;
+            }
+            const { result, localTable } = row;
+            const { clearTargets, clearDamaged, visibleFailure } = providerRowMarks(result, localTable);
+            // Only what the row is actually showing, and only those exact bytes: a
+            // count with no marked row under it is a press into the dark, and a press
+            // that reached past what it names throws away advice the user never asked
+            // to retest. One record can be reached through several origins and still
+            // clears once, because what is cleared is the bytes rather than the row.
+            if (!visibleFailure)
+                continue;
+            for (const mark of clearTargets) {
+                digests.set(mark.sha256, mark.reason);
+                if (isCompatibilityFailure(mark))
+                    compatibility.add(mark.sha256);
+            }
+            // One download can leave both: the durable record the backend wrote and
+            // this session's own memory that the row is damaged. Taking the durable
+            // one and moving on left the session's behind, so clearing the row put
+            // the same row back as Damaged and asked for a second press. They are the
+            // same statement about the same row and are cleared together, and only
+            // where the row is the one making that statement.
+            if (clearDamaged)
+                rejected.push({ provider: result.provider, artifactId: result.artifact_id });
+            rows += 1;
+        }
+        return { digests, compatibility, rejected, count: rows };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [catalogRows, safePage, blockedView, rejectedArtifactIds]);
+    const clearMarks = () => run(async () => {
+        // Both marks say the same thing about the same row, so one press clears
+        // both or the row stays inert with nothing left to explain it. Row by row
+        // rather than by search: this press named the rows on one page, and a
+        // snapshot spans pages.
+        for (const { provider, artifactId } of retryable.rejected) {
+            forgetRejectedArtifact(searchScope, provider, artifactId);
+        }
+        setRejectedGeneration((generationCount) => generationCount + 1);
+        const digests = [...retryable.digests.keys()];
+        if (onClearMarks && digests.length > 0) {
+            // Clearing a record that a table did not work never brings its old green
+            // back, so it is taken here rather than waited for: a status read that
+            // fails afterwards must not leave this screen claiming a build was proven
+            // that the backend no longer says was. A record about a download answers
+            // nothing about that, so it leaves the evidence exactly where it is.
+            setCompatibilityView((entries) => entries.map((entry) => retryable.compatibility.has(entry.table_sha256) ? { ...entry, invalidated: true } : entry));
+            try {
+                await onClearMarks(digests);
+            }
+            finally {
+                await refreshBlocked();
+            }
+        }
+    });
+    const run = async (action) => {
+        if (busyRef.current)
+            return;
+        const generation = contextGenerationRef.current;
+        busyRef.current = true;
+        setBusy(true);
+        setError(null);
+        const operation = startUiOperation("catalog.run");
+        try {
+            await action();
+            operation.completed({ stale: generation !== contextGenerationRef.current });
+        }
+        catch (reason) {
+            operation.failed(reason, { stale: generation !== contextGenerationRef.current });
+            // Before the generation check, because a failure that arrived after the
+            // context moved on is still a failure that happened. This runner is the
+            // catalog's own boundary and does not pass through the panel's, so
+            // nothing else would record a transport error or a client-side
+            // reconciliation that the backend never saw.
+            logUiFailure("catalog.action_failed", reason, { stale: generation !== contextGenerationRef.current });
+            if (generation !== contextGenerationRef.current)
+                return;
+            const message = describeError(reason);
+            setError(message);
+            // The same dialog the panel uses, for the same reason: a Steam
+            // notification is gone before it has been read.
+            if (!showActionFailure("Searching or downloading a table", reason)) {
+                toaster.toast({ title: "CE Decky catalog", body: message });
+            }
+        }
+        finally {
+            if (generation === contextGenerationRef.current) {
+                busyRef.current = false;
+                setBusy(false);
+            }
+        }
+    };
+    const performSearch = async () => {
+        const generation = contextGenerationRef.current;
+        const progressToken = newSearchToken();
+        setSearchToken(progressToken);
+        setSearching(true);
+        const normalizedQuery = query.trim();
+        if (!normalizedQuery)
+            throw new Error("Enter a game name to search for tables.");
+        // Deliberately keeps every mark. Searching again is how a user looks for a
+        // different table, not a statement that the ones already proven bad have
+        // been fixed - and clearing here made the marks useless in practice,
+        // because opening this screen from the panel searches by itself. Retrying
+        // a marked row is an explicit press of its own, below.
+        // Stamped from before the request, so an outcome that lands after the user
+        // has changed which sources are searched is not stored as current.
+        const revision = sourceSelectionRevision;
+        const outcome = await searchTables({ display_name: normalizedQuery, shortcut_executable: shortcutExecutable ?? null }, progressToken);
+        if (generation !== contextGenerationRef.current)
+            return null;
+        const searched = Date.now();
+        const scope = cacheKey(gameIdentity, normalizedQuery, shortcutExecutable);
+        rememberSearch(scope, {
+            results: outcome.results, failures: outcome.failures, sources: outcome.sources ?? [],
+            searchedAt: searched, revision,
+        });
+        setSearchScope(scope);
+        setResults(outcome.results);
+        setResultPage(0);
+        setFailures(outcome.failures);
+        setSources(outcome.sources ?? []);
+        setSearchedAt(searched);
+        return outcome;
+    };
+    const search = () => run(async () => {
+        const generation = contextGenerationRef.current;
+        try {
+            await performSearch();
+        }
+        finally {
+            if (generation === contextGenerationRef.current)
+                setSearchFinished(true);
+        }
+    });
+    SP_REACT.useEffect(() => {
+        if (!autoSearch)
+            return;
+        const cachedScope = cacheKey(gameIdentity, query, shortcutExecutable);
+        const cached = searchCache.get(cachedScope);
+        if (cached && cached.revision === sourceSelectionRevision) {
+            setSearchScope(cachedScope);
+            setResults(cached.results);
+            setResultPage(0);
+            setFailures(cached.failures);
+            setSources(cached.sources);
+            setSearchedAt(cached.searchedAt);
+            setSearchFinished(true);
+            return;
+        }
+        void search();
+        // Search exactly once for each game/target context. Query edits are explicit thereafter.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [autoSearch, gameIdentity, shortcutExecutable]);
+    const acquireOne = async (result) => {
+        const generation = contextGenerationRef.current;
+        // A cached row and its acquisition authority have independent lifetimes:
+        // this cache survives a backend reload, and the backend's own bounded
+        // snapshot map does not. The row still looks normal, so the user only found
+        // out on click. Refresh the search once and retry against the fresh
+        // authority rather than reporting a dead end.
+        let next;
+        try {
+            next = await startTableAcquisition(result.provider, result.artifact_id, result.search_id ?? null, appId ?? null);
+        }
+        catch (cause) {
+            if (!/search snapshot is expired/i.test(describeError(cause)))
+                throw cause;
+            const snapshotQuery = queryForScope(searchScope, gameIdentity, shortcutExecutable) ?? gameName;
+            const refreshed = await searchTables({
+                display_name: snapshotQuery,
+                shortcut_executable: shortcutExecutable ?? null,
+            });
+            if (generation !== contextGenerationRef.current)
+                return;
+            const match = refreshed.results.find((candidate) => candidate.provider === result.provider && candidate.artifact_id === result.artifact_id);
+            if (!match) {
+                throw new Error("This table is no longer offered by its provider. Search again to see what is available now.");
+            }
+            rememberSearch(searchScope, {
+                results: refreshed.results, failures: refreshed.failures, sources: refreshed.sources ?? [],
+                revision: sourceSelectionRevision, searchedAt: Date.now(),
+            });
+            setResults(refreshed.results);
+            setFailures(refreshed.failures);
+            setSources(refreshed.sources ?? []);
+            next = await startTableAcquisition(match.provider, match.artifact_id, match.search_id ?? null, appId ?? null);
+        }
+        if (generation !== contextGenerationRef.current) {
+            if (!isTerminalAcquisition(next)) {
+                await cancelTableAcquisition(next.acquisition_id).catch(() => undefined);
+            }
+            return;
+        }
+        // Every download gets a window of its own, because a download is the one
+        // thing on this screen the user has to be able to watch. It used to run
+        // where it was started, in a row under a list of results: the press
+        // disabled the screen and put what was happening several screens below the
+        // focus, so for most of a list the panel simply looked as though it had
+        // stopped answering. A provider that serves its own wait was given this
+        // window first, on the ground that a countdown of a minute has to be
+        // readable; the same is true of a download, which also ends in a failure
+        // worth reading or in the review screen.
+        //
+        // The window owns the acquisition from here: it polls it, it carries the
+        // archive choice and any password, it cancels what it started if it is
+        // closed, and on an import it hands straight over to the review this list
+        // was opened to reach.
+        let closed = false;
+        let handle = null;
+        const close = () => {
+            if (closed)
+                return;
+            closed = true;
+            if (ownedModalCloseRef.current === close) {
+                ownedModalCloseRef.current = null;
+                ownedAcquisitionRef.current = null;
+            }
+            handle?.Close();
+            // The window owns the whole acquisition, so its outcome reaches this list
+            // only when the window closes. Two things arrive then: the artifact this
+            // download retired, which is held here in memory, and the durable mark the
+            // backend writes where it staged bytes that turned out not to be a table.
+            // Without the second, this list offers the same row again on the next
+            // look and the import is refused after another download.
+            setRejectedGeneration((generationCount) => generationCount + 1);
+            void refreshBlocked();
+        };
+        try {
+            const imported = next;
+            handle = DFL.showModal(SP_JSX.jsx(TableAcquisitionModal, { initialStatus: next, searchScope: searchScope, onImported: async (sha256) => { noteImportedFrom(imported); await onImported(sha256); }, onClose: close }));
+        }
+        catch (cause) {
+            if (!isTerminalAcquisition(next))
+                await cancelTableAcquisition(next.acquisition_id).catch(() => undefined);
+            throw cause;
+        }
+        ownedModalCloseRef.current = close;
+        ownedAcquisitionRef.current = next.acquisition_id;
+    };
+    const acquire = (result) => run(() => acquireOne(result));
+    const redownloadLocal = (table) => run(async () => {
+        const originKeys = new Set(table.origins.map((origin) => `${origin.provider}:${origin.artifact_id}`));
+        const matches = (candidate) => {
+            const digest = candidate.advertised_sha256?.toLowerCase();
+            return digest === table.sha256.toLowerCase()
+                || originKeys.has(`${candidate.provider}:${candidate.artifact_id}`);
+        };
+        let candidate = automaticResults.find(matches);
+        if (!candidate) {
+            const refreshed = await performSearch();
+            candidate = refreshed?.results.filter(isAutomatic).find(matches);
+        }
+        if (!candidate) {
+            throw new Error("This saved table is not currently offered by its provider. The local copy is unchanged and can still be used.");
+        }
+        await acquireOne(candidate);
+    });
+    /**
+     * The one window that stands between a saved table and the network.
+     *
+     * Its two halves are gated separately on purpose. A provider row that is gone
+     * upstream, served bytes that were not a table, or produced a damaged
+     * transfer says nothing at all about the copy already on this device, and a
+     * mark recorded against that copy's own SHA says nothing about the row. Each
+     * disables its own press and leaves the other one working, because a source
+     * failing is exactly when the saved copy is the thing the user needs.
+     */
+    const showExistingChoice = (table, { result, provenance }) => {
+        let closed = false;
+        let handle = null;
+        const close = () => {
+            if (closed)
+                return;
+            closed = true;
+            handle?.Close();
+        };
+        const { download: downloadBlock, saved: savedBlock } = tableRowRefusals(blockedView, {
+            advertisedSha256: result ? resolvedDigest(result) ?? result.advertised_sha256 : undefined,
+            artifactKey: result ? `${result.provider}:${result.artifact_id}` : null,
+            savedSha256: table.sha256,
+        });
+        const damaged = result ? rejectedArtifactIds.has(`${result.provider}:${result.artifact_id}`) : false;
+        const downloadBlockedReason = downloadBlock?.reason
+            ?? (damaged ? "The last download from this row did not produce a usable table." : null);
+        // The row above this window shows the copy it is presenting, so a refusal
+        // about the revision the source is offering now is named here or nowhere.
+        // Clearing it here reaches the same records the list's own Retry does, and
+        // the list is re-read afterwards so the row it came from agrees.
+        const retryDownload = result && downloadBlockedReason && (downloadBlock || damaged)
+            ? () => {
+                // Closed from inside the work, not before it: this screen refuses a
+                // second press while one is running, and closing first turned that
+                // refusal into a window that shut and did nothing.
+                void run(async () => {
+                    close();
+                    if (damaged) {
+                        forgetRejectedArtifact(searchScope, result.provider, result.artifact_id);
+                        setRejectedGeneration((generationCount) => generationCount + 1);
+                    }
+                    // Exactly the record this press is beside, which is the one about the
+                    // revision the source is offering now. The saved copy's own record,
+                    // where there is one, is the row's to clear and stays where it is.
+                    const digests = downloadBlock ? [downloadBlock.sha256] : [];
+                    if (onClearMarks && digests.length > 0) {
+                        try {
+                            await onClearMarks(digests);
+                        }
+                        finally {
+                            await refreshBlocked();
+                        }
+                    }
+                });
+            }
+            : null;
+        handle = DFL.showModal(SP_JSX.jsx(ExistingTableChoiceModal, { table: table, provenance: provenance, canUse: !busy && !isCompatibilityFailure(savedBlock) && Boolean(onLocalSelected), canDownload: !busy && !downloadBlockedReason, useBlockedReason: isCompatibilityFailure(savedBlock) ? savedBlock?.reason ?? null : null, downloadBlockedReason: downloadBlockedReason, onRetryDownload: retryDownload, onUse: () => {
+                close();
+                if (onLocalSelected)
+                    void run(() => onLocalSelected(table.sha256));
+            }, onDownload: () => {
+                close();
+                if (result)
+                    void acquire(result);
+                else {
+                    const stored = localBySha.get(table.sha256);
+                    if (stored)
+                        void redownloadLocal(stored);
+                }
+            }, onClose: close }));
+    };
+    // What the second line used to say, plus what Retry would do, behind the
+    // row's own `?`. Both are worth having and neither is worth a line of a panel
+    // that fits six results.
+    const searchHelp = [
+        searchedAt === null
+            ? "Look this game up on the table sources CE Decky can download from."
+            : `Searched ${formatAge(Date.now() - searchedAt)}. The per-source counts say how many usable tables each one returned; a source listed as n/a refused an anonymous request.`,
+        retryable.count > 0
+            ? `${retryable.count} row(s) on this page are marked, each with what happened to it: Failed means Cheat Engine ran a cheat from it and it came straight back off, Not a table means the download was not one, Encrypted means its archive is locked and only 7-Zip opens it, and Gone means the source no longer has the file. Retry ${retryable.count} drops those marks and offers them again.`
+            : null,
+    ].filter(Boolean).join(" ");
+    return (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Search / Download" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Search query", value: query, onChange: traceUiEdit("provider_catalog.search_query", (event) => setQuery(String(event.target.value ?? ""))), disabled: busy }) }), SP_JSX.jsx(PanelRow, { testId: "search-controls", truncate: true, scroll: true, tone: "header", label: searching
+                    ? `Searching${searchingSourceCount ? ` ${searchingSourceCount}` : ""} sources \u00b7 ${elapsedSeconds}s${searchProgressText ? ` \u00b7 ${searchProgressText}` : ""}`
+                    : searchedAt === null && !searchFinished
+                        ? "No search yet"
+                        : `${catalogRows.length} table(s)${sourceSummary ? ` \u00b7 ${sourceSummary}` : ""}`, trailing: busy ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, flexShrink: 0 } }) : undefined, help: searchHelp, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy || !query.trim(), onClick: traceUiAction("catalog.search", () => void search()), children: searchedAt === null && !searchFinished ? "Search" : "Search again" }), onClearMarks && retryable.count > 0 && (SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("catalog.clear_marks", () => void clearMarks()), children: `Retry ${retryable.count}` }))] })) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Catalog error", description: error }) }), allSourcesOff && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Every table source is switched off", description: "Nothing was searched. Switch a source back on under Advanced, Table sources." }) })), SP_JSX.jsx("div", { ref: setListNode, style: fullPageHeight === null ? undefined : { minHeight: fullPageHeight }, "data-testid": "catalog-list", children: visibleRows.map((row) => {
+                    if (row.kind === "local") {
+                        const table = row.table;
+                        // A mark on these exact bytes refuses these exact bytes. Asking the
+                        // source for the file again is the other press on this row and the
+                        // only way the user finds out that a table refused for an older build
+                        // has been republished, so it stays reachable: the row opens, the
+                        // window says the copy is marked, and the ring lands on the download.
+                        const blocked = blockedView.byDigest[table.sha256.toLowerCase()];
+                        return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { className: FOCUS_SCROLL_CLASS, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !onLocalSelected, onClick: traceUiAction("catalog.local_table", () => showExistingChoice(table, { provenance: "local_only" }), { table_sha: table.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: table.filename }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, table.sha256), blocked: blocked ?? null }), SP_JSX.jsx("span", { style: ROW_MARK_LOCAL, children: "Local" })] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
+                                                        // When, which release, how large: the three a reader scans
+                                                        // for, in that order, ahead of the identity that answers
+                                                        // which exact bytes these are.
+                                                        localArrived(table),
+                                                        // The release a source stated for these exact bytes, and
+                                                        // nothing where no source stated one. This used to print the
+                                                        // `.CT` file's own `CheatEngineTableVersion`, which is the
+                                                        // version of Cheat Engine's table format rather than the
+                                                        // table's: every table reads 45 or 46 whatever its game, so
+                                                        // the row answered a question nobody asked with a number
+                                                        // that looked like an answer to the one they did. It also
+                                                        // put the `v` on itself instead of asking `releaseLabel`,
+                                                        // which is how a stored `v2` would have printed as `vv2`.
+                                                        advertisedRelease(table),
+                                                        formatSize(table.size),
+                                                        table.sha256.slice(0, 12),
+                                                        "on this device",
+                                                    ].filter(Boolean).join(" · ") }) })] }) }) }) }, `local:${table.sha256}`));
+                    }
+                    const { result, localTable, provenance } = row;
+                    const artifactKey = `${result.provider}:${result.artifact_id}`;
+                    // A table on this device that this row produced, whether or not the row
+                    // can prove it still serves the same bytes. The proof decides what the
+                    // press says, never whether the press may reach the copy: the two
+                    // sources that publish no checksum are the ones a user is most likely to
+                    // have downloaded from already, and offline that copy is all they have.
+                    // Two records about two different sets of bytes, kept apart.
+                    //
+                    // A durable mark found by advertised digest or by provider row, and a
+                    // transfer this session already found damaged, are both statements about
+                    // what this row serves. A mark recorded against the saved copy's own SHA
+                    // is a statement about the copy. Reading the first as a reason to retire
+                    // the whole row took the saved copy down with the source: a file the
+                    // provider no longer has is not a file this device no longer has, and
+                    // that is exactly the moment the saved copy is what the user needs.
+                    const marks = providerRowMarks(result, localTable);
+                    const { history, savedUsable, downloadDead, subjectDigest, failureRecord, chip: mark } = marks;
+                    // A row with nothing here to offer and only a revision that came
+                    // straight back off behind it is not worth a download: the importer
+                    // refuses those exact bytes anyway, so the press would spend a transfer
+                    // to be told what the badge already says, and **Retry** is how the user
+                    // says to try the row again. A row holding a usable copy is never
+                    // retired by that history, which is about bytes it is not offering.
+                    const historyOnly = !savedUsable && !downloadDead && Boolean(history);
+                    // Retired only with neither half left. Either press being live is a row
+                    // worth opening, and the window says which of the two is off and why.
+                    const retired = (downloadDead && !savedUsable) || historyOnly;
+                    return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { className: FOCUS_SCROLL_CLASS, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || retired, onClick: traceUiAction("catalog.result", () => {
+                                    if (localTable && onLocalSelected)
+                                        showExistingChoice(localTable, { result, provenance });
+                                    else
+                                        void acquire(result);
+                                }, { provider: result.provider, artifact_id: result.artifact_id, table_sha: localTable?.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: result.table_title }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, subjectDigest), blocked: failureRecord }), marks.duplicate ? SP_JSX.jsx(SameTableMark, {}) : null, mark ? SP_JSX.jsx("span", { style: mark.style, children: mark.text }) : null] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
+                                                    // When, which release, how large. One post commonly carries
+                                                    // every revision of the same table, so its attachments share a
+                                                    // filename, a title and the date of the post they sit in: the
+                                                    // release tells them apart where there is one, and where there
+                                                    // is not the uploader's own note on that exact file is the
+                                                    // only thing that does. The date leads because it is what a
+                                                    // reader scans a list of revisions by, and it is the one field
+                                                    // nearly every row has.
+                                                    formatPosted(result.posted_at) ?? null,
+                                                    releaseLabel(result.version) ?? result.notes ?? null,
+                                                    formatSize(result.size_bytes),
+                                                    result.filename,
+                                                    result.provider_display_name,
+                                                    result.stale ? "stale cache" : null,
+                                                ].filter(Boolean).join(" · ") }) })] }) }) }) }, artifactKey));
+                }) }), (pages > 0 || footerActions) && (SP_JSX.jsx(PagerFooter, { testId: "catalog-footer", containerRef: setFooterNode, page: safePage, pages: pages, disabled: busy, onPage: setResultPage, preferNext: true, trailing: footerActions }))] }));
+}
+
+/**
+ * The backend's name for a write that failed after its content was in place.
+ *
+ * `atomic_write_bytes` publishes the replacement with `os.replace` and only
+ * then syncs the directory entry, and a POSIX failure there is re-raised. The
+ * new authority is visible to every reader at that point - including a resident
+ * Cheat Engine reading its control file - so this exact exception is the one
+ * Python traceback that is not proof the backend refused.
+ */
+const DURABILITY_UNKNOWN_EXCEPTION = "DurabilityUnknownError";
+/** Whether this rejection is a backend refusal that happened before any commit. */
+function isPreCommitRefusal(cause) {
+    const traceback = cause?.pythonTraceback;
+    if (pythonTracebackSummary(traceback) === null)
+        return false;
+    return pythonExceptionClass(traceback) !== DURABILITY_UNKNOWN_EXCEPTION;
+}
+/**
+ * A durable write whose outcome could not be established.
+ *
+ * Raised only when the write may have been committed and the authority that
+ * would settle it could not be re-read either. The caller must not offer
+ * ordinary "nothing was saved" semantics for this.
+ */
+class DurableOutcomeUnknownError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "DurableOutcomeUnknownError";
+    }
+}
+/**
+ * A rejection that a *previous* durable write in the same action survived.
+ *
+ * One user action can commit several independent backend mutations, and each
+ * one is durable the moment it returns. Rethrowing the later failure on its own
+ * described the action as if nothing had happened, so the caller never learned
+ * that the earlier write is already stored. Wrap the later failure in this and
+ * the surfaces that name partial commits can say so.
+ */
+class PriorDurableCommitError extends Error {
+    constructor(cause, committedSubject) {
+        super(`${describeError(cause)} ${committedSubject} was already saved and stays saved.`);
+        this.name = "PriorDurableCommitError";
+        this.cause = cause;
+        this.outcomeUnknown = cause instanceof DurableOutcomeUnknownError;
+    }
+}
+/** What an aborted multi-write action left durably behind. */
+function durableResidue(cause) {
+    if (cause instanceof PriorDurableCommitError) {
+        return { committed: true, unknown: cause.outcomeUnknown };
+    }
+    return { committed: false, unknown: cause instanceof DurableOutcomeUnknownError };
+}
+/**
+ * Commit an exact desired state and reconcile a lost reply.
+ *
+ * Backend profile mutations are atomic and fully inspectable afterwards, but a
+ * rejected Decky callable was being treated as proof the write did not happen -
+ * so a saved configuration could be reported as a failed Apply, and the user
+ * offered a Discard for state that was already durable.
+ *
+ * A Python traceback is proof the backend itself refused, with one exception it
+ * names: a write that failed after `os.replace` had already published its
+ * content is not a refusal, because the new state is already the one every
+ * reader sees. Everything else is transport loss. Both of the non-refusal cases
+ * ask the authority what the exact desired state actually is.
+ *
+ * `write` must perform exactly one backend mutation. That inference only holds
+ * per mutation: grouping two of them behind one call made a traceback from the
+ * second stand for the first as well, so a committed write was reported as
+ * nothing having happened. Reconcile each one separately and wrap the later
+ * failure in `PriorDurableCommitError`.
+ */
+async function commitDesiredState(input) {
+    try {
+        await input.write();
+        return;
+    }
+    catch (cause) {
+        if (isPreCommitRefusal(cause)) {
+            throw cause;
+        }
+        let present;
+        try {
+            present = await input.verify();
+        }
+        catch {
+            throw new DurableOutcomeUnknownError(`${describeError(cause)} CE Decky could not confirm whether ${input.subject} was saved; refresh before deciding what to do.`);
+        }
+        if (present)
+            return;
+        // The content was already published when the backend raised, so an
+        // authority that does not hold it is a contradiction, not a refusal.
+        if (!isPreCommitRefusal(cause) && pythonTracebackSummary(cause?.pythonTraceback) !== null) {
+            throw new DurableOutcomeUnknownError(`${describeError(cause)} CE Decky could not establish whether ${input.subject} was saved; refresh before deciding what to do.`);
+        }
+        throw cause;
+    }
+}
+/**
+ * Re-label a failed commit with the context only the caller has, without
+ * turning an unestablished outcome into a definite one.
+ *
+ * A caller that has already changed something else - the running game, most of
+ * all - needs to say so alongside the failure. Prefixing the message flattened
+ * the one case the helper exists to distinguish: an unknown outcome was
+ * announced as "it was not remembered", immediately followed by the helper's own
+ * "could not confirm whether it was saved", which contradicts it. The unknown
+ * branch keeps its type, so anything downstream that treats an unestablished
+ * outcome differently still can.
+ */
+function describeCommitFailure(cause, wording) {
+    if (cause instanceof DurableOutcomeUnknownError) {
+        return new DurableOutcomeUnknownError(`${wording.unknown} ${cause.message}`);
+    }
+    return new Error(`${wording.definite} ${describeError(cause)}`);
+}
+/** Whether the profile already holds exactly this configured-value set. */
+function configuredValuesMatch(stored, desired) {
+    const present = new Map((stored ?? []).map((item) => [item.record_id, item.value]));
+    if (present.size !== desired.length)
+        return false;
+    return desired.every((item) => present.get(item.record_id) === item.value);
+}
+/** Whether the profile already holds exactly this remembered selection. */
+function rememberedMatches(stored, desired) {
+    const present = new Map((stored ?? []).map((item) => [item.record_id, item]));
+    if (present.size !== desired.length)
+        return false;
+    return desired.every((item) => {
+        const found = present.get(item.record_id);
+        return Boolean(found) && found.active === item.active && found.value === item.value;
+    });
+}
+
+/**
+ * Save a choice of table sources and reconcile a lost reply against the record.
+ *
+ * These are durable writes like every other one in the panel, and sending them
+ * straight through the ordinary action path gave them the semantics this
+ * project already knows is wrong: a rejected Decky callable, or a failure
+ * raised after the file had already been replaced, was reported as "the switch
+ * failed" for a choice that is stored. `commitDesiredState` re-reads the
+ * authority instead and settles it.
+ *
+ * The predicate takes the whole snapshot rather than one source. Applying a
+ * single-provider test to every source in the roster - which is what this did -
+ * is false for every provider whose ID is not the one being switched, so the
+ * one path that exists to recognise a committed write reported every one of
+ * them as uncommitted.
+ *
+ * Cache invalidation runs on every outcome, including the failures: a commit
+ * whose reply was lost changed the same file a successful one does, so leaving
+ * the cached search outcomes alone there is exactly how one of them outlives
+ * the choice that invalidated it.
+ */
+async function commitSourceSelection(subject, write, satisfied) {
+    let written = null;
+    let reread = null;
+    try {
+        await commitDesiredState({
+            subject: `${subject} was saved`,
+            write: async () => { written = await write(); },
+            verify: async () => {
+                reread = await getProviderSources();
+                return satisfied(reread);
+            },
+        });
+    }
+    finally {
+        forgetSearchOutcomes();
+    }
+    // Whichever read already established this, and never a third one. A commit
+    // returns here having either written a snapshot or read one back to settle
+    // itself, so asking the authority again could only add a read whose failure
+    // would report an established commit as a failed action. Null on the paths
+    // that leave neither, and the caller re-reads for display, which cannot turn
+    // a saved choice into a failure because the write has already returned.
+    return written ?? reread;
+}
+/** Whether the snapshot holds exactly this source's desired switch position. */
+function sourceSwitched(providerId, enabled) {
+    return (snapshot) => snapshot.sources.some((source) => source.provider === providerId && source.enabled === enabled);
+}
+/** Whether the snapshot holds no refusals at all, which is what a reset makes. */
+function everySourceOn(snapshot) {
+    return snapshot.sources.every((source) => source.enabled);
+}
+/**
+ * Whether the record of what each source has done can be read again.
+ *
+ * The desired state of a counter reset, and deliberately not "every counter is
+ * empty": the reset exists to replace a record nothing else can repair, it is
+ * only ever offered while that record is unreadable, and an emptiness test
+ * would be settled by whichever search ran next rather than by the repair.
+ */
+function countsReadable(snapshot) {
+    return snapshot.diagnostics_reason === null;
+}
+
+/** Return true only for Decky Loader's explicit file-picker cancellation signal. */
+function isDeckyFilePickerCancellation(reason) {
+    if (reason === "User canceled")
+        return true;
+    return reason instanceof Error && reason.message === "User canceled";
+}
+
+class RuntimeOperationError extends Error {
+    constructor(message, envelope = null, tableRefused = false) {
+        super(message);
+        this.name = "RuntimeOperationError";
+        this.envelope = envelope;
+        this.tableRefused = tableRefused;
+    }
+}
+/** A command was accepted durably but its result has not arrived yet. */
+class RuntimeOutcomeUnknownError extends RuntimeOperationError {
+    constructor(message, envelope, pendingGenerations) {
+        super(message, envelope);
+        this.name = "RuntimeOutcomeUnknownError";
+        this.pendingGenerations = pendingGenerations;
+    }
+}
+/**
+ * How many controls one live operation may address.
+ *
+ * The static inspector accepts up to 100k entries, which is the right ceiling
+ * for a parser but not for a Game Mode workflow: each 64-command batch is a
+ * status read, a durable write and acknowledgement polling, so the parser
+ * ceiling alone is over 1500 sequential round-trips for a single snapshot. This
+ * is the product limit, chosen so a full refresh stays inside a controller
+ * latency budget rather than taking minutes.
+ */
+const MAX_LIVE_CONTROLS = 512;
+const ACK_POLL_INTERVAL_MS = 125;
+// The bridge may intentionally hold an asynchronous Auto Assembler activation
+// pending for up to ten seconds. Wait beyond that bounded bridge deadline so a
+// valid late acknowledgement is not mislabeled as an unknown outcome.
+const ACK_POLL_ATTEMPTS = 96;
+// Cheat Engine builds a script's records after the script runs, so the first
+// query after an activation can legitimately still find nothing.
+const MATERIALIZATION_ATTEMPTS = 6;
+const MATERIALIZATION_DELAY_MS = 250;
+const COMMAND_BATCH_SIZE = 64;
+function delay(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+// How long a press waits for a bridge that is busy rather than gone before it
+// reports the silence. The bridge's own bounded allowance for an asynchronous
+// activation is ten seconds and a synchronous one blocks its timer for as long
+// as Cheat Engine takes to assemble and inject, so a press arriving during
+// either used to be refused outright three seconds in.
+const BUSY_BRIDGE_WAIT_MS = 12000;
+const BUSY_BRIDGE_POLL_MS = 250;
+/**
+ * The current envelope, having given a busy bridge a bounded moment to answer.
+ *
+ * Nothing here is fail-open: it returns whatever it last read, and the caller
+ * still refuses to issue a command against an envelope that is not connected.
+ * The wait only exists so that the refusal describes a bridge that is actually
+ * gone rather than one that was in the middle of running a script.
+ */
+async function readConnectedEnvelope(appId) {
+    const deadline = monotonicNow() + BUSY_BRIDGE_WAIT_MS;
+    let envelope = await getRuntimeStatus(appId);
+    while (!envelope.connected && bridgeMayStillBeWorking(envelope, appId) && monotonicNow() < deadline) {
+        await delay(BUSY_BRIDGE_POLL_MS);
+        envelope = await getRuntimeStatus(appId);
+    }
+    return envelope;
+}
+/**
+ * Why this envelope is not a connected bridge, in the user's terms, or `null`.
+ *
+ * There are four different things a disconnected bridge can be and the screen
+ * used to say the same sentence for all of them: no session at all, a session
+ * whose state cannot be read, a Cheat Engine that has exited, and a Cheat
+ * Engine that is alive and has simply not written a heartbeat for a moment.
+ * Only the third is a session that is over, and only the fourth is worth
+ * waiting for, so a reader who is told "disconnected or its heartbeat is stale"
+ * cannot tell whether to start the game again or to press the same button once
+ * more. The backend already distinguishes all four; this is what carries that
+ * distinction to the person reading it.
+ */
+function disconnectedReason(envelope) {
+    if (envelope.status_unreadable || envelope.session_state_reason) {
+        return `This game's runtime session state cannot be read: ${envelope.session_state_reason ?? "the bridge's own status file does not parse"}. Repair it under Advanced.`;
+    }
+    if (!envelope.prepared) {
+        return envelope.session_stale_reason
+            ?? "No Cheat Engine session is prepared for this game. Start Cheat Engine for this table first.";
+    }
+    if (envelope.terminal_reason === "owned_bridge_process_exited") {
+        return "Cheat Engine has exited, so this table is no longer loaded. Start it again for this game.";
+    }
+    if (!envelope.session_current) {
+        return envelope.session_stale_reason ?? "This game's prepared session is no longer the current one.";
+    }
+    if (!envelope.status) {
+        return "Cheat Engine has not reported its state for this session yet.";
+    }
+    if (envelope.status_clock_skew) {
+        return "Cheat Engine's last heartbeat is dated in the future, so its age cannot be judged. This device's clock changed while the session was running.";
+    }
+    if (!envelope.status_fresh) {
+        const seconds = typeof envelope.status_age_ms === "number" ? Math.round(envelope.status_age_ms / 1000) : null;
+        return `Cheat Engine has not answered for ${seconds === null ? "some time" : `${seconds}s`}. It stops answering while it runs the table's own script, so this is usually worth one more press; if it keeps saying this, Cheat Engine is no longer running.`;
+    }
+    if (!envelope.connected)
+        return "The resident bridge is not connected for this session.";
+    return null;
+}
+/**
+ * Whether the bridge is merely not answering right now, rather than gone.
+ *
+ * Cheat Engine's heartbeat is written from a timer on the same thread that runs
+ * a table's Auto Assembler and Lua, so a script that takes longer than the
+ * heartbeat's own three seconds to assemble and inject stops the heartbeat for
+ * exactly as long as it runs. That is a bridge doing what it was asked to do,
+ * and treating it as a bridge that has gone is what turned "switch this cheat
+ * on" into "Resident bridge is disconnected" on tables whose scripts are large.
+ *
+ * This never authorizes a write: a command is still only issued against a
+ * connected envelope. It authorizes waiting for one.
+ */
+function bridgeMayStillBeWorking(envelope, appId) {
+    return Boolean(
+    // Only ever a reason to wait, never a way past a check: an envelope that is
+    // connected is judged by the identity comparison in full, exactly as
+    // before.
+    !envelope.connected
+        && envelope.prepared
+        && envelope.status
+        && envelope.session_current
+        && !envelope.status_unreadable
+        && !envelope.session_state_reason
+        && !envelope.status_clock_skew
+        && !envelope.terminal_reason
+        && envelope.prepared.app_id === appId
+        && envelope.status.app_id === appId
+        && envelope.prepared.session_id === envelope.status.session_id
+        && envelope.prepared.table_sha256 === envelope.status.table_sha256
+        && envelope.prepared.ce_sha256 === envelope.status.ce_sha256
+        && envelope.prepared.descriptor_sha256 === envelope.status.descriptor_sha256);
+}
+function assertConnected(envelope, appId) {
+    if (!envelope.connected || !envelope.prepared || !envelope.status) {
+        throw new Error(disconnectedReason(envelope) ?? "Resident bridge is disconnected or its heartbeat is stale.");
+    }
+    if (!envelope.session_current || envelope.prepared.app_id !== appId || envelope.status.app_id !== appId) {
+        throw new Error("Runtime session identity is stale or does not match the selected AppID.");
+    }
+    if (envelope.prepared.session_id !== envelope.status.session_id
+        || envelope.prepared.table_sha256 !== envelope.status.table_sha256
+        || envelope.prepared.ce_sha256 !== envelope.status.ce_sha256
+        || envelope.prepared.descriptor_sha256 !== envelope.status.descriptor_sha256) {
+        throw new Error("Runtime bridge identity does not match the prepared exact session.");
+    }
+}
+/**
+ * The same exact session, still. `allowBusy` waits out a silent heartbeat.
+ *
+ * Identity is compared either way: what `allowBusy` permits is a bridge that
+ * has not written for a moment, never a different session, a different table or
+ * a Cheat Engine that is proven gone.
+ */
+function assertSameSession(before, after, appId, allowBusy = false) {
+    if (!(allowBusy && bridgeMayStillBeWorking(after, appId))) {
+        try {
+            assertConnected(after, appId);
+        }
+        catch (cause) {
+            throw new RuntimeOperationError(describeError(cause), after);
+        }
+    }
+    if (before.prepared?.session_id !== after.prepared?.session_id
+        || before.prepared?.table_sha256 !== after.prepared?.table_sha256
+        || before.prepared?.ce_sha256 !== after.prepared?.ce_sha256
+        || before.prepared?.descriptor_sha256 !== after.prepared?.descriptor_sha256) {
+        throw new RuntimeOperationError("Runtime session changed while waiting for bridge acknowledgement.", after);
+    }
+}
+function resultsForCommands(envelope, commands) {
+    const results = envelope.status?.results ?? [];
+    const byGeneration = new Map();
+    for (const result of results)
+        byGeneration.set(result.generation, result);
+    const selected = [];
+    for (const command of commands) {
+        const result = byGeneration.get(command.generation);
+        if (!result)
+            return null;
+        const expectedRecordId = command.record_id ?? null;
+        if (result.record_id !== expectedRecordId) {
+            throw new RuntimeOperationError(`Resident bridge acknowledgement identity mismatch for generation ${command.generation}.`, envelope);
+        }
+        selected.push(result);
+    }
+    return selected;
+}
+async function sendRuntimeBatchAndWait(appId, specs, expectedEnvelope) {
+    if (specs.length < 1)
+        throw new Error("Runtime command batch is empty.");
+    if (specs.length > COMMAND_BATCH_SIZE)
+        throw new Error(`Runtime command batch exceeds ${COMMAND_BATCH_SIZE} commands.`);
+    let before;
+    try {
+        before = await readConnectedEnvelope(appId);
+    }
+    catch (cause) {
+        throw new RuntimeOperationError(describeError(cause), null);
+    }
+    try {
+        assertConnected(before, appId);
+        if (expectedEnvelope)
+            assertSameSession(expectedEnvelope, before, appId);
+    }
+    catch (cause) {
+        if (cause instanceof RuntimeOperationError)
+            throw cause;
+        throw new RuntimeOperationError(describeError(cause), before);
+    }
+    const start = before.next_generation;
+    if (typeof start !== "number") {
+        // The control log this generation would extend cannot be parsed, so there
+        // is no generation to claim; repair the session state instead of guessing.
+        throw new RuntimeOperationError(before.session_state_reason ?? "This game's runtime session state cannot be read.", before);
+    }
+    const commands = specs.map((spec, index) => ({ generation: start + index, ...spec }));
+    let receipt;
+    try {
+        receipt = await writeRuntimeCommands(appId, commands);
+    }
+    catch (cause) {
+        // The backend validates and then atomically commits the generation before
+        // it returns, so a rejection here can mean either "refused before commit"
+        // or "committed and the answer was lost". Reporting both as a definite
+        // failure told the user nothing had happened when the game may already
+        // have changed. A Python traceback is proof the backend itself rejected
+        // the batch - except the one it raises after the control file has already
+        // been replaced, which Cheat Engine is free to read and execute from that
+        // moment on. That and transport loss both leave the outcome unknown.
+        if (isPreCommitRefusal(cause)) {
+            throw new RuntimeOperationError(describeError(cause), before);
+        }
+        throw new RuntimeOutcomeUnknownError(`${describeError(cause)} The command may already have been accepted; refresh this game's runtime state before retrying.`, before, commands.map((command) => command.generation));
+    }
+    if (!receipt.ok || receipt.count !== commands.length || receipt.next_generation !== start + commands.length) {
+        throw new RuntimeOperationError("Runtime command write receipt does not match the requested generation batch.", before);
+    }
+    const generations = commands.map((command) => command.generation);
+    let lastEnvelope = before;
+    for (let attempt = 0; attempt < ACK_POLL_ATTEMPTS; attempt += 1) {
+        let envelope;
+        try {
+            envelope = await getRuntimeStatus(appId);
+        }
+        catch (cause) {
+            // The batch was accepted durably, so losing the observation channel says
+            // nothing about whether Cheat Engine executed it.
+            throw new RuntimeOutcomeUnknownError(`${describeError(cause)} The commands were accepted, so their outcome is unknown until this game's runtime state can be read again.`, lastEnvelope, generations);
+        }
+        lastEnvelope = envelope;
+        // The batch is already durably accepted, and running it is the very thing
+        // that stops Cheat Engine writing its heartbeat. Abandoning the wait on a
+        // silent heartbeat reported a disconnected bridge for a session that was
+        // executing the user's own command; the poll's own deadline below is what
+        // bounds it, and its outcome is "unknown", not "disconnected".
+        assertSameSession(before, envelope, appId, true);
+        const results = resultsForCommands(envelope, commands);
+        if (results)
+            return { envelope, results };
+        if (attempt + 1 < ACK_POLL_ATTEMPTS)
+            await delay(ACK_POLL_INTERVAL_MS);
+    }
+    throw new RuntimeOutcomeUnknownError(`Runtime generation ${generations[0]}–${generations[generations.length - 1]} is still pending; wait for bridge reconciliation before retrying.`, lastEnvelope, generations);
+}
+async function sendRuntimeCommandAndWait(appId, spec) {
+    const batch = await sendRuntimeBatchAndWait(appId, [spec]);
+    const result = batch.results[0];
+    if (!result.ok) {
+        throw new RuntimeOperationError(result.error ?? "Resident bridge rejected the runtime command.", batch.envelope);
+    }
+    return { envelope: batch.envelope, result };
+}
+/** Raised when the UI that owns a multi-batch query is disposed while it runs. */
+class RuntimeQueryAbortedError extends Error {
+    constructor() {
+        super("The runtime query was cancelled before it finished.");
+        this.name = "RuntimeQueryAbortedError";
+    }
+}
+async function runForRecordChunks(appId, recordIds, build, validateChunk, expectedEnvelope, signal) {
+    if (recordIds.length === 0) {
+        let envelope = null;
+        try {
+            envelope = await getRuntimeStatus(appId);
+            assertConnected(envelope, appId);
+            if (expectedEnvelope)
+                assertSameSession(expectedEnvelope, envelope, appId);
+        }
+        catch (cause) {
+            if (cause instanceof RuntimeOperationError)
+                throw cause;
+            throw new RuntimeOperationError(describeError(cause), envelope);
+        }
+        return { envelope, results: [] };
+    }
+    let envelope = null;
+    const allResults = [];
+    for (let offset = 0; offset < recordIds.length; offset += COMMAND_BATCH_SIZE) {
+        // Cancellation is checked between batches, never inside one: a generation
+        // that has been written has to be waited out or the next action would race
+        // its acknowledgement. Closing the picker used to leave the whole remaining
+        // query issuing generations against the same control log while the user was
+        // already pressing something else on Home.
+        if (signal?.aborted)
+            throw new RuntimeQueryAbortedError();
+        const chunk = recordIds.slice(offset, offset + COMMAND_BATCH_SIZE);
+        let batch;
+        try {
+            batch = await sendRuntimeBatchAndWait(appId, chunk.map(build), expectedEnvelope);
+        }
+        catch (cause) {
+            if (cause instanceof RuntimeOperationError && !cause.envelope && envelope) {
+                throw new RuntimeOperationError(cause.message, envelope);
+            }
+            throw cause;
+        }
+        if (envelope)
+            assertSameSession(envelope, batch.envelope, appId);
+        validateChunk?.(batch.results, allResults.length, batch.envelope);
+        envelope = batch.envelope;
+        allResults.push(...batch.results);
+    }
+    return { envelope: envelope, results: allResults };
+}
+async function queryRuntimeControls(appId, recordIds, expectedEnvelope) {
+    const unique = [...new Set(recordIds)];
+    const queried = await runForRecordChunks(appId, unique, (recordId) => ({ kind: "query", record_id: recordId }), (results, _completedBefore, envelope) => {
+        const failed = results.find((result) => !result.ok);
+        if (failed) {
+            throw new RuntimeOperationError(failed.error ?? `MemoryRecord ${failed.record_id ?? "unknown"} query failed.`, envelope);
+        }
+    }, expectedEnvelope);
+    return { envelope: queried.envelope, results: queried.results };
+}
+/**
+ * Query records without letting one unavailable record invalidate the rest.
+ *
+ * A record inside a script does not exist until that script has run, which this
+ * UI models deliberately. Treating the first unsuccessful record as a failure of
+ * the whole call therefore turned an expected per-record state into a
+ * session-wide one: Home dropped its entire live snapshot and hid pinned
+ * controls, and the picker could not build a model at all, even though the
+ * bridge and session were healthy and every other record was readable.
+ *
+ * Session and descriptor mismatches stay fatal - those really are whole-session
+ * failures. Only the bridge's typed `record_missing` result is a per-record
+ * state; detach, AddressList and read failures remain fatal.
+ */
+async function queryRuntimeControlsPartial(appId, recordIds, expectedEnvelope, signal) {
+    const unique = [...new Set(recordIds)];
+    if (unique.length > MAX_LIVE_CONTROLS) {
+        throw new RuntimeOperationError(`This table has ${unique.length} controls CE Decky can act on; live control is limited to ${MAX_LIVE_CONTROLS} so one refresh cannot take minutes of bridge round-trips.`, null);
+    }
+    const queried = await runForRecordChunks(appId, unique, (recordId) => ({ kind: "query", record_id: recordId }), (results, _completedBefore, envelope) => {
+        const failed = results.find((result) => !result.ok && result.error_code !== "record_missing");
+        if (failed) {
+            throw new RuntimeOperationError(failed.error ?? `MemoryRecord ${failed.record_id ?? "unknown"} query failed.`, envelope);
+        }
+    }, expectedEnvelope, signal);
+    return {
+        envelope: queried.envelope,
+        results: queried.results.filter((result) => result.ok),
+        unavailable: queried.results.filter((result) => !result.ok && result.error_code === "record_missing"),
+    };
+}
+/**
+ * Whether this refusal says anything about the table itself.
+ *
+ * The bridge reports one code for a `set_active` that settled in the wrong
+ * state, in either direction, because from its side both are the same fact. A
+ * cheat that would not switch *on* is what a table written for a different
+ * build of the game does. A cheat that would not switch *off* is the opposite
+ * situation - the cheat is very likely still running in the game - and calling
+ * the table unusable there would both misdescribe it and hide that.
+ */
+function refusalIsAboutTheTable(failed, desiredById) {
+    if (failed.error_code !== "activation_rejected")
+        return false;
+    const desired = failed.record_id === null ? undefined : desiredById.get(failed.record_id);
+    return desired?.active === true;
+}
+/**
+ * The message for one mutation Cheat Engine did not carry out.
+ *
+ * `activation_rejected` is the refusal a user can actually act on: Cheat Engine
+ * ran the record and it came back in the state it started in. A cheat table
+ * finds the game's code by scanning for byte patterns, so a table written
+ * against an older build of the game fails exactly here - and the bridge's own
+ * "activation did not settle" tells nobody that. Every other failure already
+ * carries a reason from Cheat Engine or the bridge, and that reason stands.
+ */
+function describeMutationFailure(failed, desiredById) {
+    const desired = failed.record_id === null ? undefined : desiredById.get(failed.record_id);
+    const subject = desired?.label
+        ? `\u201c${desired.label}\u201d`
+        : `MemoryRecord ${failed.record_id ?? "unknown"}`;
+    if (failed.error_code === "activation_rejected") {
+        return desired?.active === false
+            ? `${subject} did not switch off: Cheat Engine ran its disable step and the cheat stayed on.`
+            : `${subject} did not switch on: Cheat Engine ran it and it went straight back off. A cheat table finds the game's code by scanning for patterns, so this normally means this table was written for a different build of the game.`;
+    }
+    return failed.error ?? `${subject} mutation failed.`;
+}
+async function applyRuntimeSelection(appId, desiredStates) {
+    const byId = new Map();
+    for (const state of desiredStates) {
+        if (!Number.isInteger(state.record_id) || state.record_id < 0) {
+            throw new Error("Runtime desired state contains an invalid MemoryRecord ID.");
+        }
+        if (byId.has(state.record_id)) {
+            throw new Error(`Runtime desired state contains duplicate MemoryRecord ${state.record_id}.`);
+        }
+        byId.set(state.record_id, state);
+    }
+    if (byId.size === 0) {
+        return queryRuntimeControls(appId, []);
+    }
+    // Mutation order is directional, because a script owns the records inside it.
+    // Enabling a nested cheat needs its enclosing scripts on first, so shallow
+    // records go first. Disabling one is the mirror image: switching off a parent
+    // can destroy the children it created, so the deepest record must be switched
+    // off while it still exists. Sorting parent-first unconditionally - which is
+    // what Disable all already avoids - meant Configure cheats could destroy a
+    // descendant it was about to verify and report a successful runtime change as
+    // a failure, leaving the remembered state unsaved.
+    const byDepth = (left, right, deepestFirst) => {
+        const leftPath = left.state.path;
+        const rightPath = right.state.path;
+        if (leftPath && rightPath) {
+            const depth = leftPath.length - rightPath.length;
+            if (depth)
+                return deepestFirst ? -depth : depth;
+        }
+        // Preserve caller/inspection order when no complete path ordering is available.
+        return left.index - right.index;
+    };
+    const indexed = [...byId.values()].map((state, index) => ({ state, index }));
+    const enabling = indexed
+        .filter(({ state }) => state.active !== false)
+        .sort((left, right) => byDepth(left, right, false))
+        .map(({ state }) => state);
+    const disabling = indexed
+        .filter(({ state }) => state.active === false)
+        .sort((left, right) => byDepth(left, right, true))
+        .map(({ state }) => state);
+    // Retire descendants before the ancestors that own them, then build upward.
+    const ordered = [...disabling, ...enabling];
+    const ids = ordered.map((state) => state.record_id);
+    const isAncestorOf = (ancestor, descendant) => Boolean(ancestor.path && descendant.path)
+        && ancestor.path.length < descendant.path.length
+        && ancestor.path.every((segment, position) => descendant.path[position] === segment);
+    // A record that does not exist yet is expected exactly when an ancestor of it
+    // is being enabled in this same call - that ancestor is the script that
+    // creates it. Preflighting every ID strictly aborted before the parent
+    // activation was ever sent, which is the one case the ordering above exists
+    // for: enabling a nested cheat could never work on a dynamic table.
+    const createdByAnAncestorHere = (state) => ordered.some((other) => other !== state && other.active === true && isAncestorOf(other, state));
+    const before = await queryRuntimeControlsPartial(appId, ids);
+    const current = new Map(before.results.map((result) => [result.record_id, result]));
+    const missing = new Set(before.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
+    const alreadyAbsentOff = new Set();
+    const deferred = [];
+    for (const desired of ordered) {
+        if (!missing.has(desired.record_id))
+            continue;
+        // Already unreachable and wanted off: its enclosing script is not running,
+        // so the record is inactive by construction and there is nothing to send.
+        if (desired.active === false) {
+            alreadyAbsentOff.add(desired.record_id);
+            continue;
+        }
+        if (createdByAnAncestorHere(desired)) {
+            deferred.push(desired);
+            continue;
+        }
+        throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${desired.record_id}`} does not exist in the running table.`, before.envelope);
+    }
+    const activatedHere = new Set();
+    const commandsFor = (desired, observed) => {
+        const specs = [];
+        if (desired.value !== null && observed.value !== desired.value) {
+            specs.push({ kind: "set_value", record_id: desired.record_id, value: desired.value });
+        }
+        if (desired.active !== null && observed.active !== desired.active) {
+            specs.push({ kind: "set_active", record_id: desired.record_id, value: desired.active ? "1" : "0" });
+            if (desired.active)
+                activatedHere.add(desired.record_id);
+        }
+        return specs;
+    };
+    const mutations = [];
+    for (const desired of ordered) {
+        const observed = current.get(desired.record_id);
+        if (!observed)
+            continue;
+        mutations.push(...commandsFor(desired, observed));
+    }
+    let lastEnvelope = before.envelope;
+    for (let offset = 0; offset < mutations.length; offset += COMMAND_BATCH_SIZE) {
+        const batch = await sendRuntimeBatchAndWait(appId, mutations.slice(offset, offset + COMMAND_BATCH_SIZE), before.envelope);
+        assertSameSession(before.envelope, batch.envelope, appId);
+        const failed = batch.results.find((result) => !result.ok);
+        if (failed) {
+            throw new RuntimeOperationError(describeMutationFailure(failed, byId), batch.envelope, refusalIsAboutTheTable(failed, byId));
+        }
+        lastEnvelope = batch.envelope;
+    }
+    // The ancestors are on now, so the records they create can be asked for. Wait
+    // boundedly for Cheat Engine to build them rather than assuming one round
+    // trip is enough, then mutate them shallowest-first like any other enable.
+    if (deferred.length > 0) {
+        const stillMissing = new Map(deferred.map((state) => [state.record_id, state]));
+        for (let attempt = 0; attempt < MATERIALIZATION_ATTEMPTS && stillMissing.size > 0; attempt += 1) {
+            if (attempt > 0)
+                await new Promise((resolve) => setTimeout(resolve, MATERIALIZATION_DELAY_MS));
+            const observed = await queryRuntimeControlsPartial(appId, [...stillMissing.keys()], before.envelope);
+            assertSameSession(before.envelope, observed.envelope, appId);
+            lastEnvelope = observed.envelope;
+            const pending = [];
+            for (const result of observed.results) {
+                if (result.record_id === null)
+                    continue;
+                const desired = stillMissing.get(result.record_id);
+                if (!desired)
+                    continue;
+                pending.push(...commandsFor(desired, result));
+                stillMissing.delete(result.record_id);
+            }
+            for (let offset = 0; offset < pending.length; offset += COMMAND_BATCH_SIZE) {
+                const batch = await sendRuntimeBatchAndWait(appId, pending.slice(offset, offset + COMMAND_BATCH_SIZE), before.envelope);
+                assertSameSession(before.envelope, batch.envelope, appId);
+                const failed = batch.results.find((result) => !result.ok);
+                if (failed) {
+                    throw new RuntimeOperationError(describeMutationFailure(failed, byId), batch.envelope, refusalIsAboutTheTable(failed, byId));
+                }
+                lastEnvelope = batch.envelope;
+            }
+        }
+        const unresolved = [...stillMissing.values()][0];
+        if (unresolved) {
+            throw new RuntimeOperationError(`${unresolved.label ?? `MemoryRecord ${unresolved.record_id}`} did not appear after its enclosing scripts were switched on.`, lastEnvelope);
+        }
+    }
+    // Verification must not require a record this very call deliberately
+    // destroyed. Switching a script off removes the records it created, so a
+    // descendant of a record we just switched off is expected to be unreadable
+    // and its intended state is already known: off.
+    const deliberatelyOff = new Set(disabling.map((state) => state.record_id));
+    const destroyedByAncestor = (state) => {
+        if (!state.path || state.active !== false)
+            return false;
+        return ordered.some((other) => other !== state
+            && other.active === false
+            && Boolean(other.path)
+            && other.path.length < state.path.length
+            && other.path.every((segment, position) => state.path[position] === segment));
+    };
+    const verified = await queryRuntimeControlsPartial(appId, ids, before.envelope);
+    assertSameSession(before.envelope, verified.envelope, appId);
+    for (const missing of verified.unavailable) {
+        if (missing.record_id === null)
+            continue;
+        const desired = byId.get(missing.record_id);
+        if (desired
+            && deliberatelyOff.has(missing.record_id)
+            && (alreadyAbsentOff.has(missing.record_id) || destroyedByAncestor(desired)))
+            continue;
+        throw new RuntimeOperationError(missing.error ?? `MemoryRecord ${missing.record_id} query failed.`, verified.envelope);
+    }
+    for (const result of verified.results) {
+        if (result.record_id === null)
+            continue;
+        const desired = byId.get(result.record_id);
+        if (!desired)
+            continue;
+        if (desired.active !== null && result.active !== desired.active) {
+            throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${result.record_id}`} did not switch ${desired.active ? "on" : "off"}. Cheat Engine reported ${describeReadBack(result.active === null ? null : String(result.active))}.`, verified.envelope);
+        }
+        if (desired.value !== null && result.value !== desired.value) {
+            throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${desired.value}.`, verified.envelope);
+        }
+    }
+    const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) => other !== candidate && other.active === true && candidate.path && other.path
+        && candidate.path.length < other.path.length
+        && candidate.path.every((segment, index) => other.path[index] === segment)));
+    const prepared = verified.envelope?.prepared;
+    let compatibilityConfirmed = false;
+    // A confirmation that throws has not necessarily written nothing: the record
+    // can be committed and visible and still report a durability the backend
+    // cannot prove. So the two answers are kept apart - what is known to have
+    // been stored, and what may have been - and a caller that shows compatibility
+    // history rereads it for either, because the alternative is a panel that
+    // disagrees with the backend until it is remounted.
+    let compatibilityMayHaveChanged = false;
+    if (proofTarget && prepared) {
+        compatibilityMayHaveChanged = true;
+        try {
+            compatibilityConfirmed = await confirmTableWorking(appId, prepared.table_sha256, prepared.session_id, proofTarget.record_id);
+        }
+        catch (error) {
+            logUiWarning("runtime.compatibility_not_recorded", { app_id: appId, reason: describeError(error) });
+        }
+    }
+    return { envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged };
+}
+async function deactivateAllActiveControls(appId, recordIds) {
+    const unique = [...new Set(recordIds)];
+    if (unique.length > MAX_LIVE_CONTROLS) {
+        throw new RuntimeOperationError(`This table has ${unique.length} controls CE Decky can act on; live control is limited to ${MAX_LIVE_CONTROLS}. Switch cheats off from the picker instead.`, null);
+    }
+    if (unique.length === 0) {
+        const empty = await queryRuntimeControls(appId, []);
+        return { queried: 0, active: 0, deactivated: 0, deactivatedIds: [], envelope: empty.envelope };
+    }
+    let queried;
+    let queriedBeforeFailure = 0;
+    try {
+        queried = await runForRecordChunks(appId, unique, (recordId) => ({ kind: "query", record_id: recordId }), (results, completedBefore, envelope) => {
+            // A record whose enclosing script is not running does not exist, and it
+            // is inactive by construction - which is exactly the state this call
+            // wants. Requiring every ID to answer meant one unmaterialized child
+            // blocked Disable all before a single command was sent. A record that
+            // answers but cannot report an active state is still a real failure.
+            const failures = results.filter((result) => (!result.ok && result.error_code !== "record_missing")
+                || (result.ok && result.active === null));
+            queriedBeforeFailure = completedBefore + (results.length - failures.length);
+            if (failures.length === 0)
+                return;
+            const first = failures[0];
+            throw new RuntimeOperationError(`Bulk deactivation stopped before mutation: ${failures.length} state quer${failures.length === 1 ? "y" : "ies"} failed in the current batch; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not return an active state`}.`, envelope);
+        });
+    }
+    catch (cause) {
+        if (cause instanceof RuntimeOperationError) {
+            const prefix = queriedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation stopped before mutation:")
+                ? `Bulk deactivation stopped before mutation after querying ${queriedBeforeFailure}/${unique.length} control(s); `
+                : "";
+            throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+        }
+        throw cause;
+    }
+    const activeIds = queried.results
+        .filter((result) => result.record_id !== null && result.active === true)
+        .map((result) => result.record_id);
+    if (activeIds.length === 0) {
+        return { queried: unique.length, active: 0, deactivated: 0, deactivatedIds: [], envelope: queried.envelope };
+    }
+    let deactivatedBeforeFailure = 0;
+    try {
+        await runForRecordChunks(appId, activeIds, (recordId) => ({ kind: "set_active", record_id: recordId, value: "0" }), (results, completedBefore, envelope) => {
+            const failures = results.filter((result) => !result.ok || result.active !== false);
+            const successful = results.length - failures.length;
+            deactivatedBeforeFailure = completedBefore + successful;
+            if (failures.length === 0)
+                return;
+            const first = failures[0];
+            throw new RuntimeOperationError(`Bulk deactivation incomplete: ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not acknowledge inactive`}. No later batch was sent; refresh/query state before retrying.`, envelope);
+        }, queried.envelope);
+    }
+    catch (cause) {
+        if (cause instanceof RuntimeOperationError) {
+            const prefix = deactivatedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation incomplete:")
+                ? `Bulk deactivation interrupted after ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; `
+                : "";
+            throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+        }
+        throw cause;
+    }
+    let verified;
+    let verifiedBeforeFailure = 0;
+    try {
+        verified = await runForRecordChunks(appId, activeIds, (recordId) => ({ kind: "query", record_id: recordId }), (results, completedBefore, envelope) => {
+            // The mutation phase deliberately switches the deepest record off first,
+            // because an enclosing script destroys the records it created. Requiring
+            // every one of those records to still answer therefore made the intended
+            // successful end state indistinguishable from an error: child off, parent
+            // off, parent destroys child, child query returns "MemoryRecord missing",
+            // and Disable all threw - so the durable profile kept remembering cheats
+            // the user had just switched off. A record that has ceased to exist after
+            // its own deactivation was acknowledged is the desired outcome.
+            const failures = results.filter((result) => (!result.ok && result.error_code !== "record_missing")
+                || (result.ok && result.active !== false));
+            const successful = results.length - failures.length;
+            verifiedBeforeFailure = completedBefore + successful;
+            if (failures.length === 0)
+                return;
+            const first = failures[0];
+            throw new RuntimeOperationError(`Bulk deactivation verification incomplete: ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not verify inactive`}. No later verification batch was sent.`, envelope);
+        }, queried.envelope);
+    }
+    catch (cause) {
+        if (cause instanceof RuntimeOperationError) {
+            const prefix = verifiedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation verification incomplete:")
+                ? `Bulk deactivation verification interrupted after ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; `
+                : "";
+            throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+        }
+        throw cause;
+    }
+    return {
+        queried: unique.length,
+        active: activeIds.length,
+        deactivated: activeIds.length,
+        deactivatedIds: activeIds,
+        envelope: verified.envelope,
+    };
+}
+/** How Cheat Engine answered a read-back, in words a user can act on. */
+function describeReadBack(value) {
+    const text = (value ?? "").trim();
+    if (!text || text === "??") {
+        return "no readable value, which usually means the script that creates this address is not enabled yet";
+    }
+    return text;
+}
+
+const DISPLAY_NAMES = 3;
+const NAME_CHARACTERS = 48;
+/** One pass over the schema's unique AppIDs; retain only a constant-size sample.
+ * Lowest AppIDs make the display independent of profile enumeration order.
+ */
+function aggregateTableHolders(profiles) {
+    const grouped = new Map();
+    for (const profile of profiles) {
+        if (!profile.table_sha256)
+            continue;
+        let group = grouped.get(profile.table_sha256);
+        if (!group) {
+            group = { count: 0, sample: [] };
+            grouped.set(profile.table_sha256, group);
+        }
+        group.count++;
+        if (group.sample.length < DISPLAY_NAMES || profile.app_id < group.sample[DISPLAY_NAMES - 1].app_id) {
+            group.sample.push(profile);
+            // At most four entries, never a sort of the full holder population.
+            group.sample.sort((left, right) => left.app_id - right.app_id);
+            group.sample.length = Math.min(group.sample.length, DISPLAY_NAMES);
+        }
+    }
+    return Object.fromEntries([...grouped].map(([sha, group]) => [sha, {
+            count: group.count,
+            names: group.sample.map(({ name }) => {
+                const characters = Array.from(name);
+                return characters.length > NAME_CHARACTERS
+                    ? `${characters.slice(0, NAME_CHARACTERS).join("")}…` : name;
+            }),
+        }]));
+}
+function tableHolderLabel(holders) {
+    if (!holders || holders.count <= 0)
+        return null;
+    if (!holders.names.length)
+        return `in use by ${holders.count} games`;
+    const remaining = holders.count - holders.names.length;
+    return `in use by ${holders.names.join(", ")}${remaining > 0 ? ` (+${remaining})` : ""}`;
+}
+function tableHolderIds(profiles) {
+    var _a;
+    const ids = {};
+    for (const profile of profiles) {
+        if (profile.table_sha256)
+            (ids[_a = profile.table_sha256] ?? (ids[_a] = [])).push(profile.app_id);
+    }
+    return ids;
+}
+/**
+ * Which game each stored table belongs to, by exact SHA.
+ *
+ * A file name is not an answer to "what is this table for". Real tables are
+ * called `CD_Inventory_2145.CT` or `winmm-x64.zip`, and Manage lists every
+ * table on the device, so a reader scanning it had no way to tell one game's
+ * tables from another's. The list of tables a game has imported is the fact
+ * that answers it, and the profile store already holds one per game.
+ *
+ * `preferredAppId` is the game the screen is on. Where that game holds the
+ * table, its own name is the one shown: a table several games hold is being
+ * read here in the context of one of them, and naming another game's copy of
+ * it is answering a question nobody asked.
+ *
+ * The same bounded shape as the holder sample above: one pass, a constant-size
+ * sample, lowest AppIDs first so the display does not depend on enumeration
+ * order.
+ */
+function tableOwnerNames(profiles, preferredAppId) {
+    const grouped = new Map();
+    for (const profile of profiles) {
+        for (const sha of profile.table_library ?? []) {
+            let group = grouped.get(sha);
+            if (!group) {
+                group = { count: 0, preferred: null, sample: [] };
+                grouped.set(sha, group);
+            }
+            group.count++;
+            if (preferredAppId !== null && preferredAppId !== undefined && profile.app_id === preferredAppId) {
+                group.preferred = profile.name;
+            }
+            if (group.sample.length < DISPLAY_NAMES || profile.app_id < group.sample[group.sample.length - 1].app_id) {
+                group.sample.push(profile);
+                group.sample.sort((left, right) => left.app_id - right.app_id);
+                group.sample.length = Math.min(group.sample.length, DISPLAY_NAMES);
+            }
+        }
+    }
+    const names = {};
+    for (const [sha, group] of grouped) {
+        const lead = group.preferred ?? group.sample[0]?.name;
+        if (!lead)
+            continue;
+        const remaining = group.count - 1;
+        names[sha] = remaining > 0 ? `${boundName(lead)} +${remaining}` : boundName(lead);
+    }
+    return names;
+}
+function boundName(name) {
+    const characters = Array.from(name);
+    return characters.length > NAME_CHARACTERS
+        ? `${characters.slice(0, NAME_CHARACTERS).join("")}…` : name;
+}
+
+/**
+ * One cheat as a single controller-navigable row.
+ *
+ * The viewport is the constraint: a record that expands into separate title,
+ * Active, Value and Pinned rows fits about three per screen and pushes the
+ * modal header off the display. Keeping the name, its context and the Active
+ * toggle on one row is what makes a real 17-control table usable.
+ *
+ * A closed row is exactly two lines, whichever variant it is and whatever it is
+ * called. A Cheat Engine record is named by whoever wrote the table, and the
+ * field they name it in is the same one they write their notes in, so a real
+ * table's record names run to a paragraph: "Reduction % (100 = immune, 0 = no
+ * reduction)" is one of the shorter ones. In the modal those wrapped, so one
+ * record could be five lines tall, a page of six could not be read without
+ * scrolling the window, and how much of the screen a page took depended on
+ * which records happened to be on it. The panel variant had the reveal from the
+ * start; this is the same treatment, and the name and the note now scroll
+ * themselves under the ring instead of growing the row.
+ *
+ * An open row is the exception, and deliberately: `More` is the press that says
+ * show me the whole of this, so its block wraps rather than scrolls, and
+ * nothing in it is cut.
+ */
+function CheatRow({ label, summary, active, disabled, onActiveChange, actions, body, highlighted, variant = "modal", testId, }) {
+    const panel = variant === "panel";
+    // A row showing its detail block is a row whose whole text is on screen: it
+    // wraps, the same way an opened `PanelRow` does, and it is the one row on the
+    // list allowed to be as tall as its own name.
+    const open = Boolean(body);
+    const line = (text) => open
+        ? SP_JSX.jsx(WrapText, { children: text })
+        : SP_JSX.jsx(FocusScrollText, { paced: true, children: text });
+    // Steam sizes its gamepad toggle at a fixed 38x22 with an absolutely
+    // positioned 22px knob that translates 16px when on. A flex row's default
+    // `flex-shrink: 1` narrows that box while the knob keeps its geometry, so the
+    // switch is painted clipped and spills over whatever follows it.
+    const toggle = active === null ? null : (() => {
+        const control = SP_JSX.jsx(DFL.Toggle, { value: active, disabled: disabled, onChange: (checked) => onActiveChange?.(checked) });
+        // On the panel the switch competes with the cheat's own name for a single
+        // 300px column, so it is scaled down from its right edge: Steam's knob is
+        // absolutely positioned inside a fixed 38x22 box, and scaling the box is
+        // the only way to shrink it without the knob keeping its own geometry.
+        return (SP_JSX.jsx("div", { style: panel ? panelToggleBoxStyle : toggleBoxStyle, children: panel ? SP_JSX.jsx("div", { style: panelToggleScaleStyle, children: control }) : control }));
+    })();
+    return (SP_JSX.jsxs("div", { style: panel ? undefined : blockStyle(Boolean(highlighted)), className: [
+            FOCUS_SCROLL_CLASS,
+            panel ? null : CHEAT_ROW_CLASS,
+            body ? OPEN_ROW_CLASS : null,
+        ].filter(Boolean).join(" "), "data-testid": testId, children: [SP_JSX.jsx(DFL.Field, { label: panel ? SP_JSX.jsx(FocusScrollText, { children: label }) : line(label), description: summary ? panel ? SP_JSX.jsx(FocusScrollText, { children: summary }) : line(summary) : undefined, bottomSeparator: panel ? "standard" : "none", childrenLayout: "inline", childrenContainerWidth: "min", verticalAlignment: "center", children: actions && toggle ? (SP_JSX.jsxs(ActionGroup, { style: { gap: 10 }, children: [toggle, actions] })) : toggle ?? actions }), body ? SP_JSX.jsx("div", { className: REVEAL_CLASS, children: body }) : null] }));
+}
+const toggleBoxStyle = {
+    flex: "0 0 auto",
+    display: "flex",
+    alignItems: "center",
+    minWidth: 38,
+};
+/** The same switch, narrowed to the width its scaled-down box actually needs. */
+const panelToggleBoxStyle = {
+    flex: "0 0 auto",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    width: 32,
+    minWidth: 32,
+};
+const panelToggleScaleStyle = {
+    // Steam's box cannot shrink without clipping its knob, so it keeps its 38px
+    // and the scale - anchored to the right edge the row aligns on - brings it
+    // back inside the narrower column.
+    flex: "0 0 38px",
+    transform: "scale(0.84)",
+    transformOrigin: "100% 50%",
+};
+function blockStyle(highlighted) {
+    return {
+        width: "100%",
+        borderRadius: 4,
+        // Read from the panel rather than written here, so a short screen can close
+        // the gap between rows without this file knowing which screen it is on. An
+        // inline length cannot be overridden by a stylesheet; a variable can.
+        marginBottom: "var(--ce-cheat-row-gap, 4px)",
+        background: highlighted ? "rgba(255, 255, 255, 0.09)" : "rgba(255, 255, 255, 0.04)",
+        boxShadow: highlighted ? "inset 0 0 0 1px rgba(255, 255, 255, 0.18)" : undefined,
+    };
+}
+const cheatRowActionStyle = {
+    minWidth: 0,
+    padding: "4px 10px",
+    fontSize: 12,
+    lineHeight: "16px",
+};
+
+/**
+ * HexPaw, the CE Decky mascot, as an inline data URI.
+ *
+ * The Decky frontend bundle has no asset pipeline, so the image is carried in
+ * the bundle itself rather than fetched from the plugin directory at runtime.
+ * This is the 224px palettised derivative of `docs/assets/hexpaw.png` - twice
+ * the width the panel draws it at, so it stays sharp where the QAM is scaled
+ * up, and small enough that inlining it costs a few kilobytes.
+ *
+ * Generated by `python scripts/build_mascot_asset.py`; do not hand-edit.
+ */
+const HEXPAW_DATA_URI = "data:image/png;base64,"
+    + "iVBORw0KGgoAAAANSUhEUgAAAOAAAABwCAMAAAAwlYyQAAAACXBIWXMAAAAAAAAAAQCEeRdzAAADAFBMVEUAAAAAAAABAQECAgIE"
+    + "BQQJCAcKCggNDQsSEQ8dGRcoIx8wMC85LCY8PDw9PTxKSkpLS0tXLx9bSkNbWlpbW1poaGdzc3N0b25+f36MjIyQNAeRj4+fn5+t"
+    + "rKyurq65ubm7QgfJxsXW1NPh3tzq6OfvUATz8/P4h1H5+Pn6+vr9VgX9/f3+Xwr/WwX/////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "//8A/wDfaOD+AAABAHRSTlP/////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "////////////////////////////////////////////////////////////////////////////////////////////////////"
+    + "//////////////////////////////////////////////////////////////8AU/cHJQAAEABJREFUeNrtXAmXokjWjQMRBAHp"
+    + "dhRFQZFFCjQz/v+/q+8tgWKmuVRWzVR/fcbpPpNbK5e33XffC8TPf/lL/A/gw5dS6t8NMAgCrVXwrwWogkAJqbUO1L8VoApnRggf"
+    + "IAb/RoBBIGLbHJJICPUPx/hNgFos7cXa9rAKyYzq3wcwtV3fW2vrbSzEPxjitwHmtr9cLl1nbbefEMTg3wMQkqhfIkCwIEK0hwk4"
+    + "6j/TiN8EqHQFAO16XSNEAJpHkG7+GER4qz/1Xt8EKE0DSaaLRLiqGGKbKvEn3BSystZS/H2Are1tHUK9UCuwYg+OWk1EoH8LoVRE"
+    + "kIQws1D9VYDajxBgiRcEhkvBmBeAmPq/EYmIDuB5Ipznbf3PAFh44EkIMcaUAzFZGvFNhIgO7C9EvAWHsKUM9F8FKAngQQA+BRB9"
+    + "lVksGraZfgchGk8hPDkvLPl7IfTftOBPjUmmQ4CIMPCFEAlcGLrp6lWqUW/wQqulxn+CxmN4y5LLTm9z8YcM+N1Cr8IaALKLBnKy"
+    + "noZihgiB26zHNlTjbMjICE5w15igEwif8jG8Qdn2NhXhXwaoKgBY0tVBUUzaJo/n7QVfN4QSsahbBqFv7+0n2QW0L2ZsvcthGrUX"
+    + "u/zbAANRAEDIdXzNIoLMUBwsI0wYoUP/M1AjbPiTYNw3wy/AO6M9OydQInCFSxf7f9dFFXLRzraRT/4G34YVZocLI5wjQkr6/O8N"
+    + "Hv74euma3VULuW6pkpZTIUKM5lqrvw5wjfFCSPClRcwOernglU49RCihI4b8IzXfBfpfoPx7fGC+SUnB1yQecHa8dXb/x3LMdzUZ"
+    + "DY4ESNIBICEmA4Ih2wqdVCuTlmWZJwYIjhoSjAqXP/ND8fNnjL0ymFOolL1zj38HfyEB7uZzgJI+WP7HAMqh0lMhpExTUwi25SaS"
+    + "Hn16ODsAXNuspa/dn8GdMCaaJnnVlisJBkOOcIHGskvQ0timxJBp4q9YMHB56z+kqsGN7ikI1WDClNjMPoKiKPzQAGMWYmWxNpbG"
+    + "0xyB8I+UWDbldG+buRAbZnlVLELN0bwBVqu+xGPY7T/B+F2AWmzRR6EkXAFOKVE0qTZJUTdNXe7XUzG3Pfy0JoTB4Kgox0E6yW2W"
+    + "c/E8QJUXkq7XAw/dfjEE8b0kCV/qTwPkIOzhXrtCASklaiD9JaGnw2iaNpZeVVJYpHBVSPBcOgWiGejJHIlLj21zBv3DZB6hn3sx"
+    + "UNrpRwDVtaRyWwMeE3zQp30XILe8PTIztkwgw7ZdhwJypxcneQOB1WMn3EFeBWfei2uVV8pgak3gHrSYl2wWb8uuWRsEKLKPPFQO"
+    + "TOhKiVR4OHyomHx7NkE+esGKRZ+G9xK6eqClUVpiKnU1o4cvbNVa4CZ6yKRymq9CuO8AEe3XIMEujCCHQxrzHk9Td+WUPALuCHSm"
+    + "xQwVk+BPA4ypf9g6E8Jn+VKKOAcwl86VfFf4i2jbtqHkahiQ5thswbUiCkEk1xldocK7doHMFb7DDwPtaNHwwtifoygUv9dsf3+6"
+    + "pIGt9Uxb+I5C2oz3lsPq7oX10uRYMwNXKpCZtxlAXHXUg+RYKuEtfDTgB50EpSdIwz74KlEkerM9kKqemu0/DHBOGbCNqSuEvGiy"
+    + "C9S0y4OXhTCJ9JAeAqop4JuJL6bYdlXsdO5aJ+8AZDVDBCaKIqOx1KAcy3mpIyd/hPDbSQb+Iemwt3UMPQH0AxBSl+4RPPibUmru"
+    + "agfGBtUAfPlgRAy5BrtkwrcEfPvHvS61++EsPVRN27VNVWRLQ/lTsUbLzbb+cwDhfmKloBoASV9EmCrsDdOdo3bYYagRIdViQgWy"
+    + "ieGLg+Aa70MX3dv4UYpBXUTOcld83KvZz6XA65iynICJTP8pgCpw3g9tr4HkkiC6quyG3GlvzQX5KHZW3D85lQP+WzB+CxeVLCk6"
+    + "tZJo1YcRCCDUqiQ1w904uDv4IdXKB1CSVGj4PnmL8NsxiFeJ0pPNIejNwZbbuYGm9cq3i7IdBSTxcuVcFIsmRbCtZ/P9RLgmf+jA"
+    + "9Fvz+WJZPcheeCOhxQqwtcFvsRUN/xRANmECFx6oaLuGjGhydlFbZ1MTeNKk/c2Igwm5CVYGfo2iB2SoiNOOwkhC7hc+MF90eABv"
+    + "gJiFInZmdVJA8EeyKF/rzIfrxZwWZT1bzFabaQx1HKrGrLO3PENROJSJda6wykAXMaHg1CLYI74HciFAT9rH8BwoYOoV30p6vz8F"
+    + "kBkM+hd4kNm2xMrYHcGS5VIFIbjhOJFyFiWAE2CnKVeZCCJQYtcExK6Lvdf4Ql/l17d++IK7OMucr6Darn+OufdvrJE4MRPusEFu"
+    + "3Y28psk3E6Is1y4YbvRMuNKMTV9rq9zlYPBdk3bUNb0NIaBi5fvmG25eV9or2r0w43r4O3syimXt8A4etn/QxAvBPOqAv7Flw/nR"
+    + "WTCA2ty7moJX5GWIAQnN61IdopzVXT559eP6hMUi+FMWRHjrETx0z2oJrZ0ONWfLsEbjNZAE+8Zwx8f8EeO1H2pkhBzBFm8CMEQe"
+    + "8Cm+y2XEn8BJzVh3/Z0kg3OXpB7ltw4bQoX0QjLJINZJARiW3FA4+sjdv5MZGwMcG3xWy8/wfeKrt4r0+wDhYgKhEF43StldGhKw"
+    + "cLaaKJqIYn/Q0YeW5IEcg6iqorHpetF5wYSVwSZizNJCz9z7J2avDzA6R7WtGd2p71vQZ60divrVfHse86J2Ns8K7H4xD1WULeOg"
+    + "aTS3cdQ0QGAumcsW6WUq9qhq3GsPRG26kQdCXqoQxTs+a6uaUhoK/zdC822AZl7iHbP1j8ZyOarn1NQxVxERtOmJ9ANmrL2txOQy"
+    + "YZURk6vt12HpUuwsXovYkP8GdwkUqE3fkeEskdtuq6NNcXlcNSD4nqmDJlLxmwADg3rKpat/PD/XjulmWmitHO3yJjgBS7eQV1CF"
+    + "6KjQZ64lDFRpy0gM5rGN9qBZfo0vFCtLnLZvG2ggCKUtAyHjrH3Yldnm/NzaIZF+H6DSYZzWwDbLH8/n84+W00U1FTRd51qON7+M"
+    + "U2NmxmVSMCFwN0qjmEMzbJe7obDsOTjv7ecZaGOrfD2LI2NMPEtynA5URvpOCXgL8Pn8gwHmt3oqfp1km+OPH4gNXs8lfZK9rIVQ"
+    + "ivRO1oOg3ZsaMBpwTFIouIpHpK0FskwFup8rYbZnVeBeVNF+0aQxdri+hJeHlXWyreE+KZxFPagetnl5AYQ9++j3LQgmWBxPL89s"
+    + "Po7u5Wx7KMqqzFeGGRykh5UwpKEIao2guSkEt/RishJUJyhymxwayUrfDZ3QT2QMBccPyCsC1lIBbZi0OHUFflO8sSG4KNxyygh2"
+    + "4v9GDKI4HUaL3Y+aHcW2Zc0N6CGdG9ft5eB36LMiy4TEtgrLHZtXhdg+9sTTLltDw+FUhOFrfYLiSA/yIPFCrLwZllPt+/vXNrT1"
+    + "+fxCTore8jtJBum1XpYXeytAqIksQ3JRzpNLHPXCC/JlEXo0i4Ji4IYwkFDpMiBOhYxmcQFtk3wjidxNuJ2GhspWRJ+g/OIeIUQ5"
+    + "hQ2YEFW638qigU7bEf27cN8pVBiGzKfBR8HxivW6QApWTwNq1ll/QwW1psrRbXwv9HPUf8F/w483MG6WlDzrkbq681KgS2DAM0Yh"
+    + "6sxDS/G9MmF0nI8FiQaiimYqghZIAaVv2G3BE1uIeeLMEW7RII85EI8pYvhrz0ceSlXk5+cIneLrvGRy/XwG+IMAPtPYS/x0dO1b"
+    + "AKHFztux95d5WVVVWeTpahIySM8cLMu60JD6kBW2GDsyIBmg43tiZssJTnSxk+gi+cmkzIkdo65yS05qS2dKzuxn3h4w6vsW1GLT"
+    + "3qvXiCJP12lWVG1bphPo8CEfzA9117flGtp1hcM07YcR1HOybW5EnOZZOtdQD6CW57b+aGo9gIIi5Q9fQYFl4+83PAI4Y5KhSoEy"
+    + "5fcBqqh0ut0oALq6AvvNY23meW+bbewJ5Ykwio3vnBbSYlBueQYPEevFy+lkHUPO91DO3sdN6QcfOylnr/FUmUWB3PRDCO4wCJHf"
+    + "iqGs/jpAafL9OknW233V3zN9KhVFOo0T4BzlSgsJBQXQAVLIrmC/Eu+sH22X2Gn4piShJsCZZwfsKsvNx05KNUY3W15xQEKI02Ds"
+    + "VGi3E0LwZE4vUAov3Lh8D6AiiQlfUdaiTHmVeOkrFmTTAzZD6wiHvMIL4ySPPWUqyKQrEUIySmsnY0+JwqBE3sUinqhPopAr7FVE"
+    + "pv8QmScKjlgFj94OArG+8PLAb2VRrWYjmbkbOyuyL2bHfbnP80MJH2gPQpGs1IDLzmdRorEn5EWbgKeeVYhF9ONEqmhZ/FpQKc2g"
+    + "bIUu8AMALrwFJFLoqVbftyD/V9i7hevDNlkl67zsXnFfnAraOr8q7Uio59hToC6hVFQAffHw2pJhKJGCcQsJt+29TCODYeWL12hc"
+    + "HkUvOHg4QWufwYDgXuCjJapzwe8ANKssMYESwyveNq+YIXIJqBbZpXMufGuL98jN8i3uMBx8RWQT7hbm9lwo81ml0NBEtSSTO/kR"
+    + "o9efYgSenxd+oI4IsCKDfx/gZhUFcPmTdU4MG3KG2WOY9yPaNMvncZG19q4YE8IMqTa+crwKRw9o7Sb/II+6Ik9VdKC1GrNMBf83"
+    + "wRrxcgQzy+PL6QdOZYPfiEED6PxpVg2ZE9DgNbejFgZnY7kZF5Kr9wIOiTVwO8WhtV7ti322mUJXjGuioXh/78clmfS2gURpFPgD"
+    + "GBJS6EuEAHfPpxJHjN8HiIM6nWApxFMT6IMdjnXgCtflCGEPkfK6paEki/qnR1ajToG0AbhHW2zTce9bv5tk2IL5sN1BrB0rHoQi"
+    + "ptAd3gQEWJfitj3zqwBJqEe1qUcm0xctD6762JdZiU3ayE1ny1cdDWTXpkGQOTV6lDegkqxwyusGYDYzXvAhHWVehmNlhQEZoeyT"
+    + "/DhhhsEtht3LqVly7voGQBIccNTZuXa8gFaHqOQB6OZ8JkZaAu6s13cmtPnE+CaeZQ2mF9afAuTourRE/Oy+gB4jM+rhAucEUiNE"
+    + "Hb831gFcOsGaiKjOZw5LuTs/FzK45phfA0gZfd7SXm43zIySFutbazyzgKtYdTcV3y5ndiw550Bo8qpIjUltgVOpeL2v6ipfx/rA"
+    + "BqyNmc7iMHi8WrUUfGbKKYN4t6ccm8eXl4Wk4RUA/DFnbevXAcaSyxDggR7+0vEwR0QV/mQqwvNRS16uGzKNyUa6sJ2JUG1RPoXC"
+    + "0kGik76nohXKgGXK2qMtoUDqxx7q4Q6jolEA3SwC4dPeTYQBqHlbZ/d85IbjlwHO5oLw4eXbKko7/qS57wcFVaPw9HyKpKeygdmg"
+    + "k5Zjg2KLEU6nIQ7WLpFvpqt0uwVadxkcmxZOHseGiHH2RL0VdRCDEIfrK7vnnXSauTyeyLRXCfnLAGdbxDcfRkJrQdGHVxRKXPed"
+    + "CXMCKr9AJx7qBYRmcEVIF4WTXEEj3ssK59+uKen7K+zOo78AAA0nSURBVB+IZfje8l8CVzCI1zn3FDwdPu9uPdQJfFWGT/IXAUqg"
+    + "V5IOE7hJagWcGaMPyjatObSxeIJIfwE2MZK8AGF4G1+ij/KOM45Gkxgz8bBU4NRrfL/wkQFRXIUWeTt8/q2lAK909sMQfMKv/cXi"
+    + "Op34EkANAbARtG3cOiUN9QcxAbKZoVlEWUmR18/n4/nlSYY+EM1hNlZFCZ4xJHdup4LKgy/i2sbz0QS/zbOiJk8FkvLQgBtr57wv"
+    + "MgzEB7ENzRUMa7mGVJvj068AxI4tq6Hc+HF3abdsEGx0QhG3tDEKuQ062QMQ3l10fDE4eEpcWAEV2EQZtRY9LlwFqLxFaQvp5HCr"
+    + "KF1XQoWPU9SuH4gzAe8Tx/padnh3yG33yaFZHASv6BReVVbxpdI3QxyYom1lllDWgcLMMKWJNbMibxKBA8d5++PJWxxJzZ5fBm+y"
+    + "1XKSlhxwmclz6j5aM7Ouu3KML1XQ+y/Lsex+vQQa1zThVe13BxqCYUuOxB63bgupdXe6huCnAHlRsrGxp1GPTyWdxIIXAfOjMqSg"
+    + "oviG7J+dIMJDyRuFo7FoOpuuNuskMtRB4eoBng1yC0NNmW/mk1jrEN4ird5snLklvWJ7y1c0DsdjhtiOoNxj3MojTZUh6Xxx+MK3"
+    + "CUKvBp4gTb0SvpwD9c9LyDnoECYWnuBHBpAqLxZPbl9Lu4yO8coo9nm5j9OmA1sWQYwHLMGQZZ5MjCeM0T4q89ClTMK37BCFRtvc"
+    + "Lfehym0SA58jzDIvY+8K0N89L2TwJYA0DqPdRxweyGguJERaQWvnHkHCrfl06pRCHZoQaTRtUbuxGammFFtsrAzMX89p86st0hmK"
+    + "Gh4UjaRsW6Q0MfYNb2YhfK9GKykFBoze4LqiN8W+OrnujoMdzqfb7OVDgNr3aD2pctMRJX1kLUA8NrNZTAmRT7w0h00Md1LCnaxK"
+    + "2gLUwfUgMzqUnKUQeT0daC6W/rSGfn/5tFjswJtp5ibkDJf5mom5X+PhAIy7V33XRBLj31LQgitshyUjisDnkYd+ABBPFKWRunWY"
+    + "kEZRN7p06QGfEbDCgy3Tis8o20udryJPhLNt1V2KKXitul5YDynKX2FqsVUai8mhyiYRTqhOiygyocT1VvDPKRo3kuY1Pt7UGG8Z"
+    + "QMuMNKMUk4Lar8IfVm2xEp7PT/ILayShp9YNVGbN561ndFSwJPtBrGQWJ+b7kivcheW0DrwVUIfz/eVguHq4IXVLTtrmMy2C5Xrq"
+    + "m93p5eXlfDrhv8fdAgdtWvibFndA9D0+NaZ7TDI8iUSxnW+x+PQoZGkVDFnmCGRUfw4wxGS5ERBTG5pe5p7WPlSu5bKEn9L0HGOq"
+    + "rJBpURnnlNiWYCMxaZsJ1snh3tNvMjrNYyB4js/POEVAHRpegPBJ8SmmGKvE3eFCLWVxS540+7tEMW0/1BXz4suEHZRGy/4OG4sv"
+    + "7KqJhBaPxHTLSxKNCYAnQSctoCnzI5bK+tbwmra9rQHt92U5B2bcz8R0NWRSMPDenW/wgRoDpiMBfD4dF5FmHyU9QuW0qKSu+IjJ"
+    + "Xze2Klx7SNaOa/AO5XCygZI3NBbnOwO+B1BCS9BEQm8ttzGXKUQ13LUNncBRZl22PHVZh4mtM7IjDspmmBWnxQzbtokocuYenW2x"
+    + "uKTQb6nweAKX1EdGF0opbwNAWqps5HBslCa55W3Hr5sfUIorhn6svy2isnvCG5zO9wZ8B2CIUnEqZuwEdJfw0BT8jGYf2BJk7i72"
+    + "qJMjt8QF5UjIp+NOhGvkBk0Y233GOyQmymqb4I1eLAJoA0/PL0eIPKXdiFpdh2Niv3GKEYo/06ExQR0mijAc2nHG4f22YbcDNbWX"
+    + "43078hBgRFK4XF/7drhLIWkhkCiQmtK3CL7HPNmX6xkAxL3NQJ3OzwsPwg9coBCFbQjfCv14LujeYCt/PO8i7yqr+mpASTwk5VOv"
+    + "gFWm9tp42RzfEy/hDh9Kq8MBOKgQKF3ozzd+KYWsbx0BNHJuKwJTspbTCR18uB35JPrVGLEwEmwDvQruE3Y2WXGZqLBCrDAj00su"
+    + "jsaT0XSVbJJkNZ9EajgjwAhDdlg5GcQBWucTuLN+v3iH+3uuk0d9x19A1lr4n68005mdtrrumFbUHXTc8gCNl6UtqsMkmg5tHzQK"
+    + "HTrL7vkcmeOO4gpHD828tbyhXhfJ1WBCGSmDcL4tnLTfVod0eIASnoOgpwwRgeqGBdTcQOrecjzbET4lhxVNxHc+Q4kg8vMxQLeA"
+    + "dL1TEyHjls106bcTEeOitPAgnxRjG6YC3HPnSX8BGJkfHIj41Gnse1GS5vvisM82iIXCWKh4U+AF89yNH6AEiTAOyKCS9iho8RzP"
+    + "Jnl4JBPlrUN/lQjIfi4DywWK28HPnbl7SsQjgK94AwSgj7whw1UjVIggsmaY8nlXkuDBL8GRd+cTGAcy9Usk8YjopUdiPRNyntfj"
+    + "8w6HpSaipzzIXVueFiNROCwDoQJzaHIEy2vr8N5Ln6aIe/puHx2GFZuc9oxcV4j+eT7tjsj+PnHR7RggTYOhG6tnuGq0AcB4KTMd"
+    + "uqNG1vXXkEiriTBB8ARk9+UMTa9XYCRXkFrSmssmDxPJZavE84nJB9BJbHsyFVG5TQgNC9zOdj/zKdD58AcvpkCKmzh2hI8GobPB"
+    + "LsWQNHoG8ifVZ0kG2sorcccxGPDKCBiUoFUjXhgo/SMf9ov7IVVD3py3sQhPL0dw0YXkfW1kjeuWCFU/2jvGrwvj6rOTGoef14lE"
+    + "IfhCpl+vr8d3InR1sCvLXlRZr0fRtAyOKAidd1q+PhnyFqCprwkGOmfKoMUlYjZE51Ww3TwtoMmR4RNt3VS0qxyE/Vosns8v4KW0"
+    + "TDG1lwQLNdJVdMGqHW1WU9HkY6/4mIfMjla+ZyIiMdnmivINCS+HwxyIjhe75b8yGmQ1dM/ohKzvaMB8wWcHQyQU9MS5OXiMjZHC"
+    + "uGU5vmosG9BTqmCxixrEOzOU1cO2QG30yIfCUAdY0UoyDx1KoMbjDWtet3erBThkGDIybmbSpgnSaD5VgZ01ZqaQV4jgL7bSG06e"
+    + "AlvF9PJyfJLywSnJNwABQiFrd0QnSnH1rdkLfaUamBcbLY/Pp9NJz+kQaHjUUkmlCmByygyHGFU4x03lzsFDyfh2sKnnrsf9KWSa"
+    + "aDWeQZVRyX/S862F2wUXr/2w4lXoKZ83JAP60REJe0Twgk9Pn6G2G+vGOnU3m+Lkz8jgOmAlbr0VYrFbcLNga707mSDaafhVHkPV"
+    + "ZmsHymPVt7f9Wl0FDBScIOXSl7HvxDB/edmXdpS5673rJMl53Ik1H2ITylWXBjx5o+QSQvtw3GFlfXwY+y3A1UEYXrAphJqGSrdb"
+    + "dxcdwDLJ7SGG5nbV8oww9o7P59MiwMNxwPhv/uwGJfUEhxGDQlNvwtBtCafOM8YS1XAXBpbRxW6ngtZQkLLF9AgFvuPh7nTaRUqO"
+    + "50mfWnAp6AIsPhKECnbkD2RWableQhu93xRFUe7XexRrsQN+WvChZapnK3Y9JNwYsSWwELdezkepxPDNXujR8kT/+JBApd0SMZ5M"
+    + "sHt+gpvDZxYLSmn6/ccFiLcLvSFuu/fu+DGkUJ6XunyMZ8xwYu3HEzzegiswFRQ7o6L86oP0kBISo0vw2gr6XuqaqeoAeDYslVh/"
+    + "cH16QM0jhDwcQHwQz03mHjOortczoHv3UQHirQ7qnqXSsDAo63wIKpwNZUh78UM8EgvpUG2U5IfqdiKy4x0AuDUt9JNN5JGqwt3V"
+    + "HMDGY3EsGAYoYvYIoK073gmR86bCE0Pacevg1ev9jZcH2xqYaNiAmImb3NVAoFHrvk18ofXtjRGkDyDjZVp0Q/Ukyyhdz6HBwWOn"
+    + "tNObWt4dEMX9jQiIm2vtNLjXZyGWJZpQRuuYCOoDbL/2LAsX9JVtY/YfUZWICC7MXzU21SLQbz6A19H4iBxdFZ8wSz2RlogBMKW4"
+    + "5Qusb2wpy+cojAlp5Wv1ACCSirTB9QlmNMFo/zf40uNIxM93TFgIp+yuLXB5uP5ljU2LGsFTdxjxnK0rCyU5N/R1YoaECihAJkL4"
+    + "JVlzfzUgz/iAWuX7/XYVI7d+e4oV/qMlHsxzjObX0D0CyENTka2vGa6063iyrlA2kvqBfwyHAlE3rUmCy8Sw2cyH6aalRH0Vj/bI"
+    + "oWuF28Cd+/DBlWsP708n4STSU69uqfoquodc1PGncLhwiSNMYPUxH9y5PWThzcP5UIPGfWKsL24eQ1cjJmgCZTaQLPwJVE6SHHPm"
+    + "2vdvUdbd3dQXmVtyvdV391X+/NJLvLvYp4e7BaVhiovK18dPyfd3hCAO+5q2HILbI3uGUTOK49LNl0j81u/t+LqjPG6PSl4fmHR7"
+    + "0MrX9wbfWQq9Pi9J0eoPSSafv7PSnopDMZBC9cCbRZzlWRL7MvzKQ3Fa3AWfhKjmKPWtp5d/PuEdnh/2pTfHDnb89FN3n0YjWHoS"
+    + "kpA//1uvL83o5S9czzsPd1Uq+DuPyP3fw/z/v7/+D7QvofTwNkQIAAAAAElFTkSuQmCC";
+
+/**
+ * The compact CE Decky quick-access panel.
+ *
+ * Everything above the cheats is context a user reads once and changes rarely,
+ * so Cheat Engine, the current game and the selected table are one row each and
+ * carry their own small action instead of a full-width button. The cheats
+ * themselves - the reason the panel exists - keep the full-width controls and
+ * must be reachable without scrolling the quick-access column.
+ */
+function HomePanel(props) {
+    const { pluginVersion, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
+    const workflowBlocked = busy || setupPending;
+    const searchDisabled = workflowBlocked || !game;
+    // See `preferSearchFocus`: the mount decides, and nothing after it does.
+    //
+    // Only where Search can take it. A disabled control refuses the initial focus
+    // and Advanced has been told not to ask for it, which is a panel opening with
+    // nothing asking at all; the panel moves the ring itself once the control can
+    // be pressed, and until then Advanced is where a panel opens.
+    const openOnSearch = SP_REACT.useRef(preferSearchFocus && !searchDisabled).current;
+    // A table past the live-control budget has no snapshot and never will, so the
+    // runtime row must not point at Configure cheats - the one screen that
+    // refuses a table this size. The session itself is fine.
+    // A session that never got its table has nothing to refresh, so the hint
+    // about opening Configure cheats would be advice to press a button that can
+    // only report the same emptiness. The runtime row says what happened instead.
+    // The hint, and whether the reader can finish it where it stands, decided the
+    // same way the line under it is: copy this frontend wrote is known and wraps,
+    // while a message the backend wrote has no bounded length and keeps a stop
+    // rather than pushing the panel's controls down the screen.
+    const liveStateHint = liveControlsUnavailable
+        ? {
+            text: "Live controls are unavailable for a table this size. Cheats saved for this table still load automatically.",
+            complete: true,
+        }
+        // A failed read of the live state says so instead of implying the session
+        // is fine and the user simply has not looked yet. Cheat Engine is attached
+        // either way, so this never contradicts a successful launch.
+        : liveSnapshotError
+            ? {
+                text: `Live cheat state could not be read: ${liveSnapshotError} Open Configure cheats to try again.`,
+                complete: false,
+            }
+            : { text: "Open Configure cheats to refresh the live state.", complete: true };
+    // The runtime row carries a hint only while a connected session cannot be
+    // read; the rest of the time it repeats state the row's own label already
+    // gives.
+    const runtimeHint = runtimeReady && !activeCheatSnapshotReady && !tableLoadFailed ? liveStateHint : null;
+    // What is on, counted as the user chose it. A table's own scripts are on
+    // because a cheat needed them, so they are named as what they are instead of
+    // being added to a number that is meant to match the switches on this panel.
+    const activeCheatSummary = activeScriptCount > 0
+        ? `${activeCheatLabels.length} active (${activeScriptCount} script${activeScriptCount === 1 ? "" : "s"})`
+        : `${activeCheatLabels.length} active`;
+    // Read in place unless whichever of the two is on the row was written
+    // somewhere this frontend cannot see the length of.
+    const runtimeRowStatus = launchPending || (runtimeHint === null ? runtimeTextComplete : runtimeHint.complete);
+    const ceDetail = [ceSource, ceSha256 ? ceSha256.slice(0, 8) : null, pluginVersion]
+        .filter(Boolean).join(" · ");
+    // Changing the game underneath a running one is a press away from every
+    // question this plugin answers per game: which table is prepared, which
+    // process is the target, which session an owned Cheat Engine holds. The panel
+    // says nothing about it - a running game is the ordinary state, and a line
+    // explaining a press nobody made costs a row of a 300 pixel column every
+    // session - so `README.md` carries it under **Pick the game** instead.
+    // Whether the row under the start press is about to say why it cannot be
+    // pressed. A target this game is not running is one of those reasons, and it
+    // is said there in full - what the game did start, and where the setting
+    // lives - so its own row above stands only where that row does not: while
+    // Cheat Engine is connected, while a launch is running, and behind a refusal
+    // that outranks it, which is what an anti-cheat is.
+    const startBlockedRowShown = Boolean(table && !runtimeReady && !launchPending && !startRuntimeAvailable && startRuntimeBlockedReason);
+    const gameChangeBlocked = Boolean(game) && selectedGameRunning;
+    const gameDetail = game
+        ? [game.isShortcut ? "Non-Steam" : "Steam", targetProcess || `AppID ${game.appId}`].join(" · ")
+        : runningDetectionAvailable
+            ? runningGameCount > 1 ? `${runningGameCount} games running; choose one` : "Start a game or choose one"
+            : "Automatic detection is unavailable; choose one";
+    return (SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsx("div", { style: { display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }, children: SP_JSX.jsx("img", { src: HEXPAW_DATA_URI, alt: "HexPaw, the CE Decky mascot", width: 112, style: { width: 112, height: "auto", display: "block" } }) }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Setup" }), ceReady ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", truncate: true, label: ceStatusText, description: ceDetail || "Ready", actions: setupPending ? undefined : (SP_JSX.jsx(SmallButton, { disabled: busy || ceRunning || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.reinstall", onReinstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: reinstallLabel.startsWith("Reinstall") ? "Reinstall" : "Install" })) }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", label: "Cheat Engine is not installed", description: ceStatusText }) }), !setupPending && !setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.download_and_install_ce", () => onInstall(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Download and install CE" }) }))] })), ceIdentityBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-owned-elsewhere", truncate: true, label: "Cheat Engine setup is busy", description: ceIdentityBlockedReason }) })), setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-status-error", truncate: true, label: "Setup status unavailable", description: setupStatusError, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.retry", onRetrySetupStatus, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Retry" }) }) })), installOperation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-progress", truncate: true, label: installOperation.state.replace(/_/g, " "), description: `${installOperation.message}${installOperation.error ? ` · ${installOperation.error}` : ""}`, actions: installBusy ? SP_JSX.jsx(SmallButton, { disabled: managedCancelling, onClick: traceUiAction("home_panel.cancel", onCancelInstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: managedCancelling ? "Cancelling…" : "Cancel" }) : undefined }) })), installBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: 24 }, children: SP_JSX.jsx(DFL.Spinner, { "aria-label": "CE setup in progress", style: { width: 18, height: 18, flexShrink: 0 } }) }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "game-row", truncate: true, scroll: true, label: game ? appDetails?.displayName || game.name : "No game selected", description: gameDetail, actions: SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || gameChangeBlocked, onClick: traceUiAction("home_panel.choose_game", onChooseGame, { app_id: game?.appId, table_sha: table?.sha256 }), children: game ? "Change" : "Choose" }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "table-row", truncate: true, scroll: true, label: table ? table.filename : selectedTableMissing ? "Selected table is missing" : "No table selected", description: table
+                                ? `${tableSource} · ${table.sha256.slice(0, 8)}${tableMarkedNotWorking ? " · marked as not working" : ""}`
+                                : selectedTableMissing ?? "Search online, or open one this device already has", leadingMark: table ? SP_JSX.jsx(CompatibilityMark, { evidence: tableEvidence, blocked: tableBlocked }) : undefined, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: searchButtonRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: openOnSearch, disabled: searchDisabled, onClick: traceUiAction("home_panel.search", onSearchTable, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Search" }) }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.manage", onOpenImportedTables, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Manage" })] })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "runtime-row", truncate: true, tone: "header", status: runtimeRowStatus, label: launchPending ? "Starting Cheat Engine" : tableLoadFailed ? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected", description: launchPending
+                                ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
+                                : runtimeHint?.text ?? runtimeText, trailing: launchPending ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) }), pinnedRows.map((row) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { variant: "panel", testId: `pinned-cheat-${row.recordId}`, label: row.label, summary: row.summary, active: row.active, disabled: workflowBlocked || pinnedBusyRecordId !== null, highlighted: pinnedBusyRecordId === row.recordId, onActiveChange: traceUiAction("home_panel.toggle_cheat", (active) => onTogglePinnedCheat(row.recordId, active), (active) => ({ app_id: game?.appId, table_sha: table?.sha256, record_id: row.recordId, active })) }) }, row.recordId))), pinnedCount > 0 && pinnedRows.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Pinned controls", truncate: true, description: `${pinnedCount} pinned; connect Cheat Engine to use them here.` }) })), pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: label, truncate: true }) }, `${index}:${label}`))), pinnedCount === 0 && activeCheatLabels.length > 4 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: `+${activeCheatLabels.length - 4} more`, truncate: true }) })), table && targetNotRunning && !startBlockedRowShown && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "panel-target-not-running", label: `${targetProcess} is not running in this game`, description: `This game is running ${targetNotRunning.join(", ")}. Cheat Engine attaches to one exact program, so set the target under Advanced before starting it.` }) })), table && !runtimeReady && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !startRuntimeAvailable, onClick: traceUiAction("home_panel.load_table_start_ce", () => onStartRuntime(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Load table & start CE" }) }), !launchPending && !startRuntimeAvailable && startRuntimeBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Cannot start yet", description: startRuntimeBlockedReason }) }))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !table, onClick: traceUiAction("home_panel.configure_cheats", () => onChooseCheats(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Configure cheats" }) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "panel-error", label: "Attention", description: error }) }), SP_JSX.jsxs(ActionRow, { testId: "panel-actions", navEntryPreferPosition: DFL.NavEntryPositionPreferences.PREFERRED_CHILD, children: [SP_JSX.jsx(SmallButton, { grow: true, preferredFocus: !openOnSearch, disabled: workflowBlocked, onClick: traceUiAction("home_panel.advanced", onAdvanced, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Advanced\u2026" }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || !runtimeReady || !activeCheatSnapshotReady, onClick: traceUiAction("home_panel.disable_all", onDisableAllCheats, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Disable all" }), launchPending
+                                ? SP_JSX.jsx(SmallButton, { onClick: traceUiAction("home_panel.cancel_ce_launch", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Cancel CE launch" })
+                                : ceRunning && SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.stop_ce", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Stop CE" })] })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Auto-load" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Load last table & cheats", description: autoloadBlockedReason ?? "This exact game and table SHA only.", checked: autoloadEnabled, disabled: workflowBlocked || (autoloadBlockedReason !== null && !autoloadEnabled), onChange: traceUiAction("home_panel.load_last_table_cheats", onAutoloadChange, (enabled) => ({ app_id: game?.appId, table_sha: table?.sha256, enabled })), bottomSeparator: "none" }) })] })] }));
+}
+
+/**
+ * How many per-app session rows this screen shows at once.
+ *
+ * This list is the only one on the screen that grows on its own: every game
+ * this device has ever prepared a session for keeps a row here, for as long as
+ * the session records are kept, so on a device that is actually used it is
+ * unbounded in a way nothing else on Debug is. The rest of the screen is a
+ * fixed number of rows and belongs above it.
+ */
+const SESSION_PAGE_SIZE = 6;
+/**
+ * The backend's own diagnostics snapshot, rendered densely.
+ *
+ * `diagnostics_snapshot` already reports everything worth reading when
+ * something misbehaves - storage counts, per-provider status, session
+ * inventory, every persisted-state error and the capability flags - but nothing
+ * ever displayed it, so a controller-only user had no way to see it. It is
+ * evidence, not a control surface: no row here mutates anything.
+ */
+function DebugDetails({ snapshot, loading, error, gameNames, onRefresh, onBack }) {
+    const [sessionPage, setSessionPage] = SP_REACT.useState(0);
+    const stateErrors = snapshot
+        ? [
+            ["Config", snapshot.config_state_error],
+            ["Tables", snapshot.table_state_error],
+            ["Profiles", snapshot.profile_state_error],
+            ["Providers", snapshot.provider_state_error],
+            ["Sessions", snapshot.session_state_error],
+        ].flatMap(([name, message]) => message ? [[name, message]] : [])
+        : [];
+    const capabilities = snapshot ? Object.entries(snapshot.capabilities) : [];
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Debug details" }), SP_JSX.jsxs(ActionRow, { testId: "debug-actions", children: [SP_JSX.jsx(SmallButton, { disabled: loading, onClick: traceUiAction("debug_details.refresh", onRefresh), children: "Refresh" }), SP_JSX.jsx(SmallButton, { onClick: traceUiAction("debug_details.back", onBack), children: "Back" })] }), error && SP_JSX.jsx(PanelRow, { testId: "debug-error", label: "Could not read diagnostics", description: error }), loading && !snapshot && SP_JSX.jsx(PanelRow, { label: "Reading\u2026", description: "Collecting the backend diagnostics snapshot." }), snapshot && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelRow, { truncate: true, label: `CE Decky ${snapshot.version}`, description: `up ${Math.round(snapshot.uptime_s)}s · ${snapshot.log_path}` }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Storage", description: `${snapshot.storage.tables} tables · ${Math.round(snapshot.storage.table_bytes / 1024)} KiB · ${snapshot.storage.profiles} profiles` }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Sessions", description: `${snapshot.sessions.total_sessions} total across ${snapshot.sessions.apps.length} app(s)${snapshot.sessions.errors.length ? ` · ${snapshot.sessions.errors.length} unreadable` : ""}` }), snapshot.fearless_index && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "debug-fearless-index", label: "FearLess index", description: describeFearlessIndex(snapshot.fearless_index), help: "CE Decky reads the FearLess table forum's own listing pages instead of its search route, and keeps them as a local index. Every table search re-reads the newest pages; a page is read again once a day, so this shows how much of the index is currently within that day and what the last background pass actually fetched." }))] }))] }), snapshot && (Object.keys(snapshot.providers).length > 0 || snapshot.provider_selection) && (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Providers" }), snapshot.provider_selection && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "debug-provider-selection", label: "Switched off", description: snapshot.provider_selection.reason
+                            ? `${snapshot.provider_selection.reason} (every source is being searched)`
+                            : snapshot.provider_selection.disabled.join(", ") || "None" })), Object.entries(snapshot.providers).map(([id, entry]) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `debug-provider-${id}`, label: `${id}${entry.retired ? " (retired)" : ""}${switchedOff(snapshot, id) ? " (off)" : ""}`, description: describeProvider(entry) }, id)))] })), snapshot && (stateErrors.length > 0 || snapshot.table_catalog_errors.length > 0) && (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "State errors" }), stateErrors.map(([name, message]) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `debug-state-${name}`, label: name, description: message }, name))), snapshot.table_catalog_errors.map((entry) => (SP_JSX.jsx(PanelRow, { truncate: true, label: entry.path, description: entry.error }, entry.path)))] })), capabilities.length > 0 && (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Capabilities" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "debug-capabilities-enabled", label: "Enabled", description: capabilities.filter(([, on]) => on).map(([name]) => name).join(", ") || "None" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "debug-capabilities-disabled", label: "Disabled", description: capabilities.filter(([, on]) => !on).map(([name]) => name).join(", ") || "None" })] })), snapshot && snapshot.sessions.apps.length > 0 && (() => {
+                const apps = orderedSessionApps(snapshot.sessions.apps);
+                const pages = pageCount(apps.length, SESSION_PAGE_SIZE);
+                const safePage = clampPage(sessionPage, apps.length, SESSION_PAGE_SIZE);
+                const shown = pageItems(apps, safePage, SESSION_PAGE_SIZE);
+                const troubled = apps.filter(hasSessionProblem).length;
+                return (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Sessions by app" }), SP_JSX.jsx(PanelRow, { tone: "header", truncate: true, testId: "debug-sessions-summary", label: `${apps.length} app(s) · ${snapshot.sessions.total_sessions} session(s)`, description: troubled
+                                ? `${troubled} with something to read · worst first`
+                                : "Nothing unreadable · most sessions first" }), shown.map((app) => (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: `debug-session-${app.app_id}`, label: sessionAppLabel(app, gameNames), description: [
+                                `${app.session_count} session(s)`,
+                                app.current_session_id ? `current ${app.current_session_id.slice(0, 8)}` : "no current session",
+                                app.corrupt_entries ? `${app.corrupt_entries} corrupt` : null,
+                                app.current_error,
+                            ].filter(Boolean).join(" · ") }, app.app_id))), pages > 1 && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "debug-sessions-pager", label: `Page ${safePage + 1} of ${pages}`, description: `Showing ${shown.length} of ${apps.length}`, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: safePage === 0, onClick: traceUiAction("debug_details.sessions_previous", () => setSessionPage(stepPage(safePage, apps.length, SESSION_PAGE_SIZE, -1)), { page: safePage - 1 }), children: "Previous" }), SP_JSX.jsx(SmallButton, { disabled: safePage >= pages - 1, onClick: traceUiAction("debug_details.sessions_next", () => setSessionPage(stepPage(safePage, apps.length, SESSION_PAGE_SIZE, 1)), { page: safePage + 1 }), children: "Next" })] })) }))] }));
+            })()] }));
+}
+/** Whether this app's session records have anything a reader has to act on. */
+function hasSessionProblem(app) {
+    return Boolean(app.corrupt_entries) || Boolean(app.current_error);
+}
+/**
+ * The order a paged list of games is read in, fixed so a page cannot reshuffle.
+ *
+ * Anything unreadable first, because that is the only reason to open this
+ * screen, and a reader should not have to page through every game that is
+ * working to find the one that is not. Then by how much this device holds for
+ * the game, then by AppID, which is unique and settles every tie.
+ */
+function orderedSessionApps(apps) {
+    return [...apps].sort((left, right) => Number(hasSessionProblem(right)) - Number(hasSessionProblem(left))
+        || right.session_count - left.session_count
+        || left.app_id - right.app_id);
+}
+/**
+ * What one row is called: the game where this device can still name it.
+ *
+ * The AppID stays on the row either way. It is what every other record here is
+ * keyed by, it is what a bug report quotes, and a game name is not a
+ * substitute for it.
+ */
+function sessionAppLabel(app, gameNames) {
+    const name = gameNames?.get(app.app_id);
+    return name ? `${name} · AppID ${app.app_id}` : `AppID ${app.app_id}`;
+}
+/** Whether this provider is one the user switched off. */
+function switchedOff(snapshot, providerId) {
+    return Boolean(snapshot.provider_selection?.disabled.includes(providerId));
+}
+/** How long ago, in the coarsest unit that still reads as a number. */
+function ago(epochSeconds) {
+    if (!epochSeconds)
+        return null;
+    const seconds = Math.max(0, Math.round(Date.now() / 1000 - epochSeconds));
+    if (seconds < 90)
+        return `${seconds}s ago`;
+    if (seconds < 90 * 60)
+        return `${Math.round(seconds / 60)}m ago`;
+    if (seconds < 48 * 3600)
+        return `${Math.round(seconds / 3600)}h ago`;
+    return `${Math.round(seconds / 86400)}d ago`;
+}
+function describeFearlessIndex(index) {
+    const coverage = index.total_pages
+        ? `${index.indexed_pages}/${index.total_pages} pages`
+        : `${index.indexed_pages} page(s)`;
+    const refreshed = index.fully_refreshed_at
+        ? `fully refreshed ${ago(index.fully_refreshed_at)}`
+        // Without a complete index there is no "whole index is this fresh" answer;
+        // the number of pages still owed is the honest one.
+        : `${index.stale_pages} page(s) to read`;
+    const lastPass = index.last_refresh_at
+        ? `last pass ${index.last_refresh_pages} page(s) ${ago(index.last_refresh_at)}`
+        : "no background pass yet";
+    return [
+        index.status,
+        coverage,
+        `${index.indexed_topics} topics`,
+        refreshed,
+        index.fully_refreshed_at && index.stale_pages ? `${index.stale_pages} due` : null,
+        lastPass,
+        index.retry_after_seconds ? `paused ${index.retry_after_seconds}s` : null,
+        index.error,
+    ].filter(Boolean).join(" · ");
+}
+function describeProvider(entry) {
+    const counters = entry.counters;
+    return [
+        entry.retired ? "historical provider" : null,
+        entry.state,
+        `${counters.searches} searches`,
+        `${counters.results} results`,
+        `${counters.downloads_succeeded}/${counters.downloads_succeeded + counters.downloads_failed} downloads`,
+        counters.errors ? `${counters.errors} errors` : null,
+        // A wait is not a failure, so it is named apart from one: a provider that
+        // throttles every transfer otherwise reads as one that simply serves files,
+        // and the user who watched the countdown has nothing to point at.
+        counters.downloads_throttled
+            ? `${counters.downloads_throttled} throttled${entry.last_throttle_wait_s ? ` (last ${entry.last_throttle_wait_s}s)` : ""}`
+            : null,
+        // A source that quietly stops being readable otherwise looks like a game
+        // with no tables. An unreadable page is the critical one: nothing on it can
+        // be downloaded. Dropped description is not, so it is named apart.
+        counters.parse_failed ? `${counters.parse_failed} unreadable page(s)` : null,
+        counters.parse_degraded ? `${counters.parse_degraded} partly read` : null,
+        entry.last_http_status !== null ? `HTTP ${entry.last_http_status}` : null,
+        entry.last_latency_ms !== null ? `${entry.last_latency_ms}ms` : null,
+        entry.last_error,
+    ].filter(Boolean).join(" · ");
+}
+
+/**
+ * The window the code is read through, in rows of text rather than in lines.
+ *
+ * It is fixed, and the page is built to fill it exactly once. A page of eighty
+ * lines was taller than the modal, and a controller cannot scroll a block of
+ * text: Steam moves the panel by moving focus, and a plain block of code has
+ * nothing in it to focus, so focus jumped from the row above it straight to
+ * Next and everything between the two was unreachable. Nothing was wrong with
+ * the paging; the page was simply bigger than the thing showing it.
+ *
+ * Counted in rows because a long line wraps into several of them, which is what
+ * makes a fixed count of lines overflow anyway: one `print('… WARNING: …')` is
+ * three rows on this screen. `CHARS_PER_ROW` is that wrap point, measured
+ * against the panel's own monospace at this size and deliberately short, since
+ * guessing it long is what puts a page off the bottom of the screen again.
+ *
+ * The row count leaves room for the two notes a section can carry above it,
+ * because those appear exactly on the sections whose code is worth reading
+ * carefully and must not be what pushes the controls off the screen.
+ *
+ * It is the window a full-size screen gets. A handheld gives this page 534 CSS
+ * pixels where a television gives 844, and twenty-six rows plus this screen's
+ * own chrome does not fit in the first: the sheet was drawn from 115 pixels
+ * above the top of the display, so its heading, the row naming the section and
+ * the first lines of every page were off the screen with no press that could
+ * reach them, and the ring opened at the bottom because the bottom was the only
+ * part on it. `rowsThatFit` is what turns that into a page that fits, and it
+ * never returns more than this, so nothing changes on a screen that had room.
+ */
+const ROWS_PER_PAGE = 26;
+/**
+ * The fewest rows this screen is still itself with.
+ *
+ * Below about this, paging stops being reading and becomes pressing Next, and
+ * a page holding less than a short function tells the reader nothing about what
+ * an exact SHA would run.
+ *
+ * It is a preference, not a floor over the display. It used to be the second,
+ * on the ground that a screen too small for this many rows does not arise on
+ * anything measured, and it does: a handheld gives this screen 534 pixels, of
+ * which everything that is not code takes 320, and 424 where the section
+ * carries both of its notes. That leaves fourteen rows, or seven with the
+ * notes, and holding out for twelve would draw the page past the display. What
+ * goes off a Steam Deck is the top, taking the heading, the row naming the
+ * section and the first lines of every page with it, so `rowsThatFit` lets the
+ * measured height win and this stays the preference for a screen with the room.
+ */
+const MIN_ROWS_PER_PAGE = 12;
+/**
+ * Everything on this screen that is not a row of code, in CSS pixels.
+ *
+ * Steam's own modal padding and button bar, this panel's heading, the row that
+ * names the section, and the footer holding the paging controls and the way out.
+ *
+ * That footer used to be two rows, a pager inside the list and a button bar
+ * under it, and the figure below was measured while it was. It is therefore
+ * about one row too generous now and the page is one row shorter than the
+ * screen could hold, which is the direction to be wrong in: the other one puts
+ * the top of the window off the display. It stays until somebody measures it
+ * again on a device, because deriving a new number by subtracting an estimate
+ * of the row that went is exactly the inference the paragraph below is about.
+ *
+ * Measured on the device rather than derived. `target_ui_layout_probe.py` on a
+ * Steam Deck LCD reports the page this modal opens in as 854x534 CSS pixels,
+ * and the sheet on that page as 335 tall while it was showing a single 15 pixel
+ * row of code. Everything that is not code is therefore 320, and the earlier
+ * 264 was an inference from a different screen state that this one never
+ * matched.
+ *
+ * It is deliberately an estimate again. A previous version measured this at
+ * runtime, from the difference between the sheet and the block inside it, which
+ * was sound reasoning and produced a page of one row on the device: the sheet
+ * does not shrink with its contents, so the difference is not the quantity it
+ * looks like. Reading a number off a device once, and stating where it came
+ * from, is worth more here than a mechanism that is wrong in a way nobody can
+ * see from the source. `code.page_sized` records what this screen decided, so
+ * the next display that disagrees says so with numbers.
+ */
+const CODE_PAGE_CHROME = 320;
+/**
+ * What one note above the code costs, when a section carries one.
+ *
+ * Both of them are fixed sentences and the panel is the same width on every
+ * display measured, so their height is a property of the text rather than of
+ * the screen. This is an estimate of it and is deliberately generous: spending
+ * a row that was not needed costs one line of a page, and reclaiming one that
+ * was needed puts the top of the screen back off the display.
+ */
+const NOTE_HEIGHT = 52;
+const CHARS_PER_ROW = 68;
+const ROW_HEIGHT = 15;
+/** How many sections the list starts with, extended by a press. */
+const PAGE_SECTIONS = 12;
+/**
+ * How tall one section row is, for fitting a page of them to the screen.
+ *
+ * A starting point rather than the answer: the row is measured, because a short
+ * screen trims what a row is drawn with and a constant beside that stylesheet
+ * would go on describing the old one.
+ */
+const SECTION_ROW_HEIGHT = 58;
+/** The fewest sections a page may hold before the measurement stops taking any. */
+const MIN_SECTION_ROWS = 3;
+const KIND_LABELS = {
+    lua: "Lua",
+    auto_assembler: "Auto Assembler",
+    form: "Window",
+    embedded_file: "Embedded file",
+};
+/**
+ * The last code point drawn at one column in the block's monospace face.
+ *
+ * Latin, its supplements and extensions, IPA, the combining marks, Greek,
+ * Cyrillic and Armenian all end here, and a table's comments are written in
+ * those. Everything above it is assumed to be two columns wide, which is what
+ * East Asian text, box drawing, arrows, symbols and emoji actually are in a
+ * monospace face, and what an unknown code point in a font this project does
+ * not control has to be assumed to be.
+ *
+ * The direction of the guess is the whole point. A list of the ranges known to
+ * be wide leaves every range nobody thought of counted as narrow, so a page of
+ * emoji or of some symbol family outside the list holds more drawn rows than
+ * the count believes and the bottom of it goes off the block again. Guessing
+ * wide costs a page; guessing narrow loses code on the one screen that exists
+ * to show exactly what an exact SHA would run.
+ */
+const LAST_NARROW_CODE_POINT = 0x058f;
+/** Columns one code point takes in the block's monospace face. */
+function columnsOf(text) {
+    let columns = 0;
+    for (const character of text) {
+        // A tab advances to the next eight-column stop and is counted at its
+        // widest, for the same reason: a row estimated short is a row that fits.
+        if (character === "\t")
+            columns += 8;
+        else
+            columns += (character.codePointAt(0) ?? 0) <= LAST_NARROW_CODE_POINT ? 1 : 2;
+    }
+    return columns;
+}
+/**
+ * The code itself: a fixed frame holding one element per drawn row.
+ *
+ * The frame is the same height on every page, including a last page holding two
+ * lines. A block that grew and shrank would move Previous, Next and Back under
+ * the user's thumb between presses, which is the thing paging exists to avoid.
+ */
+const CODE_BLOCK = {
+    // The height is set where the block is used, because how many rows fit is a
+    // property of the display rather than of this stylesheet.
+    fontFamily: "'DejaVu Sans Mono', 'Consolas', monospace",
+    fontSize: 11,
+    lineHeight: `${ROW_HEIGHT}px`,
+    padding: "6px 8px",
+    margin: "0 0 4px",
+    borderRadius: 4,
+    background: "hsla(0, 0%, 0%, 0.32)",
+    color: "hsla(0, 0%, 100%, 0.86)",
+    overflow: "hidden",
+};
+/**
+ * One drawn row, which is not allowed to become two.
+ *
+ * The page used to be a single block of text that the browser wrapped, so how
+ * much of it was on screen depended on a width estimate agreeing with a font
+ * this project does not ship: an estimate that read a character narrow put the
+ * end of the page under the block's own `overflow`, where no press could reach
+ * it and nothing said it was there. `pre` cannot wrap, so the page is exactly
+ * as tall as the rows it holds whatever the estimate did, and a row the
+ * estimate got wrong is one row that ends early rather than a page that does.
+ */
+const CODE_ROW = {
+    height: ROW_HEIGHT,
+    whiteSpace: "pre",
+    overflow: "hidden",
+};
+/** The footer's padding, which is the modal's rather than the code block's. */
+const CODE_FOOTER = { padding: "var(--ce-footer-padding, 0 16px 6px)" };
+function sizeText(bytes) {
+    if (bytes < 1024)
+        return `${bytes} B`;
+    return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+}
+/**
+ * What one exact table can execute, in the user's own hands.
+ *
+ * `.CT` import is not execution consent, and the decision this product asks for
+ * is whether an exact SHA may run what it carries. The only answer offered for
+ * that was a count of markers: "Lua AutoAssembler 1 embedded file(s)". Reading
+ * the scripts themselves meant Desktop Mode, a file manager and a text editor,
+ * none of which a user in Game Mode has, so in practice the consent screen
+ * asked a question it gave no way to answer.
+ *
+ * It reads and never runs. Every section is normalized the way a control label
+ * is, because a script that can render as something other than what it is would
+ * be a worse lie here than anywhere else on the panel, and an embedded payload's
+ * bytes are described rather than returned.
+ */
+function TableCodeModal({ sha256, filename, onBack }) {
+    useUiSurface("TableCodeModal", sha256);
+    const [index, setIndex] = SP_REACT.useState(null);
+    const [error, setError] = SP_REACT.useState(null);
+    const [loading, setLoading] = SP_REACT.useState(true);
+    const [section, setSection] = SP_REACT.useState(null);
+    const [sectionBusy, setSectionBusy] = SP_REACT.useState(false);
+    const sectionBusyRef = SP_REACT.useRef(false);
+    const [page, setPage] = SP_REACT.useState(0);
+    const [sectionPage, setSectionPage] = SP_REACT.useState(0);
+    const [listNode, setListNode] = SP_REACT.useState(null);
+    const [listFooterNode, setListFooterNode] = SP_REACT.useState(null);
+    // A late answer must not repaint a screen that has moved on, and this tree is
+    // unmounted by its host rather than by itself.
+    const liveRef = SP_REACT.useRef(true);
+    SP_REACT.useEffect(() => () => { liveRef.current = false; }, []);
+    SP_REACT.useEffect(() => {
+        logUi("panel.modal_opened", { modal: "table_code" });
+        void (async () => {
+            try {
+                const answer = await listTableCode(sha256);
+                if (liveRef.current)
+                    setIndex(answer);
+            }
+            catch (cause) {
+                logUiFailure("table_code.index_failed", cause);
+                if (liveRef.current)
+                    setError(describeError(cause));
+            }
+            finally {
+                if (liveRef.current)
+                    setLoading(false);
+            }
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sha256]);
+    const open = async (entry) => {
+        if (sectionBusyRef.current)
+            return;
+        sectionBusyRef.current = true;
+        lastOpenedSectionRef.current = entry.id;
+        setSectionBusy(true);
+        setError(null);
+        const operation = startUiOperation("table_code.read", { table_sha: sha256, section: entry.id });
+        try {
+            const body = await readTableCode(sha256, entry.id);
+            operation.completed({ stale: !liveRef.current });
+            if (!liveRef.current)
+                return;
+            setSection(body);
+            setPage(0);
+        }
+        catch (cause) {
+            operation.failed(cause);
+            logUiFailure("table_code.section_failed", cause, { section: entry.id });
+            if (liveRef.current)
+                setError(describeError(cause));
+        }
+        finally {
+            sectionBusyRef.current = false;
+            if (liveRef.current)
+                setSectionBusy(false);
+        }
+    };
+    const sections = index?.sections ?? [];
+    // What this screen fits, measured, rather than twelve rows and a press that
+    // adds twelve more. A handheld fits four of these and the reader was walking
+    // the stick to the bottom of the window to ask for the next twelve.
+    const [listChrome, setListChrome] = SP_REACT.useState(null);
+    SP_REACT.useLayoutEffect(() => {
+        setListChrome((held) => latchChrome(held, listNode, listFooterNode, MODAL_BOTTOM_PADDING, !loading));
+    }, [listNode, listFooterNode, loading]);
+    const sectionRowHeight = useRowHeight(listNode, SECTION_ROW_HEIGHT);
+    const sectionsAsked = SP_REACT.useMemo(() => (listChrome === null ? PAGE_SECTIONS : rowsThatFit({
+        full: PAGE_SECTIONS,
+        rowHeight: sectionRowHeight,
+        chrome: listChrome.value,
+        minimum: MIN_SECTION_ROWS,
+        node: listNode,
+    })), [listNode, listChrome, sectionRowHeight]);
+    // How far this list's window ended from Steam's bar, after that arithmetic.
+    // The same question every paged screen here asks once it has sized itself,
+    // and this is the screen that shows it is worth asking in both directions: a
+    // Steam Deck left 54 pixels of room under a list whose rows are 37.
+    const sectionsFitted = useFittedRows(listFooterNode, sectionRowHeight, listChrome?.settled === true, sections.length > sectionsAsked, error ? 1 : 0);
+    // Never past the page this screen was built with, for the same reason
+    // `rowsThatFit` caps there.
+    const sectionsPerPage = Math.min(PAGE_SECTIONS, Math.max(1, sectionsAsked + sectionsFitted));
+    const sectionPages = Math.max(1, Math.ceil(sections.length / sectionsPerPage));
+    const safeSectionPage = Math.min(sectionPage, sectionPages - 1);
+    const visible = SP_REACT.useMemo(() => sections.slice(safeSectionPage * sectionsPerPage, (safeSectionPage + 1) * sectionsPerPage), [sections, safeSectionPage, sectionsPerPage]);
+    // A page of sections is held at the height a full page of them takes, so the
+    // last page and a table with three sections in it leave the window exactly
+    // where a full one does. Without it the window shrank on the last page and
+    // took the pager and the way out somewhere new, which on a screen read by
+    // repeating one press is the control moving out from under the thumb.
+    const sectionPageHeight = usePageHeight(listNode, visible.length, sectionsPerPage);
+    // What every one of these sections sits under says nothing about any of them,
+    // and it is not free: each row is one truncated line, so a table whose author
+    // nests everything under two instruction steps spent that whole line on the
+    // same 128 characters and cut off the size and the line count behind them.
+    const sharedPath = SP_REACT.useMemo(() => sharedContextDepth(sections.map((entry) => entry.path)), [sections]);
+    const contextOf = (path) => {
+        const rest = path.slice(sharedPath).map(tidySegment).filter(Boolean);
+        return rest.length > 0 ? rest.join(" \u203a ") : null;
+    };
+    // The section as the rows the window shows, worked out once per section. A
+    // page is a fixed number of those rather than of lines, because a line can be
+    // wider than the window and every part of it has to be reachable.
+    const rows = SP_REACT.useMemo(() => codeRows(section?.lines ?? []), [section]);
+    // How many of those the display in front of the reader can actually hold. The
+    // notes are part of the answer because they are part of the screen: a section
+    // that carries one has that much less room for its code, and reserving their
+    // height only where they appear is what keeps the ordinary section at the
+    // full page. A page is worked out per section rather than per page, so the
+    // block never changes height under a thumb that is paging through one.
+    /**
+     * Everything on this screen that is not a row of code, for this section.
+     *
+     * The constant plus whatever notes this particular section carries, because a
+     * section that carries one has that much less room for its code and reserving
+     * their height only where they appear is what keeps an ordinary section at
+     * the full page. `code.page_sized` records what this arrived at, against the
+     * page height it was measured with, so a display that disagrees says so in
+     * numbers rather than in a report that the screen looks wrong.
+     */
+    const estimatedChrome = CODE_PAGE_CHROME
+        + (section?.sanitized ? NOTE_HEIGHT : 0)
+        + (section?.truncated ? NOTE_HEIGHT : 0);
+    /**
+     * A node of this screen, so the page it is drawn in can be asked its height.
+     *
+     * Not for measuring anything itself. This plugin's code runs in Steam's
+     * shared context, whose window is one pixel tall, and its DOM is rendered in
+     * the page the user is looking at; a node is the only route from one to the
+     * other. Held in state rather than in a ref alone, because the first render
+     * has no node and the page height has to be asked again once there is one.
+     */
+    const [pageNode, setPageNode] = SP_REACT.useState(null);
+    const rowsPerPage = SP_REACT.useMemo(() => rowsThatFit({
+        full: ROWS_PER_PAGE,
+        rowHeight: ROW_HEIGHT,
+        chrome: estimatedChrome,
+        minimum: MIN_ROWS_PER_PAGE,
+        node: pageNode,
+    }), [estimatedChrome, pageNode]);
+    // The two numbers this page is sized from, recorded once per section. The
+    // height is read from the page and the chrome is a figure measured on one
+    // device, so a page that comes out wrong on another is answerable from a
+    // support bundle rather than from a second device session.
+    SP_REACT.useEffect(() => {
+        if (!section)
+            return;
+        logUi("code.page_sized", {
+            section: section.id,
+            viewport: viewportHeight(pageNode),
+            chrome: estimatedChrome,
+            rows: rowsPerPage,
+        });
+    }, [section, rowsPerPage]);
+    const pages = Math.max(1, Math.ceil(rows.length / rowsPerPage));
+    const safePage = Math.min(page, pages - 1);
+    const pageRows = SP_REACT.useMemo(() => rows.slice(safePage * rowsPerPage, (safePage + 1) * rowsPerPage), [rows, safePage, rowsPerPage]);
+    // Where the focus ring sits while a script is being read.
+    //
+    // Reading one of these is a single press repeated: the window holds a fixed
+    // page of rows, and the only thing to do with a page once it has been read is
+    // ask for the next one. Focus opened on the first row of the panel instead,
+    // so every reader began by walking the stick down the whole window to find
+    // Next, and the last page then disabled Next under the thumb that was on it,
+    // which drops the ring entirely and leaves a window with nothing focused.
+    //
+    // So the press that matters holds the ring: Next while there is a next page,
+    // and the way out of the window once there is not, which by then is the only
+    // press left.
+    //
+    // Re-asserted on every page rather than only on those two, because the row
+    // these controls sit on rebuilds itself once: a group with one control left
+    // to press is a plain box and a group with two is a navigation container, and
+    // the first press of Next is what takes it from one to the other. That
+    // replaces both buttons, and the ring goes with the button that was under the
+    // thumb. So which of them the reader is working is remembered instead of read
+    // back off the screen, and putting the ring back is what survives the rebuild.
+    const nextRef = SP_REACT.useRef(null);
+    const previousRef = SP_REACT.useRef(null);
+    const closeRef = SP_REACT.useRef(null);
+    const sectionButtonRefs = SP_REACT.useRef(new Map());
+    const lastOpenedSectionRef = SP_REACT.useRef(null);
+    const returningToListRef = SP_REACT.useRef(false);
+    const initialListFocusedRef = SP_REACT.useRef(false);
+    const focusedSectionRef = SP_REACT.useRef(null);
+    const turnedRef = SP_REACT.useRef("next");
+    const firstSectionId = sections[0]?.id ?? null;
+    const closeSection = () => {
+        returningToListRef.current = true;
+        setSection(null);
+    };
+    SP_REACT.useEffect(() => {
+        if (!section) {
+            focusedSectionRef.current = null;
+            if (returningToListRef.current) {
+                if (sectionBusy)
+                    return;
+                returningToListRef.current = false;
+                const sectionId = lastOpenedSectionRef.current;
+                const holder = sectionId ? sectionButtonRefs.current.get(sectionId) : null;
+                if (holder)
+                    focusFirstEnabled({ current: holder });
+                return;
+            }
+            // The list arrives after the modal has mounted, so Steam's initial focus
+            // has already landed elsewhere. Put it on the first section the user can
+            // open once that row actually exists; returning from a section is handled
+            // above and must keep the exact row that opened it.
+            if (!initialListFocusedRef.current && !loading && !error && firstSectionId) {
+                const holder = sectionButtonRefs.current.get(firstSectionId);
+                if (holder) {
+                    initialListFocusedRef.current = true;
+                    focusFirstEnabled({ current: holder });
+                }
+            }
+            return;
+        }
+        // A section that has just been opened is read forwards, whatever the last
+        // press in the section before it was.
+        if (focusedSectionRef.current !== section.id) {
+            focusedSectionRef.current = section.id;
+            turnedRef.current = "next";
+        }
+        const holder = safePage >= pages - 1
+            ? closeRef
+            : turnedRef.current === "previous" ? previousRef : nextRef;
+        // The control the reader was working first, then where the ring goes when
+        // that control has just disabled itself under the thumb.
+        focusFirstEnabled(holder, nextRef, closeRef);
+    }, [section, sectionBusy, safePage, pages, loading, error, firstSectionId]);
+    if (section) {
+        // Which lines of the file this page holds. A line wide enough to take more
+        // than one page is on both of them, which is what happened to it.
+        const from = pageRows[0]?.line ?? 1;
+        const to = pageRows[pageRows.length - 1]?.line ?? from;
+        return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_code_modal.close_section", closeSection), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 720 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: KIND_LABELS[section.kind] }), SP_JSX.jsx(PanelRow, { tone: "header", truncate: true, testId: "table-code-section", label: section.title, description: [
+                                        section.readable ? `lines ${from}-${to} of ${section.lines.length}` : "content not shown",
+                                        section.total_lines !== section.lines.length && section.readable
+                                            ? `${section.total_lines} in the file`
+                                            : null,
+                                        // Behind the counter: which page of this script is on screen
+                                        // is what a reader needs while paging through it, and where
+                                        // the script sits does not change between pages.
+                                        contextOf(section.path),
+                                    ].filter(Boolean).join(" · ") }), !section.readable && (SP_JSX.jsx(PanelRow, { truncate: true, label: "This is a payload, not a script", description: "CE Decky reports that the table carries this file and never hands its bytes to the panel. Its name and size are the whole of what can be said about it here." })), section.sanitized && (SP_JSX.jsx(PanelNote, { children: "A line carried an invisible or text-reordering character, which was removed before this was shown. What Cheat Engine would run is the file, not this rendering of it." })), section.truncated && (SP_JSX.jsx(PanelNote, { children: "This section is longer than the panel will show and was cut. The whole of it is in the file, and in the support bundle from Advanced." })), pageRows.length > 0 && (SP_JSX.jsx("div", { ref: setPageNode, style: { ...CODE_BLOCK, height: rowsPerPage * ROW_HEIGHT }, "data-testid": "table-code-block", children: pageRows.map((row, index) => (SP_JSX.jsx("div", { style: CODE_ROW, "data-testid": "table-code-row", children: row.text }, `${row.line}:${index}`))) }))] }) }), SP_JSX.jsx(PagerFooter, { testId: "table-code-footer", style: CODE_FOOTER, page: safePage, pages: pages, previousRef: previousRef, nextRef: nextRef, focusOnTurn: false, onPage: (next, turned) => { turnedRef.current = turned; setPage(next); }, trailing: SP_JSX.jsx("div", { ref: closeRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { onClick: traceUiAction("table_code_modal.back_to_the_list", closeSection), children: "Back to the list" }) }) })] }) }));
+    }
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_code_modal.cancel_back", onBack), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 720 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Inside this table" }), SP_JSX.jsx(PanelRow, { tone: "header", truncate: true, testId: "table-code-summary", label: loading ? "Reading the table…" : summaryLabel(index, sections.length), description: [
+                                    filename,
+                                    sha256.slice(0, 12),
+                                    index ? sizeText(index.size) : null,
+                                    // Beside the count of what runs, because the two are read
+                                    // against each other: a table of eighteen cheats behind two
+                                    // scripts said only "2 Auto Assembler", and a reader who had
+                                    // just seen the eighteen had no way to tell whether the rest
+                                    // were being withheld or simply have no code to show.
+                                    index ? `${index.records} cheat(s) declared` : null,
+                                ].filter(Boolean).join(" · "), help: "Everything in this table that Cheat Engine can execute, which is what using it authorizes. CE Decky reads it and runs nothing: the scripts are shown as text, and an embedded file is named rather than opened. Most cheats carry no code of their own - they are an address and a value, and one script often creates dozens of them - so this list is normally far shorter than the cheat list, and it is the cheat list, not this one, where addresses and offsets are readable." }), error && SP_JSX.jsx(PanelRow, { truncate: true, testId: "table-code-error", label: "Could not read the table", description: error }), !loading && !error && sections.length === 0 && (SP_JSX.jsx(PanelRow, { label: "Nothing to show", description: "This table declares no Lua, no Auto Assembler script, no window and no embedded file. It is addresses and values only." })), SP_JSX.jsx("div", { ref: setListNode, style: sectionPageHeight === null ? undefined : { minHeight: sectionPageHeight }, "data-testid": "table-code-list", children: visible.map((entry) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `table-code-${entry.id.replace(":", "-")}`, label: entry.title, description: [
+                                        KIND_LABELS[entry.kind],
+                                        sizeText(entry.bytes),
+                                        entry.readable ? `${entry.lines} line(s)` : "not shown",
+                                        entry.truncated ? "cut to fit" : null,
+                                        // Last, because it is the part of this row a reader can do
+                                        // without: one truncated line holds all of it only sometimes,
+                                        // and what it holds should be what tells these rows apart.
+                                        contextOf(entry.path),
+                                    ].filter(Boolean).join(" · "), actions: (SP_JSX.jsx("div", { ref: (node) => {
+                                            if (node)
+                                                sectionButtonRefs.current.set(entry.id, node);
+                                            else
+                                                sectionButtonRefs.current.delete(entry.id);
+                                        }, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: sectionBusy, onClick: traceUiAction("table_code_modal.read_section", () => void open(entry), { table_sha: sha256, section: entry.id }), children: entry.readable ? "Read" : "About" }) })) }, entry.id))) }), index && index.omitted_sections > 0 && (SP_JSX.jsx(PanelNote, { children: `${index.omitted_sections} further section(s) are in the file and beyond what this screen will list.` }))] }) }), SP_JSX.jsx(PagerFooter, { testId: "table-code-footer", containerRef: setListFooterNode, style: CODE_FOOTER, page: safeSectionPage, pages: sectionPages, preferNext: true, onPage: setSectionPage, trailing: SP_JSX.jsx(SmallButton, { onClick: traceUiAction("table_code_modal.back", onBack), children: "Back" }) })] }) }));
+}
+/**
+ * A section as the rows the window actually shows, losing nothing.
+ *
+ * Paging between whole lines cannot be lossless: the backend allows one line of
+ * up to 2048 bytes, the window is 26 rows of about 68 columns, and a line past
+ * that simply got a page of its own with everything after the 26th row clipped
+ * by the block. No later page held it, and nothing on screen said so, on the
+ * screen whose whole purpose is showing exactly what an exact SHA would run.
+ *
+ * So a long line is cut into rows here instead, at the width of the block and
+ * counted in columns rather than characters, and paging is then arithmetic on
+ * rows. Every byte the backend hands over is reachable by pressing Next.
+ *
+ * Each row is then drawn in an element that cannot wrap, so how tall a page is
+ * does not depend on this width estimate being right about a font: what the
+ * estimate decides is where a line is cut, not whether the page fits.
+ */
+function codeRows(lines) {
+    const rows = [];
+    for (let index = 0; index < lines.length; index += 1) {
+        let text = "";
+        let columns = 0;
+        for (const character of lines[index]) {
+            const cost = columnsOf(character);
+            if (columns + cost > CHARS_PER_ROW && text.length > 0) {
+                rows.push({ text, line: index + 1 });
+                text = "";
+                columns = 0;
+            }
+            text += character;
+            columns += cost;
+        }
+        // An empty line is a row of its own: it is in the file and it is what
+        // separates one block of a script from the next.
+        rows.push({ text, line: index + 1 });
+    }
+    return rows;
+}
+function summaryLabel(index, count) {
+    if (!index)
+        return "Could not be read";
+    const parts = [
+        index.totals.lua ? `${index.totals.lua} Lua` : null,
+        index.totals.auto_assembler ? `${index.totals.auto_assembler} Auto Assembler` : null,
+        index.totals.form ? `${index.totals.form} window` : null,
+        index.totals.embedded_file ? `${index.totals.embedded_file} embedded file` : null,
+    ].filter(Boolean);
+    return parts.length ? parts.join(" · ") : `${count} section(s)`;
+}
+
+const MAX_EXTERNAL_URL_BYTES = 8192;
+/** Open one bounded HTTPS page through Decky's current navigation surface. */
+function openExternalWeb(url) {
+    if (typeof url !== "string" || new TextEncoder().encode(url).length > MAX_EXTERNAL_URL_BYTES) {
+        throw new Error("External page URL is invalid or too long.");
+    }
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        throw new Error("External page URL is invalid.");
+    }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
+        throw new Error("External pages must use HTTPS without embedded credentials.");
+    }
+    const normalized = parsed.toString();
+    if (new TextEncoder().encode(normalized).length > MAX_EXTERNAL_URL_BYTES) {
+        throw new Error("External page URL is invalid or too long.");
+    }
+    if (typeof DFL.Navigation?.NavigateToExternalWeb === "function") {
+        DFL.Navigation.NavigateToExternalWeb(normalized);
+        return;
+    }
+    window.open(normalized, "_blank", "noopener,noreferrer");
+}
+
+/**
+ * What actually stopped the game being asked back, in the user's terms.
+ *
+ * Asking a game to come back needs two calls: one that says whether a window is
+ * minimized, and one that posts the request. Either can be missing, and the
+ * outcome is the same dark game, but the two are not the same defect and a
+ * report that names the wrong one sends its reader to a call that works.
+ */
+const RESTORE_CAPABILITY_LABEL = {
+    "no-post": "Cannot ask the game to come back",
+    "no-local-call": "This Cheat Engine cannot be asked about windows",
+    "no-window": "Still working out whether the game can be brought back",
+    "symbols-unresolved": "Still working out whether the game can be brought back",
+    "iconic-unanswered": "Cannot tell whether the game is minimized",
+    "iconic-disagrees": "Cannot tell whether the game is minimized",
+};
+/**
+ * The capability states that become `ready` on their own.
+ *
+ * They are Cheat Engine still starting rather than a refusal, so the row says
+ * to wait rather than telling the user their game cannot be brought back.
+ */
+const RESTORE_CAPABILITY_SETTLING = new Set(["no-window", "symbols-unresolved"]);
+const RESTORE_CAPABILITY_HELP = {
+    "no-post": "This one answers that question. What it cannot do is post the request, so the answer cannot be acted on and nothing is sent.",
+    "no-local-call": "This Cheat Engine offers no way to call into Windows at all, so neither half of that can be done.",
+    "no-window": "Cheat Engine has not yet shown a window to test the question against. This usually settles by itself within a few seconds of attaching.",
+    "symbols-unresolved": "Cheat Engine builds the table it looks these calls up in while it starts, and it has nothing to answer with yet. This usually settles by itself within a few seconds of attaching, and the game is asked back as soon as it does.",
+    "iconic-unanswered": "This Cheat Engine does not answer that question, so nothing is sent at all.",
+    "iconic-disagrees": "The call that should answer it says Cheat Engine's own hidden window is minimized, which it is not, so its answer is not trusted for the game either and nothing is sent.",
+};
+/** How many blocked tables the review screen adds per press of Show more. */
+const BLOCKED_TABLES_PAGE = 25;
+/** A byte count as the short human figure a diagnostics row needs. */
+/** The Cheat Engine installation's own story, for the one screen that owns it.
+ *
+ * Ordinary setup downloads the exact artifact the packaged manifest reviewed
+ * and nothing here is interesting. It becomes interesting when that link stops
+ * working: CE Decky then reads the current link out of the download helper
+ * cheatengine.org hands out, and what comes back may be a newer release than
+ * the one that was reviewed. That succeeds silently on purpose - a working
+ * setup should not interrupt anyone - so this is where it is stated.
+ *
+ * The working URL is deliberately not shown. It is a live download route that
+ * nothing here needs, and printing it only invites fetching it by hand.
+ */
+function InstallerProvenance({ ce }) {
+    if (!ce.valid)
+        return null;
+    if (!ce.managed) {
+        return (SP_JSX.jsx(PanelRow, { truncate: true, testId: "ce-provenance-source", label: "Cheat Engine source", description: "Imported by you", help: "This Cheat Engine was imported rather than downloaded by CE Decky, so its origin is whatever you pointed the plugin at. Forget it in Fallback below to go back to a managed download." }));
+    }
+    const provenance = ce.provenance;
+    if (!provenance) {
+        return (SP_JSX.jsx(PanelRow, { truncate: true, testId: "ce-provenance-source", label: "Cheat Engine source", description: "Downloaded by CE Decky before it recorded how", help: "This installation predates CE Decky recording where its artifact came from. It is verified and usable; only the record is absent. Reinstalling from Home records it." }));
+    }
+    const rediscovered = provenance.source === "rediscovered";
+    const unrecorded = provenance.source === "cache";
+    const signed = provenance.signature_common_name || provenance.signature_subject;
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelRow, { truncate: true, testId: "ce-provenance-source", label: "Cheat Engine source", description: rediscovered
+                    ? "Downloaded by CE Decky using the current cheatengine.org link"
+                    : unrecorded
+                        ? "Downloaded by CE Decky; the link it used was not recorded"
+                        : "Downloaded by CE Decky from the reviewed link", help: rediscovered
+                    ? "The download link this build of CE Decky ships stopped working, so setup read the current one from the download helper cheatengine.org offers and used that instead. The helper is parsed, never run. What it pointed at still had to be the reviewed release before anything was installed."
+                    : unrecorded
+                        ? "This artifact was already in CE Decky's own verified cache when setup ran, from a download whose route predates this record. Its bytes are the reviewed release either way - that is what the cache is checked against before it is reused."
+                        : "Setup used the exact download link this build of CE Decky ships, and the artifact matched the reviewed release byte for byte." }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "ce-provenance-artifact", label: "Installer artifact", description: `${provenance.artifact_sha256.slice(0, 12)} · ${formatBytes(provenance.artifact_bytes)} · ${provenance.origin_host}`, help: `The Windows installer this Cheat Engine was extracted from, its size, and the host that served it. The installer was never executed: CE Decky parses it and writes out its payload itself.
+
+SHA-256 ${provenance.artifact_sha256}
+
+That digest is the one this build reviewed, and it is the only thing that authorizes an install: the extractor reads that exact artifact's format and nothing else. The publisher recorded at review time was ${provenance.reviewed_subject}.${signed ? ` This copy's Authenticode signature was also checked against the exact publisher key CE Decky reviewed${provenance.signature_digest ? ` (${provenance.signature_digest})` : ""}, and it covers these exact bytes, signed by ${signed}. No certificate authority is trusted for that; the key itself is pinned.` : ""}` }), provenance.helper_host && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "ce-provenance-helper", label: "Download helper", description: `${provenance.helper_host}${provenance.helper_format ? ` · ${provenance.helper_format}` : ""}`, help: "cheatengine.org hands out a third-party download manager rather than the installer itself, and the current installer link is a value inside it. CE Decky reads that value out of it and never runs it." })), provenance.signature_note && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "ce-provenance-note", label: "Signature was not checked", description: provenance.signature_note, help: "The artifact's SHA-256 already proved it is the reviewed release, so this did not block setup. It only means the extra signature check could not also run, and with it the reason an artifact that was not the reviewed release would have been refused for." }))] }));
+}
+function formatBytes(size) {
+    if (size < 1024)
+        return `${size} B`;
+    const units = ["KiB", "MiB", "GiB"];
+    let value = size / 1024;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+    }
+    return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[index]}`;
+}
+/**
+ * What one table source has actually been doing, in one line.
+ *
+ * A source is switched off after it has been seen failing, timing out, or
+ * finding nothing, so the row that offers the switch has to carry that evidence
+ * rather than only the source's name. A source that has never been asked for
+ * anything says so instead of showing a row of zeroes, because nothing recorded
+ * and everything recorded as zero are different facts.
+ */
+function describeSource(source, countsUnreadable) {
+    const counters = source.counters;
+    // Two different reasons for having no counters, and only one of them says
+    // anything about this source: nothing has asked it yet, or the whole record
+    // of what every source has done could not be read.
+    if (!counters)
+        return countsUnreadable ? "Counts unavailable" : "Not searched yet";
+    const parts = [
+        `${counters.searches} search${counters.searches === 1 ? "" : "es"}`,
+        `${counters.results} result${counters.results === 1 ? "" : "s"}`,
+    ];
+    // Stated separately, because otherwise a source reached only through another
+    // source's page reads as "0 searches" beside a result count nothing on the
+    // row explains.
+    if (counters.linked_reads)
+        parts.push(`${counters.linked_reads} through another source`);
+    if (counters.downloads_succeeded || counters.downloads_failed) {
+        parts.push(`${counters.downloads_succeeded} downloaded${counters.downloads_failed ? `, ${counters.downloads_failed} failed` : ""}`);
+    }
+    if (counters.errors)
+        parts.push(`${counters.errors} error${counters.errors === 1 ? "" : "s"}`);
+    if (counters.parse_failed)
+        parts.push(`${counters.parse_failed} unreadable page(s)`);
+    if (counters.downloads_throttled)
+        parts.push(`${counters.downloads_throttled} rate limit(s) waited out`);
+    // Only while something will actually ask it. A source that is off is not
+    // serving out a wait; the deadline is just what it last said.
+    if (source.enabled && source.cooldown_seconds > 0)
+        parts.push(`waiting ${source.cooldown_seconds}s`);
+    return parts.join(" · ");
+}
+/**
+ * The state word for a source, in the user's terms rather than the store's.
+ *
+ * Absent when this source has never been asked for anything: the description
+ * beside it already says so, and repeating it here put the same sentence on the
+ * row twice.
+ */
+function sourceStateLabel(source) {
+    if (!source.enabled)
+        return "Off";
+    if (source.cooldown_seconds > 0)
+        return "Waiting";
+    // The last attempt of any kind, search or download: a failed download writes
+    // this state too, so a later successful one now clears it rather than leaving
+    // a source reporting a finished download, no error, and a failed last
+    // attempt at the same time.
+    if (source.state === "error")
+        return "Last attempt failed";
+    if (source.state === "ready")
+        return "Working";
+    return undefined;
+}
+// The frontend can outlive a reload of an older backend, so a readiness result
+// that predates the directory inventory reports no directories rather than
+// taking the whole screen down with it.
+function managedDirectories(removal) {
+    return removal.directories ?? [];
+}
+/**
+ * What each deletion scope actually removes, in the user's terms.
+ *
+ * The confirmation has to name the consequence rather than the directories,
+ * because the directories are what the list below already shows and the
+ * consequence is what the press cannot be taken back from.
+ */
+const DELETION_SCOPES = [
+    {
+        scope: "cache",
+        label: "Search cache, staging and logs",
+        keys: ["cache", "tmp", "logs"],
+        consequence: "Nothing you set up is lost. Table search rebuilds its index the next time you use it.",
+    },
+    {
+        scope: "setup",
+        label: "That, plus every game's saved setup",
+        keys: ["cache", "tmp", "logs", "state"],
+        consequence: "Every game's selected table, target process, authorization, pinned and remembered cheats are forgotten, every table source is switched back on, and every table you marked as not working is offered again. Your tables and the installed Cheat Engine are kept, and CE Decky still knows which Cheat Engine is registered; choose one again from Stored on the home panel, which needs no network.",
+    },
+    {
+        scope: "all",
+        label: "Everything, including tables and Cheat Engine",
+        keys: ["cache", "tmp", "logs", "settings", "state", "tables", "ce"],
+        consequence: "CE Decky returns to its first-run state. Cheat Engine has to be downloaded again and every imported table is gone.",
+    },
+];
+const supportPathStyle = {
+    margin: "8px 0",
+    padding: "6px 8px",
+    borderRadius: 4,
+    background: "rgba(0, 0, 0, 0.35)",
+    fontFamily: "monospace",
+    fontSize: 13,
+    wordBreak: "break-all",
+};
+const supportNoteStyle = {
+    marginTop: 8,
+    fontSize: 12,
+    color: "hsla(0, 0%, 100%, 0.6)",
+};
+/**
+ * The bundle members that are genuinely absent.
+ *
+ * Named by what they are rather than by what they are not: this was written as
+ * everything that is not `truncated`, so `partial`, added to the collector
+ * afterwards, was counted as an item that could not be collected. One of those
+ * fires on every bundle this device produces, so every healthy archive reported
+ * a missing file. Only `omitted` means the archive does not carry something it
+ * could have: `absent` is nothing to collect, which a device that has never
+ * launched Cheat Engine and a plugin that has just been reloaded both are, and
+ * counting those made a healthy bundle report two failures.
+ */
+function omittedNotes(bundle) {
+    return bundle.notes.filter((note) => note.kind === "omitted");
+}
+/** Members the archive carries with less in them than the whole of the source. */
+function shortenedNotes(bundle) {
+    return bundle.notes.filter((note) => note.kind === "truncated" || note.kind === "partial");
+}
+function totalManagedFiles(removal) {
+    return managedDirectories(removal).reduce((total, directory) => total + directory.file_count, 0);
+}
+function totalManagedBytes(removal) {
+    return managedDirectories(removal).reduce((total, directory) => total + directory.total_bytes, 0);
+}
+function AdvancedModal(props) {
+    useUiSurface("AdvancedModal");
+    const { status, games, selectedGame, appDetails, inspection, targetProcess, ceLaunch, launchProtonToolId, blockedTables: blockedTablesProp = [], blockedTablesReason: blockedTablesReasonProp = null, onRefreshBlockedTables, onUnblockTable, onClearBlockedTables, onLoadProviderSources, onSetProviderEnabled, onResetProviderSources, onResetProviderDiagnostics, onLoadDiagnostics, onCollectSupportBundle, runtime, selfTest, busy, onRefreshGames, onSaveTargetProcess, onPickCE, onClearCEImport, onRunSelfTest, onLaunchProtonChange, onRunCELaunchSelfTest, onRefreshRuntime, onRefreshProcesses, onRetryAttach, onRepairSessionState, onRepairOwnedLaunchState, onRepairProfileState, onClearStartup, onRevokeConsent, onCheckRemoval, onDeleteManagedData, onRefreshAll, onClose, targetHarness, } = props;
+    const [gamesView, setGamesView] = SP_REACT.useState(games);
+    const [selectedGameView] = SP_REACT.useState(selectedGame);
+    const [appDetailsView, setAppDetailsView] = SP_REACT.useState(appDetails);
+    const [inspectionState, setInspectionState] = SP_REACT.useState(inspection);
+    const [targetDraft, setTargetDraft] = SP_REACT.useState(targetProcess);
+    const [protonDraft, setProtonDraft] = SP_REACT.useState(launchProtonToolId);
+    const [statusView, setStatusView] = SP_REACT.useState(status);
+    const [ceLaunchView, setCELaunchView] = SP_REACT.useState(ceLaunch);
+    const [runtimeView, setRuntimeView] = SP_REACT.useState(runtime);
+    const [selfTestView, setSelfTestView] = SP_REACT.useState(selfTest);
+    // Three states rather than the backend's two: `ok` means no blocker, and the
+    // checks that answer whether a later bug report will have any evidence in it
+    // are deliberately not blockers. Rendering `ok` alone said PASS while one of
+    // them had failed and showed its reason nowhere.
+    const selfTestSummaryView = selfTestView ? selfTestSummary(selfTestView) : null;
+    const [attachCandidate, setAttachCandidate] = SP_REACT.useState("");
+    // A basename chosen from the game's own observed processes, for when there
+    // is no Cheat Engine to ask for exact PIDs.
+    const [observedTargetDraft, setObservedTargetDraft] = SP_REACT.useState("");
+    // Whether the observed-process fallback has been asked for. It stays hidden
+    // until then, because on a healthy session the exact-PID list is the answer
+    // and two process lists at once is one more than anyone needs.
+    const [observedTargetsShown, setObservedTargetsShown] = SP_REACT.useState(false);
+    const [startupCount, setStartupCount] = SP_REACT.useState(null);
+    const [removal, setRemoval] = SP_REACT.useState(null);
+    const [removalOpen, setRemovalOpen] = SP_REACT.useState(false);
+    // Deleting plugin data is irreversible, so the scope is chosen and confirmed
+    // on a screen of its own rather than behind a single press in the header.
+    const [deleteScope, setDeleteScope] = SP_REACT.useState(null);
+    const [deleteError, setDeleteError] = SP_REACT.useState(null);
+    const [deleted, setDeleted] = SP_REACT.useState(null);
+    const [debug, setDebug] = SP_REACT.useState(null);
+    const [debugOpen, setDebugOpen] = SP_REACT.useState(false);
+    const [debugError, setDebugError] = SP_REACT.useState(null);
+    // The last archive written in this session, and why one could not be.
+    // Collecting is read-only, so a failure here is reported in place rather than
+    // as a toast over a screen the user is about to keep reading.
+    const [supportBundle, setSupportBundle] = SP_REACT.useState(null);
+    const [supportBundleError, setSupportBundleError] = SP_REACT.useState(null);
+    const [localBusy, setLocalBusy] = SP_REACT.useState(false);
+    const localBusyRef = SP_REACT.useRef(false);
+    // Which table sources are on, and what each one last did. Loaded when this
+    // screen opens rather than passed in, because nothing on the panel needs it
+    // and reading it on every panel refresh would be a file read per poll.
+    const [providerSources, setProviderSources] = SP_REACT.useState(null);
+    const [providerSourcesError, setProviderSourcesError] = SP_REACT.useState(null);
+    const [sourcesOpen, setSourcesOpen] = SP_REACT.useState(false);
+    // The same generation guard the blocked-table list uses: two quick switches
+    // must not leave the screen showing whichever read happened to land last.
+    const providerSourcesRef = SP_REACT.useRef(0);
+    // Which re-read of the blocked-table record is the current one, so an
+    // earlier one that lands later cannot repaint entries already cleared.
+    const blockedReloadRef = SP_REACT.useRef(0);
+    const blocked = busy || localBusy;
+    const reconcileProtonDraft = (nextLaunch) => {
+        setProtonDraft((current) => nextLaunch?.observed_proton_tool?.tool_id
+            ?? (nextLaunch?.proton_tools.some((tool) => tool.tool_id === current) ? current : nextLaunch?.proton_tools[0]?.tool_id ?? ""));
+    };
+    const reconcileContext = (next) => {
+        setStatusView(next.status);
+        setCELaunchView(next.ceLaunch);
+        reconcileProtonDraft(next.ceLaunch);
+        setRuntimeView(next.runtime);
+        setAppDetailsView(next.appDetails);
+        setInspectionState(next.inspection);
+        setTargetDraft(next.targetProcess);
+        setAttachCandidate("");
+        setObservedTargetDraft("");
+        setStartupCount(null);
+        setRemoval(null);
+    };
+    // Like every other view here, this renders its own copy: the modal is opened
+    // with a snapshot of the parent's props and never re-rendered from them, so
+    // without this a cleared entry stayed on screen until Advanced was reopened.
+    const [blockedTables, setBlockedTables] = SP_REACT.useState(blockedTablesProp);
+    const [blockedTablesReason, setBlockedTablesReason] = SP_REACT.useState(blockedTablesReasonProp);
+    // The record holds up to 512 entries, so it gets a screen of its own rather
+    // than a column on the panel that everything below it has to be scrolled
+    // past. Pressing Show more extends the page; the list is newest first, which
+    // is the half anyone is looking for.
+    const [blockedOpen, setBlockedOpen] = SP_REACT.useState(false);
+    // The code view is a sub-screen of this modal rather than a modal over it, the
+    // same way the blocked-table list is: Decky's focus stack is steadier with one
+    // root, and this one is opened from a row deep inside a scrolled panel.
+    const [codeOpen, setCodeOpen] = SP_REACT.useState(false);
+    const [blockedPages, setBlockedPages] = SP_REACT.useState(1);
+    const returnFocusRef = SP_REACT.useRef(null);
+    const subScreenOpenerRefs = SP_REACT.useRef(new Map());
+    const openerRef = (screen) => (node) => {
+        if (node)
+            subScreenOpenerRefs.current.set(screen, node);
+        else
+            subScreenOpenerRefs.current.delete(screen);
+    };
+    // Recorded where the screen is actually opened rather than at the press, so a
+    // press that fails to open one leaves nothing behind to be spent on the next.
+    const openSubScreen = (screen, open) => {
+        returnFocusRef.current = screen;
+        open();
+    };
+    const subScreenOpen = removalOpen || sourcesOpen || blockedOpen || codeOpen || debugOpen;
+    SP_REACT.useEffect(() => {
+        if (subScreenOpen)
+            return;
+        const screen = returnFocusRef.current;
+        if (!screen)
+            return;
+        returnFocusRef.current = null;
+        const holder = subScreenOpenerRefs.current.get(screen);
+        if (holder)
+            focusFirstEnabled({ current: holder });
+    }, [subScreenOpen]);
+    const shownBlockedTables = SP_REACT.useMemo(() => blockedTables.slice(0, blockedPages * BLOCKED_TABLES_PAGE), [blockedTables, blockedPages]);
+    // The day of the newest record, which is what dates the whole summary.
+    /**
+     * What this device can call each AppID, for the screens that show numbers.
+     *
+     * The Steam library first, because it is current and it is already here. The
+     * not-working records second, and only to fill a gap: they carry the name a
+     * game had when the mark was written, which is what still answers for a game
+     * that has since been uninstalled, and which must not outrank a library entry
+     * that has been renamed since.
+     */
+    const gameNames = SP_REACT.useMemo(() => {
+        const names = new Map();
+        for (const entry of blockedTables) {
+            if (typeof entry.app_id === "number" && entry.game_name)
+                names.set(entry.app_id, entry.game_name);
+        }
+        for (const game of gamesView)
+            names.set(game.appId, game.name);
+        return names;
+    }, [gamesView, blockedTables]);
+    const newestBlockedAt = blockedTables.length > 0 ? blockedRecordedOn(blockedTables[0].recorded_at) : null;
+    // Empty because it could not be read is not empty, and the difference is
+    // whether a table already known not to work is about to be offered and
+    // imported again. Both states are named on the panel, not only inside.
+    const blockedSummaryLabel = blockedTablesReason
+        ? "Record cannot be read"
+        : blockedTables.length === 0
+            ? "No tables marked"
+            : `${blockedTables.length} table${blockedTables.length === 1 ? "" : "s"} marked`;
+    // What this record holds, said once, so an empty screen and a populated one
+    // cannot describe different lists. Four causes are stored, and the one that
+    // used to go missing before the first entry existed is the locked archive,
+    // which is kept apart from bytes that are not a table because the user can
+    // act on it.
+    //
+    // They are named in the help rather than on the row. On the device this
+    // heading was six lines of prose above three entries, which is a screen
+    // explaining itself instead of showing what it holds, and the height it took
+    // is height the entries do not get. A record with entries in it describes
+    // itself: each one carries the sentence it was recorded with, and the row
+    // above them keeps only what cannot be read off them - how many, how recent,
+    // and what a press does. A record with nothing in it has no entries to say
+    // any of that, so that is the one state that still needs a line of its own.
+    const BLOCKED_CAUSES = "a table that ran and did not work, a download that was not a usable table or an archive nothing here can open, or a provider row whose file the source no longer has";
+    const blockedSummaryDescription = blockedTablesReason
+        ? `${blockedTablesReason} Nothing is being refused while this cannot be read; Clear all replaces it with an empty record.`
+        : blockedTables.length === 0
+            ? "Nothing is recorded here yet."
+            : undefined;
+    const blockedSummaryHelp = `Each entry is something not to try again until it is cleared, and what it holds is ${BLOCKED_CAUSES}. A download or a source condition never refuses a copy already on this device. CE Decky records a table by its exact contents when Cheat Engine runs it and it comes straight back off, when a download turns out not to be a usable table at all, and when its archive is one only 7-Zip opens and every file inside it is locked, which is kept apart because re-packing such a download is something the user can act on. A row whose file the source says it no longer has is recorded too, by that row rather than by contents, because nothing was ever downloaded to key it on. A cheat table finds the game's code by scanning for patterns, so the first case is almost always a table written for a different build of the game - which is why the game's version is kept beside it. Clearing an entry removes that refusal and nothing else: a table it marked can be chosen and imported again, while what is already known about it, including a success an entry invalidated, stays as it was until a cheat proves the table again.`;
+    const blockedManageable = (blockedTables.length > 0 || Boolean(blockedTablesReason))
+        && Boolean(onClearBlockedTables || onUnblockTable);
+    /**
+     * Re-read the record after an edit, without ever rejecting or repainting a
+     * newer answer with an older one.
+     *
+     * This is called from a commit's success path, where the durable edit has
+     * already happened: a refresh that fails must not take that press down with
+     * it, and two quick edits must not leave the screen showing whichever read
+     * happened to land last. It resolves rather than rejects for the same reason.
+     */
+    const reloadBlockedTables = async () => {
+        if (!onRefreshBlockedTables)
+            return;
+        const generation = blockedReloadRef.current + 1;
+        blockedReloadRef.current = generation;
+        try {
+            const listed = await onRefreshBlockedTables();
+            if (blockedReloadRef.current !== generation)
+                return;
+            setBlockedTables(listed.tables);
+            setBlockedTablesReason(listed.reason);
+        }
+        catch (cause) {
+            if (blockedReloadRef.current !== generation)
+                return;
+            logUiFailure("advanced.blocked_tables_refresh", cause);
+            setBlockedTablesReason("This list could not be re-read just now, so it may be out of date. Refresh before deciding what to do next.");
+        }
+    };
+    // The prop is whatever the panel last read, which can be older than this
+    // screen: a refresh started as Advanced opened would land after the snapshot
+    // was taken and never reach it.
+    SP_REACT.useEffect(() => { void reloadBlockedTables().catch(() => undefined); }, []);
+    /**
+     * Re-read which sources are on, without ever repainting a newer answer with
+     * an older one.
+     *
+     * Called from a switch's success path, where the durable write has already
+     * happened, so it resolves rather than rejects: a refresh that fails must not
+     * take a saved change down with it.
+     */
+    const reloadProviderSources = async (next) => {
+        const generation = providerSourcesRef.current + 1;
+        providerSourcesRef.current = generation;
+        if (next) {
+            setProviderSources(next);
+            setProviderSourcesError(null);
+            return;
+        }
+        if (!onLoadProviderSources)
+            return;
+        try {
+            const snapshot = await onLoadProviderSources();
+            if (providerSourcesRef.current !== generation)
+                return;
+            setProviderSources(snapshot);
+            setProviderSourcesError(null);
+        }
+        catch (cause) {
+            if (providerSourcesRef.current !== generation)
+                return;
+            logUiFailure("advanced.provider_sources_refresh", cause);
+            setProviderSourcesError(describeError(cause));
+        }
+    };
+    SP_REACT.useEffect(() => { void reloadProviderSources().catch(() => undefined); }, []);
+    // One line for the panel: how many sources are on, and what they have done
+    // between them. The totals are the reason the switch is worth offering at
+    // all - a source with hundreds of errors and no results is the one a user
+    // wants to stop waiting for.
+    const sourceTotals = SP_REACT.useMemo(() => {
+        const rows = providerSources?.sources ?? [];
+        return rows.reduce((total, source) => {
+            const counters = source.counters;
+            if (!counters)
+                return total;
+            return {
+                measured: total.measured + 1,
+                searches: total.searches + counters.searches,
+                results: total.results + counters.results,
+                downloads: total.downloads + counters.downloads_succeeded,
+                errors: total.errors + counters.errors,
+            };
+        }, { measured: 0, searches: 0, results: 0, downloads: 0, errors: 0 });
+    }, [providerSources]);
+    const sourcesSummaryLabel = providerSourcesError && !providerSources
+        // Only while there is nothing to show. Once a read has succeeded, this
+        // same field also carries the failure of a switch, and labelling that as
+        // an unreadable list contradicted the rows sitting under it.
+        ? "Sources could not be read"
+        : providerSources?.selection_reason
+            // Not "5 of 5 sources on": that is what is happening, but stating it as
+            // the user's own choice would hide that their choice is the thing that
+            // was lost.
+            ? "Your choice of sources cannot be read"
+            : providerSources
+                ? `${providerSources.enabled_count} of ${providerSources.total} sources on`
+                : "Table sources";
+    const sourcesSummaryDescription = providerSourcesError
+        ? providerSourcesError
+        : providerSources?.selection_reason
+            ? `${providerSources.selection_reason} Every source is being searched while this cannot be read; Switch all on replaces the record.`
+            : providerSources?.diagnostics_reason
+                // Never a row of zeroes here. Nothing was measured, and totals of zero
+                // state as fact that nothing has happened, which is a different and
+                // much more misleading claim than saying the record is unreadable.
+                ? `What each source has done cannot be read: ${providerSources.diagnostics_reason}`
+                : providerSources
+                    ? sourceTotals.measured === 0
+                        ? "No source has been searched yet."
+                        : `${sourceTotals.searches} search${sourceTotals.searches === 1 ? "" : "es"} · ${sourceTotals.results} result${sourceTotals.results === 1 ? "" : "s"} · ${sourceTotals.downloads} downloaded · ${sourceTotals.errors} error${sourceTotals.errors === 1 ? "" : "s"}`
+                    : "Reading which sources are on…";
+    // A switch writes by reading the record first, so while that read fails every
+    // one of them is guaranteed to fail too - and its error would replace the
+    // explanation of the corruption with a generic one. Switch all on is the
+    // action that works, because it replaces the record without reading it.
+    const switchesBlocked = Boolean(providerSources?.selection_reason);
+    const sourcesSummaryHelp = "The sites CE Decky searches for cheat tables. All of them are on to begin with, and switching one off stops it completely: it is not searched, it is not read when another source's page points at it, and rows it already left in the search cache are no longer offered. Nothing you have already downloaded is affected. The counts beside each source are what it has actually done on this device, which is what makes the choice worth making: a source that never answers is only costing you the wait.";
+    const invoke = async (action, onSuccess, onFailure) => {
+        if (busy || localBusyRef.current)
+            return;
+        localBusyRef.current = true;
+        setLocalBusy(true);
+        const operation = startUiOperation("advanced.invoke", { callback: action.name || "inline" });
+        try {
+            const value = await action();
+            onSuccess?.(value);
+            operation.completed();
+        }
+        catch (cause) {
+            operation.failed(cause);
+            // Parent actions already surface a CE Decky toast; contain the rejected
+            // event promise here. A caller that is not routed through the parent's
+            // error path says so by passing its own handler.
+            onFailure?.(cause);
+        }
+        finally {
+            localBusyRef.current = false;
+            setLocalBusy(false);
+        }
+    };
+    const repair = (write) => invoke(async () => {
+        try {
+            await write();
+        }
+        finally {
+            // A repair can publish its change before reporting a durability error.
+            // This detached screen must adopt the readback on either outcome.
+            try {
+                reconcileContext(await onRefreshAll());
+            }
+            catch (cause) {
+                logUiFailure("advanced.status_after_repair_failed", cause);
+            }
+        }
+    });
+    /**
+     * Perform a deletion the user has now confirmed twice: once by choosing the
+     * scope, once in Steam's own dialog. Failure keeps the choice on screen with
+     * the reason, because nothing was removed in that case.
+     */
+    const performDelete = (scope) => invoke(() => onDeleteManagedData(scope), (result) => {
+        // Best effort on the backend, because a readiness report that could not
+        // be produced after the files went is not a deletion that did not happen.
+        if (result.readiness)
+            setRemoval(result.readiness);
+        setDeleted(result);
+        setDeleteScope(null);
+        // Everything else on screen was describing data that may now be gone:
+        // the selected table, the registered Cheat Engine, the game's own
+        // profile. Catching up is best-effort - the deletion already happened.
+        void Promise.resolve().then(onRefreshAll).then(reconcileContext).catch((cause) => logUiFailure("advanced.delete_refresh_failed", cause));
+        // These two are not part of that context and were left saying what the
+        // deleted files used to hold: a scope that removes `state/` switches
+        // every source back on and erases every blocked-table mark, so the rows
+        // above would have gone on reporting "all off" and a record of tables
+        // this no longer refuses.
+        void reloadProviderSources().catch(() => undefined);
+        void reloadBlockedTables().catch(() => undefined);
+    }, (cause) => {
+        setDeleteError(`${describeError(cause)} Anything already removed stays removed; the rows above have been re-read.`);
+        // The deletion commits before the call returns, so a failure after that
+        // point is a report that did not arrive rather than files that are still
+        // there. Refreshing on this path too is what stops the screen going on
+        // describing state that is gone.
+        // Wrapped, because catching up is best effort on a path that is already
+        // reporting a failure: a refresh that rejects, or a host that hands back
+        // no promise at all, must not become a second error on top of the one the
+        // user is being shown.
+        void Promise.resolve().then(onRefreshAll).then(reconcileContext).catch((cause) => logUiFailure("advanced.delete_refresh_failed", cause));
+        void reloadProviderSources();
+        void reloadBlockedTables();
+        void Promise.resolve().then(onCheckRemoval).then((next) => { if (next)
+            setRemoval(next); })
+            .catch((cause) => logUiFailure("advanced.removal_refresh_failed", cause));
+    });
+    /**
+     * Write one support archive and then say, in one dialog, exactly where it is.
+     *
+     * The path is the whole point of the press: a user in Game Mode has to find
+     * this file afterwards from a desktop session or a file transfer, and a toast
+     * that scrolls away with the path in it is the same as no path at all. So the
+     * result is a dialog that has to be dismissed, with one button, and the path
+     * on a line of its own.
+     */
+    const collectSupportBundle = () => invoke(onCollectSupportBundle, (bundle) => {
+        setSupportBundle(bundle);
+        // A log that is in the archive and readable is not a missing member,
+        // whether it was trimmed to a budget or holds less of a window than was
+        // offered. Only a member that is not there at all is something the reader
+        // has to be told about, and this counted by exclusion until a third kind
+        // arrived and every healthy bundle started reporting a problem.
+        const missing = omittedNotes(bundle).length;
+        const confirmation = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { bAlertDialog: true, strTitle: "Support bundle saved", strOKButtonText: "OK", strDescription: (SP_JSX.jsxs("div", { children: [SP_JSX.jsx("div", { children: "Attach this file to a GitHub issue and describe what happened." }), SP_JSX.jsx("div", { style: supportPathStyle, children: bundle.path }), SP_JSX.jsxs("div", { children: [`${formatBytes(bundle.size_bytes)} · ${bundle.member_count} file(s)`, missing > 0 ? ` · ${missing} item(s) could not be collected; the archive lists them in manifest.json.` : ""] }), SP_JSX.jsx("div", { style: supportNoteStyle, children: "It holds CE Decky's logs, settings, game profiles and the cheat tables in use. It holds no password and no Cheat Engine or game files. Remove anything you would rather not publish before attaching it." })] })), onOK: traceUiAction("advanced_modal.support_bundle_saved", () => confirmation.Close()), onCancel: traceUiAction("advanced_modal.support_bundle_dismiss", () => confirmation.Close()) }));
+    }, (cause) => setSupportBundleError(describeError(cause)));
+    const loadDebug = () => {
+        setDebugError(null);
+        // Diagnostics are read directly rather than through the parent's action
+        // wrapper, so nothing else reports this failure. Without the handler the
+        // screen sat empty - not loading, no error, no snapshot - exactly when the
+        // backend could not produce diagnostics.
+        void invoke(onLoadDiagnostics, setDebug, (cause) => setDebugError(describeError(cause)));
+    };
+    const openDebug = () => {
+        setDebugOpen(true);
+        loadDebug();
+    };
+    const close = () => {
+        if (!busy && !localBusyRef.current)
+            onClose();
+    };
+    /**
+     * Leave this screen, then navigate Steam to the page.
+     *
+     * `NavigateToExternalWeb` navigates the Steam UI underneath; a Decky modal
+     * stays mounted above it, so the browser opens with its own chrome visible
+     * around this dialog and its page never reachable. Dismissing first is what
+     * makes the page the thing on screen.
+     */
+    const openSourcePage = (url) => {
+        if (busy || localBusyRef.current)
+            return;
+        onClose();
+        openExternalWeb(url);
+    };
+    const profile = selectedGameView
+        ? statusView.profiles.find((candidate) => candidate.app_id === selectedGameView.appId && candidate.is_shortcut === selectedGameView.isShortcut) ?? null
+        : null;
+    const inspectionView = inspectionState && profile?.table_sha256 === inspectionState.sha256 ? inspectionState : null;
+    const runtimeSessionReady = Boolean(selectedGameView
+        && profile?.table_sha256
+        && isExactRuntimeSession(runtimeView, selectedGameView.appId, profile.table_sha256));
+    // Why the exact-PID list is not the answer right now.
+    //
+    // Processes exists to recover from an attachment that chose the wrong
+    // program, and that is very often the same situation in which Cheat Engine
+    // will not start or will not stay attached - so a button that only worked
+    // with a healthy connected session was disabled in exactly the case it was
+    // written for. It is now always pressable for a selected game: with a session
+    // it asks Cheat Engine, which is the only thing that can supply an exact
+    // Windows PID, and without one it falls back to the game's own processes as
+    // observed on this machine, which names a target for the next start.
+    const exactPidUnavailableReason = runtimeSessionReady || !selectedGameView
+        ? null
+        : !profile?.table_sha256
+            ? "This game has no active table, so no Cheat Engine can be asked for exact PIDs."
+            : !runtimeView?.prepared
+                ? "No session has been prepared for this table yet, so no Cheat Engine can be asked for exact PIDs."
+                : !runtimeView.connected
+                    ? "Cheat Engine is not running for this game, so no exact PID can be offered."
+                    : runtimeView.session_stale_reason
+                        ?? "The running session belongs to a different game or table than the one selected here.";
+    // The game's own Windows executables, read from this machine's process table
+    // rather than from Cheat Engine. No PID is offered with them: these are
+    // Linux-side observations of the game's processes, and only Cheat Engine can
+    // name a Windows PID. Choosing one sets the target the next start attaches to.
+    const observedTargets = SP_REACT.useMemo(() => {
+        const observed = ceLaunchView?.game?.windows_executables ?? [];
+        const valid = observed.filter((name) => isValidProcessBasename(name));
+        const unique = [...new Set(valid)];
+        return unique
+            .map((name) => ({ name, runtimeNoise: isWineRuntimeExecutable(name) }))
+            .sort((left, right) => Number(left.runtimeNoise) - Number(right.runtimeNoise)
+            || (left.name.toLowerCase() < right.name.toLowerCase() ? -1 : 1));
+    }, [ceLaunchView?.game?.windows_executables]);
+    const selectedObservedTarget = observedTargets.find((candidate) => candidate.name === observedTargetDraft) ?? null;
+    const runtimeProcessOptions = SP_REACT.useMemo(() => runtimeAttachCandidates(runtimeView?.status?.processes ?? [])
+        .flatMap((candidate) => candidate.pids.map((pid) => ({
+        name: candidate.name, pid, runtimeNoise: Boolean(candidate.runtimeNoise),
+    }))), [runtimeView?.status?.processes]);
+    const selectedAttach = runtimeProcessOptions.find((candidate) => `${candidate.pid}:${candidate.name}` === attachCandidate) ?? null;
+    const liveTargetOverride = divergentLiveTarget(runtimeView, profile?.target_process);
+    // What this game is actually running, when the process saved for it is not
+    // among that. `null` wherever the absence cannot be proved.
+    const absentTargetCandidates = absentLiveTarget(ceLaunchView?.game ?? null, profile?.target_process);
+    // Offered only where there is one answer. With several, the press would be
+    // picking for the user out of a list this cannot rank, and what it writes
+    // stops the Cheat Engine running now; the field above and Processes below are
+    // the route for that, and the row names the candidates either way.
+    const absentTargetAction = absentTargetCandidates?.length === 1 ? (SP_JSX.jsx(SmallButton, { disabled: blocked || !profile?.table_sha256, onClick: traceUiAction("advanced_modal.use_running_target", () => { void invoke(() => onSaveTargetProcess(absentTargetCandidates[0])); }, { process: absentTargetCandidates[0] }), children: `Use ${absentTargetCandidates[0]}` })) : undefined;
+    // Both of these are built here rather than inside the row's props. A prop
+    // whose value spans lines is emitted into the tracked bundle with the line
+    // broken after the prop before it, which leaves that line ending in a space
+    // and `git diff --check` refusing the bundle - the same reason a comment
+    // between props is refused.
+    const absentTargetDetail = absentTargetCandidates === null
+        ? ""
+        : absentTargetCandidates.length === 1
+            ? `The game is running and started ${absentTargetCandidates[0]}. Saving that uses it from the next start.`
+            : `The game is running and started ${absentTargetCandidates.join(", ")}. Set the one this table is for in Target process above, or pick it under Processes.`;
+    // The bridge loads the session's exact table itself, because Cheat Engine only
+    // opens one named on its command line once its main window is shown. Saying
+    // which of the two happened is the difference between "this table is not
+    // supported" and "this session never got the table".
+    const tableLoad = runtimeView?.status?.table_load_state ?? null;
+    const tableLoadDetail = tableLoad === null || tableLoad === "loaded"
+        ? ""
+        : tableLoad === "pending"
+            ? " \u00b7 table not loaded yet"
+            : ` \u00b7 table could not be opened${runtimeView?.status?.table_load_error ? `: ${runtimeView.status.table_load_error}` : ""}`;
+    // Import, Forget and the self-test change or occupy the global Cheat Engine
+    // registration, which the backend refuses while *any* game owns a live one -
+    // this one included. Filtering the selected game out of that answer is what
+    // left those buttons enabled beside actions that silently stop CE instead.
+    const ownership = launchOwnership({
+        capability: ceLaunchView,
+        scopeAppId: selectedGameView?.appId ?? null,
+        selectedAppId: selectedGameView?.appId ?? null,
+        nameOf: (appId) => games.find((candidate) => candidate.appId === appId)?.name ?? null,
+    });
+    const ceIdentityBlockedReason = ceLaunchView ? ownership.identityBlockedReason : null;
+    const invalidSelectedOwnership = (ceLaunchView?.owned_launch_owners ?? []).some((owner) => owner.app_id === selectedGameView?.appId && owner.state === "invalid");
+    const targetDraftValid = isValidProcessBasename(targetDraft.trim());
+    const observedProton = ceLaunchView?.observed_proton_tool ?? null;
+    const compatState = ceLaunchView?.compat_data?.state ?? "unknown";
+    const compatPath = ceLaunchView?.compat_data?.compat_data_path ?? ceLaunchView?.game?.compat_data_path ?? null;
+    const prefixConflicts = ceLaunchView?.game?.conflicting_wine_prefixes ?? [];
+    // The catalog entry behind the profile's exact table SHA: filename, size,
+    // origin and availability live there rather than in the parsed inspection.
+    const activeTable = profile?.table_sha256
+        ? statusView.tables.find((table) => table.sha256 === profile.table_sha256) ?? null
+        : null;
+    const tableOrigin = activeTable?.origins[activeTable.origins.length - 1] ?? null;
+    // A table published for another store's build commonly differs from the
+    // running executable in letter case alone, which reads as a contradiction
+    // between two rows unless it is named as the ordinary thing it is.
+    const hintCaseOnlyMismatch = Boolean(profile?.target_process
+        && inspectionState?.process_candidates.some((hint) => hint !== profile.target_process && hint.toLowerCase() === profile.target_process.toLowerCase()));
+    // Only an https page is offered; the origin record is provider data.
+    const originOpenable = /^https:\/\//i.test(tableOrigin?.source_page ?? "");
+    if (removalOpen && removal && deleteScope !== null) {
+        const chosen = DELETION_SCOPES.find((item) => item.scope === deleteScope) ?? DELETION_SCOPES[0];
+        const affected = managedDirectories(removal).filter((directory) => chosen.keys.includes(directory.key));
+        const files = affected.reduce((total, directory) => total + directory.file_count, 0);
+        const bytes = affected.reduce((total, directory) => total + directory.total_bytes, 0);
+        return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.delete.cancel_back", () => { if (!busy && !localBusyRef.current)
+                setDeleteScope(null); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Delete plugin data" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "What to delete", rgOptions: DELETION_SCOPES.map((item) => ({ data: item.scope, label: item.label })), selectedOption: deleteScope, onChange: traceUiAction("advanced_modal.what_to_delete", (option) => { setDeleteError(null); setDeleteScope(String(option.data)); }, (option) => ({ scope: String(option.data) })), disabled: localBusy }) }), SP_JSX.jsx(PanelRow, { testId: "delete-scope-summary", tone: "header", truncate: true, label: `${files} file(s) · ${formatBytes(bytes)}`, help: `${chosen.consequence} Everything listed below is under ${removal.managed_root}.` }), affected.map((directory) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `delete-directory-${directory.key}`, label: directory.label, trailing: directory.exists ? `${directory.file_count} · ${formatBytes(directory.total_bytes)}` : "empty" }, directory.key))), deleteError && SP_JSX.jsx(PanelRow, { testId: "delete-error", label: "Nothing was deleted", description: deleteError })] }) }), SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DestructiveAction, { disabled: localBusy, onClick: traceUiAction("advanced_modal.delete_these", () => {
+                                    const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Delete this plugin data?", strDescription: `${chosen.label}. ${chosen.consequence} This cannot be undone.`, strOKButtonText: "Delete", strCancelButtonText: "Keep it", onCancel: traceUiAction("advanced_modal.delete.keep", () => confirm.Close(), { scope: deleteScope }), onOK: traceUiAction("advanced_modal.delete.confirm", () => {
+                                            confirm.Close();
+                                            void performDelete(deleteScope);
+                                        }, { scope: deleteScope }) }));
+                                }, { scope: deleteScope }), children: "Delete these" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: localBusy, onClick: traceUiAction("advanced_modal.cancel", () => { if (!busy && !localBusyRef.current)
+                                    setDeleteScope(null); }), children: "Cancel" })] })] }) }));
+    }
+    if (removalOpen && removal) {
+        return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.removal.back", () => { if (!busy && !localBusyRef.current)
+                setRemovalOpen(false); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin data on disk" }), SP_JSX.jsx(PanelRow, { tone: "header", testId: "removal-summary", label: removal.can_delete_managed_data ? "Safe to remove" : "Removal is blocked", description: [
+                                        `${totalManagedFiles(removal)} file(s) · ${formatBytes(totalManagedBytes(removal))} · ${removal.profiles_total} profile(s)`,
+                                        ...removal.blockers,
+                                    ].join(" · "), actions: (SP_JSX.jsx(SmallButton, { disabled: blocked || removal.live_owned_launch, onClick: traceUiAction("advanced_modal.delete", () => { setDeleteError(null); setDeleted(null); setDeleteScope("cache"); }), children: "Delete\u2026" })) }), deleted && (SP_JSX.jsx(PanelRow, { testId: "removal-deleted", label: deleted.failed.length > 0 ? "Partly deleted" : "Deleted", description: [
+                                        `${deleted.deleted.reduce((total, item) => total + item.removed_files, 0)} file(s) · ${formatBytes(deleted.deleted.reduce((total, item) => total + item.removed_bytes, 0))} removed.`,
+                                        // Naming what survived is the point: the rest really was
+                                        // deleted, and saying nothing happened would be the same
+                                        // untruth the durable-write reconciliation exists to stop.
+                                        ...deleted.failed.map((item) => `${item.label} could not be cleared: ${item.error}`),
+                                    ].join(" ") })), managedDirectories(removal).map((directory) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `removal-directory-${directory.key}`, label: directory.label, description: directory.error ?? directory.path, trailing: directory.exists
+                                        ? `${directory.file_count} · ${formatBytes(directory.total_bytes)}${directory.truncated ? "+" : ""}`
+                                        : "empty", help: `${directory.purpose} ${directory.path}` }, directory.key)))] }) }), SP_JSX.jsx("div", { style: { padding: "0 16px 6px" }, children: SP_JSX.jsx(ActionGroup, { style: { justifyContent: "flex-end", gap: 8 }, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.back", () => { if (!busy && !localBusyRef.current)
+                                    setRemovalOpen(false); }), children: "Back" }) }) })] }) }));
+    }
+    /**
+     * Which sites CE Decky may search, one row per source.
+     *
+     * A screen of its own rather than a column on the diagnostics list: each row
+     * carries the evidence for the decision it offers - what that source has
+     * searched, found, downloaded and failed on this device - and that does not
+     * fit beside everything else. Switching one off is durable and reversible,
+     * and takes effect on the next search rather than retroactively: tables
+     * already downloaded from it are untouched.
+     */
+    if (sourcesOpen) {
+        const rows = providerSources?.sources ?? [];
+        const allOff = providerSources !== null && providerSources.enabled_count === 0 && rows.length > 0;
+        return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.sources.back", () => { if (!busy && !localBusyRef.current)
+                setSourcesOpen(false); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Table sources" }), SP_JSX.jsx(PanelRow, { tone: "header", testId: "provider-sources-summary", label: sourcesSummaryLabel, description: allOff && !providerSourcesError
+                                        ? "Every source is off, so a table search cannot find anything. Switch at least one back on."
+                                        : sourcesSummaryDescription, help: sourcesSummaryHelp, actions: onResetProviderSources ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.switch_all_on", () => { void invoke(onResetProviderSources, (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause))); }), children: "Switch all on" })) : undefined }), providerSources?.diagnostics_reason && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "provider-sources-diagnostics-error", label: "Counts are unavailable", description: `${providerSources.diagnostics_reason} Searching will not repair it; Reset counts replaces the record with an empty one.`, help: "The switches themselves still work. What could not be read is the separate record of what each source has done. Ordinary use does not fix it: every search and download loads that whole record before adding to it, and a load that fails is deliberately ignored so a broken counter can never fail a search. So it stays broken until it is replaced, which is what Reset counts does. Nothing else is affected, and the counts start again from the next search.", actions: onResetProviderDiagnostics ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.reset_counts", () => { void invoke(onResetProviderDiagnostics, (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause))); }), children: "Reset counts" })) : undefined })), rows.map((source) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `provider-source-${source.provider}`, label: source.provider_display_name, description: describeSource(source, Boolean(providerSources?.diagnostics_reason)), trailing: sourceStateLabel(source), help: [
+                                        // Both halves come from the registry rather than from one
+                                        // of them standing for the other: only two of these sources
+                                        // are ever named by another source's page, and describing
+                                        // all five as if they were claimed a route three of them
+                                        // do not have.
+                                        source.discovery === "linked_source"
+                                            ? "This source is never searched on its own. It is read only when another source's page names an exact page on it, and switching it off stops that."
+                                            : source.linked_target
+                                                ? "Searched for every game, and also read when another source's page names an exact page on it. Switching it off stops both."
+                                                : "Searched for every game. Switching it off stops that; nothing else points at this source.",
+                                        source.enabled && source.cooldown_seconds > 0
+                                            ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
+                                            : null,
+                                        source.last_error ? `Last error: ${source.last_error}` : null,
+                                        source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null,
+                                    ].filter(Boolean).join(" "), actions: onSetProviderEnabled ? (SP_JSX.jsx(SmallButton, { disabled: blocked || switchesBlocked, onClick: traceUiAction("advanced_modal.source.toggle", () => {
+                                            void invoke(() => onSetProviderEnabled(source.provider, !source.enabled), (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause)));
+                                        }, { provider: source.provider, enabled: !source.enabled }), children: source.enabled ? "Switch off" : "Switch on" })) : undefined }, source.provider))), rows.length === 0 && (SP_JSX.jsx(PanelRow, { label: providerSourcesError ? "Sources could not be read" : "Reading sources…", description: providerSourcesError ?? "Asking the backend which sources this build can use." }))] }) }), SP_JSX.jsx("div", { style: { padding: "0 16px 8px" }, children: SP_JSX.jsx(DFL.DialogButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.back_2", () => { if (!busy && !localBusyRef.current)
+                                setSourcesOpen(false); }), children: "Back" }) })] }) }));
+    }
+    /**
+     * Every table the record refuses, on a screen that can hold them all.
+     *
+     * On the panel this was a capped list: the newest twelve rows with a count of
+     * the rest, which made the entries past the cap unreachable by any route
+     * except emptying the whole record. Here the page extends instead, so a
+     * single entry can always be cleared - which matters because the two things
+     * recorded expire differently. A table that failed against an older build of
+     * the game becomes correct again when the game updates; a download that was
+     * never a table stays wrong forever. Clear all re-offers both.
+     */
+    // Reading a table is not running it, and it is the one thing this screen can
+    // say about an exact SHA that a count of markers cannot.
+    if (codeOpen && activeTable) {
+        return (SP_JSX.jsx(TableCodeModal, { sha256: activeTable.sha256, filename: activeTable.filename, onBack: () => setCodeOpen(false) }));
+    }
+    if (blockedOpen) {
+        const remaining = blockedTables.length - shownBlockedTables.length;
+        return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.blocked.back", () => { if (!busy && !localBusyRef.current)
+                setBlockedOpen(false); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables that did not work" }), SP_JSX.jsx(PanelRow, { tone: "header", testId: "blocked-tables-summary", label: blockedSummaryLabel, description: blockedSummaryDescription, trailing: newestBlockedAt ? `newest ${newestBlockedAt}` : undefined, help: blockedSummaryHelp, actions: onClearBlockedTables ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.clear_all", () => { void invoke(async () => { try {
+                                            await onClearBlockedTables();
+                                            setBlockedPages(1);
+                                        }
+                                        finally {
+                                            void reloadBlockedTables();
+                                        } }); }), children: "Clear all" })) : undefined }), shownBlockedTables.map((entry) => (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: `blocked-table-${blockedKey(entry).slice(0, 12)}`, label: blockedRowLabel(entry), description: blockedRowDetail(entry, status.tables), help: [
+                                        // The whole of the recorded sentence, for a reader who
+                                        // wants the half the row shortened away, and the identity
+                                        // this record is cleared by.
+                                        entry.reason,
+                                        entry.sha256 ? `SHA-256 ${entry.sha256}` : `Provider row ${entry.origins?.join(", ") ?? blockedKey(entry)}`,
+                                    ].join(" \u00b7 "), actions: onUnblockTable ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.blocked.clear", () => { void invoke(async () => { try {
+                                            await onUnblockTable(blockedKey(entry));
+                                        }
+                                        finally {
+                                            void reloadBlockedTables();
+                                        } }); }, { blocked_key: blockedKey(entry) }), children: "Clear" })) : undefined }, blockedKey(entry)))), remaining > 0 && (SP_JSX.jsx(ActionRow, { testId: "blocked-tables-more", children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.blocked.show_more", () => setBlockedPages((pages) => pages + 1)), children: `Show ${Math.min(remaining, BLOCKED_TABLES_PAGE)} more` }) }))] }) }), SP_JSX.jsx("div", { style: { padding: "0 16px 8px" }, children: SP_JSX.jsx(DFL.DialogButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.back_3", () => { if (!busy && !localBusyRef.current)
+                                setBlockedOpen(false); }), children: "Back" }) })] }) }));
+    }
+    if (debugOpen) {
+        return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.debug.back", () => setDebugOpen(false)), children: SP_JSX.jsx(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: SP_JSX.jsx(DensePanel, { children: SP_JSX.jsx(DebugDetails, { snapshot: debug, loading: blocked, error: debugError, gameNames: gameNames, onRefresh: loadDebug, onBack: () => setDebugOpen(false) }) }) }) }));
+    }
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Advanced / Diagnostics" }), SP_JSX.jsx(PanelRow, { truncate: true, label: `CE Decky ${statusView.version}`, description: statusView.ce.valid ? `Cheat Engine ${statusView.ce.version ?? "of unknown version"} · ${statusView.ce.sha256?.slice(0, 8)}` : statusView.ce.reason ?? "Cheat Engine is not ready", help: "Diagnostics and recovery for when the normal panel cannot finish something. Refresh re-reads every backend fact, Self-test checks the plugin's own paths and permissions, and Debug opens the backend's full diagnostics snapshot. Nothing on this screen is needed for ordinary use.", actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.refresh", () => { void invoke(onRefreshAll, reconcileContext); }), children: "Refresh" }), SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.self_test", () => { void invoke(onRunSelfTest, setSelfTestView); }), children: "Self-test" }), SP_JSX.jsx("div", { ref: openerRef("debug"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.debug", () => openSubScreen("debug", openDebug)), children: "Debug" }) })] })) }), selfTestSummaryView && SP_JSX.jsx(PanelRow, { truncate: true, label: selfTestSummaryView.label, description: selfTestSummaryView.counts }), selfTestSummaryView?.failures.map((check) => (SP_JSX.jsx(PanelRow, { status: true, testId: `self-test-failure-${check.name}`, label: `${selfTestCheckLabel(check.name)} ${check.blocking === false ? "(warning)" : "(blocker)"}`, description: check.detail || "the check failed and reported no detail" }, check.name))), statusView.profile_state_reason && (SP_JSX.jsx(PanelRow, { testId: "profile-state-repair", truncate: true, label: "Game settings cannot be read", description: statusView.profile_state_reason, help: "CE Decky keeps every game's table choice, authorization and cheat selection in one file. When that file is unreadable, no game can be configured until it is replaced. Discarding it keeps the unreadable file as evidence and starts an empty one; your Cheat Engine installation and your imported tables are untouched, and you re-choose a table per game afterwards from Stored on the home panel, which needs no network.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.profile.discard", () => { void repair(onRepairProfileState); }), children: "Discard" }) }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Report a problem" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "support-bundle", label: "Collect support bundle", description: supportBundleError
+                                        ? supportBundleError
+                                        : supportBundle
+                                            ? `Saved ${supportBundle.filename} (${formatBytes(supportBundle.size_bytes)}) in your home folder.`
+                                            : "Writes one .zip of logs, settings and state into your home folder, and tells you where.", help: "Everything needed to answer a bug report without the device: CE Decky's own log across every plugin load, what Proton and Cheat Engine printed, the session records naming the exact table and target a Cheat Engine was given, your settings and game profiles, the tables in use, the provider diagnostics behind a search, and what this panel did. Attach the file to a GitHub issue with a description of what happened, and a screenshot if it is something you can see. It holds no password and no Cheat Engine or game files; it does hold your game names, your paths and your cheat tables, so remove anything you would rather not publish first.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.collect", () => { setSupportBundleError(null); void collectSupportBundle(); }), children: "Collect" }) }), supportBundle && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "support-bundle-path", label: "Saved to", description: supportBundle.path, help: "The full path of the archive that was just written. Copy it off the device in Desktop Mode, or with whatever file transfer you already use." })), supportBundle && omittedNotes(supportBundle).length > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "support-bundle-notes", label: `${omittedNotes(supportBundle).length} item(s) not collected`, description: omittedNotes(supportBundle).slice(0, 3).map((note) => `${note.member}: ${note.reason}`).join(" · "), help: "Every file the collector could not take is listed inside the archive, in manifest.json, with the reason. A state file that cannot be read is very often the fault being reported rather than a fault in collecting it, so the archive is still worth attaching." })), supportBundle && shortenedNotes(supportBundle).length > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "support-bundle-shortened", label: `${shortenedNotes(supportBundle).length} item(s) shortened`, description: shortenedNotes(supportBundle).slice(0, 3).map((note) => `${note.member}: ${note.reason}`).join(" · "), help: "These files are in the archive and readable. A log longer than the budget it is given is kept from its end, so the newest part is there and the oldest is not. manifest.json names each one and what was left out." }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheat Engine installation" }), SP_JSX.jsx(InstallerProvenance, { ce: statusView.ce })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Fallback" }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Registered Cheat Engine", description: ceIdentityBlockedReason ?? statusView.ce.executable ?? statusView.ce.reason ?? "None registered", help: "CE Decky downloads and manages its own Windows Cheat Engine, and this is the fallback for when it cannot. Import takes either a Windows Cheat Engine already on this machine, or a .zip of a Cheat Engine installation directory packed up on a Windows machine - use the archive when the official installer is no longer downloadable. Test runs the registered Cheat Engine on its own to prove it works before a game depends on it; Forget drops the registration so the managed one is used again. None of this touches your tables.", actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: blocked || Boolean(ceIdentityBlockedReason), onClick: traceUiAction("advanced_modal.import", () => { void invoke(onPickCE); }), children: "Import\u2026" }), SP_JSX.jsx(SmallButton, { disabled: blocked || !statusView.ce.valid || !protonDraft || Boolean(ceIdentityBlockedReason), onClick: traceUiAction("advanced_modal.test", () => { void invoke(() => onRunCELaunchSelfTest(protonDraft)); }), children: "Test" }), statusView.ce.configured && (SP_JSX.jsx(SmallButton, { disabled: blocked || Boolean(ceIdentityBlockedReason), onClick: traceUiAction("advanced_modal.forget", () => { void invoke(onClearCEImport, reconcileContext); }), children: "Forget" }))] })) }), SP_JSX.jsx(PanelRow, { truncate: true, label: selectedGameView ? appDetailsView?.displayName || selectedGameView.name : "Steam library", description: selectedGameView
+                                        ? `${selectedGameView.isShortcut ? "Non-Steam" : "Steam"} \u00b7 AppID ${selectedGameView.appId}`
+                                        : `${gamesView.length} games and shortcuts enumerated`, help: "Which library entry CE Decky acts on. It follows the running game by itself, and Change game on the panel picks a different one; this row only reports what was resolved and re-reads Steam's library and shortcuts.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.refresh_library", () => { void invoke(onRefreshGames, setGamesView); }), children: "Refresh library" }) }), selectedGameView && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Target process", value: targetDraft, onChange: traceUiEdit("advanced_modal.target_process", (event) => setTargetDraft(String(event.target.value ?? ""))), disabled: blocked }) }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Target process", description: targetDraftValid ? `Cheat Engine will attach to ${targetDraft.trim()}.` : "Enter one .exe basename; paths and control characters are not accepted.", help: "The exact Windows .exe inside the game that Cheat Engine opens. It is normally confirmed for you when you review a table, so set it here only when attachment picked the wrong process - a launcher or a crash handler instead of the game itself. Type the file name only, such as Game-Win64-Shipping.exe. A Cheat Engine running for this game is stopped first, because it was started for the old target.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked || !profile?.table_sha256 || !targetDraftValid, onClick: traceUiAction("advanced_modal.save", () => { void invoke(() => onSaveTargetProcess(targetDraft)); }, { process: targetDraft }), children: "Save" }) }), absentTargetCandidates && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "target-not-running", label: `${profile?.target_process} is not running in this game`, description: absentTargetDetail, help: "Cheat Engine attaches to one exact Windows .exe inside the game. When a table names none and the game had never been started, CE Decky offers the executables in the game's own installed folder, which is the only evidence there is at that point. This is the first chance to check that choice against what the game actually runs.", actions: absentTargetAction }))] }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Proton and prefix" }), SP_JSX.jsx(PanelRow, { truncate: true, label: observedProton ? observedProton.name : "Proton not observed", description: observedProton
+                                        ? `${observedProton.tool_id} · ${observedProton.proton_sha256.slice(0, 8)} · ${observedProton.source}`
+                                        : ceLaunchView?.observed_proton_reason ?? "No running game to observe a Proton identity from.", help: "The exact Proton build CE Decky saw the selected game running under. An attached launch uses this identity and nothing else: if it cannot be observed, CE Decky refuses to attach rather than guessing a compatible one." }), observedProton && SP_JSX.jsx(PanelRow, { truncate: true, label: "Proton path", description: observedProton.path }), SP_JSX.jsx(PanelRow, { truncate: true, label: compatState === "resolved" ? "Compatdata resolved" : compatState === "unknown" ? "Compatdata not resolved" : `Compatdata ${compatState}`, description: compatPath ?? `${ceLaunchView?.compat_data?.candidates.length ?? 0} candidate(s) · no single exact directory`, help: "Steam's per-game compatdata directory, resolved independently from the library metadata. The attached launch requires this to equal the prefix the running game itself reports; a disagreement fails closed instead of writing into the wrong game's prefix." }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Wine prefix", description: ceLaunchView?.game?.wine_prefix ?? "The running game reported no prefix." }), prefixConflicts.length > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, label: `${prefixConflicts.length} conflicting prefix path(s)`, description: prefixConflicts.join(" · ") })), SP_JSX.jsx(PanelRow, { truncate: true, label: ceLaunchView?.game?.running ? `Game running · ${ceLaunchView.game.pids.length} process(es)` : "Game not running", description: ceLaunchView?.game?.running
+                                        ? `${(ceLaunchView.game.windows_executables ?? []).join(", ") || "no Windows executables observed"}${ceLaunchView.game.launch_executable ? ` · Steam launched ${ceLaunchView.game.launch_executable}` : ""}`
+                                        : ceLaunchView?.game?.reason ?? ceLaunchView?.reason ?? "Nothing observed for this AppID.", help: "What CE Decky can see of the game's own processes right now: how many it owns, which Windows .exe basenames they are, and which one Steam asked Proton to start. The target process must be one of these." }), (ceLaunchView?.proton_tools.length ?? 0) > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Self-test Proton", rgOptions: (ceLaunchView?.proton_tools ?? []).map((tool) => ({ data: tool.tool_id, label: tool.name })), selectedOption: protonDraft, onChange: traceUiAction("advanced_modal.self_test_proton", (option) => { const value = String(option.data); setProtonDraft(value); onLaunchProtonChange(value); }, (option) => ({ proton: String(option.data) })), disabled: blocked }) })), SP_JSX.jsx(PanelRow, { truncate: true, label: "Self-test launch", description: `Start Cheat Engine alone in ${ceLaunchView?.self_test_prefix ?? "its own prefix"}, with no game attached.`, help: "Starts Cheat Engine on its own, in a throwaway prefix, with no game and no table. It answers one question: can the selected Proton build run this exact Cheat Engine at all? Use it when attaching to a game fails and you need to know whether Cheat Engine or the game's own prefix is at fault.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked || !statusView.ce.valid || !protonDraft || Boolean(ceIdentityBlockedReason), onClick: traceUiAction("advanced_modal.verify", () => { void invoke(() => onRunCELaunchSelfTest(protonDraft)); }), children: "Verify" }) }), ceIdentityBlockedReason && SP_JSX.jsx(PanelRow, { truncate: true, label: "Cheat Engine is in use", description: ceIdentityBlockedReason }), ceLaunchView?.recovery_error && SP_JSX.jsx(PanelRow, { truncate: true, label: "Recovery", description: ceLaunchView.recovery_error }), invalidSelectedOwnership && (SP_JSX.jsx(PanelRow, { testId: "launch-ownership-repair", truncate: true, label: "Launch ownership cannot be read", description: "The durable Cheat Engine ownership record is malformed.", help: "CE Decky will quarantine this record only after a complete process-table scan proves that no process carrying any CE Decky descriptor can still be running. If that proof is incomplete, repair stays blocked and nothing is discarded.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.ownership.repair", () => { void repair(onRepairOwnedLaunchState); }), children: "Repair" }) }))] }), (inspectionView || activeTable) && (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Active table" }), activeTable && (SP_JSX.jsx(PanelRow, { truncate: true, label: activeTable.filename, description: [
+                                        activeTable.sha256.slice(0, 12),
+                                        formatBytes(activeTable.size),
+                                        // The release the publisher gave these bytes, which is what
+                                        // search offered them under. The number beside it is Cheat
+                                        // Engine's own table format and now says so: unlabelled, the
+                                        // two read as one thing and disagree, so an imported v1.0.6
+                                        // was described here as "version 52".
+                                        releaseLabel(tableOrigin?.version),
+                                        activeTable.table_version ? `CE table ${activeTable.table_version}` : null,
+                                        tableOrigin ? tableOrigin.retrieved_at.slice(0, 10) : null,
+                                        tableOrigin?.advertised_sha256 && tableOrigin.advertised_sha256 !== activeTable.sha256 ? "advertised SHA differed" : null,
+                                        activeTable.available ? null : "file missing",
+                                    ].filter(Boolean).join(" · "), help: "The exact table this game is configured to use. Everything CE Decky does with it is keyed by this SHA-256: the consent you gave, the cheats it remembers, and the pins on the panel all belong to these exact bytes and to no other copy of the same table." })), tableOrigin && (SP_JSX.jsx(PanelRow, { truncate: true, label: `From ${providerDisplayName(tableOrigin.provider)}`, description: tableOrigin.source_page, help: "The page this exact file was downloaded from. Open reaches it in the Steam browser; a table imported from a local file has no origin recorded.", actions: originOpenable ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.open", () => { openSourcePage(tableOrigin.source_page); }), children: "Open" })) : undefined })), activeTable && (SP_JSX.jsx(PanelRow, { truncate: true, label: "Stored at", description: activeTable.blob_path, help: "CE Decky's own copy of the file, stored under its SHA-256 rather than its name, so two tables that happen to share a filename cannot overwrite each other. The original you imported is left where it was, and this copy is never edited in place. Look inside opens what the table can execute, as text; it runs nothing.", actions: activeTable.available ? (SP_JSX.jsx("div", { ref: openerRef("code"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.look_inside", () => openSubScreen("code", () => setCodeOpen(true))), children: "Look inside" }) })) : undefined })), SP_JSX.jsx(PanelRow, { truncate: true, label: profile?.execution_consent_sha256 === profile?.table_sha256 ? "Execution authorized" : "Not authorized", description: `${profile?.pinned.length ?? 0} pinned · ${profile?.remembered.length ?? 0} remembered · ${profile?.table_library.length ?? 0} table(s) imported for this game${profile?.autoload_enabled ? " · auto-load on" : ""}`, help: "Whether you have authorized this exact table's executable content to run, and how much state this game keeps for it. Revoke clears that authorization and nothing else; the table and its remembered cheats stay. A Cheat Engine running for this game is stopped first, because it is running under the authorization being withdrawn.", actions: profile?.table_sha256 && profile.execution_consent_sha256 === profile.table_sha256 ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.consent.revoke", () => { void invoke(onRevokeConsent); }), children: ownership.ownedBySelected ? "Stop CE and revoke" : "Revoke" })) : undefined }), inspectionView && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelRow, { truncate: true, label: `${inspectionView.total_entries} entries · ${inspectionView.controls.length} controls`, description: `${`${inspectionView.has_lua ? "Lua " : ""}${inspectionView.has_auto_assembler ? "AutoAssembler " : ""}${inspectionView.embedded_files ? `${inspectionView.embedded_files} embedded ` : ""}`.trim() || "no executable content"}${inspectionView.unsupported_record_id_count ? ` · ${inspectionView.unsupported_record_id_count} unsupported` : ""}${inspectionView.ambiguous_record_ids.length ? ` · ${inspectionView.ambiguous_record_ids.length} ambiguous` : ""}`, help: "What is actually inside the table. Controls are the records CE Decky can drive; unsupported and ambiguous records are skipped rather than guessed at. Lua and AutoAssembler are executable content, which is why the table needs explicit authorization." }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Process hints", description: inspectionView.process_candidates.join(", ") || "None", help: hintCaseOnlyMismatch
+                                                ? `This table names its process differently from the one saved for this game - ${profile?.target_process} - in letter case only. That is the table author's build, not a mismatch: CE Decky attaches to the executable this game actually runs.`
+                                                : "The process this table's author wrote it against. It is evidence about the table, not the target: the saved target process above is what Cheat Engine attaches to." })] })), (startupCount ?? profile?.startup.length ?? 0) > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, label: "Legacy startup actions", description: startupCount !== null
+                                        ? `${startupCount} remain for this exact table`
+                                        : `${profile?.startup.length} run every time this exact table prepares a session`, help: "An older way of replaying cheats when a table is prepared, kept so a profile made before Configure cheats existed still works. Clearing them is safe: the cheats you confirm now are remembered separately.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.startup.clear", () => { void invoke(onClearStartup, setStartupCount); }), children: "Clear" }) }))] })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Runtime" }), SP_JSX.jsx(PanelRow, { truncate: true, label: runtimeSessionReady ? "Connected" : runtimeView?.connected ? "Stale / mismatched session" : runtimeView?.prepared ? "Prepared / disconnected" : "Not prepared", description: runtimeSessionReady && runtimeView?.status?.attached
+                                        ? `Attached PID ${runtimeView.status.opened_process_id} · ${runtimeView.status.target_process}${tableLoadDetail}`
+                                        : runtimeView?.session_stale_reason ?? (runtimeView?.connected ? "Prepared/status identity no longer matches this game and table." : "No active session"), help: "The live link between CE Decky and the Cheat Engine it started for this game and this exact table. Refresh runtime re-reads that state. Processes lists what CE Decky can attach to: with a Cheat Engine running it asks that Cheat Engine, which is the only thing that can give an exact Windows PID; without one it reads the game's own processes from this machine, and one of those can be saved as the target for the next start.", actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: blocked || !selectedGameView, onClick: traceUiAction("advanced_modal.refresh_runtime", () => { void invoke(onRefreshRuntime, setRuntimeView); }), children: "Refresh runtime" }), SP_JSX.jsx(SmallButton, { disabled: blocked || !selectedGameView, onClick: traceUiAction("advanced_modal.processes", () => {
+                                                    if (runtimeSessionReady) {
+                                                        void invoke(onRefreshProcesses, (next) => { setRuntimeView(next); setAttachCandidate(""); });
+                                                        return;
+                                                    }
+                                                    setObservedTargetsShown(true);
+                                                    void invoke(onRefreshAll, (next) => { reconcileContext(next); setObservedTargetsShown(true); });
+                                                }), children: "Processes" })] })) }), observedTargetsShown && !runtimeSessionReady && selectedGameView && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelRow, { truncate: true, testId: "observed-targets", label: observedTargets.length > 0
+                                                ? `${observedTargets.length} process(es) observed in the game`
+                                                : ceLaunchView?.game?.running ? "No Windows executables observed yet" : "The game is not running", description: exactPidUnavailableReason
+                                                ? `${exactPidUnavailableReason} These are the game's own processes instead, read from this machine.`
+                                                : "The game's own processes, read from this machine.", help: "What CE Decky can see of the game's Windows processes without asking Cheat Engine anything. Use this when Cheat Engine will not start or will not stay attached, which is exactly when the exact-PID list cannot be produced. Choosing one saves it as this game's target process, and the next Cheat Engine start attaches to it. A Cheat Engine running for this game is stopped first, because it was started for the old target." }), observedTargets.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Target from observed processes", rgOptions: [
+                                                            { data: "", label: "Choose an observed .exe…" },
+                                                            ...observedTargets.map((candidate) => ({
+                                                                data: candidate.name,
+                                                                label: candidate.runtimeNoise ? `${candidate.name} · Wine/Proton helper` : candidate.name,
+                                                            })),
+                                                        ], selectedOption: observedTargetDraft, onChange: traceUiAction("advanced_modal.target_from_observed_processes", (option) => setObservedTargetDraft(String(option.data)), (option) => ({ process: String(option.data) })), disabled: blocked }) }), selectedObservedTarget?.runtimeNoise && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "observed-target-helper", label: `${selectedObservedTarget.name} is a Wine or Proton helper`, description: "These run beside the game rather than being it, so this is almost never the process that owns the game's memory.", help: "Wine and Proton start their own programs inside the same prefix as the game: services, launchers and helper processes. Cheat Engine can attach to one, and it will simply find nothing to change. It stays selectable because for an unusual game one of them really is the executable that runs it, but if you did not come here for that, pick the entry that looks like the game." })), SP_JSX.jsx(ActionRow, { children: SP_JSX.jsx(SmallButton, { disabled: blocked || !profile?.table_sha256 || !selectedObservedTarget, onClick: traceUiAction("advanced_modal.save_as_target", () => {
+                                                            if (!selectedObservedTarget)
+                                                                return;
+                                                            void invoke(() => onSaveTargetProcess(selectedObservedTarget.name));
+                                                        }, { process: selectedObservedTarget?.name }), children: "Save as target" }) }), !profile?.table_sha256 && (SP_JSX.jsx(PanelRow, { truncate: true, label: "No table is selected for this game", description: "A target process is stored against the table this game uses, so choose a table first." }))] }))] })), runtimeView?.prepared && SP_JSX.jsx(PanelRow, { truncate: true, label: "Session", description: `${runtimeView.prepared.session_id.slice(0, 8)} · table ${runtimeView.prepared.table_sha256.slice(0, 8)}` }), runtimeView?.status?.window_over_game === true && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "window-over-game", label: "A Cheat Engine window could not be hidden", description: "A window is over the game and CE Decky cannot take it down. Stop Cheat Engine to get the screen back.", help: "A cheat table can build a window of its own, and Cheat Engine does not always let CE Decky hide one. While it is there it takes the running game's screen, audio and controller input. Stopping Cheat Engine removes it. This is worth reporting with the table that caused it." })), runtimeView?.status?.window_over_game === false && (runtimeView?.status?.unsuppressed_sweeps ?? 0) > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "unsuppressed-sweeps", label: `${runtimeView?.status?.unsuppressed_sweeps} attempt(s) to hide a Cheat Engine window failed`, description: "A window was over the game earlier in this session and is not now.", help: "CE Decky sweeps for Cheat Engine windows on a timer. Each sweep that saw a window it could not put down is counted here, so one stubborn window raises this once per sweep for as long as it was on screen. It is worth reporting with the table that caused it." })), (runtimeView?.status?.window_suppressions ?? 0) > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "window-suppressions", label: `${runtimeView?.status?.window_suppressions} Cheat Engine window(s) hidden`, description: "Cheat Engine mapped a window over the game after it started; CE Decky put it back down.", help: "CE Decky never lets Cheat Engine's own windows appear, because a window that does takes the running game's audio and controller input with it. Cheat Engine still maps one occasionally after startup, and this counts how many times that had to be undone. It is a normal thing to see once; a number that keeps climbing is worth reporting." })), (runtimeView?.status?.dialogs_dismissed ?? 0) > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "dialogs-dismissed", label: `${runtimeView?.status?.dialogs_dismissed} Cheat Engine dialog(s) dismissed`, description: runtimeView?.status?.last_dialog
+                                        ? `The last one was "${runtimeView.status.last_dialog}".`
+                                        : "Cheat Engine asked something over the game.", help: "Cheat Engine sometimes asks a question in a window of its own. Over a running game that window cannot be read or answered, and on this hardware it takes the screen from the game while it is there, so CE Decky closes it, which Cheat Engine treats as cancelling. If a table stopped doing what it should right after this appeared, the cancelled question is the likely reason." })), runtimeView?.status?.restore_capability !== undefined
+                                    && runtimeView?.status?.restore_capability !== null
+                                    && runtimeView.status.restore_capability !== "ready" && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "minimized-query-unavailable", label: RESTORE_CAPABILITY_LABEL[runtimeView.status.restore_capability ?? ""]
+                                        ?? "Cannot bring the game back", description: RESTORE_CAPABILITY_SETTLING.has(runtimeView.status.restore_capability ?? "")
+                                        ? "This usually settles by itself within a few seconds."
+                                        : "If the game keeps its sound and its controller but draws nothing, bring it back from Steam.", help: `Starting Cheat Engine takes the foreground, and a game that loses it minimizes itself. CE Decky normally asks such a game to come back, but only after asking Windows whether that window really is minimized: sent to a maximized window the same request means 'back to windowed size', which would take a game that was fine out of fullscreen. ${RESTORE_CAPABILITY_HELP[runtimeView.status.restore_capability ?? ""] ?? "This Cheat Engine did not establish that it can do both, so nothing is sent at all."}${runtimeView.status.restore_error ? ` Cheat Engine said: ${runtimeView.status.restore_error}` : ""}` })), runtimeView?.session_state_reason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "session-state-repair", truncate: true, label: "Session state cannot be read", description: runtimeView.session_state_reason, help: "CE Decky keeps a pointer to this game's current Cheat Engine session. When that pointer or its metadata is unreadable, no new session can be prepared for this game. Discarding it is safe once no Cheat Engine CE Decky owns is running; your tables, authorizations and cheat choices are untouched.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.session.discard", () => { void repair(onRepairSessionState); }), children: "Discard" }) }) })), runtimeProcessOptions.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Exact process PID", rgOptions: [
+                                                    { data: "", label: "Choose an observed .exe process…" },
+                                                    ...runtimeProcessOptions.map((candidate) => ({
+                                                        data: `${candidate.pid}:${candidate.name}`,
+                                                        label: candidate.runtimeNoise
+                                                            ? `${candidate.name} · PID ${candidate.pid} · Wine/Proton helper`
+                                                            : `${candidate.name} · PID ${candidate.pid}`,
+                                                    })),
+                                                ], selectedOption: attachCandidate, onChange: traceUiAction("advanced_modal.exact_process_pid", (option) => setAttachCandidate(String(option.data)), (option) => ({ selection: String(option.data) })), disabled: blocked || !runtimeSessionReady }) }), SP_JSX.jsx(ActionRow, { children: SP_JSX.jsx(SmallButton, { disabled: blocked || !runtimeSessionReady || !selectedAttach, onClick: traceUiAction("advanced_modal.retry_attach", () => {
+                                                    if (!selectedAttach)
+                                                        return;
+                                                    void invoke(() => onRetryAttach(selectedAttach.name, selectedAttach.pid), (next) => setRuntimeView(next));
+                                                }, { process: selectedAttach?.name, pid: selectedAttach?.pid }), children: "Retry attach" }) }), liveTargetOverride && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "live-target-override", truncate: true, label: `Attached to ${liveTargetOverride}, this session only`, description: `${profile?.target_process} is still what this game will use next time. Saving stops the Cheat Engine running now and uses ${liveTargetOverride} from the next start.`, actions: (SP_JSX.jsx(SmallButton, { disabled: blocked || !profile?.table_sha256, onClick: traceUiAction("advanced_modal.stop_ce_and_save", () => { void invoke(() => onSaveTargetProcess(liveTargetOverride)); }), children: "Stop CE and save" })) }) }))] })), (runtimeView?.status?.processes.length ?? 0) > 0 && runtimeProcessOptions.length === 0 && (SP_JSX.jsx(PanelRow, { label: "Attach candidates", description: "The bridge reported no valid .exe process basenames." }))] }), onLoadProviderSources && (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Table sources" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "provider-sources", label: sourcesSummaryLabel, description: sourcesSummaryDescription, trailing: providerSources && providerSources.total > 0 && providerSources.enabled_count === 0 ? "all off" : undefined, help: sourcesSummaryHelp, actions: (SP_JSX.jsx("div", { ref: openerRef("sources"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.choose", () => openSubScreen("sources", () => { setSourcesOpen(true); void reloadProviderSources(); })), children: "Choose" }) })) })] })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables that did not work" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "blocked-tables", label: blockedSummaryLabel, description: blockedSummaryDescription, trailing: newestBlockedAt ? `newest ${newestBlockedAt}` : undefined, help: blockedSummaryHelp, actions: blockedManageable ? (SP_JSX.jsx("div", { ref: openerRef("blocked"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.review", () => openSubScreen("blocked", () => { setBlockedPages(1); setBlockedOpen(true); })), children: "Review" }) })) : undefined })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin data" }), SP_JSX.jsx(PanelRow, { truncate: true, label: removal ? removal.can_delete_managed_data ? "Safe to remove" : "Removal is blocked" : "Plugin data on disk", description: removal
+                                        ? `${totalManagedFiles(removal)} file(s) · ${formatBytes(totalManagedBytes(removal))} under ${removal.managed_root}`
+                                        : "See what CE Decky has put on disk and what removing it would leave behind.", help: "Reports what removing CE Decky would leave on disk - your downloaded tables, game profiles and its managed Cheat Engine - and anything that would block deleting it, such as a Cheat Engine process CE Decky still owns or session state it cannot read. Nothing is deleted by looking: the report itself offers deletion, and that asks which data to remove and confirms it first.", actions: SP_JSX.jsx("div", { ref: openerRef("removal"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.check", () => { void invoke(onCheckRemoval, (next) => { setRemoval(next); openSubScreen("removal", () => setRemovalOpen(true)); }); }), children: "Check" }) }) }), removal && !removal.can_delete_managed_data && (SP_JSX.jsx(PanelRow, { truncate: true, label: `${removal.blockers.length} blocker(s)`, description: removal.blockers.join("; ") }))] }), targetHarness] }), SP_JSX.jsx("div", { style: { padding: "0 16px 8px" }, children: SP_JSX.jsx(DFL.DialogButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.close_2", close), children: "Close" }) })] }) }));
+}
+
+function ArchiveImportModal({ members, onImport, onCancel }) {
+    useUiSurface("ArchiveImportModal");
+    const [memberPath, setMemberPath] = SP_REACT.useState(members[0]?.path ?? "");
+    const [password, setPassword] = SP_REACT.useState("");
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const busyRef = SP_REACT.useRef(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const member = members.find((candidate) => candidate.path === memberPath) ?? null;
+    const unsupported = isUnsupportedEncryptedMember(member);
+    // Whether the press this window exists for can be made at all right now.
+    const importable = !busy && Boolean(member) && !unsupported && !(member?.encrypted && !password);
+    const submit = async () => {
+        if (!member || busyRef.current || unsupported || (member.encrypted && !password))
+            return;
+        busyRef.current = true;
+        setBusy(true);
+        setError(null);
+        const operation = startUiOperation("archive.import", { member_index: members.indexOf(member), encrypted: member.encrypted });
+        try {
+            await onImport(member.path, member.encrypted ? password : null);
+            operation.completed();
+        }
+        catch (cause) {
+            operation.failed(cause);
+            setError(describeError(cause));
+            busyRef.current = false;
+            setBusy(false);
+        }
+    };
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("archive_import_modal.cancel_back", () => { if (!busyRef.current)
+            onCancel(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Choose table from archive" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Table", rgOptions: members.map((item) => ({ data: item.path, label: `${item.path} · ${Math.max(1, Math.ceil(item.size / 1024))} KiB${item.encrypted ? " · encrypted" : ""}` })), selectedOption: memberPath, onChange: traceUiAction("archive_import_modal.table", (option) => { setMemberPath(String(option.data)); setPassword(""); }, (option) => ({ member_index: members.findIndex((item) => item.path === String(option.data)) })), disabled: busy }) }), unsupported && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "This entry cannot be imported", description: UNSUPPORTED_MEMBER_EXPLANATION }) })), member?.encrypted && !unsupported && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Archive password (not stored)", value: password, onChange: traceUiEdit("archive_import_modal.archive_password_not_stored", (event) => setPassword(String(event.target.value ?? ""))), disabled: busy }) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Import failed", description: error }) })] }) }), SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: importable, disabled: !importable, onClick: traceUiAction("archive_import_modal.import", () => void submit()), children: "Import" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !importable, disabled: busy, onClick: traceUiAction("archive_import_modal.cancel", () => { if (!busyRef.current)
+                                onCancel(); }), children: "Cancel" })] })] }) }));
+}
+
+/**
+ * How tall one closed cheat block is, for fitting a page to the screen.
+ *
+ * The 40 pixels `CHEAT_ROW_CLASS` holds a closed block's field to, plus the
+ * four between one block and the next. It is a
+ * constant because the row is now a constant: both of its lines are clamped to
+ * one, and `CHEAT_ROW_CLASS` holds the height of a row that has only one of
+ * them. A row opened by `More` is taller and is not part of this: it is one row
+ * of the page and the reader put it there.
+ */
+const CHEAT_ROW_HEIGHT = 44;
+/**
+ * The fewest cheats a page may hold before the measurement stops taking any.
+ *
+ * A page of one is not a smaller version of this screen. Below this, whatever
+ * the screen says, the reader is better served by a page they scroll than by
+ * paging through a table two records at a time.
+ */
+const MIN_CHEAT_ROWS = 3;
+function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = null, autoloadEnabled, pinned, startupPreferences, rememberedPreferences, configuredValues, onApplied, onCompatibilityConfirmed, onTogglePin, onSaveConfiguredValues, onTableRefused, onValidateStartupPlan, onSnapshot, onSnapshotInvalidated, onCancel }) {
+    useUiSurface("CheatSelectionModal", inspection.sha256);
+    // Every path that reads or writes the running session asks this, never `live`
+    // on its own: a session that cannot answer a full read is as unusable for
+    // those as no session at all, and treating it otherwise is what manufactured
+    // failed Applies on large tables.
+    const storedOnly = !live || Boolean(liveUnavailableReason);
+    /**
+     * What this screen does while nothing is running, in one line and in full.
+     *
+     * It was three sentences in a plain field, so on a handheld it wrapped to
+     * four or five lines above a list that is counted in rows. The line says the
+     * whole of what a reader has to decide on - Apply stores this, it runs later
+     * - and everything behind it, including the rule that arms Auto-load and the
+     * exact reason live control is unavailable, is one press away.
+     */
+    const storedOnlyLine = "Apply saves this table's selection; it runs when the game next starts.";
+    const storedOnlyHelp = liveUnavailableReason
+        ? `${liveUnavailableReason} Apply saves the selection for this exact table and does not change the Cheat Engine running now; it is applied the next time this game starts Cheat Engine.`
+        : autoloadEnabled
+            ? "Nothing is running for this table, so Apply saves the selection for this exact table and CE Decky applies it when this game next starts."
+            : "Nothing is running for this table. Apply saves the selection for this exact table, and switching a cheat on also switches on Load last table & cheats, so CE Decky starts Cheat Engine with this game and applies it; switching every cheat off again switches that back off. A value on its own is only stored, and is written when its cheat is switched on.";
+    // Pinning is a profile write, never a runtime mutation, so it is committed
+    // immediately and kept out of the Apply diff.
+    const [pinnedView, setPinnedView] = SP_REACT.useState(pinned);
+    const [pinning, setPinning] = SP_REACT.useState(false);
+    const pinningRef = SP_REACT.useRef(false);
+    const safeControls = SP_REACT.useMemo(() => safeActionableControls(inspection), [inspection]);
+    const controlById = SP_REACT.useMemo(() => new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, control]])), [safeControls]);
+    // This modal owns the configured values while it is open. The parent renders
+    // it once through Decky's modal root, so the prop never updates after a save;
+    // keeping the committed map here is what lets a second Apply build on the
+    // first instead of reverting it. It is a ref, not state, because the initial
+    // exact-session read must depend on the table and session only - re-running
+    // that query would discard the user's unapplied edits.
+    const configuredByIdRef = SP_REACT.useRef(new Map(configuredValues.map((item) => [item.record_id, item.value])));
+    const sections = SP_REACT.useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
+    const enclosingIds = SP_REACT.useMemo(() => enclosingControlIds(safeControls), [safeControls]);
+    // What the Scripts toggle hides, which is more than what Apply treats as a
+    // dependency: an attach-only record is machinery too, but nothing is ever
+    // switched on through it.
+    const scriptListedIds = SP_REACT.useMemo(() => scriptListedControlIds(safeControls), [safeControls]);
+    const [showScripts, setShowScripts] = SP_REACT.useState(false);
+    // Set when an Apply failed after the first runtime command: the modal is then
+    // showing reconciled live state, not the user's staged intent, and closing
+    // cannot undo what the game already holds.
+    /**
+     * What an aborted Apply left behind. These are independent: one Apply can
+     * change the running game *and* commit this table's saved configuration, and
+     * a mutually exclusive answer described only the live half - after which
+     * reconciliation cleared the dirty sets, so the close prompt fell silent
+     * about a configured value that survives into the next Auto-load.
+     */
+    const [partialCommit, setPartialCommit] = SP_REACT.useState(null);
+    const notePartialCommit = (next) => setPartialCommit((current) => ({
+        runtimeChanged: false, durableChanged: false, durableUnknown: false, ...current, ...next,
+    }));
+    const [sectionKey, setSectionKey] = SP_REACT.useState("all");
+    const [search, setSearch] = SP_REACT.useState("");
+    const [page, setPage] = SP_REACT.useState(0);
+    const [expanded, setExpanded] = SP_REACT.useState(null);
+    // Which record's value search is on screen and what has been typed into it.
+    // Kept with the record rather than beside it so that opening another row
+    // starts empty, and closing this one forgets a query that named nothing.
+    const [valueQuery, setValueQuery] = SP_REACT.useState(null);
+    const [lastConfirmed, setLastConfirmed] = SP_REACT.useState({});
+    const [confirmingClose, setConfirmingClose] = SP_REACT.useState(false);
+    const [staged, setStaged] = SP_REACT.useState({});
+    const [touchedValues, setTouchedValues] = SP_REACT.useState(new Set());
+    const [touchedActive, setTouchedActive] = SP_REACT.useState(new Set());
+    const [loading, setLoading] = SP_REACT.useState(true);
+    // Records an inactive enclosing script has not created yet. They are not an
+    // error; they simply cannot be read or set until their parent runs.
+    const [unavailableRecords, setUnavailableRecords] = SP_REACT.useState(new Set());
+    const [applying, setApplying] = SP_REACT.useState(false);
+    const applyingRef = SP_REACT.useRef(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const [errorTitle, setErrorTitle] = SP_REACT.useState("Cannot apply");
+    SP_REACT.useEffect(() => {
+        let cancelled = false;
+        // A local flag only suppressed the state update; the multi-batch query kept
+        // issuing generations against the same control log after this modal was
+        // gone, so an invisible orphan could race whatever the user pressed next.
+        const aborter = new AbortController();
+        setLoading(true);
+        setError(null);
+        if (storedOnly) {
+            // Nothing usable is running, so the only truth available is what this exact
+            // table was configured to do. Everything else is off, which is what it
+            // will be when Cheat Engine loads the table.
+            const next = {};
+            for (const control of safeControls) {
+                if (control.id === null)
+                    continue;
+                next[control.id] = { active: false, value: null };
+            }
+            for (const preference of effectiveStartupPreferences(startupPreferences, rememberedPreferences)) {
+                if (!(preference.record_id in next))
+                    continue;
+                next[preference.record_id] = {
+                    active: preference.active ?? false,
+                    value: preference.value,
+                };
+            }
+            // Nothing is running, so the value this table was configured with is the
+            // only real answer for it; the remembered copy above may hold whatever
+            // Cheat Engine happened to report last.
+            for (const [recordId, configured] of configuredByIdRef.current) {
+                if (!(recordId in next))
+                    continue;
+                next[recordId] = { active: next[recordId].active, value: configured };
+            }
+            setStaged(next);
+            setLastConfirmed(next);
+            setLoading(false);
+            return () => { cancelled = true; aborter.abort(); };
+        }
+        // The previous Home snapshot is no longer authoritative once this modal
+        // starts a fresh exact-session read. If the read fails, Home must degrade to
+        // "Connected" rather than continue showing stale cheat states.
+        onSnapshotInvalidated?.();
+        // Cheat Engine only creates the record inside a script while that script
+        // runs, so an inactive parent legitimately has children that cannot be read
+        // yet. Aborting the whole model on the first of them left this picker with
+        // no confirmed state at all, which then broke its own ancestor-activation
+        // logic: selecting a child could no longer see a confirmed-off parent to
+        // switch on first. Initialize every readable record and represent the rest
+        // as blocked by their parent.
+        void queryRuntimeControlsPartial(appId, safeControls.flatMap((control) => control.id === null ? [] : [control.id]), undefined, aborter.signal)
+            .then(({ results, unavailable, envelope }) => {
+            if (cancelled)
+                return;
+            const next = {};
+            for (const result of results) {
+                if (result.record_id === null)
+                    continue;
+                // A live session is the truth for a value Cheat Engine can actually
+                // read. It answers `??` for an address that does not exist yet, and
+                // adopting that placeholder is exactly what used to lose the value
+                // the user configured, so the stored choice stands in for it.
+                //
+                // Where there is no stored choice either, this record has no value
+                // rather than a value of `??`. Keeping the placeholder put it in the
+                // editor itself, which is a field the user then has to clear before
+                // they can type into it, and a dropdown whose selection matches none
+                // of the options it is offering.
+                next[result.record_id] = {
+                    active: result.active,
+                    value: displayableControlValue(result.value) === null
+                        ? configuredByIdRef.current.get(result.record_id) ?? null
+                        : result.value,
+                };
+            }
+            setStaged(next);
+            setLastConfirmed(next);
+            setUnavailableRecords(new Set(unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
+            onSnapshot?.(results, envelope);
+        })
+            .catch((cause) => {
+            // This query owns an AbortController and its cleanup aborts it, and the
+            // runtime client throws between batches when that happens. Closing the
+            // picker mid-query is the user doing what the control is for, so it is
+            // not a failure and must not be recorded as one, exactly as the panel's
+            // own boundaries already treat it.
+            if (cause instanceof RuntimeQueryAbortedError)
+                return;
+            // Otherwise: this modal owns its own query, so nothing else records a
+            // session or acknowledgement identity that did not match after the
+            // backend answered every call.
+            logUiFailure("cheats.initial_query_failed", cause, { appId, table: inspection.sha256.slice(0, 12) });
+            if (!cancelled)
+                setError(describeError(cause));
+        })
+            .finally(() => {
+            if (!cancelled)
+                setLoading(false);
+        });
+        return () => { cancelled = true; aborter.abort(); };
+    }, [appId, inspection.sha256, storedOnly]);
+    const selectedSection = sections.find((section) => section.key === sectionKey) ?? sections[0];
+    const sectionControls = SP_REACT.useMemo(() => controlsForSection(safeControls, selectedSection, pinnedView), [safeControls, selectedSection, pinnedView]);
+    const searched = SP_REACT.useMemo(() => filterControls(sectionControls, search), [sectionControls, search]);
+    // The scripts that build a table's cheats are machinery, not choices: Apply
+    // switches on whatever the selected cheats need, so they are hidden until the
+    // user asks to see them.
+    const hiddenScripts = searched.filter((control) => control.id !== null && scriptListedIds.has(control.id)).length;
+    const matching = showScripts ? searched : searched.filter((control) => control.id === null || !scriptListedIds.has(control.id));
+    /**
+     * How many cheats this screen puts on one page, on the screen it is drawn on.
+     *
+     * `CONTROL_PAGE_SIZE` is what a 1280x800 modal fits and stays the answer
+     * wherever there is room for it. A Steam Deck gives a modal 534 CSS pixels
+     * against a television's 844, and six rows plus this screen's own chrome do
+     * not fit in the first of those: the window scrolled, which on a controller
+     * is a page the reader has to work to see the end of.
+     *
+     * The chrome is read rather than estimated, because it is Steam's own
+     * dropdown and text field above the list and this plugin's footer below it,
+     * and a figure guessed for that is wrong on one of the two screens. Both
+     * nodes are held in state rather than in refs, because the first render has
+     * neither and the answer has to be asked again once it does.
+     */
+    const [listNode, setListNode] = SP_REACT.useState(null);
+    const [footerNode, setFooterNode] = SP_REACT.useState(null);
+    // The window itself, which this screen asks only how tall a screen it is on.
+    const [windowNode, setWindowNode] = SP_REACT.useState(null);
+    // Measured once and then held. Re-measuring on every content change made the
+    // page ratchet: a filter keystroke changed the row count, the re-measure read
+    // the layout the previous answer had already shrunk, and the next keystroke
+    // shrank it again down to the minimum with nothing to bring it back.
+    // The wait for the running Cheat Engine's values is this screen's transient:
+    // a row saying so sits above the list while it is out, and latching against
+    // that sized the page for a layout the reader never settles on.
+    const [chrome, setChrome] = SP_REACT.useState(null);
+    SP_REACT.useLayoutEffect(() => {
+        setChrome((held) => latchChrome(held, listNode, footerNode, MODAL_BOTTOM_PADDING, !loading));
+    }, [listNode, footerNode, loading]);
+    const cheatRowHeight = useRowHeight(listNode, CHEAT_ROW_HEIGHT);
+    // How far this screen's window ended from Steam's bar, after the arithmetic
+    // above has had its go. Every paged screen here asks the same question the
+    // same way, and answers it in rows of its own list.
+    const asked = SP_REACT.useMemo(() => (chrome === null ? CONTROL_PAGE_SIZE : rowsThatFit({
+        full: CONTROL_PAGE_SIZE,
+        rowHeight: cheatRowHeight,
+        chrome: chrome.value,
+        minimum: MIN_CHEAT_ROWS,
+        node: listNode,
+    })), [listNode, chrome, cheatRowHeight]);
+    // Both of the blocks this screen mounts under its list on its own: a refusal
+    // it has to report, and the acknowledgement it asks for before closing over
+    // unapplied edits. Either one moves the footer down without the list or the
+    // footer changing at all.
+    const fitLayout = (error ? 1 : 0) | (confirmingClose ? 2 : 0);
+    const fitted = useFittedRows(footerNode, cheatRowHeight, chrome?.settled === true, matching.length > asked, fitLayout);
+    // Never past the page this screen was built with: `rowsThatFit` caps
+    // there so a television stays exactly as it was, and room found after the
+    // fact is not a reason to change a screen that had no problem.
+    const pageSize = Math.min(CONTROL_PAGE_SIZE, Math.max(1, asked + fitted));
+    // The two numbers this page is sized from, recorded when they settle. The
+    // height is read from the page and the chrome from its own nodes, so a page
+    // that comes out wrong on a screen nobody here has is answerable from a
+    // support bundle rather than from a second device session.
+    SP_REACT.useEffect(() => {
+        if (!listNode)
+            return;
+        // Not the control count: it is read here but changes with every filter
+        // keystroke, and including it would either log a stale number or write a
+        // record per keystroke into a bounded ring. What this table holds is
+        // already on `panel.modal_opened`.
+        logUi("cheats.page_sized", { viewport: viewportHeight(listNode), chrome: chrome?.value ?? null, settled: chrome?.settled ?? null, rows: pageSize, fitted });
+    }, [pageSize, listNode, chrome, fitted]);
+    const pages = pageCount(matching.length, pageSize);
+    const safePage = clampPage(page, matching.length, pageSize);
+    // The way out of the window, which is where the ring goes when a page turn
+    // leaves neither paging control pressable. `PagerFooter` owns the rest of
+    // that rule, because it is the same rule on every paged screen here.
+    const cancelRef = SP_REACT.useRef(null);
+    const visible = pageItems(matching, safePage, pageSize);
+    // What a full page of this list measured, so a short last page holds the
+    // window at the same height instead of moving Apply and the way out.
+    // Keyed to the page size it was measured for: this screen settles on its
+    // page a commit after it opens, and a height held from the page it started
+    // with padded the window past the bottom of a Steam Deck's display.
+    const fullPageHeight = usePageHeight(listNode, visible.length, pageSize);
+    const activeCount = Object.values(staged).filter((state) => state.active === true).length;
+    // Whether this screen is drawn on a handheld, which decides how much of it is
+    // a second line. `windowNode` is how it asks about the page it is actually in,
+    // which is never the page this code runs in.
+    const tight = isShortScreen(windowNode);
+    const countsLine = `${safeControls.length} supported \u00b7 ${matching.length} shown${!showScripts && hiddenScripts > 0 ? ` \u00b7 ${hiddenScripts} script${hiddenScripts === 1 ? "" : "s"} hidden` : ""}`;
+    const update = (recordId, patch) => {
+        setStaged((current) => ({
+            ...current,
+            [recordId]: { active: current[recordId]?.active ?? null, value: current[recordId]?.value ?? null, ...patch },
+        }));
+    };
+    const touchValue = (recordId, value) => {
+        if (applyingRef.current || pinningRef.current)
+            return;
+        clearError();
+        update(recordId, { value });
+        setTouchedValues((current) => new Set(current).add(recordId));
+    };
+    /**
+     * Drop the last refusal, which every action after it makes history.
+     *
+     * A refusal describes one press against the state at that moment, and it
+     * stops being true the moment anything moves: switching off the cheat it
+     * named, typing the value it asked for, or simply paging away to something
+     * else all leave a red block on screen about a press nobody is still making.
+     * It is cleared by every user-driven change here rather than only by the next
+     * Apply, because the reader has to be able to get rid of it.
+     *
+     * `partialCommit` is deliberately not touched. That is not a refusal, it is
+     * the acknowledgement that something reached the running game or this table's
+     * saved state, and it is owed until the window is closed.
+     */
+    const clearError = () => setError(null);
+    /**
+     * What the refusal on screen is about, which is not always Apply.
+     *
+     * Pinning refuses here too, and it is a different press: reporting it under
+     * "Cannot apply" tells the reader their Apply failed when they pressed Pin,
+     * and sends them looking at the wrong control. The heading follows whatever
+     * set the line.
+     */
+    const refuse = (title, detail) => {
+        setErrorTitle(title);
+        setError(detail);
+    };
+    const togglePin = async (recordId, next) => {
+        if (pinningRef.current || applyingRef.current)
+            return;
+        pinningRef.current = true;
+        setPinning(true);
+        setError(null);
+        const operation = startUiOperation("cheats.pin", { app_id: appId, table_sha: inspection.sha256, record_id: recordId, pinned: next });
+        try {
+            setPinnedView(await onTogglePin(recordId, next));
+            operation.completed();
+        }
+        catch (cause) {
+            operation.failed(cause);
+            refuse("Cannot pin", describeError(cause));
+        }
+        finally {
+            pinningRef.current = false;
+            setPinning(false);
+        }
+    };
+    const touchActive = (recordId, active) => {
+        if (applyingRef.current || pinningRef.current)
+            return;
+        // The two edits that can make a refusal false outright: it very often names
+        // this exact record, and switching it off or filling its value is the
+        // reader doing what it asked.
+        clearError();
+        update(recordId, { active });
+        setTouchedActive((current) => new Set(current).add(recordId));
+    };
+    /**
+     * Re-read the exact session after a failed Apply and say what it really holds.
+     *
+     * `applyRuntimeSelection()` sends several batches and deliberately does not
+     * roll back the ones already acknowledged, which is only safe if the caller
+     * then reconciles. Without this the form kept showing the user's intent while
+     * the game held something else - most often an enclosing script that was
+     * switched on before a child underneath it failed - and closing with Discard
+     * reset the form without restoring anything.
+     *
+     * A failure before any command took effect is the ordinary transient case, so
+     * the staged edits survive it and Apply can simply be pressed again. Only a
+     * confirmed difference from the last confirmed state adopts the live answer
+     * and labels the outcome partial.
+     */
+    const reconcileLiveState = async () => {
+        let observed;
+        try {
+            observed = await queryRuntimeControlsPartial(appId, safeControls.flatMap((control) => control.id === null ? [] : [control.id]));
+        }
+        catch (cause) {
+            // The session could not be re-read, so the modal cannot claim to know the
+            // live state either. Say that rather than implying the intent is current.
+            // It is also the reconciliation after a failed Apply, which is the moment
+            // a report most needs a record of: the game may hold something the form
+            // no longer describes.
+            logUiFailure("cheats.reconcile_failed", cause, { appId });
+            notePartialCommit({ runtimeChanged: true });
+            return true;
+        }
+        setUnavailableRecords(new Set(observed.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
+        const reconciled = {};
+        let changed = false;
+        for (const result of observed.results) {
+            if (result.record_id === null)
+                continue;
+            const configured = configuredByIdRef.current.get(result.record_id) ?? null;
+            const state = {
+                active: result.active,
+                value: displayableControlValue(result.value) === null ? configured : result.value,
+            };
+            reconciled[result.record_id] = state;
+            const previous = lastConfirmed[result.record_id];
+            if (!previous || previous.active !== state.active || previous.value !== state.value)
+                changed = true;
+        }
+        onSnapshot?.(observed.results, observed.envelope);
+        setLastConfirmed(reconciled);
+        if (!changed)
+            return false;
+        setStaged(reconciled);
+        setTouchedActive(new Set());
+        setTouchedValues(new Set());
+        notePartialCommit({ runtimeChanged: true });
+        return true;
+    };
+    const apply = async () => {
+        if (applyingRef.current || pinningRef.current || loading)
+            return;
+        applyingRef.current = true;
+        setApplying(true);
+        setErrorTitle("Cannot apply");
+        setError(null);
+        setPartialCommit(null);
+        // Configured values are committed before any runtime write so a later
+        // read-back cannot overwrite the user's typed choice. That ordering is
+        // deliberate, but it means a failure after it leaves durable state the
+        // close prompt used to offer to "discard".
+        let committedDurable = false;
+        let mutatedRuntime = false;
+        const operation = startUiOperation("cheats.apply", { app_id: appId, table_sha: inspection.sha256, active_changes: touchedActive.size, value_changes: touchedValues.size });
+        try {
+            // Switching a cheat on switches on every script that encloses it, because
+            // Cheat Engine only creates the inner record while the outer script runs.
+            // The user asked for the cheat; making them hunt for its parents first is
+            // a puzzle, not a safety boundary.
+            const effective = { ...staged };
+            const effectiveTouchedActive = new Set(touchedActive);
+            // Scripts CE Decky switched on or off by itself. They are sent to Cheat
+            // Engine like any other change, but they are not a user's choice, so they
+            // never reach the remembered state - one that did switched itself back on
+            // in the next session with every cheat under it off.
+            const pluginManaged = new Set();
+            const activeById = new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, staged[control.id]?.active ?? null]]));
+            for (const recordId of [...touchedActive, ...touchedValues]) {
+                if (effective[recordId]?.active !== true)
+                    continue;
+                const control = controlById.get(recordId);
+                if (!control)
+                    continue;
+                for (const ancestor of inactiveAncestorControls(control, safeControls, activeById)) {
+                    if (ancestor.id === null)
+                        continue;
+                    effective[ancestor.id] = { active: true, value: effective[ancestor.id]?.value ?? null };
+                    effectiveTouchedActive.add(ancestor.id);
+                    if (!touchedActive.has(ancestor.id))
+                        pluginManaged.add(ancestor.id);
+                    activeById.set(ancestor.id, true);
+                }
+            }
+            // Before anything is committed or written. A value or dropdown record is
+            // not finished by being switched on: Cheat Engine freezes whatever the
+            // game happens to hold at that address, which is not what was asked for
+            // and is indistinguishable afterwards from a cheat that did not work.
+            // Apply took it, saved it into this table's startup state and reported
+            // success, so the next session switched it on again the same way.
+            //
+            // Scoped to the records this press switches on. A record already on and
+            // already without a value is a state this screen did not create, and
+            // refusing until it is dealt with would block every other change the user
+            // came here to make; clearing the field of one that is already on is a
+            // supported ask, which drops the stored value without writing a blank
+            // into a game holding a real number.
+            const desiredById = new Map(Object.entries(effective).map(([id, state]) => [Number(id), state]));
+            // One list, deduplicated: a record this press switches on and that is
+            // also pinned is in both answers, and naming it twice reads as two cheats
+            // with the same name.
+            const missingValues = [...new Set([
+                    ...controlsMissingRequiredValue(safeControls, desiredById, touchedActive),
+                    // And every cheat pinned onto the panel, whether this press switched it
+                    // on or not. A pinned control is a switch on the quick access panel
+                    // with nowhere to type, so one pinned without a value can only ever be
+                    // switched on empty - the same thing this refuses above, reached from
+                    // a screen that has no field to fix it on.
+                    ...pinnedMissingRequiredValue(safeControls, desiredById, pinnedView),
+                ])];
+            const missingValueReason = missingRequiredValueReason(missingValues);
+            if (missingValueReason)
+                throw new Error(missingValueReason);
+            // A script exists to create the records inside it, so one left running
+            // after the last cheat that needed it went off is residue: it keeps its
+            // patch in the game for nothing. Switch it off in the same Apply, and let
+            // the deepest-first order release an inner script before its parent is
+            // judged, so a chain of them clears in one pass.
+            for (const scriptId of unusedActiveScripts(safeControls, activeById)) {
+                effective[scriptId] = { active: false, value: effective[scriptId]?.value ?? null };
+                effectiveTouchedActive.add(scriptId);
+                if (!touchedActive.has(scriptId))
+                    pluginManaged.add(scriptId);
+                activeById.set(scriptId, false);
+            }
+            // An enclosing script this Apply neither switched on nor released is
+            // still not a choice: it is on because something inside it is, and the
+            // startup profile derives it from the table anyway. Without this, a
+            // script left on by an older build stayed in the profile until the cheat
+            // under it happened to be switched off.
+            for (const scriptId of enclosingIds) {
+                if (!touchedActive.has(scriptId))
+                    pluginManaged.add(scriptId);
+            }
+            // A value whose enclosing script is still off has no address yet, so it
+            // cannot be written now. That is a pre-game setting, not an error: keep it
+            // in this table's own config and write it when the script is switched on.
+            const deferredValues = new Set();
+            for (const recordId of touchedValues) {
+                const control = controlById.get(recordId);
+                if (control && inactiveAncestorControl(control, safeControls, activeById))
+                    deferredValues.add(recordId);
+            }
+            const stagedStates = safeControls.flatMap((control) => {
+                if (control.id === null)
+                    return [];
+                const state = effective[control.id];
+                return state ? [{ record_id: control.id, active: state.active, value: state.value }] : [];
+            });
+            const prospectiveRemembered = rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged);
+            const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
+            if (budgetError)
+                throw new Error(budgetError);
+            // The value the user typed is this table's own configuration, and it is
+            // committed before anything is written to Cheat Engine. A record whose
+            // address does not exist yet reads back as `??`, and a failed activation
+            // reads back as whatever the game holds, so deriving the durable value
+            // from the confirmed live state is what used to discard the choice.
+            // Clearing the field is equally deliberate: it drops the entry.
+            const nextConfigured = new Map(configuredByIdRef.current);
+            let configuredChanged = false;
+            for (const recordId of touchedValues) {
+                const value = displayableControlValue(effective[recordId]?.value);
+                const previous = nextConfigured.get(recordId) ?? null;
+                if (value === null) {
+                    configuredChanged || (configuredChanged = nextConfigured.delete(recordId));
+                    continue;
+                }
+                if (value !== previous)
+                    configuredChanged = true;
+                nextConfigured.set(recordId, value);
+            }
+            const prospectiveConfigured = [...nextConfigured]
+                .map(([record_id, value]) => ({ record_id, value }))
+                .sort((left, right) => left.record_id - right.record_id);
+            // The local budget counts only the fields this Apply is about to write.
+            // The backend budget also counts the configured values already stored and
+            // every enclosing script the exact table implies, so a selection could
+            // pass here, mutate the running game, and only then be refused
+            // persistence. Ask the one authority before the first runtime command.
+            const plan = await onValidateStartupPlan(prospectiveRemembered, prospectiveConfigured);
+            if (!plan.fits) {
+                throw new Error(`This selection expands to ${plan.action_count} startup actions for this exact table; the safe per-session limit is ${plan.limit}. Reduce the selection or its saved values before applying.`);
+            }
+            if (configuredChanged) {
+                await onSaveConfiguredValues(prospectiveConfigured);
+                configuredByIdRef.current = nextConfigured;
+                committedDurable = true;
+            }
+            if (storedOnly) {
+                // With no usable session there is nothing to write to and nothing to read
+                // back: the staged selection is the whole result, kept for the next
+                // time this exact table is loaded.
+                //
+                // The parent commits it durably. Clearing the dirty flags before that
+                // returned made a failed write look saved: Back then closed without the
+                // unsaved-change confirmation and the choices were lost.
+                setStaged(effective);
+                await onApplied(prospectiveRemembered, null);
+                setLastConfirmed(effective);
+                setTouchedActive(new Set());
+                setTouchedValues(new Set());
+                operation.completed({ stored_only: true });
+                return;
+            }
+            const touchedIds = new Set([...effectiveTouchedActive, ...touchedValues]);
+            const desired = safeControls.flatMap((control) => {
+                if (control.id === null || !touchedIds.has(control.id))
+                    return [];
+                const state = effective[control.id];
+                if (!state)
+                    return [];
+                const active = effectiveTouchedActive.has(control.id) ? state.active : null;
+                // Emptying the field asks for the stored configuration to be dropped,
+                // not for a blank to be written into the game's memory.
+                const value = touchedValues.has(control.id) && !deferredValues.has(control.id)
+                    ? displayableControlValue(state.value)
+                    : null;
+                if (active === null && value === null)
+                    return [];
+                return [{
+                        record_id: control.id,
+                        active,
+                        value,
+                        path: control.path,
+                        label: controlRowLabel(control),
+                    }];
+            });
+            // Any mutation/revalidation failure after this point makes the previous
+            // Home snapshot stale. Successful final query below republishes a fresh one.
+            onSnapshotInvalidated?.();
+            mutatedRuntime = true;
+            const confirmed = await applyRuntimeSelection(appId, desired);
+            if (confirmed.compatibilityMayHaveChanged) {
+                await onCompatibilityConfirmed?.().catch((cause) => logUiFailure("cheats.compatibility_refresh_failed", cause, { appId }));
+            }
+            // A record the user deliberately switched off may no longer exist, because
+            // its enclosing script created it. Re-query what is still addressable
+            // rather than turning that expected outcome into a failed Apply.
+            const finalState = await queryRuntimeControlsPartial(appId, safeControls.flatMap((control) => control.id === null ? [] : [control.id]), confirmed.envelope);
+            setUnavailableRecords(new Set(finalState.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
+            // Cheat Engine answers `??` for an address it cannot read yet, including
+            // every value deliberately deferred above. The typed choice is what this
+            // table has to remember, so it stands in wherever the read-back is blank.
+            const rememberedStates = finalState.results.map((result) => {
+                if (result.record_id === null || !touchedValues.has(result.record_id))
+                    return result;
+                const typed = staged[result.record_id]?.value ?? null;
+                return displayableControlValue(result.value) === null && typed !== null ? { ...result, value: typed } : result;
+            });
+            const remembered = rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged);
+            const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
+            if (finalBudgetError) {
+                throw new Error(`Runtime changes were confirmed, but the remembered-state safety budget changed before persistence: ${finalBudgetError}`);
+            }
+            onSnapshot?.(finalState.results, finalState.envelope);
+            // Cheat Engine answers `??` for a record it cannot read yet, so adopting
+            // the re-read blindly would wipe the value the user just chose. Keep the
+            // typed value on screen until Cheat Engine reports a real one.
+            const confirmedState = {};
+            for (const result of finalState.results) {
+                if (result.record_id === null)
+                    continue;
+                const typed = touchedValues.has(result.record_id) ? staged[result.record_id]?.value ?? null : null;
+                const configured = configuredByIdRef.current.get(result.record_id) ?? null;
+                confirmedState[result.record_id] = {
+                    active: result.active,
+                    value: displayableControlValue(result.value) === null ? typed ?? configured : result.value,
+                };
+            }
+            setStaged(confirmedState);
+            // Cheat Engine has been mutated and verified, but the remembered state
+            // and auto-load are written by the parent. Adopting the confirmed state
+            // before that returned meant a failed persistence left CE changed while
+            // the modal no longer knew it owed a write, so the next session restored
+            // the old selection. Stay dirty until the durable half commits.
+            await onApplied(remembered, finalState.envelope ?? confirmed.envelope);
+            setLastConfirmed(confirmedState);
+            setTouchedActive(new Set());
+            setTouchedValues(new Set());
+            operation.completed({ stored_only: false });
+        }
+        catch (cause) {
+            operation.failed(cause, { mutated_runtime: mutatedRuntime, committed_durable: committedDurable });
+            setError(describeError(cause));
+            // Handed up before reconciliation, which takes several round trips: the
+            // table is the subject either way, and the user should not watch this
+            // dialog work for seconds before being told what happened.
+            if (cause?.tableRefused === true) {
+                try {
+                    await onTableRefused?.(describeError(cause));
+                }
+                catch {
+                    // Recording this is a courtesy on top of an Apply that already
+                    // failed; it must never replace the failure the user is being shown.
+                }
+            }
+            // A failed Apply is not an Apply that did nothing: `applyRuntimeSelection`
+            // sends several batches and does not roll back the ones already
+            // acknowledged, so the form kept showing the user's intent while the game
+            // held something else - and closing with Discard then reset the form
+            // without restoring the runtime. Reconcile against the exact session
+            // before the user is offered that choice.
+            // Applying sends several batches and does not roll back the ones already
+            // acknowledged, so a failure here can leave the game holding part of an
+            // intent. That is the single most consequential thing this panel does,
+            // and it left no trace.
+            logUiFailure("cheats.apply_failed", cause, {
+                appId,
+                table: inspection.sha256.slice(0, 12),
+                mutated_runtime: mutatedRuntime,
+                committed_durable: committedDurable,
+            });
+            // Reconciliation reports the runtime half; the durable half is known here
+            // and stands on its own. Both are recorded, because one Apply can leave
+            // both behind and a single answer described only the live game.
+            if (mutatedRuntime)
+                await reconcileLiveState();
+            // The durable half is more than this modal's own configured-value write:
+            // the parent commits the remembered selection and Auto-load as separate
+            // mutations, so a failure of the later one arrives carrying the fact that
+            // the earlier one is already stored.
+            const residue = durableResidue(cause);
+            if (committedDurable || residue.committed)
+                notePartialCommit({ durableChanged: true });
+            if (residue.unknown)
+                notePartialCommit({ durableUnknown: true });
+            return;
+        }
+        finally {
+            applyingRef.current = false;
+            setApplying(false);
+        }
+    };
+    // What actually differs from the last confirmed state, not what was touched
+    // on the way there: a cheat switched on and off again is not a change, and
+    // counting it offered to discard a form that had nothing in it.
+    const unsavedCount = unsavedChangeCount(staged, lastConfirmed, [...touchedActive, ...touchedValues]);
+    const stagedActiveById = new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, staged[control.id]?.active ?? null]]));
+    const blockedBy = (control) => inactiveAncestorControl(control, safeControls, stagedActiveById);
+    const requestClose = () => {
+        if (applyingRef.current || pinningRef.current)
+            return;
+        // Reconciliation after a partial Apply clears the dirty sets, so counting
+        // unapplied edits alone let the modal close silently over state that was
+        // already committed. Anything left behind is acknowledged first.
+        if (unsavedCount > 0 || partialCommit) {
+            setConfirmingClose(true);
+            return;
+        }
+        onCancel();
+    };
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("cheat_selection_modal.request_close", requestClose), children: SP_JSX.jsxs(DFL.Focusable, { ref: setWindowNode, style: { minWidth: 420, maxWidth: 620 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Configure cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { bottomSeparator: "thick", label: (SP_JSX.jsxs("div", { style: headerRowStyle, children: [SP_JSX.jsxs("div", { style: headerTextStyle, children: [SP_JSX.jsxs("div", { style: headerLabelStyle, children: [`${activeCount} ${storedOnly ? "selected" : "active"}${unsavedCount > 0 ? ` \u00b7 ${unsavedCount} unapplied` : ""}`, tight ? SP_JSX.jsx("span", { style: headerInlineCountStyle, children: ` \u00b7 ${countsLine}` }) : null] }), tight ? null : SP_JSX.jsx("div", { style: headerDescriptionStyle, children: countsLine })] }), loading && (SP_JSX.jsx("div", { style: headerSpinnerStyle, "data-testid": "cheats-loading", children: SP_JSX.jsx(DFL.Spinner, { style: { width: 16, height: 16 } }) })), SP_JSX.jsxs("div", { style: headerToggleStyle, "data-testid": "show-scripts", children: [SP_JSX.jsx("span", { style: headerToggleLabelStyle, children: "Scripts" }), SP_JSX.jsx("div", { style: toggleBoxStyle, children: SP_JSX.jsx(DFL.Toggle, { value: showScripts, disabled: applying, onChange: traceUiAction("cheat_selection_modal.show_scripts", (checked) => { clearError(); setShowScripts(checked); setPage(0); setExpanded(null); }, (shown) => ({ shown })) }) })] })] })) }) }), storedOnly && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "cheats-stored-only", label: liveUnavailableReason ? "Live control is unavailable for this table" : "Cheat Engine is not running", description: tight ? undefined : storedOnlyLine, help: tight ? `${storedOnlyLine} ${storedOnlyHelp}` : storedOnlyHelp }) })), partialCommit && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Partly applied", description: [
+                                        partialCommit.runtimeChanged
+                                            ? "Some commands were already accepted before this failed, so the rows below show what Cheat Engine actually holds rather than what was staged."
+                                            : null,
+                                        partialCommit.durableChanged
+                                            ? "This table's saved configuration was written, so it stays stored and is used the next time this table is loaded."
+                                            : null,
+                                        partialCommit.durableUnknown
+                                            ? "CE Decky could not confirm whether this table's saved state was written; refresh before deciding what to do."
+                                            : null,
+                                        "Closing does not undo any of it.",
+                                    ].filter(Boolean).join(" ") }) })), !loading && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(SideBySide, { testId: "cheats-filters", children: [SP_JSX.jsx(DFL.DropdownItem, { label: "Section", rgOptions: sections.map((section) => ({ data: section.key, label: section.label })), selectedOption: selectedSection.key, onChange: traceUiAction("cheat_selection_modal.section", (option) => { clearError(); setSectionKey(String(option.data)); setSearch(""); setPage(0); setExpanded(null); }, (option) => ({ section: String(option.data) })), disabled: applying }), SP_JSX.jsx(FilterField, { value: search, onChange: traceUiEdit("cheat_selection_modal.filter", (event) => { clearError(); setSearch(String(event.target.value ?? "")); setPage(0); setExpanded(null); }), disabled: applying })] }) }), SP_JSX.jsx("div", { ref: setListNode, style: fullPageHeight === null ? undefined : { minHeight: fullPageHeight }, "data-testid": "cheat-list", children: visible.map((control) => {
+                                            if (control.id === null)
+                                                return null;
+                                            const recordId = control.id;
+                                            const state = staged[recordId];
+                                            const isPinned = pinnedView.includes(recordId);
+                                            const context = controlRowContext(control);
+                                            // The staged value is the semantic string; the row shows a
+                                            // display copy so invisible/bidi characters cannot reorder it.
+                                            const value = presentableControlValue(state?.value);
+                                            // An active record whose value still has to be supplied always
+                                            // shows its editor, even before the user opens the details.
+                                            const valueRequired = state?.active === true && controlNeedsValueInput(control);
+                                            const isExpanded = expanded === recordId || valueRequired;
+                                            // A record its enclosing script has not created yet is shown as
+                                            // waiting for that script rather than as a broken control.
+                                            const blockedByParent = !storedOnly && unavailableRecords.has(recordId);
+                                            // A real table here declares 6508 items in one picker, and a
+                                            // controller walks a Decky dropdown one item at a time with no
+                                            // search and no way to jump. Past a screenful, the list is
+                                            // narrowed by typing and only what is offered is rendered.
+                                            const searchable = control.kind === "dropdown"
+                                                && control.dropdown_values.length > DROPDOWN_SEARCH_THRESHOLD;
+                                            const choices = control.kind === "dropdown" && isExpanded
+                                                ? matchingDropdownValues(control.dropdown_values, (searchable && valueQuery?.id === recordId ? valueQuery.text : ""), state?.value ?? null)
+                                                : null;
+                                            const summary = [
+                                                // The group, cut to fit, while the row is closed. An open row
+                                                // states the whole path at the top of its own block, so
+                                                // keeping the short form here as well put the same breadcrumb
+                                                // on the screen twice, neither copy complete.
+                                                isExpanded ? null : context,
+                                                blockedByParent ? "its script has not run yet" : null,
+                                                value ? `= ${value}` : null,
+                                                isPinned ? "pinned" : null,
+                                            ].filter(Boolean).join(" \u00b7 ");
+                                            return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { testId: `cheat-row-${recordId}`, label: controlRowLabel(control), summary: summary, active: state?.active ?? null, disabled: applying || pinning, highlighted: isExpanded, onActiveChange: traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active })), actions: (
+                                                    // An active cheat that takes a value keeps its editor
+                                                    // open whatever this button does, so the button both
+                                                    // said "More" over an already-open row and did nothing
+                                                    // when pressed. It reports the row's real state and is
+                                                    // disabled for exactly as long as it cannot change it -
+                                                    // switching the cheat off releases it.
+                                                    SP_JSX.jsx(DFL.DialogButton, { style: cheatRowActionStyle, disabled: applying || valueRequired, onClick: traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId }), children: isExpanded ? "Less" : "More" })), body: isExpanded ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelNote, { children: control.path.join(" \u203a ") }), control.description.trim() && control.description.trim() !== controlRowLabel(control)
+                                                                ? SP_JSX.jsx(PanelNote, { children: control.description.trim() })
+                                                                : null, searchable && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), controlAcceptsTypedValue(control) && blockedBy(control) && (SP_JSX.jsx(PanelNote, { children: state?.active === true
+                                                                    ? `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.`
+                                                                    : `Value saved; written when \u201c${controlRowLabel(blockedBy(control))}\u201d is switched on.` })), controlAcceptsTypedValue(control) && (SP_JSX.jsx(DFL.TextField, { label: control.kind === "dropdown" ? "Custom value" : "Value", value: state?.value ?? "", onChange: traceUiEdit("cheat_selection_modal.edit_value", (event) => touchValue(recordId, String(event.target.value ?? "")), { record_id: recordId }), disabled: applying || pinning })), SP_JSX.jsx(DFL.ToggleField, { label: "Pinned", description: "Show this control directly on the CE Decky panel for this exact table.", checked: isPinned, onChange: traceUiAction("cheat_selection_modal.pinned", (checked) => void togglePin(recordId, checked), (pinned) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, pinned })), disabled: applying || pinning, bottomSeparator: "none" }), SP_JSX.jsx(DFL.Field, { label: "Record", description: `${control.kind} \u00b7 ID ${recordId}`, bottomSeparator: "none" })] })) : null }) }, recordId));
+                                        }) }), matching.length === 0 && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "No controls", description: "No supported controls match this section/filter." }) })] }))] }) }), error && (SP_JSX.jsx("div", { style: bottomErrorStyle, children: SP_JSX.jsx(RefusalBlock, { testId: "cheat-apply-error", children: SP_JSX.jsx(DFL.Field, { label: errorTitle, description: error, bottomSeparator: "none" }) }) })), confirmingClose && (SP_JSX.jsxs("div", { style: bottomErrorStyle, "data-testid": "unsaved-prompt", children: [SP_JSX.jsx(DFL.Field, { label: unsavedCount > 0
+                                ? `${unsavedCount} unapplied change${unsavedCount === 1 ? "" : "s"}`
+                                : "Some of this Apply was already committed", description: partialCommit
+                                ? "Discard only drops the edits still on screen; what was already written to Cheat Engine or saved for this table stays as it is."
+                                : "Apply them to the running Cheat Engine, or discard them and close.", bottomSeparator: "none" }), SP_JSX.jsxs(ActionGroup, { style: { gap: 8, padding: "4px 0 0" }, children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.apply", () => { if (applyingRef.current || pinningRef.current)
+                                        return; setConfirmingClose(false); void apply(); }), children: "Apply" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.discard", () => { if (applyingRef.current || pinningRef.current)
+                                        return; setConfirmingClose(false); setStaged(lastConfirmed); setTouchedActive(new Set()); setTouchedValues(new Set()); onCancel(); }), children: "Discard" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: true, disabled: applying, onClick: traceUiAction("cheat_selection_modal.keep_editing", () => setConfirmingClose(false)), children: "Keep editing" })] })] })), SP_JSX.jsxs("div", { ref: setFooterNode, children: [SP_JSX.jsx(PagerFooter, { testId: "cheat-footer", style: cheatFooterStyle, page: safePage, pages: pages, disabled: applying, preferNext: true, fallbackRef: cancelRef, onPage: (next) => { clearError(); setExpanded(null); setPage(next); }, trailing: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: loading || applying || pinning, onClick: traceUiAction("cheat_selection_modal.apply_2", () => void apply()), children: "Apply" }), SP_JSX.jsx("div", { ref: cancelRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.cancel", requestClose), children: "Cancel" }) })] })) }), !isShortScreen(windowNode) && (SP_JSX.jsxs("div", { style: modalNoteStyle, children: ["Tip: a cheat's ", SP_JSX.jsx("b", { children: "More" }), " can pin it onto the CE Decky panel. Scripts load automatically when a cheat needs them."] }))] })] }) }));
+}
+const modalNoteStyle = {
+    padding: "0 16px 10px",
+    fontSize: 12,
+    lineHeight: "16px",
+    opacity: 0.7,
+};
+const headerRowStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    width: "100%",
+};
+const headerTextStyle = {
+    flex: "1 1 auto",
+    minWidth: 0,
+};
+const headerLabelStyle = {
+    fontSize: 14,
+    lineHeight: "17px",
+};
+// The counts, inline after the active total rather than under it. Set like the
+// description they replace, so the row reads as one statement with a quiet half.
+const headerInlineCountStyle = {
+    fontSize: 11,
+    color: "hsla(0, 0%, 100%, 0.6)",
+    whiteSpace: "nowrap",
+};
+const headerDescriptionStyle = {
+    fontSize: 11,
+    lineHeight: "14px",
+    marginTop: 1,
+    color: "hsla(0, 0%, 100%, 0.6)",
+};
+const headerSpinnerStyle = {
+    flex: "0 0 auto",
+    display: "flex",
+    alignItems: "center",
+};
+const headerToggleStyle = {
+    flex: "0 0 auto",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+};
+const headerToggleLabelStyle = {
+    fontSize: 12,
+    opacity: 0.8,
+    whiteSpace: "nowrap",
+};
+const bottomErrorStyle = {
+    padding: "0 16px 8px",
+};
+const cheatFooterStyle = {
+    padding: "var(--ce-footer-padding, 6px 16px 4px)",
+};
+
+function gameKey(game) {
+    return `${game.appId}:${game.isShortcut ? "shortcut" : "steam"}`;
+}
+function GamePickerModal({ games, selectedGame, runningGames = [], onPick, onCancel }) {
+    useUiSurface("GamePickerModal");
+    const running = new Set(runningGames.map(gameKey));
+    // Running first, and among them the order they were observed in. Everything
+    // else keeps the library's own order underneath.
+    const ordered = running.size > 0
+        ? [...games].sort((left, right) => Number(running.has(gameKey(right))) - Number(running.has(gameKey(left))))
+        : games;
+    // Falling back to the first library entry is right when the user opened this
+    // to change games: it is the list they came to read. It is wrong when the
+    // question is which of several running games they meant, because there the
+    // arbitrary answer is one press away from being taken as the deliberate one.
+    const initial = selectedGame && ordered.some((game) => gameKey(game) === gameKey(selectedGame))
+        ? gameKey(selectedGame)
+        : running.size > 0 ? "" : ordered[0] ? gameKey(ordered[0]) : "";
+    const [selection, setSelection] = SP_REACT.useState(initial);
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const busyRef = SP_REACT.useRef(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const submit = async () => {
+        const game = games.find((candidate) => gameKey(candidate) === selection);
+        if (!game || busyRef.current)
+            return;
+        busyRef.current = true;
+        setBusy(true);
+        setError(null);
+        const operation = startUiOperation("game.select", { app_id: game.appId, shortcut: game.isShortcut });
+        try {
+            await onPick(game);
+            operation.completed();
+        }
+        catch (cause) {
+            operation.failed(cause);
+            setError(describeError(cause));
+            busyRef.current = false;
+            setBusy(false);
+        }
+    };
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("game_picker_modal.cancel_back", () => { if (!busyRef.current)
+            onCancel(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Choose game" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: running.size > 1 ? "More than one game is running" : "Steam library", description: running.size > 1
+                                        ? "CE Decky cannot tell which of these you are playing. The running games are listed first; the rest of your library is below them."
+                                        : "Select the exact Steam or non-Steam game for this CE Decky profile." }) }), ordered.length > 0 ? (
+                            /* The control is stacked under its label here, so the row needs the
+                               air the dense field padding does not give a stacked one: without
+                               it the dropdown sits on the bottom edge of its own block. */
+                            SP_JSX.jsx("div", { className: BELOW_FIELD_CLASS, children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Game", layout: "below", childrenContainerWidth: "max", contextMenuPositionOptions: {
+                                            bMatchWidth: true,
+                                            bShiftToFitWindow: true,
+                                            bFitToWindow: true,
+                                        }, rgOptions: [
+                                            ...(running.size > 0 && !selectedGame ? [{ data: "", label: "Choose a game\u2026" }] : []),
+                                            ...ordered.map((game) => ({
+                                                data: gameKey(game),
+                                                label: `${game.name} \u00b7 ${game.isShortcut ? "non-Steam" : `AppID ${game.appId}`}${running.has(gameKey(game)) ? " \u00b7 running" : ""}`,
+                                            })),
+                                        ], selectedOption: selection, onChange: traceUiAction("game_picker_modal.game", (option) => setSelection(String(option.data)), (option) => ({ selection: String(option.data) })), disabled: busy }) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "No games found", description: "Refresh the Steam library from Advanced diagnostics." }) })), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Selection failed", description: error }) })] }) }), SP_JSX.jsx("div", { "data-testid": "game-picker-actions", children: SP_JSX.jsxs(ActionGroup, { style: gamePickerActionsStyle, children: [SP_JSX.jsx(SmallButton, { disabled: busy || !selection, onClick: traceUiAction("game_picker_modal.use_this_game", () => void submit(), { selection }), children: "Use this game" }), SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("game_picker_modal.cancel", () => { if (!busyRef.current)
+                                    onCancel(); }), children: "Cancel" })] }) })] }) }));
+}
+const gamePickerActionsStyle = {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    width: "100%",
+    gap: 8,
+    padding: "4px 16px 8px",
+    boxSizing: "border-box",
+};
+
+/**
+ * What a row has to say for a table to be told apart from another.
+ *
+ * A digest and a size do not answer the question this screen exists for, which
+ * is which of these to use: several revisions of one table share a filename and
+ * differ only by what the source called them and when they arrived. So the
+ * release comes first where a source stated one, then how many records it
+ * holds, then where it came from and when, and the exact digest and size last.
+ * A field the table does not carry is left out rather than shown empty.
+ *
+ * Returned in pieces rather than as one sentence, because a row that is also
+ * saying something about its own state has to put that first and the release
+ * immediately after it: the reader is choosing between revisions, and a status
+ * that pushed the release past the end of the line left them choosing between
+ * identical names.
+ */
+/**
+ * One width for every control on a table row.
+ *
+ * `Use`, `Revoke`, `Delete` and `Confirm` are all different lengths, and a
+ * row lays its controls out from the right, so `Use` landed in a different
+ * column depending on which of them was beside it: the list had its buttons
+ * in three columns and nothing lined up down the screen.
+ *
+ * The width is the longest of those four rather than a round number, so none
+ * is ever cut, and the side padding is tightened to pay for it: what a button
+ * takes here comes out of a name the reader has to finish reading. Together
+ * the pair is narrower than it was while being the same width on every row.
+ */
+const rowActionStyle = {
+    ...modalActionStyle,
+    padding: "6px 8px",
+    minWidth: 70,
+    justifyContent: "center",
+};
+/**
+ * The footer's own padding, which is the modal's rather than the panel's.
+ *
+ * This row sits outside the dense wrapper, where a section's own inline padding
+ * does not reach it, so it carries the same sixteen pixels every modal's bottom
+ * actions were drawn with.
+ */
+const MANAGE_FOOTER = { padding: "var(--ce-footer-padding, 0 16px 6px)" };
+// The filter takes the width the count beside it is not using, and keeps a
+// floor under it. A table's name is what is typed into it, and a box cut off at
+// some fraction of the row is a box you cannot read back what you typed into,
+// on the screen whose names are `NeonBazaar-ItemNoDecreaseUpdate.CT`. Given
+// only a share of the row it moved with the words beside it: the line above the
+// list is longer when no game is chosen, and the box shrank to whatever that
+// sentence left. The count and its line clip to an ellipsis first, which is
+// what the row's own `truncate` is for.
+const MANAGE_FILTER = { flex: "1 1 260px", minWidth: 180 };
+function describeParts(table) {
+    // One provenance record for the whole row. The release used to be searched
+    // for separately, walking back to any origin that had one, so a row could
+    // pair a version from the source a table came from once with the provider and
+    // date of the source it came from last, and say so as though the three
+    // belonged together.
+    const origin = table.origins.length ? table.origins[table.origins.length - 1] : null;
+    return [
+        advertisedRelease(table),
+        `${table.entry_count} ${table.entry_count === 1 ? "record" : "records"}`,
+        origin ? origin.provider : "Local file",
+        // The download where there was one, and otherwise when the file was opened
+        // here: both answer when this copy arrived, which is the question a reader
+        // comparing two of them is asking.
+        arrived(origin?.retrieved_at ?? table.imported_at ?? null),
+        `${table.sha256.slice(0, 8)}`,
+        `${Math.max(1, Math.round(table.size / 1024))} KiB`,
+    ];
+}
+/**
+ * The release this table is, in the words the user was offered it under.
+ *
+ * The version the provider advertised for these bytes is the whole of it: that
+ * is what search showed and what tells one revision from another, since a post
+ * carries every revision of a table and its attachments share a filename and a
+ * title. Taken from the one origin the rest of the row is describing, never
+ * searched for across all of them, because a version that belongs to a
+ * different download is a different table's release.
+ *
+ * `table_version` used to be the fallback, on the recorded belief that it was
+ * the author's own release field. It is not. It is the `.CT` file's
+ * `CheatEngineTableVersion` attribute, which is the version of Cheat Engine's
+ * own table format: every table on this device reads 45 or 46 whatever its game
+ * or source, because those are CE 7.5 and 7.6. A Neon Bazaar table whose
+ * source advertised nothing was therefore shown as `v46`, which named the
+ * format of the file rather than anything about the cheats in it. So a row now
+ * claims a version only where a source stated one, and the format version keeps
+ * the places that already label it honestly as `CE table 46`.
+ */
+/**
+ * When this copy arrived on this device, as a date and nothing finer.
+ *
+ * The download, not the post: `retrieved_at` is stamped by the acquisition that
+ * fetched the file, so it answers "when did I get this" rather than "when did
+ * the author publish it", and those differ by years on an old post. A table
+ * opened from a file has no origin and answers with the arrival the store
+ * stamped instead, so a stored list is not half dated.
+ *
+ * A time of day is noise on a row being scanned, and the question here is which
+ * of two copies is the newer one. A table imported before arrival was tracked
+ * has neither date and says nothing rather than inventing one from a file
+ * timestamp, which records when the bytes were written and not when the user
+ * chose them.
+ */
+function arrived(at) {
+    if (!at)
+        return null;
+    const when = new Date(at);
+    if (Number.isNaN(when.getTime()))
+        return null;
+    return when.toISOString().slice(0, 10);
+}
+/**
+ * The tables this game already has, selectable without a provider.
+ *
+ * Every imported table is retained by exact SHA in the game's own library, but
+ * the only ways back to one were a provider search result that still mapped to
+ * it or the original file on disk. A table imported from a file the user later
+ * moved, or whose provider row stopped coming back, became unreachable state -
+ * which is not what "switch between imported tables" is supposed to mean.
+ */
+function ImportedTablesModal({ compatibility = [], tables, otherTables = [], owners, activeSha256: initialActiveSha256, activeAuthorized = true, canSelect = true, blockedReasons = {}, selectedBy: initialSelectedBy = {}, holderIds: initialHolderIds = {}, onRevoke, onRefreshHolders, onOpenLocalFile, onSelect, onDelete, onClose }) {
+    useUiSurface("ImportedTablesModal");
+    const [selectedBy, setSelectedBy] = SP_REACT.useState(initialSelectedBy);
+    const [holderIds, setHolderIds] = SP_REACT.useState(initialHolderIds);
+    const [activeSha256, setActiveSha256] = SP_REACT.useState(initialActiveSha256);
+    // Selecting a table is an async workflow that opens Review. A second press
+    // while the first is still running produced a rejection nothing surfaced, so
+    // the modal owns its own latch rather than relying on the parent's.
+    const selectingRef = SP_REACT.useRef(false);
+    const [selecting, setSelecting] = SP_REACT.useState(false);
+    const select = (sha256) => {
+        if (selectingRef.current)
+            return;
+        setArmed(null);
+        setFailure(null);
+        selectingRef.current = true;
+        setSelecting(true);
+        const operation = startUiOperation("manage.select", { table_sha: sha256 });
+        void (async () => onSelect(sha256))()
+            .then(() => operation.completed())
+            // Said on the row the press was made on, exactly as a failed removal is.
+            // This screen is a modal, and a window raised over it can appear behind
+            // it and read as a press that did nothing.
+            .catch((cause) => { operation.failed(cause); setFailure(describeError(cause)); })
+            .finally(() => {
+            selectingRef.current = false;
+            setSelecting(false);
+        });
+    };
+    /**
+     * Which row's delete has been pressed once, if any.
+     *
+     * The confirmation is the row itself rather than a window over this one. A
+     * modal raised over a modal is a window behind a window, which on the device
+     * is a screen that looks as though the press did nothing, and this project
+     * has already paid for that lesson once. Two presses on the same control,
+     * with the row saying what the second one does, needs no second window and
+     * is a shape a controller can walk. Arming one row disarms any other, and
+     * anything else the reader does with this screen puts it back.
+     */
+    const [armed, setArmed] = SP_REACT.useState(null);
+    const revoke = (sha256) => {
+        if (selectingRef.current || !onRevoke)
+            return;
+        selectingRef.current = true;
+        setSelecting(true);
+        setFailure(null);
+        const operation = startUiOperation("manage.revoke", { table_sha: sha256 });
+        void (async () => {
+            try {
+                await onRevoke(sha256, holderIds[sha256] ?? []);
+                operation.completed();
+                setSelectedBy((current) => ({ ...current, [sha256]: { count: 0, names: [] } }));
+                setActiveSha256((current) => current === sha256 ? null : current);
+            }
+            catch (cause) {
+                operation.failed(cause);
+                setFailure(describeError(cause));
+            }
+            finally {
+                // A multi-holder operation may commit only some withdrawals. Reconcile
+                // that partial result without turning a completed withdrawal into failure.
+                if (onRefreshHolders) {
+                    try {
+                        const next = await onRefreshHolders();
+                        setSelectedBy(next.holders);
+                        setHolderIds(next.holderIds ?? {});
+                        setActiveSha256(next.activeSha256);
+                    }
+                    catch (cause) {
+                        startUiOperation("manage.refresh_holders", { table_sha: sha256 }).failed(cause);
+                    }
+                }
+                selectingRef.current = false;
+                setSelecting(false);
+            }
+        })();
+    };
+    const remove = (sha256) => {
+        if (selectingRef.current || !onDelete)
+            return;
+        selectingRef.current = true;
+        setSelecting(true);
+        setFailure(null);
+        const operation = startUiOperation("manage.delete", { table_sha: sha256 });
+        void (async () => onDelete(sha256))()
+            // Only what actually happened. The row goes on the resolution, so a
+            // rejection has to reach here as one: a failure swallowed on the way
+            // would take the row away from a table still on the device.
+            .then(() => {
+            operation.completed();
+            restoreAfterDelete.current = Math.max(0, visible.findIndex((entry) => entry.table.sha256 === sha256));
+            setRemoved((current) => [...current, sha256]);
+        })
+            .catch((cause) => { operation.failed(cause); setFailure(describeError(cause)); })
+            .finally(() => {
+            selectingRef.current = false;
+            setSelecting(false);
+        });
+    };
+    const close = () => {
+        if (!selectingRef.current)
+            onClose();
+    };
+    /**
+     * The two presses a row can carry, in the order a reader wants them.
+     *
+     * Use is first and keeps the ring: it is what this screen is for, and Steam
+     * enters a row at the control covering most of the one above it. Delete is
+     * beside it and is offered only where deleting is possible at all, so a row
+     * for the table this game is using shows nothing to press.
+     */
+    /**
+     * What a row is called, and what it is doing.
+     *
+     * Which group a row is in is answered by the ground it is drawn on rather
+     * than by a heading, because the two groups are one list so that the screen
+     * has one page budget: a page opening in the middle of the second group
+     * carried no boundary at all, and a run of rows belonging to other games
+     * looked exactly like this game's own. The words remain on the first of them,
+     * for a reader who wants the boundary named.
+     *
+     * In use is in use, whichever game is on it. Saying it only for this game's
+     * own table left a row another game is running looking like any other, with a
+     * missing Delete and nothing on the line to account for it.
+     */
+    const rowLabel = (table, group, index) => {
+        const holders = selectedBy[table.sha256];
+        const holderCount = holders?.count ?? 0;
+        const usedHere = table.sha256 === activeSha256;
+        // One statement, not two. "in use" and "in use by Neon Bazaar" are the
+        // same sentence on a row that already leads with that game, and the row
+        // carried both. Where this game is the only one on the table the flag is
+        // the whole of it; where others hold it too, naming every one of them is,
+        // and the flag says nothing the naming does not. Needing authorization is
+        // the exception either way: no holder list says that.
+        const soleHolder = usedHere && holderCount <= 1;
+        return [
+            owners?.[table.sha256] ? `${owners[table.sha256]} \u00b7 ${table.filename}` : table.filename,
+            usedHere && !activeAuthorized ? "needs authorizing" : soleHolder ? "in use" : null,
+            soleHolder ? null : tableHolderLabel(holders),
+            canSelect && group === "device" && (index === 0 || visible[index - 1].group === "mine")
+                ? "elsewhere on this device"
+                : null,
+        ].filter(Boolean).join(" · ");
+    };
+    /**
+     * What this row is doing, in a few words, before anything that describes it.
+     *
+     * Every state on this screen answers the same two questions in the same
+     * order: what is up with this row, and which release is it. They used to be
+     * answered the other way round and at length - a row that could not be used
+     * opened with a sentence naming the screen the mark is cleared on, and a row
+     * with a confirmation armed replaced its whole description with a paragraph,
+     * so the release the reader is choosing between was off the end of the line
+     * in exactly the two states where a mistake is expensive.
+     *
+     * Each of these is a state, not a sentence: what follows from it is on the
+     * controls, which say Confirm where a press is armed and offer nothing where
+     * a press is refused, and what it is about is on the line behind it.
+     */
+    const rowStatus = (table) => {
+        const held = (selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256;
+        if (armed === table.sha256) {
+            // The consequence in the fewest words that still distinguish the two
+            // presses, because they differ in exactly one way that matters: one keeps
+            // the bytes and the other does not. The bytes here may be the only copy
+            // left - the source may be gone, the row it came from may have changed,
+            // the original file may have been moved - so the delete says what is lost
+            // rather than promising a re-import this screen cannot keep.
+            return held
+                ? `Confirm: revoke and detach \u00b7 ${tableHolderLabel(selectedBy[table.sha256]) ?? "held by the current game"} \u00b7 local file kept`
+                : "Confirm: delete from this device \u00b7 comes back only from a file or a new download";
+        }
+        // Every state that applies, not the first of them. Returning on the first
+        // match dropped the line that accounts for a missing Delete from exactly
+        // the rows that have one missing for two reasons at once: a table marked as
+        // not working which another game is also holding said only that it was
+        // marked, and the button was gone with nothing on the line explaining it.
+        return [
+            // The reason the one press on this row is off, said before the record it
+            // is off for: a mark this screen shows and Search refuses the same bytes
+            // for is not a mark this screen may quietly step around.
+            // The state and nothing else. Where a mark is cleared and how a damaged
+            // entry is repaired are the same two sentences on every row that has
+            // them, so they say nothing about the row they are on: what belongs here
+            // is what is true of this table, and the release and date behind it are
+            // what the reader came to compare. The routes out are in the README.
+            isCompatibilityFailure(blockedReasons[table.sha256]) ? "Marked as not working" : null,
+            !table.available ? "File missing or damaged" : null,
+            // Which game has it is on the label, where in use is said for this game's
+            // own table too, so this only has to account for the absent Delete.
+            held ? "In use, cannot be deleted" : null,
+        ].filter(Boolean).join(" \u00b7 ") || null;
+    };
+    const rowDescription = (table) => [
+        rowStatus(table),
+        ...describeParts(table),
+        // The mark itself is the glyph on the label, in the same state language
+        // Search uses. What is said here is the head of the recorded sentence behind
+        // it, which is the part a user can act on - and only for a record about
+        // whether the table works. An archive or source failure has no source
+        // context on this screen and belongs to the row it came from and to the
+        // full list under Advanced.
+        isCompatibilityFailure(blockedReasons[table.sha256])
+            ? shortBlockedReason(blockedReasons[table.sha256]?.reason)
+            : null,
+    ].filter(Boolean).join(" \u00b7 ");
+    /**
+     * The presses one row carries.
+     *
+     * `Use` is withheld from a table another game owns. A cheat table is written
+     * against one game's code, so applying one game's to another cannot work, and
+     * the press was not merely useless: it associates the table with this game
+     * before the review screen opens, and cancelling that review does not take
+     * the association back. One press on such a row put Half-Life 2's table
+     * permanently into Neon Bazaar's library, where it then read as one of
+     * that game's own tables.
+     *
+     * Owned by another game, not merely listed in the second group. A table this
+     * device holds that no profile claims is the one route back after a recovery
+     * that discards the profile store: the bytes are still here, the association
+     * is gone, and Search needs a provider row while Local file needs the
+     * original file. Offline with neither, this press is the only thing that can
+     * name them, which is what the second group was added for.
+     */
+    const rowActions = (table, usable, group) => (SP_JSX.jsxs(SP_JSX.Fragment, { children: [canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
+                    if (armed === table.sha256) {
+                        setArmed(null);
+                        revoke(table.sha256);
+                    }
+                    else {
+                        setFailure(null);
+                        setArmed(table.sha256);
+                    }
+                }, { table_sha: table.sha256, confirm: armed === table.sha256 }), children: armed === table.sha256 ? "Confirm" : "Revoke" })), onDelete && !((selectedBy[table.sha256]?.count ?? 0) > 0) && table.sha256 !== activeSha256 && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.delete_or_confirm", () => {
+                    if (armed === table.sha256) {
+                        setArmed(null);
+                        remove(table.sha256);
+                        return;
+                    }
+                    setFailure(null);
+                    setArmed(table.sha256);
+                }, { table_sha: table.sha256, confirm: armed === table.sha256 }), children: armed === table.sha256 ? "Confirm" : "Delete" }))] }));
+    const [filter, setFilter] = SP_REACT.useState("");
+    const [page, setPage] = SP_REACT.useState(0);
+    /**
+     * Tables this window has removed, which the arrays it was given still hold.
+     *
+     * This screen is opened once with the lists as they were, and the panel that
+     * owns those lists cannot replace the props of a window already on screen. So
+     * a deletion that succeeded left its own row sitting there, offering presses
+     * against bytes that are gone. The window reconciles what it did itself, and
+     * only what actually succeeded: `onDelete` rejects on failure, and a row is
+     * taken away on the resolution rather than on the press.
+     */
+    const [removed, setRemoved] = SP_REACT.useState([]);
+    /** What went wrong with the last press, said on this screen rather than over it. */
+    const [failure, setFailure] = SP_REACT.useState(null);
+    /**
+     * Everything this screen can act on, in the order a reader needs it.
+     *
+     * One sequence rather than two lists, because two lists paged separately put
+     * twice the rows on a screen that fits one page of them. The order carries
+     * what the two headings used to: the table this game is on comes first,
+     * because the panel sends the reader here to authorize exactly that one and
+     * sorting it alphabetically could put it pages away; then the rest of this
+     * game's own; then what the device holds for other games.
+     */
+    const entries = SP_REACT.useMemo(() => {
+        const needle = filter.trim().toLowerCase();
+        const gone = new Set(removed);
+        const matches = (table) => !gone.has(table.sha256) && (!needle
+            || table.filename.toLowerCase().includes(needle)
+            || table.sha256.startsWith(needle));
+        // Deterministic, so a page does not reshuffle under a thumb: by filename,
+        // then by digest for two tables that share one.
+        const byName = (left, right) => left.filename.localeCompare(right.filename) || left.sha256.localeCompare(right.sha256);
+        const mine = tables.filter(matches).sort(byName);
+        const active = mine.filter((table) => table.sha256 === activeSha256);
+        const rest = mine.filter((table) => table.sha256 !== activeSha256);
+        const device = otherTables.filter(matches).sort(byName);
+        return [
+            ...active.map((table) => ({ table, group: "mine" })),
+            ...rest.map((table) => ({ table, group: "mine" })),
+            ...device.map((table) => ({ table, group: "device" })),
+        ];
+    }, [tables, otherTables, activeSha256, filter, removed]);
+    const [listNode, setListNode] = SP_REACT.useState(null);
+    const [footerNode, setFooterNode] = SP_REACT.useState(null);
+    // What this screen actually fits, read from the screen. It was the one paged
+    // list here that measured nothing and took six as an answer, and six ran off
+    // the bottom of a Steam Deck's 534 pixel page. Nothing on this screen is
+    // transient, so the first credible measurement is the settled one.
+    const [chrome, setChrome] = SP_REACT.useState(null);
+    SP_REACT.useLayoutEffect(() => {
+        setChrome((held) => latchChrome(held, listNode, footerNode, MODAL_BOTTOM_PADDING));
+    }, [listNode, footerNode]);
+    const tableRowHeight = useRowHeight(listNode, MANAGE_ROW_HEIGHT);
+    const asked = SP_REACT.useMemo(() => (chrome === null ? MANAGE_PAGE_SIZE : rowsThatFit({
+        full: MANAGE_PAGE_SIZE,
+        rowHeight: tableRowHeight,
+        chrome: chrome.value,
+        minimum: MIN_MANAGE_ROWS,
+        node: listNode,
+    })), [listNode, chrome, tableRowHeight]);
+    // How far this window ended from Steam's bar, after that arithmetic has had
+    // its go. This is the screen that made the rule worth having: it measured
+    // what was above its list before the filter had been drawn, and the page it
+    // sized from that ran 27 pixels behind the bar.
+    const fitted = useFittedRows(footerNode, tableRowHeight, chrome !== null, entries.length > asked, failure ? 1 : 0);
+    // Never past the page this screen was built with, for the same reason
+    // `rowsThatFit` caps there: room found after the fact is not a reason to
+    // change a screen that had no problem.
+    const pageSize = Math.min(MANAGE_PAGE_SIZE, Math.max(1, asked + fitted));
+    SP_REACT.useEffect(() => {
+        if (!listNode)
+            return;
+        logUi("manage.page_sized", {
+            viewport: viewportHeight(listNode), chrome: chrome?.value ?? null, rows: pageSize, fitted,
+        });
+    }, [pageSize, listNode, chrome, fitted]);
+    const pages = pageCount(entries.length, pageSize);
+    const safePage = clampPage(page, entries.length, pageSize);
+    const visible = pageItems(entries, safePage, pageSize);
+    // A page of rows is held at the height a page of rows takes, measured off the
+    // rows themselves. Every row on this list is one line of name over one line
+    // of state, so one of them times a page is what a page costs, and the window
+    // stays where it is on the last page and on a device whose whole library is
+    // three tables and never fills one.
+    const pageHeight = usePageHeight(listNode, visible.length, pageSize);
+    // What this screen still has, which is what it was given minus what it has
+    // removed. Asking the props instead left a screen whose last table had just
+    // been deleted saying nothing matches a filter nobody set, and offering a
+    // filter and a pager for rows that are gone.
+    const remaining = SP_REACT.useMemo(() => {
+        const gone = new Set(removed);
+        return tables.concat(otherTables).filter((table) => !gone.has(table.sha256));
+    }, [tables, otherTables, removed]);
+    const filterable = remaining.length > pageSize || filter.trim().length > 0;
+    const rowRefs = SP_REACT.useRef(new Map());
+    const backRef = SP_REACT.useRef(null);
+    const restoreAfterDelete = SP_REACT.useRef(null);
+    SP_REACT.useEffect(() => {
+        if (selecting || restoreAfterDelete.current === null)
+            return;
+        const index = Math.min(restoreAfterDelete.current, visible.length - 1);
+        restoreAfterDelete.current = null;
+        const candidates = [...visible.slice(index), ...visible.slice(0, index).reverse()];
+        focusFirstEnabled(...candidates.map(({ table }) => ({ current: rowRefs.current.get(table.sha256) ?? null })), backRef);
+    }, [selecting, removed, safePage]);
+    const mineCount = entries.filter((entry) => entry.group === "mine").length;
+    const deviceCount = entries.length - mineCount;
+    /**
+     * Anything that moves the reader is an answer to the armed question.
+     *
+     * The confirmation is two presses on one control, which only means anything
+     * while they are one interaction. Paging the row away and coming back to it
+     * hours later must not find it still armed and one press from destroying a
+     * file, so every navigation here disarms it.
+     */
+    const moveTo = (next) => {
+        setArmed(null);
+        setFailure(null);
+        next();
+    };
+    return (SP_JSX.jsxs(DFL.ModalRoot, { onCancel: traceUiAction("imported_tables_modal.close", close), onEscKeypress: traceUiAction("imported_tables_modal.close_2", close), children: [SP_JSX.jsxs(DensePanel, { tightRows: true, children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Open a file" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "open-local-table", truncate: true, label: "A table on this device", description: "A .CT, or a .zip, .7z or .rar holding one. It is reviewed and authorized like any other.", actions: (SP_JSX.jsx(SmallButton, { disabled: selecting || !onOpenLocalFile, onClick: traceUiAction("imported_tables_modal.local_file", () => {
+                                            // The prop stays optional: a screen opened without this
+                                            // route may not press it.
+                                            if (!onOpenLocalFile)
+                                                return;
+                                            // This window first: Decky's picker is a modal of its own,
+                                            // and one raised over another is a window behind a window.
+                                            onClose();
+                                            onOpenLocalFile();
+                                        }), children: "Local file" })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables" }), failure && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-failure", status: true, label: "That did not work", description: failure }) })), remaining.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing imported yet", description: "Open a file above, or search online." }) })), remaining.length > 0 && entries.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing matches that", description: "Clear the filter to see every table." }) })), (entries.length > 0 || filterable) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-summary", tone: "header", truncate: true, scroll: true, fillWithActions: filterable, label: canSelect ? `${mineCount} here, ${deviceCount} elsewhere` : `${mineCount + deviceCount} on this device`, description: canSelect ? "No provider or network needed." : "Choose a game to use one.", actions: filterable ? (SP_JSX.jsx("div", { style: MANAGE_FILTER, children: SP_JSX.jsx(FilterField, { placeholder: "Filter", disabled: selecting, value: filter, onChange: traceUiEdit("imported_tables_modal.filter_by_name_or_digest", (event) => moveTo(() => {
+                                                setFilter(String(event.target.value ?? ""));
+                                                setPage(0);
+                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), mark: SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
+                                                if (node)
+                                                    rowRefs.current.set(table.sha256, node);
+                                                else
+                                                    rowRefs.current.delete(table.sha256);
+                                            }, children: rowActions(table, table.available && !isCompatibilityFailure(blockedReasons[table.sha256])
+                                                && (table.sha256 !== activeSha256 || !activeAuthorized), group) }) }) }, table.sha256))) })] })] }), SP_JSX.jsx(PagerFooter, { testId: "manage-footer", style: MANAGE_FOOTER, containerRef: setFooterNode, page: safePage, pages: pages, preferNext: true, disabled: selecting, onPage: (next) => moveTo(() => setPage(next)), trailing: SP_JSX.jsx("div", { ref: backRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: selecting, onClick: traceUiAction("imported_tables_modal.back", close), children: "Back" }) }) })] }));
+}
+
+const CUSTOM_PROCESS = "__custom_process__";
+/** `m:ss` since the press, for a wait that is long enough to be doubted. */
+function elapsedText(seconds) {
+    const whole = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+/**
+ * The process control and the press that fills it again.
+ *
+ * A game started while this screen is open changes nothing here otherwise: the
+ * snapshot is taken before it opens and a modal never receives new props, so
+ * looking again is a real press rather than a refresh. It is still a secondary
+ * one, and it had a full-width row of its own directly under a control that
+ * already takes the width, which on a handheld is a whole row of the display
+ * spent on the smaller half of one decision.
+ *
+ * The compact secondary action stays beside the process control on every screen.
+ */
+function ProcessChoice({ children, label, description, onRescan, rescanning, disabled }) {
+    return (
+    // The same class the game picker's own stacked selector carries, because it
+    // is the same shape and needs the same thing: this control is drawn under
+    // its label rather than beside it, so the block it opens is as wide as the
+    // row and lands directly below it. Without the air it sits flat on the row
+    // explaining where the name came from, and the explanation reads as part of
+    // the control.
+    SP_JSX.jsx("div", { className: BELOW_FIELD_CLASS, children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: label, description: description, childrenLayout: "below", childrenContainerWidth: "max", bottomSeparator: "standard", children: SP_JSX.jsxs(ActionGroup, { style: { gap: 8 }, children: [SP_JSX.jsx("div", { style: { flex: "1 1 0", minWidth: 0 }, children: children }), onRescan === null ? null : (SP_JSX.jsx(SmallButton, { size: "medium", disabled: disabled || rescanning, onClick: traceUiAction("table_review_modal.on_rescan_2", onRescan), children: rescanning ? "Looking…" : "Refresh" }))] }) }) }) }));
+}
+function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onCancel }) {
+    useUiSurface("TableReviewModal", table.sha256);
+    // Seeded from the snapshot this screen was opened with, and replaced when the
+    // user asks again after starting the game.
+    const [observedProcesses, setObservedProcesses] = SP_REACT.useState(initialObservedProcesses);
+    const [rescanning, setRescanning] = SP_REACT.useState(false);
+    // Why the last look for the game's processes failed, and nothing once one
+    // has worked. The list beside it is the previous answer, kept on purpose.
+    const [rescanError, setRescanError] = SP_REACT.useState(null);
+    // Reading the table is a sub-screen of the decision, not a step in it.
+    const [codeOpen, setCodeOpen] = SP_REACT.useState(false);
+    // Where the ring goes when the reader comes back from it.
+    //
+    // A sub-screen replaces this tree, so returning mounts the review again and
+    // Steam's initial focus lands wherever it would on a screen just opened,
+    // which is not the control the user pressed to leave. The press that opened
+    // the code is what they are still in the middle of, so the ring goes back on
+    // it. Recorded where the screen is actually opened rather than at the press,
+    // so nothing is left behind to be spent on some later return.
+    const lookInsideRef = SP_REACT.useRef(null);
+    const returningFromCodeRef = SP_REACT.useRef(false);
+    const openCode = () => {
+        returningFromCodeRef.current = true;
+        setCodeOpen(true);
+    };
+    SP_REACT.useEffect(() => {
+        if (codeOpen || !returningFromCodeRef.current)
+            return;
+        returningFromCodeRef.current = false;
+        focusFirstEnabled(lookInsideRef);
+    }, [codeOpen]);
+    const rescan = () => {
+        if (!onRefreshProcesses || rescanning)
+            return;
+        setRescanning(true);
+        setRescanError(null);
+        void onRefreshProcesses()
+            .then((next) => {
+            setObservedProcesses(next);
+            setRescanError(null);
+        })
+            // The snapshot already on screen stays: a look that failed is not a
+            // statement that the game stopped running. It is also not a look that
+            // succeeded, and this screen is where the user picks which executable
+            // Cheat Engine will attach to, so a press that changed nothing and said
+            // nothing left them choosing from a list they had just been given a
+            // reason to distrust. The parent records the failure, but its error row
+            // is on a panel this screen is drawn over.
+            .catch((cause) => {
+            logUiFailure("review.process_refresh_failed", cause, { table_sha: table.sha256.slice(0, 12) });
+            setRescanError(describeError(cause));
+        })
+            .finally(() => setRescanning(false));
+    };
+    const antiCheatReason = antiCheatBlockedReason(observedProcesses);
+    // Most tables never name a process, and the library entry usually points at a
+    // launcher rather than the executable that owns the game's memory. Offering
+    // what the game is actually running keeps this a controller choice instead of
+    // an .exe basename the user has to know and type blind.
+    // A Proton prefix runs Wine's own services, Proton's helpers and the game's
+    // crash reporter beside the game, so the raw observation is mostly noise. The
+    // table's own hints are never filtered: they are the author's intent.
+    const observedGameProcesses = SP_REACT.useMemo(() => withoutWineRuntimeProcesses(observedProcesses), [observedProcesses]);
+    const candidates = SP_REACT.useMemo(() => {
+        const merged = [];
+        const seen = new Map();
+        const add = (candidate, preferSpelling) => {
+            if (!isValidProcessBasename(candidate))
+                return;
+            const key = candidate.toLowerCase();
+            const existing = seen.get(key);
+            if (existing !== undefined) {
+                // Windows process matching is case-insensitive. When the table and the
+                // live process disagree only in spelling, display and submit the exact
+                // spelling observed from the running game.
+                if (preferSpelling)
+                    merged[existing] = candidate;
+                return;
+            }
+            seen.set(key, merged.length);
+            merged.push(candidate);
+        };
+        for (const candidate of inspection.process_candidates)
+            add(candidate, false);
+        for (const candidate of observedGameProcesses)
+            add(candidate, true);
+        // Many games start through a launcher of their own, which Steam records as
+        // the shortcut's target and Proton reports as the launch target. It is
+        // never the default - the table's hint and the running game outrank it -
+        // but it is the one other executable known to belong to this game, and a
+        // table whose cheats live in the launcher process had no way to reach it
+        // without the user typing the name blind. Store launchers and Wine's own
+        // programs stay out: those belong to no game.
+        if (launchExecutable && !isWineRuntimeExecutable(launchExecutable)) {
+            add(launchExecutableBasename(launchExecutable), false);
+        }
+        // Last, because nothing here has ever been seen running. What Steam itself
+        // starts for this game comes in the order Steam lists it; where Steam had
+        // nothing to say, the walk of the game's folder is shallowest first, which
+        // is not a guess about names - Half-Life 2's root holds exactly `hl2.exe`
+        // while its `bin/` holds thirty-odd SDK compilers that read like plausible
+        // programs and are none of them the game.
+        for (const installed of installedGameExecutables(installedExecutables))
+            add(installed.name, false);
+        return merged;
+    }, [inspection, observedGameProcesses, launchExecutable, installedExecutables]);
+    // Which of the offered names are known ONLY from the game's folder, so the
+    // row that offers one can say so. Built against the stronger sources rather
+    // than from the listing alone: a name the table itself declares and the
+    // folder also holds - `hl2.exe` is both - was being labelled as read off a
+    // disk and annotated "nothing has been seen running", which presents the
+    // table author's own intent as the weakest evidence there is.
+    const fromGameFiles = SP_REACT.useMemo(() => {
+        const stronger = new Set([
+            ...inspection.process_candidates.map((name) => name.toLowerCase()),
+            ...observedGameProcesses.map((name) => name.toLowerCase()),
+            ...(launchExecutable ? [launchExecutableBasename(launchExecutable).toLowerCase()] : []),
+        ]);
+        return new Set(installedGameExecutables(installedExecutables)
+            .map((item) => item.name.toLowerCase())
+            .filter((name) => !stronger.has(name)));
+    }, [installedExecutables, inspection, observedGameProcesses, launchExecutable]);
+    // The names Steam itself declares for this game, which is a different claim
+    // from a name a walk of the folder turned up and is said differently.
+    const declared = SP_REACT.useMemo(() => new Set(installedGameExecutables(installedExecutables)
+        .filter((item) => item.declared)
+        .map((item) => item.name.toLowerCase())), [installedExecutables]);
+    /**
+     * Whether this game holds no Windows program at all, proven rather than
+     * merely not found.
+     *
+     * A Steam game installed on Linux is often the native build: a Steam Deck's
+     * Half-Life 2 has `hl2.sh` and `hl2_linux` and not one `.exe` anywhere, while
+     * Steam's own record for it names `hl2.exe`, which belongs to the Windows
+     * depot the other machine has. Cheat Engine attaches to a Windows process
+     * under Proton, so there is nothing here for it to attach to at all, and a
+     * field asking the reader to type an `.exe` basename is asking them to name
+     * something that does not exist.
+     *
+     * Only the walked answer proves this. A game that is not installed, a library
+     * that could not be read and a walk that hit its own bound are each a reason
+     * to keep the manual entry, because none of them says there is no Windows
+     * program: they say nobody looked.
+     *
+     * One thing overturns it, and it is not a name: a Windows process actually
+     * seen running for this game. That is the device contradicting its own walk,
+     * and what is running wins. A name the table declares and a name Steam's
+     * launch record carries are neither of them that - they are what the Windows
+     * depot would be called, said by a file and by an account, and on this device
+     * that program is not there. Counting them let a table hint reading `hl2.exe`
+     * hide this warning on a machine whose Half-Life 2 is `hl2_linux`, and leave
+     * the reader authorizing a target nothing can ever attach to.
+     */
+    const observed = SP_REACT.useMemo(() => new Set(observedGameProcesses.filter(isValidProcessBasename).map((candidate) => candidate.toLowerCase())), [observedGameProcesses]);
+    const noWindowsProgram = installedExecutables?.cause === "no_windows_executable" && observed.size === 0;
+    const launchBasename = launchExecutableBasename(launchExecutable).toLowerCase();
+    const initial = defaultTargetProcess({
+        confirmed: initialTargetProcess,
+        tableHints: inspection.process_candidates,
+        observed: observedGameProcesses,
+        launchExecutable,
+        installed: installedExecutables,
+    });
+    // DropdownItem selects by exact option data, while Windows executable names
+    // and our evidence matching are case-insensitive. Resolve the model's choice
+    // back to the canonical candidate before initializing the control; otherwise
+    // Decky shows the custom-entry row even though the adjacent text field holds
+    // the correct process.
+    const initialCandidate = candidates.find((candidate) => candidate.toLowerCase() === initial.toLowerCase());
+    const [selector, setSelector] = SP_REACT.useState(initialCandidate ?? CUSTOM_PROCESS);
+    const [customProcess, setCustomProcess] = SP_REACT.useState(initialCandidate ? "" : initial);
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const busyRef = SP_REACT.useRef(false);
+    const abortingRef = SP_REACT.useRef(false);
+    const abortPendingRef = SP_REACT.useRef(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const [step, setStep] = SP_REACT.useState(null);
+    const [startedAt, setStartedAt] = SP_REACT.useState(null);
+    const [elapsedSeconds, setElapsedSeconds] = SP_REACT.useState(0);
+    const [aborting, setAborting] = SP_REACT.useState(false);
+    // Whether the step now running owns a Cheat Engine that stopping would end.
+    // The button used to be offered for the whole activation, including the
+    // durable profile and consent writes that precede any launch, where pressing
+    // it could only answer that there was nothing to stop.
+    const [stoppable, setStoppable] = SP_REACT.useState(false);
+    // The wait is seconds long on the device it was watched on and bounded by the
+    // backend's five minute deadline, and its only visible part is this row, so
+    // the clock has to run rather than be sampled when something else happens to
+    // re-render. It exists only while there is something to time.
+    SP_REACT.useEffect(() => {
+        if (startedAt === null) {
+            setElapsedSeconds(0);
+            return;
+        }
+        setElapsedSeconds((Date.now() - startedAt) / 1000);
+        const handle = window.setInterval(() => setElapsedSeconds((Date.now() - startedAt) / 1000), 1000);
+        return () => window.clearInterval(handle);
+    }, [startedAt]);
+    // A table is used as written unless it could not be. A label carrying a
+    // character that hides itself is the one thing a cheat list can be made to
+    // lie with, so the removal is said rather than swallowed.
+    const sanitizedLabels = inspection.sanitized_labels ?? 0;
+    const droppedValues = inspection.dropped_values ?? 0;
+    // A whole list is one picker gone from a record, not one value, and the list
+    // this was added for holds 6508 of them: counted among the values it told a
+    // user deciding whether to use the table that it had lost one.
+    const droppedLists = inspection.dropped_value_lists ?? 0;
+    const notTakenAsWritten = [
+        sanitizedLabels ? `${sanitizedLabels} label(s) had hidden characters removed` : "",
+        droppedValues ? `${droppedValues} value(s) this cannot carry were dropped` : "",
+        droppedLists ? `${droppedLists} value list(s) too large to carry were dropped` : "",
+    ].filter(Boolean).join(" · ");
+    const targetProcess = selector === CUSTOM_PROCESS ? customProcess.trim() : selector;
+    const targetValid = isValidProcessBasename(targetProcess);
+    /**
+     * Whether the decision this window is for can be made right now.
+     *
+     * A game proven to hold no Windows program is one of the ways it cannot: the
+     * screen above says so and offers nothing to choose, but the target a table
+     * hint or an older selection left behind is still a valid `.exe` basename, so
+     * validity alone kept this press live over a process that does not exist on
+     * this device.
+     */
+    const usable = !busy && !aborting && targetValid && !antiCheatReason && !noWindowsProgram;
+    const origin = table.origins[table.origins.length - 1];
+    const use = async () => {
+        if (!targetValid || antiCheatReason || noWindowsProgram || busyRef.current || abortingRef.current)
+            return;
+        busyRef.current = true;
+        setBusy(true);
+        setError(null);
+        setStep("Saving the selected table");
+        setStoppable(false);
+        setStartedAt(Date.now());
+        const operation = startUiOperation("review.use", { table_sha: table.sha256, process: targetProcess });
+        try {
+            await onUse(targetProcess, (next, nextStoppable) => {
+                setStep(next);
+                setStoppable(Boolean(nextStoppable));
+            });
+            operation.completed();
+        }
+        catch (cause) {
+            operation.failed(cause);
+            setError(describeError(cause));
+        }
+        finally {
+            busyRef.current = false;
+            setBusy(false);
+            // Release only after both this activation and its stop RPC have settled.
+            if (!abortPendingRef.current) {
+                abortingRef.current = false;
+                setAborting(false);
+            }
+            setStoppable(false);
+            setStep(null);
+            setStartedAt(null);
+        }
+    };
+    const abort = async () => {
+        if (!onAbort || abortingRef.current || !busyRef.current || !stoppable)
+            return;
+        abortingRef.current = true;
+        abortPendingRef.current = true;
+        setAborting(true);
+        const operation = startUiOperation("review.abort", { table_sha: table.sha256 });
+        let confirmed = false;
+        try {
+            const nothingToStop = await onAbort();
+            confirmed = !nothingToStop;
+            // The activation itself ends on its own once the thing it was waiting for
+            // is gone, so this reports only the case where nothing could be stopped.
+            if (nothingToStop)
+                setError(nothingToStop);
+            operation.completed({ nothing_to_stop: Boolean(nothingToStop) });
+        }
+        catch (cause) {
+            operation.failed(cause);
+            setError(describeError(cause));
+        }
+        finally {
+            abortPendingRef.current = false;
+            if (!confirmed || !busyRef.current) {
+                abortingRef.current = false;
+                setAborting(false);
+            }
+        }
+    };
+    // A sub-screen of this one rather than a modal over it: the review is mid
+    // decision, its process choice and its progress have to survive being read,
+    // and Decky's focus stack is steadier with one root.
+    if (codeOpen) {
+        return (SP_JSX.jsx(TableCodeModal, { sha256: table.sha256, filename: table.filename, onBack: () => setCodeOpen(false) }));
+    }
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_review_modal.cancel_back", () => { if (!busyRef.current && !abortingRef.current)
+            onCancel(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 620 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Review cheat table" }), SP_JSX.jsx(InfoFields, { items: [
+                                    { label: table.filename, description: `SHA-256 ${table.sha256.slice(0, 12)}… · ${Math.max(1, Math.ceil(table.size / 1024))} KiB` },
+                                    { label: "Source", description: origin ? `${origin.provider} · ${origin.original_filename || table.filename}` : "Local file" },
+                                    { label: "Contents", description: `${inspection.total_entries} entries · ${inspection.controls.length} inspected controls · CE table ${inspection.table_version ?? "unknown"}${notTakenAsWritten ? ` · ${notTakenAsWritten}` : ""}` },
+                                    { label: "Executable content", description: `${inspection.has_lua ? "Lua " : ""}${inspection.has_auto_assembler ? "AutoAssembler " : ""}${inspection.has_forms ? "its own window " : ""}${inspection.embedded_files ? `${inspection.embedded_files} embedded file(s)` : ""}`.trim() || "No static executable-content markers found" },
+                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
+                                    ? undefined
+                                    : onRefreshProcesses
+                                        ? "This table names no process and none is running for this game. Start the game and press Look again, or enter the .exe basename."
+                                        : "This table names no process and none is running for this game. Start the game and reopen this screen, or enter the .exe basename.", onRescan: onRefreshProcesses ? () => rescan() : null, rescanning: rescanning, disabled: busy, children: SP_JSX.jsx(DFL.Dropdown, { menuLabel: "Game process", rgOptions: [
+                                        ...candidates.map((candidate) => ({
+                                            data: candidate,
+                                            // What each name is, so a choice made before the game has
+                                            // ever run is made knowing which it is. `running` is the
+                                            // strongest and `in this game's files` is the weakest: it was
+                                            // read off the disk and nothing has been seen running.
+                                            label: observed.has(candidate.toLowerCase())
+                                                ? `${candidate} \u00b7 running`
+                                                : candidate.toLowerCase() === launchBasename
+                                                    ? `${candidate} \u00b7 launcher`
+                                                    : declared.has(candidate.toLowerCase())
+                                                        ? `${candidate} \u00b7 Steam starts this`
+                                                        : fromGameFiles.has(candidate.toLowerCase())
+                                                            ? `${candidate} \u00b7 in this game's files`
+                                                            : candidate,
+                                        })),
+                                        { data: CUSTOM_PROCESS, label: "Enter another .exe basename…" },
+                                    ], selectedOption: selector, onChange: traceUiAction("table_review_modal.game_process", (option) => {
+                                        const next = String(option.data);
+                                        setSelector(next);
+                                        if (next !== CUSTOM_PROCESS)
+                                            setCustomProcess("");
+                                    }, (option) => ({ table_sha: table.sha256, process: String(option.data) })), disabled: busy }) })), !noWindowsProgram && selector !== CUSTOM_PROCESS && declared.has(selector.toLowerCase()) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-declared-choice", label: "What Steam starts for this game", description: "Steam's own record for the version installed here, not an observation.", help: "Nothing has been seen running yet. A game that starts through a launcher of its own declares the launcher, so if it turns out to run something else, CE Decky says so the first time you start it and offers what it actually found." }) })), !noWindowsProgram && selector !== CUSTOM_PROCESS && !declared.has(selector.toLowerCase()) && fromGameFiles.has(selector.toLowerCase()) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-installed-choice", label: "Read from this game's files", description: "The game's own installed executable, not an observation.", help: "Nothing has been seen running yet. If the game turns out to run something else, CE Decky says so the first time you start it and offers what it actually found." }) })), !noWindowsProgram && selector === CUSTOM_PROCESS && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Process (.exe basename)", value: customProcess, onChange: traceUiEdit("table_review_modal.process_exe_basename", (event) => setCustomProcess(String(event.target.value ?? ""))), disabled: busy }) })), !noWindowsProgram && !targetValid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Process required", description: "Choose or enter one unambiguous filename ending in .exe. Paths are not accepted." }) }), antiCheatReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Anti-cheat detected", description: antiCheatReason }) })), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Could not use table", description: error }) }), busy && step && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: step, description: "Cheat Engine loads the table and answers when it is ready, usually within fifteen seconds on a handheld.", trailing: (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }, children: [elapsedText(elapsedSeconds), SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } })] })) }) }))] }) }), SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: usable, disabled: !usable, onClick: traceUiAction("table_review_modal.use_this_table", () => void use()), children: "Use this table" }), busy && onAbort
+                            ? SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: aborting || !stoppable, onClick: traceUiAction("table_review_modal.abort", () => void abort()), children: aborting ? "Stopping…" : "Stop and cancel" })
+                            : SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !usable, disabled: busy || aborting, onClick: traceUiAction("table_review_modal.cancel", () => { if (!busyRef.current && !abortingRef.current)
+                                    onCancel(); }), children: "Cancel" })] })] }) }));
+}
+
+function TableSearchModal({ gameIdentity, gameName, artifactResolutions, compatibility, onRefreshProvenance, appId, shortcutExecutable, localArtifacts, localTables, deviceTables, importedArtifacts, blockedTables, blockedArtifacts, onClearMarks, onRefreshBlocked, onSelected, onCancel, }) {
+    useUiSurface("TableSearchModal", appId);
+    const committingRef = SP_REACT.useRef(false);
+    const [committing, setCommitting] = SP_REACT.useState(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const commitSelected = async (sha256) => {
+        if (committingRef.current)
+            return;
+        committingRef.current = true;
+        setCommitting(true);
+        setError(null);
+        try {
+            await onSelected(sha256);
+        }
+        catch (cause) {
+            logUiFailure("search.selection_failed", cause, { app_id: appId, table_sha: sha256 });
+            setError(describeError(cause));
+        }
+        finally {
+            committingRef.current = false;
+            setCommitting(false);
+        }
+    };
+    const cancel = () => {
+        if (!committingRef.current)
+            onCancel();
+    };
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_search_modal.cancel", cancel), children: SP_JSX.jsx(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: SP_JSX.jsxs(DensePanel, { children: [error && SP_JSX.jsx("div", { role: "alert", children: error }), SP_JSX.jsx(ProviderCatalog, { gameIdentity: gameIdentity, gameName: gameName, appId: appId, shortcutExecutable: shortcutExecutable, initialQuery: gameName, autoSearch: true, localArtifacts: localArtifacts, localTables: localTables, deviceTables: deviceTables, compatibility: compatibility, artifactResolutions: artifactResolutions, onRefreshProvenance: onRefreshProvenance, importedArtifacts: importedArtifacts, blockedTables: blockedTables, blockedArtifacts: blockedArtifacts, onClearMarks: onClearMarks, onRefreshBlocked: onRefreshBlocked, onLocalSelected: commitSelected, onImported: commitSelected, footerActions: SP_JSX.jsx(SmallButton, { disabled: committing, onClick: traceUiAction("table_search_modal.close", cancel), children: "Close" }) })] }) }) }));
+}
+
+/**
+ * A durable write announcing itself to whatever panel is on screen.
+ *
+ * Some of this plugin's answers outlive the panel that asked for them. The
+ * question about a table Cheat Engine refused is the clearest case: it closes
+ * Configure cheats, which on the device takes the quick access panel with it,
+ * and the several writes the answer then makes land while no panel exists.
+ * Steam builds a new one when the user looks again, and that panel reads the
+ * authority once, on its way up - which is a read racing a chain of writes it
+ * knows nothing about. It won the race, so the table it had just been told to
+ * stop using was still sitting on the panel with its Load and Configure rows.
+ *
+ * `PANEL_CATCH_UP_DELAY_MS` is the timed answer to the same problem and stays
+ * for what it was measured against: a single withdrawal landing a few hundred
+ * milliseconds late. It cannot cover this one, because the write that matters
+ * here is the last of five round trips rather than the first, and the honest
+ * fix for that is not a longer timer. This is the exact one: the answer says
+ * when it has finished, and the panel that happens to be alive then re-reads.
+ *
+ * Deliberately not a store. It carries no state and no payload, because the
+ * authority is the backend and the only thing a panel needs to be told is that
+ * asking again is now worth it.
+ */
+const listeners$1 = new Set();
+/** Re-read the authority: something durable changed behind this panel's back. */
+function notifyAuthorityChanged() {
+    // Copied first: a listener that unsubscribes while this runs must not change
+    // the set being walked, and a panel unmounting inside its own re-read is an
+    // ordinary way for that to happen.
+    for (const listener of [...listeners$1]) {
+        try {
+            listener();
+        }
+        catch {
+            // One panel failing to re-read is not a reason to keep another from
+            // being told. The write has already happened either way.
+        }
+    }
+}
+/** Hear about those, until the returned function is called. */
+function subscribeAuthorityChanged(listener) {
+    listeners$1.add(listener);
+    return () => { listeners$1.delete(listener); };
+}
+
+/**
+ * Where the ring belongs on the panel that comes back after an answer.
+ *
+ * Some of this plugin's questions are answered with no panel on screen. The
+ * question about a table Cheat Engine refused is the clearest case: it closes
+ * Configure cheats, which on the device takes the quick access panel with it,
+ * so the answer lands while nothing is mounted and the panel Steam builds when
+ * the user looks again opens wherever it always opens. That is Advanced, which
+ * is not what somebody who has just retired a table is going to press. They are
+ * going to look for another one, and the control for that is Search.
+ *
+ * A request outlives the panel for exactly that reason, and it is taken by
+ * whichever panel is alive when the control it names can actually be pressed:
+ * Search is disabled while the panel is busy and while it has no game, and the
+ * writes the answer makes are still running when the request is made. Taking it
+ * is what retires it, so one answer moves the ring once.
+ *
+ * Deliberately tiny and deliberately not a store. It carries no panel state:
+ * the only thing a panel needs to be told is which of its own controls the last
+ * answer left the user in front of.
+ */
+let pending = null;
+const listeners = new Set();
+/** Put the ring on this control, on whichever panel is or becomes alive. */
+function requestPanelFocus(target) {
+    pending = target;
+    // Copied first: a listener that unsubscribes while this runs must not change
+    // the set being walked, and a panel unmounting inside its own handler is an
+    // ordinary way for that to happen.
+    for (const listener of [...listeners]) {
+        try {
+            listener();
+        }
+        catch {
+            // One panel failing to hear this is not a reason to keep another from
+            // hearing it. The request stays pending either way.
+        }
+    }
+}
+/**
+ * Take the outstanding request, when it is for this control.
+ *
+ * The caller has to be able to act on it: a request taken by a panel whose
+ * Search button is still disabled is a request spent on nothing.
+ */
+function takePanelFocus(target) {
+    if (pending !== target)
+        return false;
+    pending = null;
+    return true;
+}
+/** Hear about a request arriving, until the returned function is called. */
+function subscribePanelFocus(listener) {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+}
+
+/**
+ * Hand the panel's record to the backend while the panel still works.
+ *
+ * `supportLog.ts` keeps what the panel did in a ring buffer, and that buffer
+ * lives in the renderer Steam gives the Quick Access panel. One class of defect
+ * destroys it as a condition of being recovered: a wedged panel is fixed by
+ * restarting Steam's webhelper, which replaces the renderer, so the support
+ * bundle collected afterwards reports `frontend_entries=0` and nothing about
+ * what the panel had been doing survives. That is not hypothetical; it is what
+ * happened to the 2026-09-12 panel-close incident.
+ *
+ * So the entries are flushed as they are produced. The backend appends them to
+ * a bounded file that outlives the renderer, the plugin reload and the reboot,
+ * and the support bundle collects it beside the live ring.
+ *
+ * This is diagnostics, and it holds itself to what that permits:
+ *
+ * - it costs nothing while nothing is being recorded. The ring is quiet when
+ *   the panel is idle, so an idle panel makes no calls at all;
+ * - a failure is never reported to the user and never retried into a loop. A
+ *   rejected flush leaves the cursor where it was, and the entries go again
+ *   with the next one;
+ * - it never delays anything a user is waiting on. Nothing awaits it.
+ *
+ * Lifetime is the frontend's, not the panel's. Opening any modal unmounts the
+ * panel, and the modal's own failures are exactly what a report needs, so this
+ * is started by `definePlugin` and stopped by `onDismount`.
+ */
+/** Ordinary cadence. Long enough to batch a burst, short enough to survive one. */
+const FLUSH_INTERVAL_MS = 5000;
+/**
+ * How soon a failure is written down.
+ *
+ * A warning or an error is very often the last thing recorded before whatever
+ * it is warning about stops the panel, so it does not wait for the interval.
+ * Short but not zero: one press can record several entries, and they should go
+ * as one call.
+ */
+const FAILURE_FLUSH_DELAY_MS = 400;
+/**
+ * Distinguishes one frontend lifetime from the next in the durable record.
+ *
+ * A new value in the file means the renderer was replaced, which is the
+ * difference between a panel that closed and a panel that was restarted out of
+ * a wedge. `Math.random` is right for this: it is a grouping key, not an
+ * identity, and it must not depend on a crypto API being exposed to this page.
+ */
+const SESSION = Math.random().toString(36).slice(2, 10);
+/**
+ * Which renderer this module was evaluated in.
+ *
+ * The panel's record outlives the renderer that wrote it, and an install has to
+ * be able to tell one generation of it from the next: the frontend being
+ * replaced is alive while its replacement is being asked for, its entries reach
+ * the file on a five second timer, and Decky's last load of the plugin tells
+ * that outgoing frontend to import the bundle again. A late flush from it lands
+ * after any boundary a reader can take, and neither the moment on it nor the
+ * batch id in it says which renderer produced it: the batch id is per module,
+ * and that re-import is a new module in the old renderer.
+ *
+ * So the id is kept on the global object, which is per renderer: every module
+ * evaluated in one renderer finds the same value, and a renderer that has just
+ * been created has none and makes one. A global that refuses the property is
+ * handled rather than thrown on, and leaves the id per module, which is what it
+ * was before this existed.
+ */
+const RENDERER_KEY = "__ceDeckyRenderer";
+function rendererId() {
+    const host = globalThis;
+    const existing = host[RENDERER_KEY];
+    if (typeof existing === "string" && existing)
+        return existing;
+    const created = Math.random().toString(36).slice(2, 10);
+    try {
+        host[RENDERER_KEY] = created;
+    }
+    catch {
+        // A frozen or sealed global. Nothing to recover: the id is this module's
+        // own from here, which is strictly weaker and never wrong about identity.
+    }
+    return created;
+}
+const RENDERER = rendererId();
+/** Which renderer this panel is in, for the record that outlives it. */
+function panelRenderer() {
+    return RENDERER;
+}
+/**
+ * How many times this module's plugin factory has run.
+ *
+ * One module can be asked for more than one panel, and that is the case the
+ * durable record has to be able to describe. Decky imports this bundle as
+ * `index.js?t=${Date.now()}` and a browser returns one module instance per
+ * resolved URL, so two imports issued in the same millisecond resolve to the
+ * same URL, evaluate this module once and call its factory twice. Two rows,
+ * one module, one `SESSION`.
+ *
+ * The batch id above is therefore the wrong key for a row: it says which loaded
+ * module wrote the entry, which is what it is for, and cannot tell two panels
+ * from that module apart. A counter can, and a counter beside the batch id is
+ * unique in both directions - across modules because `SESSION` differs, within
+ * one because this does.
+ */
+let panels = 0;
+/**
+ * The id of one panel, for the record that says whether it is still there.
+ *
+ * Called once per plugin factory invocation, which is once per row Decky adds.
+ * The mount that opens a row and the dismount that closes it carry this, so
+ * something reading the file afterwards can pair them; nothing else about a
+ * panel is identity, and this is deliberately not derived from anything that
+ * would repeat if the module were evaluated again.
+ */
+function nextPanelInstance() {
+    panels += 1;
+    return `${SESSION}-${panels}`;
+}
+/**
+ * The timer functions, taken from the global rather than from `window`.
+ *
+ * This runs at `definePlugin` time, which is module evaluation for anything
+ * that loads the built bundle - including the packaging smoke check, which
+ * imports `dist/index.js` in bare Node to prove it loads at all. There is no
+ * `window` there, and a diagnostics timer must not be the reason the bundle
+ * fails to evaluate. Where there are no timers there is also nothing to flush
+ * to, so the absence is handled rather than worked around.
+ */
+const timers = globalThis;
+/**
+ * Stop a timer from holding its host's event loop open.
+ *
+ * Node returns a `Timeout` object carrying `unref`; a browser returns a number
+ * and has no such concept, because nothing there waits for a page to go idle.
+ * It matters because the packaging smoke check loads the built bundle in Node
+ * and calls this plugin's factory: without this, the diagnostics interval keeps
+ * that process alive until something kills it. That is a hang rather than a
+ * failure, which is the worst shape a defect can take in a gate, and it is not
+ * hypothetical - it is what this function was added for.
+ */
+function unrefTimer(handle) {
+    handle?.unref?.();
+}
+/**
+ * How many panels are using the flush machinery below, and everything it holds.
+ *
+ * Module scope rather than per call, and that is the whole of this design. The
+ * ring, the count of what has been recorded and the cursor that says how much
+ * of it the backend has kept are all module-global, because there is one record
+ * per loaded module. One flush loop per panel over one shared cursor is
+ * therefore not two independent queues, it is two queues racing one another:
+ * both drain the same entries before either hand-over is confirmed, so the file
+ * gets them twice, and nothing orders the two requests, so a newer batch can
+ * land before an older one and leave the record ending on an entry that was
+ * recorded before its last line. That last part is what the file is for - a
+ * record ending on `panel.dismounted` is a panel that closed - and an ordering
+ * artifact of the flushing reads as a wedge.
+ *
+ * One module can hold two panels: Decky imports this bundle as
+ * `index.js?t=${Date.now()}` and a browser returns one module instance per
+ * resolved URL, so two imports issued inside one millisecond call the factory
+ * twice. So the machinery is one per module, counted rather than duplicated:
+ * the first panel starts it, later panels join it, and the last one out stops
+ * it and makes the final hand-over.
+ */
+let users = 0;
+/**
+ * Every hand-over, one after the next.
+ *
+ * Two of these in flight at once is not a race about a lock: the backend
+ * appends under one, so the bytes are safe either way. What is not safe is the
+ * order they arrive in and what each of them carries. The cursor only moves
+ * when a hand-over is confirmed, so a second batch drained before the first is
+ * confirmed repeats every entry of the first, and nothing makes the older
+ * request reach the file before the newer one.
+ *
+ * So there is one queue for the whole module, every panel's stop included, and
+ * each drain is taken only once the hand-over before it has settled. It
+ * deliberately outlives the panels: a queue rebuilt per panel is the race
+ * above, and one that survives the last release keeps the order of what the
+ * next panel records.
+ */
+let chain = Promise.resolve();
+let queued = false;
+let failureTimer = null;
+let interval = null;
+let observer = null;
+function handOver() {
+    // Read here rather than at enqueue time: what is owed is whatever the ring
+    // holds now that the previous hand-over has been confirmed, which is what
+    // keeps a confirmed entry from being sent a second time.
+    const { entries, dropped, cursor } = drainSupportLog();
+    if (entries.length === 0)
+        return Promise.resolve();
+    return recordPanelLog(entries, dropped, SESSION)
+        .then((result) => {
+        // Only a hand-over the backend says it kept moves the cursor. A backend
+        // that could not write reports `ok: false` rather than raising, and those
+        // entries go again with the next flush.
+        //
+        // `ok` rather than `accepted === entries.length`: a backend that wrote
+        // everything it could keep still reports fewer than it was given when one
+        // entry was malformed enough to be dropped, and those entries will be
+        // dropped again every time. Holding the cursor for them would resend the
+        // same batch for ever and duplicate the rest of it on every pass. A write
+        // that did not fully land is `ok: false`, which is the case the cursor is
+        // actually being held for.
+        if (result?.ok)
+            confirmSupportLogFlush(cursor);
+    })
+        .catch(() => {
+        // Deliberately silent, and deliberately not logged through `logUi`: a
+        // failed flush that recorded its own failure would record another one on
+        // the next attempt, and the ring would fill with nothing else.
+    });
+}
+/**
+ * Put one hand-over at the end of the queue.
+ *
+ * At most one waits behind the one in flight, because a drain taken later
+ * carries everything an earlier one would have: a third would send nothing.
+ * `force` is for a panel's stop, which has an entry of its own to hand over and
+ * must not be answered by a queued drain that was taken before it.
+ */
+function enqueue(force = false) {
+    if (queued && !force)
+        return;
+    queued = true;
+    chain = chain
+        .then(() => {
+        queued = false;
+        return handOver();
+    })
+        .catch(() => undefined);
+}
+/**
+ * Start flushing for one panel, and return the function that releases it.
+ *
+ * Called once per plugin factory invocation. The first call starts the shared
+ * timer and listener; a later one joins them, because the record they write to
+ * is shared too. Each returned function releases only its own hold, and the
+ * last release stops the timer, gives up the listener and makes the final
+ * hand-over, so an ordinary dismount still ends the record with the entry that
+ * says it was ordinary.
+ */
+function startSupportLogFlush() {
+    if (typeof timers.setInterval !== "function" || typeof timers.clearInterval !== "function") {
+        // Not a browser: nothing records, nothing flushes, and stopping is free.
+        return () => undefined;
+    }
+    users += 1;
+    if (users === 1) {
+        interval = timers.setInterval(() => {
+            if (unflushedSupportLogCount() > 0)
+                enqueue();
+        }, FLUSH_INTERVAL_MS);
+        unrefTimer(interval);
+        observer = (level) => {
+            if (level === "info" || failureTimer !== null)
+                return;
+            if (typeof timers.setTimeout !== "function")
+                return;
+            failureTimer = timers.setTimeout(() => {
+                failureTimer = null;
+                enqueue();
+            }, FAILURE_FLUSH_DELAY_MS);
+            unrefTimer(failureTimer);
+        };
+        observeSupportLog(observer);
+    }
+    let released = false;
+    return () => {
+        if (released)
+            return;
+        released = true;
+        users -= 1;
+        // Its own entries go now either way: a panel that has just recorded its
+        // dismount must not have to wait for the next tick of a timer that belongs
+        // to whichever panel is still open.
+        enqueue(true);
+        if (users > 0)
+            return;
+        timers.clearInterval?.(interval);
+        interval = null;
+        if (failureTimer !== null) {
+            timers.clearTimeout?.(failureTimer);
+            failureTimer = null;
+        }
+        if (observer !== null) {
+            unobserveSupportLog(observer);
+            observer = null;
+        }
+    };
+}
+
+/**
+ * Remember which library entry the user chose, across panel remounts.
+ *
+ * Opening any Decky modal closes the quick-access panel, so the plugin's React
+ * tree unmounts and every piece of frontend-only state is lost. The selected
+ * table survives that because it lives in the backend profile; the selected
+ * *game* did not, so picking a game that was not running put the user straight
+ * back on "No game selected" the moment the picker closed.
+ *
+ * This is an explicit user choice, not an inferred identity: it is stored as
+ * the exact AppID plus whether it is a non-Steam shortcut, and the caller must
+ * still match it against the live Steam library and re-resolve everything
+ * downstream before acting on it.
+ */
+const KEY = "ce-decky.selected-game.v1";
+function rememberSelectedGame(selection) {
+    try {
+        window.localStorage.setItem(KEY, JSON.stringify(selection));
+    }
+    catch {
+        // Private windows and blocked site data are normal; the panel simply loses
+        // the convenience and behaves as it did before.
+    }
+}
+function forgetSelectedGame() {
+    try {
+        window.localStorage.removeItem(KEY);
+    }
+    catch {
+        // Ignore: nothing downstream depends on the removal succeeding.
+    }
+}
+function readSelectedGame() {
+    let raw = null;
+    try {
+        raw = window.localStorage.getItem(KEY);
+    }
+    catch {
+        return null;
+    }
+    if (!raw)
+        return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object")
+            return null;
+        const { appId, isShortcut } = parsed;
+        if (typeof appId !== "number" || !Number.isInteger(appId) || appId <= 0 || appId > 0xFFFFFFFF)
+            return null;
+        if (typeof isShortcut !== "boolean")
+            return null;
+        return { appId, isShortcut };
+    }
+    catch {
+        return null;
+    }
+}
+
+// Bounded Auto-load backoff. A game settles in seconds, not minutes: the target
+// executable can appear after its launcher, and the first bridge heartbeat and
+// record query can both land before Cheat Engine is ready to answer. Three
+// widening retries cover that without ever becoming a respawn loop, and the
+// length of this list is the attempt budget.
+const AUTOLOAD_RETRY_DELAYS_MS = [4000, 10000, 25000];
+// A backend that is still starting, or a websocket lost across a reload, needs
+// a second or two rather than a remount of the whole panel.
+const BOOTSTRAP_RETRY_DELAYS_MS = [1500, 4000, 10000];
+// The loader's panel-visibility hook, when the running loader has one. It
+// arrived with API version 2, an older loader connects at version 1 and leaves
+// it undefined, and a plugin that calls undefined as a hook renders nothing at
+// all. Resolve it once here so the panel degrades to its previous behavior
+// instead of crashing, and so the hook order of a mount cannot change.
+const QUICK_ACCESS_VISIBLE = typeof useQuickAccessVisible === "function" ? useQuickAccessVisible : null;
+// One poll of a launch operation. The backend's own bridge deadline is five
+// minutes; this only bounds a single Decky callable that never settles.
+const LAUNCH_POLL_TIMEOUT_MS = 8000;
+/** Reject after `ms` if `promise` has not settled, without leaking the timer. */
+async function withTimeout(promise, ms, message) {
+    let timer;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => { timer = window.setTimeout(() => reject(new Error(message)), ms); }),
+        ]);
+    }
+    finally {
+        if (timer !== undefined)
+            window.clearTimeout(timer);
+    }
+}
+// How long auto-load waits for the resident bridge to finish applying startup.
+// The bridge resolves one startup action at a time and may legitimately spend a
+// whole per-action budget on a single one: `MAX_STARTUP_WAIT_TICKS` and
+// `MAX_ACTIVATION_WAIT_TICKS` in `ce_decky_bridge.lua` are both 40 ticks of
+// `POLL_MS` 250 ms, so 10 s each, plus one heartbeat period before that outcome
+// is published. A fixed total budget was therefore shorter than one action, and
+// Auto-load reported "the saved cheats had not been applied yet" for a startup
+// that went on to apply them. `tests/test_bridge_asset.py` keeps this in step
+// with the exact Lua constants.
+/**
+ * How long the question about a refused table waits for the panel to go idle.
+ *
+ * It waits at all because two of the three callers raise it from inside their
+ * own action, which owns the panel's latch until that action returns, and an
+ * answer given while the latch is held is refused. It waits only this long
+ * because a latch that never comes free would otherwise take the question with
+ * it, and a question asked slightly too early is recoverable while a question
+ * never asked is not: the table goes on applying and nothing says why.
+ */
+/** The one panel error that stops being true when the table goes away. */
+const LIVE_READ_FAILURE_PREFIX = "Live cheat state could not be refreshed: ";
+const REFUSAL_ASK_WAIT_MS = 4000;
+// How long the answer waits for the latch it needs, having been put by a wait
+// that is allowed to give up on that same latch. The question can therefore be
+// asked while an operation still holds it, and the answer makes five durable
+// writes that cannot run beside another operation, so it waits again rather
+// than being thrown away at the press.
+const REFUSAL_ANSWER_WAIT_MS = 8000;
+const BRIDGE_STARTUP_ACTION_BUDGET_MS = 11000;
+const STARTUP_OUTCOME_DELAY_MS = 500;
+/** The exact record the bridge reported a startup failure for, if it named one. */
+function startupFailureReason(envelope) {
+    const state = envelope?.status?.startup_state;
+    // "Auto-load failed" is only an accurate account of the game's state when the
+    // bridge proved it rolled its earlier actions back. When it could not, the
+    // table may still be partly applied - including enclosing scripts the user
+    // never sees in their own selection - so say so and name the recovery.
+    const residue = state === "failed_partial" || state === "failed"
+        ? " Some of it may still be applied to the game; stop Cheat Engine to clear it."
+        : "";
+    const failed = (envelope?.status?.results ?? []).find((result) => result.generation === 0 && !result.ok);
+    if (!failed)
+        return `Auto-load could not restore the saved cheats.${residue}`;
+    const record = failed.record_id === null ? "a saved cheat" : `MemoryRecord ${failed.record_id}`;
+    return `Auto-load could not restore ${record}: ${failed.error ?? "Cheat Engine did not accept it"}.${residue}`;
+}
+/**
+ * What a refused **Change** says, in the terms the user can act in.
+ *
+ * `README.md` carries the same rule under **Pick the game**, because a row
+ * explaining a press nobody made costs a line of a narrow panel every session.
+ */
+const GAME_RUNNING_REFUSAL = "That game is running now. Everything CE Decky holds is for one game, so quit it and the press comes back.";
+function currentProfile(status, game) {
+    if (!status || !game)
+        return null;
+    return status.profiles.find((profile) => profile.app_id === game.appId && profile.is_shortcut === game.isShortcut) ?? null;
+}
+function operationIsActive(operation) {
+    return Boolean(operation && ["downloading", "extracting", "verifying"].includes(operation.state));
+}
+function Content() {
+    const [status, setStatus] = SP_REACT.useState(null);
+    const [managedCE, setManagedCE] = SP_REACT.useState(null);
+    const [managedCEError, setManagedCEError] = SP_REACT.useState(null);
+    const [managedInstall, setManagedInstall] = SP_REACT.useState(null);
+    // The capability carries both launcher-global ownership and facts about one
+    // exact game, so the AppID it was fetched for travels with it: a failed
+    // refresh after a game switch used to leave the previous game's snapshot
+    // describing the new one.
+    const [ceLaunch, setCELaunch] = SP_REACT.useState(null);
+    const [ceLaunchError, setCELaunchError] = SP_REACT.useState(null);
+    const [launchProtonToolId, setLaunchProtonToolId] = SP_REACT.useState("");
+    const [selfTest, setSelfTest] = SP_REACT.useState(null);
+    const [selectedGame, setSelectedGame] = SP_REACT.useState(null);
+    const [appDetails, setAppDetails] = SP_REACT.useState(null);
+    const [inspection, setInspection] = SP_REACT.useState(null);
+    const [targetProcess, setTargetProcess] = SP_REACT.useState("");
+    const [games, setGames] = SP_REACT.useState([]);
+    const [runningGames, setRunningGames] = SP_REACT.useState({ available: false, games: [] });
+    const [bootstrapAttempt, setBootstrapAttempt] = SP_REACT.useState(0);
+    // A launch that is still waiting for the resident bridge. It is a real owned
+    // Cheat Engine the backend can stop, so Home keeps Stop available for it even
+    // while the action that started it holds the global busy latch.
+    const [launchInProgress, setLaunchInProgressState] = SP_REACT.useState(null);
+    // Review is a detached modal: its handlers close over the render that opened
+    // it and would read `null` here for the whole wait. The ref is what lets that
+    // screen offer the same Stop that Home does.
+    const launchInProgressRef = SP_REACT.useRef(null);
+    const setLaunchInProgress = SP_REACT.useCallback((pending) => {
+        launchInProgressRef.current = pending;
+        setLaunchInProgressState(pending);
+    }, []);
+    const [runtime, setRuntime] = SP_REACT.useState(null);
+    const [liveSnapshot, setLiveSnapshot] = SP_REACT.useState(null);
+    // Why the live snapshot is missing, when it is missing because the read
+    // failed rather than because this table has no live controls at all.
+    const [liveSnapshotError, setLiveSnapshotError] = SP_REACT.useState(null);
+    /**
+     * Drop the live snapshot, saying why when there is a reason to say.
+     *
+     * A snapshot dropped because the context changed is not the same as one
+     * dropped because the read failed, and leaving the previous failure on screen
+     * described a healthy session as broken.
+     */
+    const dropLiveSnapshot = SP_REACT.useCallback((reason = null) => {
+        setLiveSnapshot(null);
+        setLiveSnapshotError(reason);
+    }, []);
+    const [pinnedBusyRecordId, setPinnedBusyRecordId] = SP_REACT.useState(null);
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const statusRef = SP_REACT.useRef(null);
+    const selectedGameRef = SP_REACT.useRef(null);
+    const busyRef = SP_REACT.useRef(false);
+    const pinnedBusyRef = SP_REACT.useRef(null);
+    const statusGenerationRef = SP_REACT.useRef(0);
+    // The status read that is currently the authority in flight. A read that has
+    // been overtaken answers with this one rather than from before it.
+    const statusInFlightRef = SP_REACT.useRef(null);
+    const blockedGenerationRef = SP_REACT.useRef(0);
+    const gameGenerationRef = SP_REACT.useRef(0);
+    const selectionSourceRef = SP_REACT.useRef(null);
+    const managedOwnerRef = SP_REACT.useRef(null);
+    const managedCancelRef = SP_REACT.useRef(false);
+    const [managedCancelling, setManagedCancelling] = SP_REACT.useState(false);
+    const managedCapabilityGenerationRef = SP_REACT.useRef(0);
+    const launchGenerationRef = SP_REACT.useRef(0);
+    const runtimeGenerationRef = SP_REACT.useRef(0);
+    const detectionBusyRef = SP_REACT.useRef(false);
+    // Whether the running-game observation is currently failing. The detector
+    // runs every three seconds, so failure and recovery are each logged once
+    // rather than once a tick.
+    const detectionFailedRef = SP_REACT.useRef(false);
+    // Closing the panel has to stop the reads the panel started. A live refresh
+    // walks every actionable record of the table in chunks, which for a large
+    // table is over a hundred bridge round-trips: without this the whole sweep
+    // ran to completion against a component that no longer exists, writing state
+    // into a dead tree for seconds after the panel was dismissed. The picker has
+    // had this since the same defect was found there; Home had not.
+    const panelAborterRef = SP_REACT.useRef(new AbortController());
+    const contextModalDepthRef = SP_REACT.useRef(0);
+    const autoloadAttemptRef = SP_REACT.useRef(null);
+    // A failed Auto-load is usually a startup race, not a decision: the target
+    // process appears after the launcher, the bridge has not finished its first
+    // heartbeat, or a record query runs while the game is still settling. The
+    // attempt key alone would latch that first failure for the lifetime of this
+    // mounted panel, so keep a small bounded retry beside it.
+    const autoloadRetryRef = SP_REACT.useRef(null);
+    const autoloadRetryTimerRef = SP_REACT.useRef(null);
+    const [autoloadRetryTick, setAutoloadRetryTick] = SP_REACT.useState(0);
+    const clearAutoloadRetry = SP_REACT.useCallback(() => {
+        if (autoloadRetryTimerRef.current !== null) {
+            clearTimeout(autoloadRetryTimerRef.current);
+            autoloadRetryTimerRef.current = null;
+        }
+        autoloadRetryRef.current = null;
+    }, []);
+    SP_REACT.useEffect(() => () => {
+        if (autoloadRetryTimerRef.current !== null)
+            clearTimeout(autoloadRetryTimerRef.current);
+    }, []);
+    const runningGamesRef = SP_REACT.useRef([]);
+    const restoredSelectionRef = SP_REACT.useRef(false);
+    const showContextModal = SP_REACT.useCallback((render) => {
+        contextModalDepthRef.current += 1;
+        let closed = false;
+        let handle = null;
+        const close = () => {
+            if (closed)
+                return;
+            closed = true;
+            contextModalDepthRef.current = Math.max(0, contextModalDepthRef.current - 1);
+            handle?.Close();
+        };
+        try {
+            handle = DFL.showModal(render(close));
+        }
+        catch (cause) {
+            contextModalDepthRef.current = Math.max(0, contextModalDepthRef.current - 1);
+            throw cause;
+        }
+        return close;
+    }, []);
+    const refreshStatus = SP_REACT.useCallback(async () => {
+        const generation = statusGenerationRef.current + 1;
+        statusGenerationRef.current = generation;
+        // Decky can leave several overlapping observers refreshing the same backend.
+        // A slower response must never overwrite a newer one and resurrect a stale
+        // Cheat Engine identity that the whole workflow keys off - and it must not
+        // be handed back as this device's state either. The caller is deciding
+        // something with it: which games hold a table, what a detached screen
+        // repaints from. Returning the read that was just rejected made the guard
+        // protect this component and nothing else.
+        //
+        // Nor is the last accepted snapshot a substitute, because the read that
+        // overtook this one may still be in flight: answering from before it is
+        // answering with a state that is already known to be out of date. A
+        // superseded call waits for the read that beat it and answers with that,
+        // and fails with it where it fails, because the caller asked what is true
+        // now and the honest answers are the current one or none.
+        //
+        // What an answer from this generation is worth is decided in one place, for
+        // the answer and for the failure alike. Deciding it only where the read
+        // succeeded meant a read that was overtaken and then failed still reported
+        // its own failure, and the caller acted on an error about a question the
+        // winning read had already answered.
+        const overtakenBy = () => {
+            if (generation === statusGenerationRef.current)
+                return null;
+            const winner = statusInFlightRef.current;
+            if (winner && winner.generation !== generation)
+                return winner.promise;
+            // Nothing newer is running: the generation moved for a local correction
+            // this panel made itself, which is the accepted state.
+            return statusRef.current ? Promise.resolve(statusRef.current) : null;
+        };
+        const attempt = (async () => {
+            let next;
+            try {
+                next = await getStatus(selectedGameRef.current?.appId ?? null);
+            }
+            catch (cause) {
+                return await (overtakenBy() ?? Promise.reject(cause));
+            }
+            const winner = overtakenBy();
+            if (winner)
+                return winner;
+            // Overtaken with nothing better to answer with: this read is all there is.
+            if (generation !== statusGenerationRef.current)
+                return next;
+            statusRef.current = next;
+            setStatus(next);
+            return next;
+        })();
+        statusInFlightRef.current = { generation, promise: attempt };
+        return attempt;
+    }, []);
+    /**
+     * Take one table out of what this panel believes it has, without asking.
+     *
+     * For the one mutation that is already committed by the time the panel hears
+     * about it. Reading the authority again is reconciliation, and reconciliation
+     * that fails must not turn a deletion that happened into one reported as
+     * failed, so the local answer is corrected first and the read follows.
+     *
+     * The generation moves with it, because an older read already in flight
+     * carries a list from before the deletion and would otherwise land afterwards
+     * and put the row back.
+     */
+    const forgetStoredTable = SP_REACT.useCallback((sha256) => {
+        statusGenerationRef.current += 1;
+        const current = statusRef.current;
+        if (!current)
+            return;
+        const next = { ...current, tables: current.tables.filter((table) => table.sha256 !== sha256) };
+        statusRef.current = next;
+        setStatus(next);
+    }, []);
+    const refreshManagedCE = SP_REACT.useCallback(async () => {
+        const generation = managedCapabilityGenerationRef.current + 1;
+        managedCapabilityGenerationRef.current = generation;
+        let next;
+        try {
+            next = await getManagedCECapability();
+        }
+        catch (cause) {
+            // Managed setup is optional: the backend keeps the controller-accessible
+            // import fallback alive when it cannot offer a download. Record that this
+            // one capability is unreadable rather than leaving `managedCE` null, which
+            // the panel used to treat as "still loading" forever and which disabled
+            // game selection, table search, Advanced and the runtime actions of an
+            // otherwise healthy imported Cheat Engine until the panel was remounted.
+            if (generation === managedCapabilityGenerationRef.current)
+                setManagedCEError(describeError(cause));
+            throw cause;
+        }
+        if (generation !== managedCapabilityGenerationRef.current)
+            return next;
+        setManagedCEError(null);
+        setManagedCE(next);
+        // A live monitor owns the local progress snapshot. The capability view can
+        // be one poll behind it, so adopting it here would repaint progress the
+        // monitor already advanced or cleared - including terminal setup state
+        // after a consumed completion.
+        if (!managedOwnerRef.current)
+            setManagedInstall(next.operation);
+        return next;
+    }, []);
+    /**
+     * Refresh managed setup without letting it fail a durable mutation.
+     *
+     * Managed install is optional by design and its failure is already surfaced
+     * separately, but it was a hard member of the refresh chains that run after
+     * import, clear-CE, session repair and Advanced refresh - so a state change
+     * that had already been committed could still be reported as failed, and the
+     * caller's `.then(... close())` never ran.
+     */
+    const refreshManagedCEOptional = SP_REACT.useCallback(() => refreshManagedCE().catch(() => undefined), [refreshManagedCE]);
+    const refreshCELaunch = SP_REACT.useCallback(async (appId) => {
+        const generation = launchGenerationRef.current + 1;
+        launchGenerationRef.current = generation;
+        let next;
+        try {
+            next = await getCELaunchCapability(appId);
+        }
+        catch (cause) {
+            // Launch state that could not be read is unknown, not clear: record it so
+            // ownership stays fail-closed and Home can say which fact is missing.
+            if (generation === launchGenerationRef.current) {
+                setCELaunch(null);
+                setCELaunchError(describeError(cause));
+            }
+            throw cause;
+        }
+        if (generation !== launchGenerationRef.current)
+            return next;
+        setCELaunchError(null);
+        setCELaunch({ appId, capability: next });
+        setLaunchProtonToolId((current) => next.observed_proton_tool?.tool_id
+            ?? (next.proton_tools.some((tool) => tool.tool_id === current) ? current : next.proton_tools[0]?.tool_id ?? ""));
+        return next;
+    }, []);
+    const refreshRuntime = SP_REACT.useCallback(async (appId) => {
+        const generation = runtimeGenerationRef.current + 1;
+        runtimeGenerationRef.current = generation;
+        const next = await getRuntimeStatus(appId);
+        if (generation !== runtimeGenerationRef.current)
+            return next;
+        if (selectedGameRef.current?.appId !== appId)
+            return next;
+        setRuntime(next);
+        return next;
+    }, []);
+    // Startup resolves one record at a time and waits for any that an enclosing
+    // script has to create, so a terminal answer can be a few seconds out. Poll
+    // for it rather than reading the first status after connect.
+    const awaitStartupOutcome = SP_REACT.useCallback(async (appId, connected) => {
+        // A table can chain many actions, so the budget is per action rather than
+        // for the whole startup: every action the bridge finishes is proof it is
+        // working rather than stuck, and earns the next one its own budget.
+        //
+        // Progress comes from the bridge's own monotonic counter where it publishes
+        // one. Counting generation-0 results instead stopped growing after the
+        // bridge's 128-result window filled, so a large plan whose later actions
+        // needed materialization or async activation looked stalled and was
+        // reported pending while it was still advancing.
+        const settledActions = (envelope) => {
+            const published = envelope.status?.startup_completed;
+            if (typeof published === "number")
+                return published;
+            return (envelope.status?.results ?? []).filter((result) => result.generation === 0).length;
+        };
+        let observed = connected;
+        let settled = settledActions(observed);
+        let deadline = monotonicNow() + BRIDGE_STARTUP_ACTION_BUDGET_MS;
+        for (;;) {
+            const state = observed.status?.startup_state;
+            // A bridge from before this contract reports nothing. Treating that as a
+            // failure would break auto-load for a Cheat Engine still running from
+            // before an update, so accept it as the old best-effort behaviour.
+            if (state === undefined || state === null || state === "applied")
+                return "applied";
+            if (state === "failed" || state === "failed_rolled_back" || state === "failed_partial")
+                return "failed";
+            if (monotonicNow() >= deadline)
+                return "pending";
+            await new Promise((resolve) => setTimeout(resolve, STARTUP_OUTCOME_DELAY_MS));
+            observed = await refreshRuntime(appId);
+            const observedSettled = settledActions(observed);
+            if (observedSettled > settled) {
+                settled = observedSettled;
+                deadline = monotonicNow() + BRIDGE_STARTUP_ACTION_BUDGET_MS;
+            }
+        }
+    }, [refreshRuntime]);
+    /**
+     * Let a started Cheat Engine finish applying startup, then reconcile what it
+     * proved.
+     *
+     * The backend persists positive compatibility only when a status read
+     * observes startup in a terminal state, and startup can settle seconds after
+     * the bridge answers. A manual start that stopped at the first live read
+     * therefore left a genuine activation in pending proof that nothing ever
+     * consumed, and where the proof did land, Search and Manage kept the snapshot
+     * from before it.
+     *
+     * Advisory throughout: this observes and rereads, and a Cheat Engine that is
+     * running with the table open stays a successful start whatever it saw.
+     */
+    const reconcileStartupCompatibility = SP_REACT.useCallback(async (appId, connected) => {
+        try {
+            await awaitStartupOutcome(appId, connected);
+            await refreshStatus();
+        }
+        catch (cause) {
+            logUiFailure("launch.compatibility_refresh_failed", cause, { app_id: appId });
+        }
+    }, [awaitStartupOutcome, refreshStatus]);
+    /**
+     * Resolve once no CE Decky operation owns the global latch.
+     *
+     * Signalled by `runAction` releasing it, never polled and never timed out. A
+     * deadline was worse than useless here: its only effect was to hand back
+     * control while the latch was still held, so the caller went on to offer an
+     * action that the same latch was guaranteed to refuse - which is the failure
+     * this exists to prevent. A reconciliation may legitimately take longer than
+     * any bound worth picking.
+     *
+     * Unmounting resolves every waiter, because whatever they were going to do
+     * belongs to a panel that is gone; callers check for that themselves.
+     */
+    const idleWaitersRef = SP_REACT.useRef([]);
+    const releaseIdleWaiters = SP_REACT.useCallback(() => {
+        const waiting = idleWaitersRef.current;
+        idleWaitersRef.current = [];
+        for (const resolve of waiting)
+            resolve();
+    }, []);
+    const whenIdle = SP_REACT.useCallback(async () => {
+        if (!busyRef.current)
+            return;
+        await new Promise((resolve) => { idleWaitersRef.current.push(resolve); });
+    }, []);
+    // False once this panel is gone, for work that outlives the press that started
+    // it and must not act on state nobody is updating any more.
+    const mountedRef = SP_REACT.useRef(true);
+    SP_REACT.useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            releaseIdleWaiters();
+        };
+    }, [releaseIdleWaiters]);
+    // `automatic` marks work nobody pressed. It is still recorded and still
+    // reaches the panel's own error row; what it must not do is put a dialog over
+    // a running game, titled as something the user did, for something they did
+    // not do.
+    const runAction = SP_REACT.useCallback(async (action, options) => {
+        const interaction = options?.automatic ? undefined : options?.interaction ?? currentUiAction();
+        const name = interaction?.action || action.name || "action";
+        if (busyRef.current) {
+            // Throwing before the handler below meant a second fast press produced an
+            // error that was never toasted and never caught by the caller.
+            const message = "Another CE Decky operation is still running.";
+            logUiWarning("panel.action_rejected", { ...interaction, action: name, reason: "busy" });
+            setError(message);
+            toaster.toast({ title: "CE Decky", body: message });
+            throw new Error(message);
+        }
+        busyRef.current = true;
+        setBusy(true);
+        setError(null);
+        const started = monotonicNow();
+        logUi("panel.action_started", { ...interaction, action: name, automatic: Boolean(options?.automatic) });
+        try {
+            const result = await action();
+            logUi("panel.action_completed", { ...interaction, action: name, duration_ms: elapsedSince(started) });
+            return result;
+        }
+        catch (cause) {
+            const message = describeError(cause);
+            logUiFailure("panel.action_failed", cause, { ...interaction, action: name, duration_ms: elapsedSince(started) });
+            setError(message);
+            // A dialog rather than a Steam notification, which slides away on its own
+            // timer: on a handheld the whole message was gone before it had been
+            // read, and the panel row that also holds it is usually behind whatever
+            // the workflow opened next. The notification stays as the fallback for a
+            // dialog Steam refuses to open, because a failure nobody is told about is
+            // worse than one told badly.
+            if (options?.failureShownByCaller) ;
+            else if (options?.automatic || !showActionFailure("The last thing you pressed", cause)) {
+                toaster.toast({ title: "CE Decky", body: message });
+            }
+            throw cause;
+        }
+        finally {
+            busyRef.current = false;
+            setBusy(false);
+            releaseIdleWaiters();
+        }
+    }, [releaseIdleWaiters]);
+    const bootstrap = SP_REACT.useCallback(async () => {
+        const results = await Promise.allSettled([refreshStatus(), refreshManagedCE(), refreshCELaunch(null)]);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected")
+            setError(describeError(failed.reason));
+    }, [refreshStatus, refreshManagedCE, refreshCELaunch]);
+    // Tables the user recorded as not working, by exact content. Re-read whenever
+    // one is added or cleared, so a search opened afterwards greys the same rows
+    // Advanced lists.
+    const [blockedTables, setBlockedTables] = SP_REACT.useState([]);
+    // What the last accepted read of that list held, for a caller whose own read
+    // was superseded by a local correction rather than by another read.
+    const blockedTablesRef = SP_REACT.useRef({ tables: [], reason: null });
+    // The read that is currently the authority in flight, which a superseded call
+    // waits for rather than answering from before it.
+    const blockedInFlightRef = SP_REACT.useRef(null);
+    // A search result advertises a content digest only sometimes and a provider
+    // row always, so without the second lookup the mark was invisible on exactly
+    // the rows it had been recorded from and the same table was offered on every
+    // search. Built by one function, because the search screen is a detached tree
+    // that has to rebuild them from a fresh read rather than from new props.
+    const blockedLookups = SP_REACT.useMemo(() => blockedTableLookups(blockedTables), [blockedTables]);
+    // The exact table a refusal dialog is currently open for, if any.
+    const refusalDialogRef = SP_REACT.useRef(null);
+    // Why the record is empty, when it is empty because it could not be read.
+    // Without this an unreadable record and a record with nothing in it are the
+    // same "No tables marked", and the protection is failing open silently.
+    const [blockedTablesReason, setBlockedTablesReason] = SP_REACT.useState(null);
+    const refreshBlockedTables = SP_REACT.useCallback(async () => {
+        const generation = ++blockedGenerationRef.current;
+        // Superseded reads wait for the read that beat them, for the same reason
+        // status does: a detached Search adopts what this returns and cannot see
+        // that this component rejected it, and the snapshot from before the newer
+        // read is not an answer to what is true now.
+        const attempt = (async () => {
+            // Advisory, so an unreadable record is no reason to break anything that
+            // uses it: the list is simply empty and Advanced reports why.
+            const listed = await listBlockedTables().catch((cause) => ({ tables: [], reason: describeError(cause) }));
+            const read = { tables: listed?.tables ?? [], reason: listed?.reason ?? null };
+            if (generation !== blockedGenerationRef.current) {
+                const winner = blockedInFlightRef.current;
+                if (winner && winner.generation !== generation)
+                    return winner.promise;
+                return blockedTablesRef.current;
+            }
+            blockedTablesRef.current = read;
+            setBlockedTables(read.tables);
+            setBlockedTablesReason(read.reason);
+            return read;
+        })();
+        blockedInFlightRef.current = { generation, promise: attempt };
+        return attempt;
+    }, []);
+    // One lost `getStatus()` during mount used to leave the panel an
+    // indefinitely disabled loading screen: nothing retried it, and every action
+    // rendered in that state is a no-op, so the only recovery was remounting the
+    // whole panel. Retry on a bounded backoff; Home also offers an explicit Retry.
+    SP_REACT.useEffect(() => {
+        if (status !== null || bootstrapAttempt >= BOOTSTRAP_RETRY_DELAYS_MS.length)
+            return;
+        const timer = window.setTimeout(() => {
+            setBootstrapAttempt((attempt) => attempt + 1);
+            void bootstrap();
+        }, BOOTSTRAP_RETRY_DELAYS_MS[bootstrapAttempt]);
+        return () => window.clearTimeout(timer);
+    }, [status, bootstrapAttempt, bootstrap]);
+    SP_REACT.useEffect(() => {
+        // A fresh controller per mount, before anything it has to cover starts: an
+        // aborted one must never outlive its panel and silence the next one's first
+        // refresh, and a sweep must never start against the previous one.
+        const aborter = new AbortController();
+        panelAborterRef.current = aborter;
+        void bootstrap();
+        // Advisory and small; read once so a search opened straight away already
+        // greys what Advanced would list.
+        void refreshBlockedTables();
+        return () => {
+            launchGenerationRef.current += 1;
+            runtimeGenerationRef.current += 1;
+            gameGenerationRef.current += 1;
+            // Stop the refresh sweeps at their next chunk boundary. A generation
+            // counter only stops the result being adopted; the round-trips carried on
+            // regardless, and they are the expensive part.
+            aborter.abort();
+        };
+    }, [bootstrap, refreshBlockedTables]);
+    // Whether the quick-access panel is on screen right now.
+    //
+    // The loader supplies this; an older loader API does not, and a hook that is
+    // not there must not take the whole panel down with it. `QUICK_ACCESS_VISIBLE`
+    // is decided once for the frontend's lifetime, so the hook order of any one
+    // mount is still fixed.
+    const quickAccessVisible = QUICK_ACCESS_VISIBLE ? QUICK_ACCESS_VISIBLE() : true;
+    SP_REACT.useEffect(() => { logUi("panel.visibility_changed", { visible: quickAccessVisible }); }, [quickAccessVisible]);
+    // Whether the panel has a status snapshot at all yet. This is a dependency of
+    // the reread below rather than a bare read of the ref, because a panel that
+    // mounts already visible never sees a visibility transition: the loader
+    // initializes the hook from the tab's current visibility, so a browser view
+    // Steam recreates while the panel is open starts at `true` and stays there.
+    // Without this the reread ran once against an empty status, returned, and was
+    // never scheduled again, which left exactly the stale authorization the
+    // reread exists to clear.
+    const statusReady = status !== null;
+    // Whether this panel has already scheduled its one delayed catch-up read.
+    const initialCatchUpRef = SP_REACT.useRef(false);
+    SP_REACT.useEffect(() => {
+        if (!quickAccessVisible || !statusReady)
+            return;
+        // Re-read the authority every time this panel comes back into view.
+        //
+        // Work started by a press outlives the press, and it can outlive the panel:
+        // Steam recreates this browser view when a game returns to the foreground -
+        // which is exactly what stopping Cheat Engine does - so a mutation that
+        // lands a moment later reports to a component nobody renders any more. The
+        // panel that comes back read the profile just before that write and never
+        // reads it again, because nothing here polls status. On the target that
+        // left Home showing an execution authorization the user had just withdrawn,
+        // with Load table & start CE enabled for it, until the plugin was reloaded.
+        //
+        // Every durable write still refreshes on its own path; this only closes the
+        // window where the panel that receives the answer is not the panel that
+        // asked. A read of the exact same authority is idempotent, and doing it
+        // while the user is looking at the panel is the moment it is worth paying
+        // for.
+        const reread = () => {
+            void refreshStatus().catch(() => undefined);
+            void refreshBlockedTables().catch(() => undefined);
+        };
+        reread();
+        // Once per panel, and only behind the first reread it performs: an ordinary
+        // status update must not schedule another one, or this stops being a
+        // catch-up and becomes a poll. A panel that mounts hidden gets its first
+        // reread when it is first shown, and that one is worth following too, since
+        // the write it is racing belongs to the panel this one replaced either way.
+        if (initialCatchUpRef.current)
+            return;
+        initialCatchUpRef.current = true;
+        const timer = window.setTimeout(reread, PANEL_CATCH_UP_DELAY_MS);
+        return () => window.clearTimeout(timer);
+    }, [quickAccessVisible, statusReady, refreshStatus, refreshBlockedTables]);
+    // The exact half of the same problem. The catch-up above is a timer, and a
+    // timer covers a write that lands a moment late; it cannot cover an answer
+    // whose last write is five round trips after its first, made by a dialog that
+    // outlived the panel entirely. Such an answer says when it has finished, and
+    // whichever panel is alive then reads the authority again.
+    SP_REACT.useEffect(() => subscribeAuthorityChanged(() => {
+        void (async () => {
+            const next = await refreshStatus().catch(() => null);
+            // A failed live read is about the live state of a selected table. Once
+            // there is no selected table it cannot be true of anything, and it was
+            // outliving the table it described: hydration is the only thing that
+            // clears it and nothing re-hydrates a game whose table was taken away
+            // under it, so the panel kept "Live cheat state could not be refreshed"
+            // with no table and no session to refresh it from.
+            if (next && !currentProfile(next, selectedGameRef.current)?.table_sha256) {
+                setError((current) => current?.startsWith(LIVE_READ_FAILURE_PREFIX) ? null : current);
+            }
+        })();
+        void refreshBlockedTables().catch(() => undefined);
+    }), [refreshStatus, refreshBlockedTables]);
+    // Where the ring goes once a table has been retired.
+    //
+    // Searching is the next thing a user does about a table that did not work,
+    // and the answer that retires one is given from a window that has usually
+    // taken this panel with it, so the request arrives either at a panel Steam is
+    // about to build or at one that is in the middle of the writes the answer
+    // makes. Taken at the mount for the first, and heard for the second.
+    const searchButtonRef = SP_REACT.useRef(null);
+    const [preferSearchFocus, setPreferSearchFocus] = SP_REACT.useState(false);
+    // Taken in an effect rather than in the state initializer it belongs to by
+    // shape. Taking one retires it, which makes it a side effect, and an
+    // initializer is allowed to run more than once for a single mount: the run
+    // that took the request would not be the run whose value React keeps, and the
+    // one answer this panel exists to act on would be spent on nothing. The
+    // effect runs before the panel below has finished reading the authority, so
+    // the screen the user actually sees is still built knowing about it.
+    SP_REACT.useEffect(() => {
+        if (takePanelFocus("search"))
+            setPreferSearchFocus(true);
+        return subscribePanelFocus(() => {
+            if (takePanelFocus("search"))
+                setPreferSearchFocus(true);
+        });
+    }, []);
+    // A request this panel never acted on goes back rather than dying with it.
+    // Taking one is what retires it, and a panel that was hidden the whole time
+    // it held one has retired something nobody ever saw: the quick access panel
+    // is exactly what an answer to this question closes, and Steam may well build
+    // another before it is looked at again.
+    const outstandingFocusRef = SP_REACT.useRef(false);
+    SP_REACT.useEffect(() => { outstandingFocusRef.current = preferSearchFocus; }, [preferSearchFocus]);
+    SP_REACT.useEffect(() => () => { if (outstandingFocusRef.current)
+        requestPanelFocus("search"); }, []);
+    // Deliberately without a dependency list. Search is disabled while the panel
+    // is busy and while it has no game, and both are true when the request
+    // arrives: the answer is still writing, and the panel below has not finished
+    // reading the authority. So this asks after every commit until the control it
+    // wants can actually be pressed, and the guard makes every other one free.
+    SP_REACT.useEffect(() => {
+        if (!preferSearchFocus)
+            return;
+        // A hidden panel is not somewhere a ring can be seen, and Steam settles the
+        // focus of the one it shows next. Waiting costs nothing here: this runs
+        // again when the panel is looked at, and the loader's own visibility is
+        // what re-renders it.
+        if (!quickAccessVisible)
+            return;
+        if (!focusFirstEnabled(searchButtonRef))
+            return;
+        setPreferSearchFocus(false);
+        logUi("panel.focus_moved", { control: "search" });
+    });
+    const clearGameContext = SP_REACT.useCallback(() => {
+        gameGenerationRef.current += 1;
+        runtimeGenerationRef.current += 1;
+        selectedGameRef.current = null;
+        selectionSourceRef.current = null;
+        forgetSelectedGame();
+        setSelectedGame(null);
+        setAppDetails(null);
+        setInspection(null);
+        setTargetProcess("");
+        setRuntime(null);
+        dropLiveSnapshot();
+        // Ownership of Cheat Engine is launcher-global, not part of the game
+        // context: dropping it here removed the Stop action and the owner's name at
+        // exactly the moment observation became ambiguous, and re-enabled setup
+        // actions the backend still had to reject. Re-read it at launcher scope.
+        void refreshCELaunch(null).catch(() => undefined);
+        autoloadAttemptRef.current = null;
+        clearAutoloadRetry();
+    }, [clearAutoloadRetry, refreshCELaunch]);
+    const hydrateGame = SP_REACT.useCallback(async (game, source) => {
+        logUi("panel.game_hydrating", { app_id: game.appId, shortcut: game.isShortcut, source });
+        const generation = gameGenerationRef.current + 1;
+        gameGenerationRef.current = generation;
+        runtimeGenerationRef.current += 1;
+        const details = await readAppDetails(game.appId);
+        if (generation !== gameGenerationRef.current)
+            return null;
+        if (details.isShortcut !== game.isShortcut) {
+            throw new Error(`Steam identity changed for AppID ${game.appId}; refusing to reuse the old game profile.`);
+        }
+        const canonical = { ...game, name: details.displayName || game.name, sortAs: details.displayName || game.sortAs };
+        const profile = currentProfile(statusRef.current, canonical);
+        let nextInspection = null;
+        let hydrationError = null;
+        if (profile?.table_sha256 && statusRef.current?.tables.some((table) => table.sha256 === profile.table_sha256 && table.available)) {
+            try {
+                nextInspection = await inspectTableSha(profile.table_sha256, canonical.appId);
+            }
+            catch (cause) {
+                logUiFailure("panel.table_inspection_failed", cause, { app_id: canonical.appId, table_sha: profile.table_sha256.slice(0, 12) });
+                hydrationError = `Saved table inspection failed: ${describeError(cause)}`;
+            }
+        }
+        if (generation !== gameGenerationRef.current)
+            return null;
+        let nextRuntime = null;
+        let nextSnapshot = null;
+        try {
+            nextRuntime = await getRuntimeStatus(canonical.appId);
+            const exactReady = Boolean(nextInspection
+                && profile?.table_sha256
+                && isExactAttachedRuntime(nextRuntime, canonical.appId, profile.table_sha256));
+            const snapshotIds = nextInspection
+                ? safeActionableControls(nextInspection).flatMap((control) => control.id === null ? [] : [control.id])
+                : [];
+            // A table beyond the live-control budget stays usable for inspection and
+            // Auto-load by design, so hydration keeps its connected runtime and
+            // simply has no live snapshot to show.
+            if (exactReady && nextInspection && snapshotIds.length <= MAX_LIVE_CONTROLS) {
+                // A child its script has not created yet is an expected per-record
+                // state, not a broken session: it must not fail the whole hydration.
+                const queried = await queryRuntimeControlsPartial(canonical.appId, snapshotIds, undefined, panelAborterRef.current.signal);
+                nextRuntime = queried.envelope;
+                const sessionId = queried.envelope.prepared?.session_id;
+                const tableSha256 = queried.envelope.prepared?.table_sha256;
+                if (sessionId && tableSha256 && queried.envelope.status?.session_id === sessionId && queried.envelope.session_current) {
+                    nextSnapshot = { sessionId, tableSha256, results: queried.results };
+                }
+            }
+        }
+        catch (cause) {
+            // The panel going away is not a failure to report to a user who is no
+            // longer looking at it, and there is nothing left to hydrate.
+            if (cause instanceof RuntimeQueryAbortedError)
+                return null;
+            // The backend can complete every RPC and the operation still fail here:
+            // a session or acknowledgement identity that does not match, a bridge
+            // result that says not ok, a read-back that disagrees. Those are known
+            // only to the panel, so a bundle without this line shows a healthy
+            // backend beside a user reporting stale cheats.
+            logUiFailure("runtime.hydration_failed", cause, { appId: canonical.appId });
+            hydrationError ?? (hydrationError = `${LIVE_READ_FAILURE_PREFIX}${describeError(cause)}`);
+        }
+        if (generation !== gameGenerationRef.current)
+            return null;
+        selectedGameRef.current = canonical;
+        selectionSourceRef.current = source;
+        // Opening any modal unmounts this panel, so an explicit choice has to be
+        // written down or the picker appears to do nothing at all.
+        if (source === "manual")
+            rememberSelectedGame({ appId: canonical.appId, isShortcut: canonical.isShortcut });
+        setSelectedGame(canonical);
+        setAppDetails(details);
+        setTargetProcess(profile?.target_process ?? "");
+        setInspection(nextInspection);
+        setRuntime(nextRuntime);
+        setLiveSnapshot(nextSnapshot);
+        // Hydration surfaces its own read failure as the panel error, so the
+        // snapshot note starts clean for the game that was just selected.
+        setLiveSnapshotError(null);
+        // Cleared on a read that worked, not only replaced on one that did not. A
+        // failure from an earlier hydration outlived the session it described:
+        // stopping a table left "Live cheat state could not be refreshed" on a
+        // panel with no table and no session to refresh it from.
+        setError(hydrationError ?? null);
+        // Identity has already changed, so the previous game's launch snapshot must
+        // not describe this one for even one render.
+        setCELaunch((current) => current && current.appId === null ? current : null);
+        const nextLaunch = await refreshCELaunch(canonical.appId).catch((cause) => {
+            setError(`Cheat Engine launch state for this game could not be read: ${describeError(cause)}`);
+            return null;
+        });
+        if (statusRef.current?.table_compatibility?.entries.some((entry) => entry.app_id === canonical.appId)) {
+            await refreshStatus().catch((cause) => logUiFailure("panel.compatibility_refresh_failed", cause, { app_id: canonical.appId }));
+        }
+        const currentStatus = statusRef.current;
+        if (!currentStatus || generation !== gameGenerationRef.current)
+            return null;
+        return {
+            status: currentStatus,
+            ceLaunch: nextLaunch,
+            runtime: nextRuntime,
+            appDetails: details,
+            inspection: nextInspection,
+            targetProcess: profile?.target_process ?? "",
+        };
+    }, [refreshCELaunch]);
+    const shortcutExecutableCacheRef = SP_REACT.useRef(new Map());
+    const resolveShortcutExecutables = SP_REACT.useCallback(async (games) => {
+        const cache = shortcutExecutableCacheRef.current;
+        for (const game of games) {
+            if (cache.has(game.appId))
+                continue;
+            if (!game.isShortcut) {
+                // Steam library apps expose no shortcut executable, and a Steam app is
+                // never one of the third-party launchers this filter targets.
+                cache.set(game.appId, null);
+                continue;
+            }
+            try {
+                cache.set(game.appId, (await readAppDetails(game.appId)).shortcutExe || null);
+            }
+            catch {
+                // An unreadable entry stays a candidate: this filter may only remove a
+                // launcher it positively identified, never a game it failed to read.
+                cache.set(game.appId, null);
+            }
+        }
+        return cache;
+    }, []);
+    const detectRunningGame = SP_REACT.useCallback(async () => {
+        // Detached Decky modals are intentionally bound to the game context they
+        // were opened from. Do not silently swap the Home selection underneath an
+        // in-progress Search/Review/Cheats/Advanced workflow; backend launch/runtime
+        // checks still revalidate the actual running process state at mutation time.
+        if (detectionBusyRef.current || busyRef.current || contextModalDepthRef.current > 0)
+            return;
+        detectionBusyRef.current = true;
+        try {
+            let snapshot = await listRunningGames(runningGamesRef.current, async () => {
+                // Only reached when this Steam build exposes no running-app query. The
+                // backend proposes AppIDs Steam itself declared; they are matched against
+                // the Steam library here, and every launch path still resolves the
+                // prefix and Proton identity independently.
+                const observed = await listRunningAppIds();
+                return observed.available ? observed.app_ids : null;
+            });
+            // A user action or modal may have started while GameSessions/library
+            // enumeration was awaiting Steam. Never let that older detector pass
+            // overwrite or clear the newer explicit UI context.
+            if (busyRef.current || contextModalDepthRef.current > 0)
+                return;
+            // A game started through a third-party store leaves that store's own
+            // library entry running beside it. Resolving the shortcut executables of
+            // an ambiguous observation often leaves exactly one real game, which the
+            // user then does not have to select by hand. Steam library apps have no
+            // shortcut executable and are never dropped.
+            //
+            // Resolved before anything is published, never after. Publishing the raw
+            // observation first and correcting it afterwards made the launcher a live
+            // running candidate for as long as the resolution took, and Choose is not
+            // held during it: a press landing in that window opened the picker on the
+            // uncorrected answer, and the detector then exited on its own race guard
+            // without ever publishing the corrected one.
+            if (snapshot.games.length > 1) {
+                const executables = await resolveShortcutExecutables(snapshot.games);
+                if (busyRef.current || contextModalDepthRef.current > 0)
+                    return;
+                const games = withoutKnownLaunchers(snapshot.games, (game) => executables.get(game.appId) ?? null);
+                if (games.length !== snapshot.games.length)
+                    snapshot = { ...snapshot, games: [...games] };
+            }
+            runningGamesRef.current = snapshot.games;
+            setRunningGames(snapshot);
+            // A running game supersedes a game the user picked by hand while nothing
+            // was running, so that pick must not be restored on any later remount.
+            if (snapshot.games.length > 0)
+                forgetSelectedGame();
+            const selectedBeforeDetection = selectedGameRef.current;
+            if (!selectedBeforeDetection) {
+                // With no game context nothing else refreshed launcher ownership, so a
+                // recovered owner that exited stayed on Home and kept blocking setup
+                // until the user opened Advanced or picked a game.
+                await refreshCELaunch(null).catch(() => undefined);
+            }
+            if (selectedBeforeDetection) {
+                // Keep Home lifecycle truth fresh even when the game identity itself did
+                // not change: owned CE may exit, a prepared bridge may go stale, or a
+                // manually selected game may start after selection. These are backend
+                // observations for the already explicit AppID, never a guessed identity.
+                await refreshCELaunch(selectedBeforeDetection.appId).catch(() => undefined);
+                const runtimeRefreshGeneration = runtimeGenerationRef.current + 1;
+                try {
+                    await refreshRuntime(selectedBeforeDetection.appId);
+                }
+                catch {
+                    // A failed runtime refresh must not leave an old connected/attached
+                    // envelope driving Home controls. Do not clear a newer result written
+                    // by a user action that raced this background detector pass.
+                    if (runtimeGenerationRef.current === runtimeRefreshGeneration
+                        && !busyRef.current
+                        && contextModalDepthRef.current === 0
+                        && selectedGameRef.current?.appId === selectedBeforeDetection.appId) {
+                        setRuntime(null);
+                        dropLiveSnapshot();
+                    }
+                }
+            }
+            if (busyRef.current || contextModalDepthRef.current > 0)
+                return;
+            // Here, not at the end of this function. The observation has been taken
+            // and the stale-action guards have passed, which is the whole of what
+            // recovery means, and every ordinary outcome below returns before the
+            // end: one game running, a remembered selection restored. Clearing the
+            // latch down there meant that after one failure the common cases never
+            // reached it, so no recovery was ever recorded and, far worse, the latch
+            // stayed raised and suppressed every later failure. A latch that never
+            // clears is worse than no latch at all: it turns one logged failure into
+            // silence about all the rest.
+            if (detectionFailedRef.current) {
+                detectionFailedRef.current = false;
+                logUi("games.detection_recovered");
+            }
+            // An observation with an AppID nothing could resolve is ambiguous however
+            // few games it resolved, so it can never drive automatic selection.
+            const unresolvedRunning = (snapshot.unresolvedAppIds ?? []).length > 0;
+            if (snapshot.games.length === 1 && !unresolvedRunning) {
+                const only = snapshot.games[0];
+                const current = selectedGameRef.current;
+                const sameAsRunning = Boolean(current && current.appId === only.appId && current.isShortcut === only.isShortcut);
+                // A manual choice made while its own game runs is an override and is
+                // kept. A manual choice made to prepare a game that is not running is a
+                // preparation screen, and it must not survive a different game actually
+                // starting: Home would keep showing, searching and configuring the game
+                // the user is not playing, and Auto-load would look dead for the one
+                // they are, until they noticed and pressed Change.
+                if (current && selectionSourceRef.current === "manual" && sameAsRunning)
+                    return;
+                if (!sameAsRunning) {
+                    await hydrateGame(only, "auto");
+                }
+                return;
+            }
+            if (!selectedGameRef.current && snapshot.games.length === 0 && !unresolvedRunning && !restoredSelectionRef.current) {
+                // Nothing is running and nothing is selected: this is the only moment a
+                // remembered manual pick is still what the user meant. It is honoured
+                // once per mount, and only while that exact library entry still exists.
+                restoredSelectionRef.current = true;
+                const remembered = readSelectedGame();
+                if (remembered) {
+                    const installed = await loadGames();
+                    if (busyRef.current || contextModalDepthRef.current > 0 || selectedGameRef.current)
+                        return;
+                    const match = installed.find((candidate) => candidate.appId === remembered.appId && candidate.isShortcut === remembered.isShortcut);
+                    if (match) {
+                        await hydrateGame(match, "manual");
+                        return;
+                    }
+                    forgetSelectedGame();
+                }
+            }
+            const selected = selectedGameRef.current;
+            if (selected && selectionSourceRef.current === "auto") {
+                // Automatic context is authoritative only while exactly one library game is
+                // observed running. If a second game starts (or observation becomes empty),
+                // keeping the previous auto-selection would silently guess which game the
+                // user intends to mutate.
+                clearGameContext();
+            }
+        }
+        catch (cause) {
+            if (busyRef.current || contextModalDepthRef.current > 0)
+                return;
+            // Latched, because this runs every three seconds and a line per tick
+            // would bury the ring buffer it is written into. Parts of this pipeline
+            // are entirely Steam-side, so when they fail there is no backend record
+            // to compensate and this is the only trace there will be.
+            if (!detectionFailedRef.current) {
+                detectionFailedRef.current = true;
+                logUiFailure("games.detection_failed", cause, {
+                    hadSelection: Boolean(selectedGameRef.current),
+                    selectionSource: selectionSourceRef.current,
+                });
+            }
+            runningGamesRef.current = [];
+            setRunningGames({ available: false, games: [] });
+            if (selectedGameRef.current && selectionSourceRef.current === "auto") {
+                // Losing the observation channel invalidates an automatic selection just
+                // as surely as seeing 0/2+ running games. Keep manual selections as an
+                // explicit user choice, but never preserve an auto-selected AppID on a
+                // stale snapshot after Steam observation itself failed.
+                clearGameContext();
+            }
+            else if (!selectedGameRef.current) {
+                setError(describeError(cause));
+            }
+        }
+        finally {
+            detectionBusyRef.current = false;
+        }
+    }, [clearGameContext, hydrateGame, refreshCELaunch, refreshRuntime]);
+    /**
+     * Whether the game this panel is on is running, asked now.
+     *
+     * Home reads that from the detector's snapshot, which is up to three seconds
+     * old and is deliberately not refreshed while a press is in flight or a
+     * context modal is open. That is right for a row that describes the state and
+     * wrong for the one decision that turns on it: a game started after the last
+     * poll, or between the render and the press, or while the picker was open,
+     * leaves a stopped snapshot standing over a running game, and the picker is
+     * open for exactly as long as the detector is suppressed.
+     *
+     * So this asks Steam itself, and it asks about one exact AppID rather than
+     * publishing an observation: nothing here writes `runningGames`, and a pass
+     * that raced this one still owns that.
+     */
+    const selectedGameRunningNow = SP_REACT.useCallback(async () => {
+        const game = selectedGameRef.current;
+        if (!game)
+            return null;
+        const snapshot = await listRunningGames(runningGamesRef.current, async () => {
+            const observed = await listRunningAppIds();
+            return observed.available ? observed.app_ids : null;
+        });
+        if (!snapshot.available)
+            return null;
+        const running = snapshot.games.some((candidate) => (candidate.appId === game.appId && candidate.isShortcut === game.isShortcut)) || (snapshot.unresolvedAppIds ?? []).includes(game.appId);
+        return running ? game : null;
+    }, []);
+    /**
+     * Refuse to move the game context off a game that is running.
+     *
+     * Everything this plugin holds is per game: the selected table, the process
+     * it attaches to, the consent given for those exact bytes, and any Cheat
+     * Engine it is running. Moving that context onto another game while the first
+     * one is playing leaves all of it pointing somewhere else, and the disabled
+     * button is presentation: it describes the last snapshot and cannot enforce
+     * anything at the moment of the press.
+     *
+     * An observation that could not be taken is not an observation that the game
+     * stopped, and it is also not a reason to strand a user with no way to change
+     * games. It is recorded and the press goes ahead: this refusal protects the
+     * per-game context, while the launch paths that would actually touch a
+     * running game resolve identity for themselves and fail closed on their own.
+     */
+    const refuseWhileSelectedGameRuns = SP_REACT.useCallback(async (stage) => {
+        let running = null;
+        try {
+            running = await selectedGameRunningNow();
+        }
+        catch (cause) {
+            logUiWarning("games.change_guard_unreadable", { stage, reason: describeError(cause) });
+            return;
+        }
+        if (!running)
+            return;
+        logUiWarning("games.change_refused_running", { stage, app_id: running.appId, shortcut: running.isShortcut });
+        throw new Error(GAME_RUNNING_REFUSAL);
+    }, [selectedGameRunningNow]);
+    SP_REACT.useEffect(() => {
+        if (!status)
+            return;
+        void detectRunningGame();
+        const timer = window.setInterval(() => void detectRunningGame(), 3000);
+        return () => window.clearInterval(timer);
+    }, [status?.version, detectRunningGame]);
+    const profile = currentProfile(status, selectedGame);
+    const activeTable = profile?.table_sha256
+        ? status?.tables.find((table) => table.sha256 === profile.table_sha256 && table.available) ?? null
+        : null;
+    // A table can be marked as not working and still be the selected one: keeping
+    // it is one of the two answers the refusal dialog offers, and a mark recorded
+    // for another game reaches this one by exact bytes. Nothing said so anywhere
+    // outside Search, so Home showed the row a working table has. It stays
+    // usable - the record is advice, not a trust decision - but it says what it
+    // is, because being offered a table that is already known not to work is the
+    // whole thing the record exists to prevent.
+    // Only a record about whether this table works. A statement about a download
+    // or about a source belongs to the row that download came from and to the
+    // full list under Advanced; on the table this game is using it would read as
+    // "the table you are playing does not work", which is not what it says.
+    const selectedTableMark = profile?.table_sha256 ? blockedLookups.byDigest[profile.table_sha256] : undefined;
+    const selectedTableMarkedNotWorking = isCompatibilityFailure(selectedTableMark)
+        ? selectedTableMark?.reason ?? null
+        : null;
+    const ceLaunchView = ceLaunch?.capability ?? null;
+    // Facts about one exact game are only valid from a snapshot fetched for it.
+    const ceLaunchGame = ceLaunch && ceLaunch.appId === selectedGame?.appId ? ceLaunch.capability.game : null;
+    // Whether the game this profile is on is running, from Steam's own list of
+    // running apps rather than from the launch capability's `running`, which is
+    // true while any process still reports the AppID: `docs/FIELD_NOTES.md`
+    // records that `wineserver`, the Proton chain and Steam's reaper all outlive
+    // the game doing exactly that, so a control gated on it would stay refused
+    // after the game was gone. This clears when the game does, and it is the same
+    // list the game row's own "N games running" is counted from.
+    const selectedGameRunning = runningGames.games.some((candidate) => (candidate.appId === selectedGame?.appId && candidate.isShortcut === selectedGame?.isShortcut));
+    // Ownership of the one Cheat Engine CE Decky may run is launcher-global, and
+    // every consumer now reads it from the same place: setup identity mutations,
+    // manual Start, table activation and Auto-load previously disagreed about the
+    // same invariant and offered actions the backend had to reject.
+    const ownership = launchOwnership({
+        capability: ceLaunchView,
+        readError: ceLaunchError,
+        scopeAppId: ceLaunch?.appId ?? null,
+        selectedAppId: selectedGame?.appId ?? null,
+        // The library may not be enumerated yet, and the owner is very often one of
+        // the games currently observed running, so both sources are consulted
+        // before falling back to a bare AppID.
+        nameOf: (appId) => games.find((candidate) => candidate.appId === appId)?.name
+            ?? runningGames.games.find((candidate) => candidate.appId === appId)?.name
+            ?? null,
+    });
+    const ceRunning = ownership.ownedBySelected;
+    // The exact running-process set already positively identifies a known
+    // anti-cheat launcher; that signal was consumed only to keep the launcher out
+    // of target selection and then discarded, so Start and Auto-load proceeded
+    // silently for a game the documented boundary says to refuse. Nothing here
+    // touches the anti-cheat itself.
+    const antiCheatReason = antiCheatBlockedReason(ceLaunchGame?.windows_executables ?? []);
+    // What the game started instead of the one program this table is for, where
+    // that absence is proven, resolved once for the three places that ask: the
+    // row the reader sees, the refusal under the start press, and Auto-load.
+    const targetNotRunning = SP_REACT.useMemo(() => absentLiveTarget(ceLaunchGame, profile?.target_process), [ceLaunchGame, profile?.target_process]);
+    // The same answer as one bit, because that is what an effect may depend on.
+    // The list itself is a new array on every observation, so depending on it
+    // would wake Auto-load on the detector's own cadence instead of on the thing
+    // that changed - and depending on neither is what left Auto-load asleep
+    // through the transition it exists for, a game starting its launcher first
+    // and the target appearing seconds later with `running` true throughout.
+    const targetProvenAbsent = targetNotRunning !== null;
+    const ceIdentityBlockedReason = ownership.blockedReason;
+    const runtimeSessionReady = Boolean(selectedGame
+        && profile?.table_sha256
+        && isExactRuntimeSession(runtime, selectedGame.appId, profile.table_sha256));
+    // A Cheat Engine that outlived a plugin update can still be running the
+    // previous resident bridge. Ownership and Stop stay available; live control
+    // does not, because current commands would reach an old protocol whose
+    // compatibility is an accident rather than a contract.
+    const recoveredBridgeMismatch = ceLaunchView?.recovered_bridge_mismatch ?? null;
+    const runtimeReady = Boolean(selectedGame
+        && profile?.table_sha256
+        && !recoveredBridgeMismatch
+        && isExactAttachedRuntime(runtime, selectedGame.appId, profile.table_sha256));
+    // A partially failed activation can leave the freshly inspected table in state
+    // while the backend profile still points at the previous exact SHA. Home must
+    // never label live results or open the cheat picker with a mismatched table, so
+    // treat the inspection as usable only for the profile's exact current SHA.
+    const currentInspection = inspection && inspection.sha256 === profile?.table_sha256 ? inspection : null;
+    const safeControls = SP_REACT.useMemo(() => safeActionableControls(currentInspection), [currentInspection]);
+    const activeCheatSnapshotReady = Boolean(runtimeReady
+        && liveSnapshot
+        && liveSnapshot.sessionId === runtime?.prepared?.session_id
+        && liveSnapshot.tableSha256 === profile?.table_sha256);
+    // What is on, split the way this panel presents it. A table's enclosing
+    // scripts and its attach-only record are machinery rather than choices: CE
+    // Decky switches them on itself and the picker lists them apart from the
+    // cheats. Counting them in with the cheats made the panel say two were on
+    // above a single switch that was, which is the panel disagreeing with its own
+    // controls; and the labels under it named a script the user never chose.
+    const { activeCheatLabels, activeScriptCount } = SP_REACT.useMemo(() => {
+        if (!activeCheatSnapshotReady || !liveSnapshot)
+            return { activeCheatLabels: [], activeScriptCount: 0 };
+        const scriptListed = scriptListedControlIds(safeControls);
+        const labels = [];
+        let scripts = 0;
+        for (const control of safeControls) {
+            if (control.id === null)
+                continue;
+            const result = latestRuntimeResult(liveSnapshot.results, control.id);
+            if (!result?.ok || result.active !== true)
+                continue;
+            if (scriptListed.has(control.id))
+                scripts += 1;
+            else
+                labels.push(control.path.join(" › "));
+        }
+        return { activeCheatLabels: labels, activeScriptCount: scripts };
+    }, [activeCheatSnapshotReady, liveSnapshot, safeControls]);
+    const pinnedRows = SP_REACT.useMemo(() => activeCheatSnapshotReady && liveSnapshot
+        ? pinnedCheatRows(safeControls, profile?.pinned ?? [], liveSnapshot.results, profile?.remembered ?? [], profile?.configured_values ?? [])
+        : [], [activeCheatSnapshotReady, liveSnapshot, safeControls, profile?.pinned, profile?.remembered, profile?.configured_values]);
+    const recordLiveSnapshot = SP_REACT.useCallback((results, envelope) => {
+        const game = selectedGameRef.current;
+        const sessionId = envelope.prepared?.session_id;
+        const tableSha256 = envelope.prepared?.table_sha256;
+        const selectedProfile = currentProfile(statusRef.current, game);
+        if (!game
+            || !sessionId
+            || !tableSha256
+            || selectedProfile?.table_sha256 !== tableSha256
+            || !isExactAttachedRuntime(envelope, game.appId, tableSha256)) {
+            return;
+        }
+        setRuntime(envelope);
+        setLiveSnapshot({ sessionId, tableSha256, results });
+        setLiveSnapshotError(null);
+    }, []);
+    /**
+     * Read the live state of every safe control, when that is possible at all.
+     *
+     * The snapshot is what powers pinned rows and Disable all; it is not what
+     * makes a launch succeed. A table larger than the live-control budget is
+     * explicitly supported for inspection and Auto-load, so awaiting the snapshot
+     * as part of the success transaction turned a connected, attached, correctly
+     * started session into a reported failure - and for Auto-load into one the
+     * retry loop could not even retry, because Cheat Engine was already running.
+     *
+     * Never throws. Returns `null` when the table is beyond that budget or when
+     * the read itself failed; either way the caller keeps its own outcome and
+     * Home degrades to live controls being unavailable, saying why. Awaiting this
+     * as part of the success transaction is exactly what turned a connected,
+     * attached, correctly started session into a reported failure for a read-only
+     * query that has no bearing on it.
+     */
+    const captureLiveSnapshot = SP_REACT.useCallback(async (appId, tableInspection) => {
+        const recordIds = safeActionableControls(tableInspection)
+            .flatMap((control) => control.id === null ? [] : [control.id]);
+        if (recordIds.length > MAX_LIVE_CONTROLS)
+            return null;
+        try {
+            // A record inside a script does not exist until that script has run, so
+            // one unreadable record is an expected per-record state, not a broken
+            // session. Requiring every record to answer meant a single unmaterialized
+            // child threw away the whole snapshot: pinned controls disappeared and
+            // Disable all went dead while the bridge was perfectly healthy.
+            const queried = await queryRuntimeControlsPartial(appId, recordIds, undefined, panelAborterRef.current.signal);
+            recordLiveSnapshot(queried.results, queried.envelope);
+            return queried.envelope;
+        }
+        catch (cause) {
+            // A sweep the closing panel abandoned says nothing about the session, so
+            // it must not leave "live controls unavailable" behind it either.
+            if (cause instanceof RuntimeQueryAbortedError)
+                return null;
+            logUiFailure("runtime.live_snapshot_failed", cause, { appId });
+            dropLiveSnapshot(describeError(cause));
+            return null;
+        }
+    }, [recordLiveSnapshot, dropLiveSnapshot]);
+    // The backend knows whether it installed this Cheat Engine itself, which it
+    // answers from the installation's own location rather than by matching the
+    // SHA the manifest currently pins.
+    const managedReleaseInstalled = Boolean(status?.ce.valid && status.ce.managed);
+    // Every Cheat Engine declares its own version in its PE resources, and that
+    // is the only answer that does not depend on a label written by hand. Fall
+    // back to the manifest's label only for a build declaring none.
+    const ceVersion = status?.ce.version
+        ?? (status?.ce.managed ? managedCE?.release?.visible_version ?? null : null);
+    const ceStatusText = status?.ce.valid
+        ? ceVersion
+            ? `Cheat Engine ${ceVersion} · Ready`
+            : "Cheat Engine · Ready"
+        : status?.ce.reason ?? managedCE?.reason ?? "Cheat Engine is required before live cheats can run.";
+    // A `completed` snapshot only means "setup still owns the workflow" while the
+    // backend still owns that exact operation. Once completion is consumed the CE
+    // identity is durably registered, so a snapshot retained by a superseded or
+    // failed monitor must neither block the workflow nor keep a stale progress row
+    // visible. Failed and cancelled snapshots stay visible on purpose.
+    const managedInstallSnapshot = managedInstall && managedInstall.state === "completed" && !managedCE?.operation
+        ? null
+        : managedInstall;
+    const managedSetupPending = Boolean(managedInstallSnapshot && ["downloading", "extracting", "verifying", "completed"].includes(managedInstallSnapshot.state));
+    const installAvailable = Boolean(managedCE && !managedSetupPending && managedCE.managed_install_available);
+    const installBusy = operationIsActive(managedInstallSnapshot);
+    const tableSource = activeTable?.origins.length
+        ? activeTable.origins[activeTable.origins.length - 1].provider
+        : "Local";
+    // A session override from Advanced -> Retry attach changes the live target
+    // only. Saying "Connected" without naming that divergence let Home imply the
+    // profile target and the process actually being controlled were the same.
+    const liveTargetOverride = divergentLiveTarget(runtime, profile?.target_process);
+    // A table larger than the live-control budget still loads, attaches and
+    // auto-loads; only the live picker, snapshot and bulk operations degrade.
+    const beyondLiveControlBudget = safeControls.length > MAX_LIVE_CONTROLS;
+    // Cheat Engine attached to the game with an empty address list is not a table
+    // CE Decky cannot support, and used to be indistinguishable from one: every
+    // record answered "missing", so no cheat had a switch and none of them could
+    // be pinned. The bridge now says whether it got the table in, and Home says so
+    // rather than presenting a session that can do nothing as Connected.
+    const tableLoadFailed = runtimeSessionReady && runtime?.status?.table_load_state === "failed";
+    // The runtime line, and whether the reader can finish it where it stands.
+    // Both come out of the same branch because they had drifted: a failure or
+    // recovery message decided here and a reachability decided somewhere else
+    // leaves text on screen that nothing can reveal.
+    //
+    // What decides it is who wrote the sentence. Every line this frontend writes
+    // itself is known copy of a known length, and a row read in place wraps, so
+    // there is nothing on it to open and no reason to rest the ring on it: the
+    // panel is a column of controls, and a stop that shows nothing for being
+    // reached is paid for on every pass down it. The two lines that carry a
+    // message the backend wrote are the exception, because that text has no
+    // bounded length and wrapping the whole of it inline would push the panel's
+    // own controls down the screen. Those keep their stop, stay cut to the line,
+    // and open on a press.
+    const { text: runtimeText, complete: runtimeTextComplete } = (() => {
+        if (recoveredBridgeMismatch && runtimeSessionReady) {
+            return { text: `${recoveredBridgeMismatch}. Stop it and start it again to use live cheats.`, complete: false };
+        }
+        if (tableLoadFailed) {
+            const detail = runtime?.status?.table_load_error ? `: ${runtime.status.table_load_error}` : "";
+            return {
+                text: `Cheat Engine is running, but it could not open this table${detail}. Stop it and start it again; if that repeats, the table cannot be used with this Cheat Engine.`,
+                complete: false,
+            };
+        }
+        if (runtimeReady) {
+            // An attached session is the state Home spends almost all of its time in.
+            // A process name is a value this frontend did not choose, but it is one
+            // token and the row wraps it rather than cutting it, so its length is not
+            // a reason to make this line a stop.
+            return liveTargetOverride
+                ? {
+                    text: `Connected · ${liveTargetOverride} · this session only; ${profile?.target_process} is still saved`,
+                    complete: true,
+                }
+                : { text: `Connected · ${runtime?.status?.target_process ?? targetProcess}`, complete: true };
+        }
+        if (runtimeSessionReady) {
+            return { text: "Cheat Engine is running, but it has not attached to the game process yet.", complete: true };
+        }
+        if (runtime?.connected) {
+            return {
+                text: "Cheat Engine is running for a different game or table; select this table again to reconnect.",
+                complete: true,
+            };
+        }
+        if (runtime?.prepared) {
+            return { text: "Cheat Engine is not running for this table. Details are under Advanced.", complete: true };
+        }
+        return activeTable
+            ? { text: "Table selected; Cheat Engine is not connected.", complete: true }
+            : { text: "Select a table first.", complete: true };
+    })();
+    // A selected table survives a restart, so Home owns the second-run entry point
+    // into the runtime. Say exactly what is missing instead of only disabling it.
+    const startRuntimeBlockedReason = (() => {
+        if (runtimeReady)
+            return "Cheat Engine is already connected for this exact table.";
+        if (profile?.table_sha256 && !activeTable) {
+            return "The selected table file is missing. Download or open it again to re-import it.";
+        }
+        if (!selectedGame)
+            return "Choose the game this table belongs to first.";
+        if (!status?.ce.valid)
+            return status?.ce.reason ?? "Install or import Cheat Engine first.";
+        if (!profile?.table_sha256)
+            return "Select a table for this game first.";
+        if (profile.execution_consent_sha256 !== profile.table_sha256) {
+            return "This exact table is not authorized yet. Open it once from Manage and confirm it.";
+        }
+        if (!profile.target_process)
+            return "The exact game .exe is not confirmed yet. Open the table once to review it.";
+        if (antiCheatReason)
+            return antiCheatReason;
+        if (ownership.blockedReason)
+            return ownership.blockedReason;
+        if (ceLaunchGame?.app_id !== selectedGame.appId || !ceLaunchGame.running) {
+            return ceLaunchGame?.reason ?? "Start the game first; Cheat Engine attaches to the running game.";
+        }
+        // A game that is up and is not running the one program this table is for.
+        // Home already said so in its own row and told the reader to repair it
+        // before starting, and the press underneath stayed live: the attach then
+        // waits for a process that is not there, which on this panel is
+        // indistinguishable from Cheat Engine failing. `absentLiveTarget` answers
+        // only where the absence is proven, so an observation that could not see
+        // everything still starts.
+        if (targetNotRunning) {
+            return `${profile.target_process} is not running in this game. This game is running ${targetNotRunning.join(", ")}. Set the target under Advanced first.`;
+        }
+        if (ceRunning)
+            return "Cheat Engine is already running for this game; stop it before starting a new session.";
+        return null;
+    })();
+    /**
+     * Publish one launch operation into the launcher snapshot immediately.
+     *
+     * A launch that reaches `starting` and then waits for the resident bridge is
+     * a real owned Cheat Engine, and the backend can already stop it safely. Home
+     * only adopted the operation once it reached `connected`, so for up to five
+     * minutes the panel had no ownership snapshot from the action it had just
+     * performed - and therefore no Stop.
+     */
+    const setCELaunchOperation = SP_REACT.useCallback((operation) => {
+        setCELaunch((current) => {
+            if (!current)
+                return current;
+            const base = current.capability;
+            return {
+                ...current,
+                capability: {
+                    ...base,
+                    operations: [
+                        ...base.operations.filter((candidate) => candidate.operation_id !== operation.operation_id),
+                        operation,
+                    ],
+                },
+            };
+        });
+    }, []);
+    const awaitLaunchOutcome = async (started, waitForStop = false) => {
+        let operation = started;
+        const deadline = monotonicNow() + 330000;
+        const pending = () => ["starting", "running"].includes(operation.state)
+            || (waitForStop && operation.state === "connected");
+        while (pending() && monotonicNow() < deadline) {
+            await new Promise((resolve) => window.setTimeout(resolve, 700));
+            try {
+                // One poll that never settles used to hold the global busy latch open
+                // for the whole panel lifetime, because the deadline below could not
+                // advance while it was being awaited. A lost poll is not a lost launch,
+                // so bound each one and let the outer deadline stay the real limit.
+                operation = await withTimeout(pollCELaunch(operation.operation_id), LAUNCH_POLL_TIMEOUT_MS, "Cheat Engine launch status did not answer in time.");
+                setCELaunchOperation(operation);
+            }
+            catch {
+                // Keep the last known operation and try again until the deadline.
+            }
+        }
+        return operation;
+    };
+    const runManagedSetup = SP_REACT.useCallback(async (force) => {
+        if (managedOwnerRef.current)
+            return;
+        const owner = new ManagedSetupOwner({
+            // The owner may abandon a read for Cancel. Only its accepted observation
+            // may publish operation state, never a late callable's side effect.
+            capability: getManagedCECapability,
+            status: refreshStatus,
+            start: startManagedCEInstall,
+            poll: pollManagedCEInstall,
+            cancel: cancelManagedCEInstall,
+            complete: completeManagedCEInstall,
+            publish: (operation) => {
+                setManagedInstall(operation);
+                setManagedCE((current) => current ? { ...current, operation } : current);
+            },
+            signal: panelAborterRef.current.signal,
+            completed: (receipt, cancelled) => {
+                void refreshCELaunch(selectedGameRef.current?.appId ?? null).catch(() => undefined);
+                if (receipt.completed_now)
+                    toaster.toast({
+                        title: "CE Decky",
+                        body: cancelled
+                            ? "Cancellation arrived after promotion; Cheat Engine installation was verified."
+                            : "Cheat Engine installation was verified.",
+                    });
+            },
+        });
+        // Reserve ownership before the first await, including start receipt recovery.
+        managedOwnerRef.current = owner;
+        try {
+            await owner.run(force, managedCE ?? await refreshManagedCE());
+        }
+        finally {
+            if (managedOwnerRef.current === owner)
+                managedOwnerRef.current = null;
+        }
+    }, [managedCE, refreshCELaunch, refreshManagedCE, refreshStatus]);
+    SP_REACT.useEffect(() => {
+        const operation = managedCE?.operation;
+        if (!operation
+            || !["downloading", "extracting", "verifying", "completed"].includes(operation.state)
+            || busyRef.current
+            || managedOwnerRef.current)
+            return;
+        void runAction(() => runManagedSetup(false), { automatic: true }).catch(() => undefined);
+    }, [managedCE?.operation?.operation_id, managedCE?.operation?.state, runAction, runManagedSetup]);
+    const chooseManagedSetup = (force) => {
+        const capability = managedCE;
+        if (!capability)
+            return;
+        if (managedSetupPending)
+            return;
+        if (force) {
+            const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Reinstall Cheat Engine", strDescription: "CE Decky will download and extract the reviewed Cheat Engine release again. The current installation keeps working until the replacement is verified, and setup can be cancelled at any time.", strOKButtonText: "Reinstall", strCancelButtonText: "Cancel", onOK: traceUiAction("panel.reinstall.confirm", () => { confirm.Close(); startManagedSetup(capability, true); }), onCancel: traceUiAction("panel.reinstall.cancel", () => confirm.Close()) }));
+            return;
+        }
+        startManagedSetup(capability, force);
+    };
+    /** Explain a setup that could not obtain Cheat Engine by any route.
+     *
+     * Both download routes failing is the one setup outcome the user cannot act
+     * on from the panel itself, and a one-line error under the button does not
+     * carry the way out. Import is a real completion path, so it is named here
+     * with the steps it actually needs.
+     */
+    const showManagedSetupFailure = (detail) => {
+        // The body is paragraphs rather than newlines: this renders as HTML, where
+        // a "\n\n" would collapse and run the cause straight into the way out.
+        const dialog = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { bAlertDialog: true, strTitle: "Cheat Engine could not be downloaded", strDescription: (SP_JSX.jsxs("div", { "data-testid": "managed-setup-failure", children: [SP_JSX.jsx("p", { children: detail }), SP_JSX.jsx("p", { children: "Nothing was installed and your existing setup is unchanged." }), SP_JSX.jsx("p", { children: "You can finish setup yourself. Install Cheat Engine on a Windows machine from cheatengine.org, then bring its installation folder to this device - copy the folder across, or pack it into a .zip. Import it from Advanced, under Registered Cheat Engine. Everything after that works exactly as a downloaded Cheat Engine does." })] })), strOKButtonText: "Close", onOK: traceUiAction("panel.setup_failure.close", () => dialog.Close()), onCancel: traceUiAction("panel.setup_failure.cancel", () => dialog.Close()) }));
+    };
+    const startManagedSetup = (capability, force) => {
+        if (!capability.managed_install_available) {
+            setError(capability.reason || "Managed Cheat Engine extraction is unavailable.");
+            return;
+        }
+        // The dialog belongs to setup failing, not to the panel refusing a press.
+        // Catching inside the action makes that structural: a press refused because
+        // another operation is running never reaches this body at all.
+        void runAction(async () => {
+            try {
+                await runManagedSetup(force);
+            }
+            catch (cause) {
+                showManagedSetupFailure(describeError(cause));
+                throw cause;
+            }
+        }, { failureShownByCaller: true }).catch(() => undefined);
+    };
+    const cancelManagedSetup = async () => {
+        const owner = managedOwnerRef.current;
+        const operation = owner?.operation;
+        if (!owner || !operation || !operationIsActive(operation) || managedCancelRef.current)
+            return;
+        managedCancelRef.current = true;
+        setManagedCancelling(true);
+        const cancellation = startUiOperation("managed_setup.cancel", { operation_id: operation.operation_id });
+        try {
+            const state = await owner.cancel();
+            if (state === "cancelled")
+                toaster.toast({ title: "CE Decky", body: "Cheat Engine setup cancelled." });
+            cancellation.completed({ state });
+        }
+        catch (cause) {
+            cancellation.failed(cause);
+            logUiFailure("managed_setup.cancel_failed", cause, { operation_id: operation.operation_id });
+            setError(describeError(cause));
+        }
+        finally {
+            managedCancelRef.current = false;
+            setManagedCancelling(false);
+        }
+    };
+    const requestOwnedCEStop = async (appId, tableSha256) => {
+        const result = await (tableSha256 ? stopCEForGame(appId, tableSha256) : stopCEForGame(appId));
+        logUi("panel.stop_requested", { app_id: appId, stopped: result.stopped, recovered: result.recovered });
+        if (result.recovered && !result.stopped) {
+            throw new Error("CE Decky could not prove that the owned Cheat Engine process stopped; the session was left unchanged.");
+        }
+        dropLiveSnapshot();
+        return result.stopped;
+    };
+    const stopOwnedCE = async (appId, tableSha256) => {
+        await requestOwnedCEStop(appId, tableSha256);
+        await refreshCELaunch(appId).catch(() => undefined);
+        await refreshRuntime(appId).catch(() => undefined);
+    };
+    const ensureAttachedRuntime = async (game, process, report = () => undefined) => {
+        report("Starting Cheat Engine");
+        const capability = await refreshCELaunch(game.appId);
+        if (!capability.ce_ready)
+            throw new Error(capability.reason || "Cheat Engine is not ready.");
+        if (!capability.game?.running)
+            throw new Error(capability.game?.reason || "The selected game is not running.");
+        // The backend launch transaction prepares the session itself, so preparing
+        // one here only wrote a second exact-SHA table snapshot that Cheat Engine
+        // never opened; both were retained.
+        logUi("panel.launch_requested", {
+            app_id: game.appId, process,
+            proton: capability.observed_proton_tool?.tool_id ?? null,
+            game_running: capability.game?.running ?? false,
+            windows_executables: (capability.game?.windows_executables ?? []).join(","),
+        });
+        const started = await launchCEForGame(game.appId, capability.observed_proton_tool?.tool_id ?? null);
+        // Adopt the owned operation before waiting on it, so Home can show and stop
+        // a launch that is still waiting for the bridge.
+        setCELaunchOperation(started);
+        setLaunchInProgress({ appId: game.appId, operationId: started.operation_id });
+        // The launch is adopted, so from here there is an exact owned operation to
+        // stop, and it stays stoppable through attach: what is running is the same
+        // Cheat Engine either way.
+        report("Waiting for Cheat Engine to load the table and answer", true);
+        let operation;
+        try {
+            operation = await awaitLaunchOutcome(started);
+        }
+        finally {
+            setLaunchInProgress(null);
+        }
+        if (operation.state !== "connected") {
+            logUiWarning("panel.launch_not_connected", {
+                app_id: game.appId, state: operation.state,
+                message: operation.message, error: operation.error,
+            });
+            throw new Error(operation.error || operation.message || "Cheat Engine did not connect to the game session.");
+        }
+        logUi("panel.launch_connected", { app_id: game.appId, session: operation.session_id.slice(0, 12) });
+        setCELaunchOperation(operation);
+        void refreshCELaunch(game.appId).catch(() => undefined);
+        let observed = await refreshRuntime(game.appId);
+        if (!observed.connected || observed.prepared?.session_id !== operation.session_id || observed.status?.session_id !== operation.session_id) {
+            throw new Error("Cheat Engine started, but the exact fresh bridge session was not confirmed.");
+        }
+        if (!observed.status?.attached) {
+            const exact = (observed.status?.processes ?? []).filter(([, name]) => name.toLowerCase() === process.toLowerCase());
+            if (exact.length === 1) {
+                report(`Attaching to ${process}`, true);
+                const [pid, name] = exact[0];
+                const attached = await sendRuntimeCommandAndWait(game.appId, { kind: "retry_attach", value: name, target_pid: pid });
+                observed = attached.envelope;
+                setRuntime(observed);
+            }
+        }
+        // Attached is not loaded. A Cheat Engine that could not open the table
+        // attaches to the game anyway and reports itself perfectly healthy, with an
+        // address list that answers "missing" for every record: nothing to switch
+        // on, nothing to pin, no live value to read. Every caller here is asking
+        // for a runtime it can use, and all three of them used to say "Table
+        // loaded" for this one, leaving Home's own row as the only account of it.
+        if (observed.status?.table_load_state === "failed") {
+            logUiWarning("panel.table_not_loaded", {
+                app_id: game.appId, route: observed.status?.table_load_route ?? null,
+                error: observed.status?.table_load_error ?? null,
+            });
+            throw new Error(observed.status?.table_load_error
+                || "Cheat Engine started and attached to the game, but it could not open this table.");
+        }
+        return observed;
+    };
+    const ensureProfileAssociation = async (sha256) => {
+        const game = selectedGameRef.current;
+        if (!game)
+            throw new Error("No game is selected.");
+        let profile = currentProfile(await refreshStatus(), game);
+        if (!profile) {
+            // Exact desired state, so a lost reply is asked about rather than
+            // reported as a failed import of a table the backend has already stored.
+            await commitDesiredState({
+                subject: "the profile for this game",
+                write: () => saveProfile(game.appId, appDetails?.displayName || game.name, game.isShortcut, null, null),
+                verify: async () => Boolean(currentProfile(await refreshStatus(), game)),
+            });
+            // Ask the authority again rather than reusing what this screen last saw.
+            // `commitDesiredState` returns the moment its write succeeds and re-reads
+            // only when the reply was lost, so on the ordinary path nothing had
+            // refreshed the status since before this profile existed: the cached one
+            // still held no profile for the game, and a first table that had just
+            // been downloaded, verified and stored ended in "could not create the
+            // game profile" for a profile that was on disk. Nothing was associated
+            // and nothing was offered for review, so the only way back to those bytes
+            // was to download them again. A game that already had a profile never
+            // entered this branch, which is why every later import worked.
+            profile = currentProfile(await refreshStatus(), game);
+        }
+        if (!profile)
+            throw new Error("Could not create the game profile for the imported table.");
+        await commitDesiredState({
+            subject: "this table's place in the game's library",
+            write: () => associateTable(game.appId, sha256),
+            verify: async () => Boolean(currentProfile(await refreshStatus(), game)?.table_library?.includes(sha256)),
+        });
+        await refreshStatus();
+    };
+    const activateTable = async (table, nextInspection, process, activation, report = () => undefined) => {
+        const game = selectedGameRef.current;
+        if (!game)
+            throw new Error("No game is selected.");
+        if (!isValidProcessBasename(process))
+            throw new Error("Target process must be an unambiguous .exe basename.");
+        // Stopping the Cheat Engine an activation is using ends the activation. The
+        // live read that follows a connection swallows a failed query on purpose,
+        // so without this the run that the user just stopped went on to report a
+        // loaded table and a connected Cheat Engine that are no longer there.
+        const stopRequested = async () => {
+            // An attempted stop owns this activation until its actual RPC settles.
+            // A failed attempt allows progress; confirmed stopping prevents success.
+            await activation.stopAttempt?.catch(() => undefined);
+            if (activation.stopState === "confirmed") {
+                throw new Error("Stopped at your request: Cheat Engine was stopped, so the table was not activated.");
+            }
+        };
+        try {
+            const beforeStatus = statusRef.current ?? await refreshStatus();
+            const beforeProfile = currentProfile(beforeStatus, game);
+            const changingIdentity = beforeProfile?.table_sha256 !== table.sha256 || beforeProfile?.target_process !== process;
+            let live = await refreshCELaunch(game.appId);
+            const beforeRuntime = await refreshRuntime(game.appId).catch(() => null);
+            const beforeRuntimeReady = Boolean(beforeProfile?.table_sha256
+                && isExactAttachedRuntime(beforeRuntime, game.appId, beforeProfile.table_sha256));
+            const hadOwnedCE = Boolean(live && (live.recovered?.app_id === game.appId
+                || live.operations.some((operation) => operation.app_id === game.appId && ["starting", "running", "connected"].includes(operation.state))));
+            if (hadOwnedCE && (changingIdentity || !beforeRuntimeReady)) {
+                report("Stopping the Cheat Engine that is already running");
+                await stopOwnedCE(game.appId);
+            }
+            report("Saving the selected table");
+            // Two independent durable mutations, reconciled one at a time. A
+            // rejected Decky reply is not proof the write did not land, and this
+            // sequence has already stopped the previous owned Cheat Engine by the
+            // time it runs: reporting a committed activation as a failure left the
+            // game without its table and the panel describing state it did not have.
+            // The separate association the selection used to make is gone with it -
+            // saving the profile already puts the selected digest in the table
+            // library, so it only added a second boundary that could fail.
+            await commitDesiredState({
+                subject: "the selected table and its target process",
+                write: () => saveProfile(game.appId, appDetails?.displayName || game.name, game.isShortcut, table.sha256, process),
+                verify: async () => {
+                    const saved = currentProfile(await refreshStatus(), game);
+                    return saved?.table_sha256 === table.sha256 && saved?.target_process === process;
+                },
+            });
+            try {
+                report("Recording the authorization for this exact table");
+                await commitDesiredState({
+                    subject: "the authorization to run this table",
+                    write: () => setExecutionConsent(game.appId, table.sha256, true),
+                    verify: async () => currentProfile(await refreshStatus(), game)?.execution_consent_sha256 === table.sha256,
+                });
+            }
+            catch (cause) {
+                throw new PriorDurableCommitError(cause, "The selected table");
+            }
+            setTargetProcess(process);
+            setInspection(nextInspection);
+            const nextStatus = await refreshStatus();
+            const nextProfile = currentProfile(nextStatus, game);
+            if (!nextProfile || nextProfile.table_sha256 !== table.sha256 || nextProfile.execution_consent_sha256 !== table.sha256) {
+                throw new Error("Backend did not confirm the selected exact-SHA table and authorization.");
+            }
+            live = await refreshCELaunch(game.appId);
+            const currentRuntime = await refreshRuntime(game.appId).catch(() => null);
+            const existingReady = Boolean(!changingIdentity
+                && hadOwnedCE
+                && isExactAttachedRuntime(currentRuntime, game.appId, table.sha256));
+            if (statusRef.current?.ce.valid && live.game?.running && !existingReady) {
+                const observed = await ensureAttachedRuntime(game, process, report);
+                await stopRequested();
+                if (observed.connected && observed.status?.attached) {
+                    report("Waiting for the saved cheats to be applied", true);
+                    await reconcileStartupCompatibility(game.appId, observed);
+                    await stopRequested();
+                    report("Reading the table's live values", true);
+                    await captureLiveSnapshot(game.appId, nextInspection);
+                    await stopRequested();
+                    toaster.toast({ title: "CE Decky", body: hadOwnedCE ? "Table switched; the game kept running." : "Table loaded and Cheat Engine connected." });
+                }
+                else {
+                    dropLiveSnapshot();
+                    toaster.toast({ title: "CE Decky", body: "Table loaded. Cheat Engine connected, but the target process still needs an exact PID selection in Advanced." });
+                }
+            }
+            else if (existingReady) {
+                // The owned Cheat Engine this reads through is already running, so this
+                // step owns something the user can stop as much as a launch does.
+                report("Reading the table's live values", true);
+                await captureLiveSnapshot(game.appId, nextInspection);
+                await stopRequested();
+            }
+            await stopRequested();
+            autoloadAttemptRef.current = null;
+            clearAutoloadRetry();
+        }
+        catch (cause) {
+            // The activation transaction spans several independently durable backend
+            // mutations (profile, association, consent, launch/session). If a later
+            // step fails, immediately reconcile Home with the backend before Review
+            // can be dismissed; otherwise the next visible panel could keep showing
+            // the pre-activation table/profile until another unrelated refresh.
+            dropLiveSnapshot();
+            await Promise.allSettled([
+                refreshStatus(),
+                refreshCELaunch(game.appId),
+                refreshRuntime(game.appId),
+            ]);
+            throw cause;
+        }
+    };
+    const prepareReview = async (sha256) => {
+        const nextStatus = await refreshStatus();
+        const table = nextStatus.tables.find((candidate) => candidate.sha256 === sha256 && candidate.available);
+        if (!table)
+            throw new Error("The imported exact table SHA is no longer available.");
+        const nextInspection = await inspectTableSha(sha256, selectedGameRef.current?.appId ?? null);
+        const existing = currentProfile(nextStatus, selectedGameRef.current);
+        // Review is a detached modal, so the running-process observation has to be
+        // taken here: it cannot arrive from Home after the modal is open. A failed
+        // or empty observation only means the manual entry stays the way forward.
+        const game = selectedGameRef.current;
+        const observed = game
+            ? await refreshCELaunch(game.appId)
+                .then((capability) => capability.game)
+                .catch(() => null)
+            : null;
+        const observedProcesses = observed?.windows_executables ?? [];
+        // Read for a Steam game whichever way the observation went, because the
+        // observation is about what is running and this is about what is
+        // installed: a game that is running has already answered, and one that is
+        // not is the case this exists for. Never for a non-Steam shortcut, which
+        // has no Steam manifest and answers with its own recorded target instead.
+        // Best effort: Review opens without it, as it always did.
+        const installedExecutables = game && !game.isShortcut
+            ? await listGameExecutables(game.appId).catch((cause) => {
+                logUiFailure("panel.game_files_unreadable", cause, { app_id: game.appId });
+                return null;
+            })
+            : null;
+        return {
+            table,
+            inspection: nextInspection,
+            observedProcesses,
+            installedExecutables,
+            // Steam records a non-Steam shortcut's target in AppDetails, but a Steam
+            // library entry's launch executable is only observable in the running
+            // game's own process table.
+            launchExecutable: observed?.launch_executable
+                ?? (game?.isShortcut ? appDetails?.shortcutExe ?? null : null),
+            initialTargetProcess: existing?.target_process ?? null,
+        };
+    };
+    const showPreparedReview = ({ table, inspection: nextInspection, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }) => {
+        let currentActivation = null;
+        logUi("panel.modal_opened", {
+            modal: "table_review", table_sha: table.sha256.slice(0, 12),
+            controls: nextInspection.controls.length, entries: nextInspection.total_entries,
+            unsupported: nextInspection.unsupported_record_id_count,
+            target: initialTargetProcess, observed: observedProcesses.join(","),
+            // How much the screen had to work with, which is what a report about a
+            // table that could not be authorized turns on.
+            installed: installedExecutables?.executables.length ?? 0,
+            installed_reason: installedExecutables?.reason ?? null,
+            // Which of the two answers the screen is working from, and why the
+            // stronger one was not available. A review that offered a folder full of
+            // candidates is only answerable from a support archive with this on it.
+            installed_source: installedExecutables?.source ?? null,
+            declared_reason: installedExecutables?.declared_reason ?? null,
+        });
+        showContextModal((close) => (SP_JSX.jsx(TableReviewModal, { table: table, inspection: nextInspection, observedProcesses: observedProcesses, launchExecutable: launchExecutable, installedExecutables: installedExecutables, initialTargetProcess: initialTargetProcess, onRefreshProcesses: async () => {
+                const game = selectedGameRef.current;
+                if (!game)
+                    return [];
+                return (await refreshCELaunch(game.appId)).game?.windows_executables ?? [];
+            }, onUse: async (process, report) => {
+                await runAction(async () => {
+                    const activation = { appId: selectedGameRef.current?.appId ?? null, finished: false, stopState: "idle", stopAttempt: null };
+                    currentActivation = activation;
+                    try {
+                        await activateTable(table, nextInspection, process, activation, report);
+                    }
+                    finally {
+                        // Even a separate activation failure cannot release the panel
+                        // while its uncancelled Stop callable can still mutate the game.
+                        await activation.stopAttempt?.catch(() => undefined);
+                        activation.finished = true;
+                    }
+                });
+                close();
+            }, onAbort: async () => {
+                const activation = currentActivation;
+                if (!activation || activation.finished || activation.appId === null)
+                    return "There is nothing to stop; this activation is no longer running.";
+                if (activation.stopState !== "pending" && activation.stopState !== "confirmed") {
+                    activation.stopState = "pending";
+                    activation.stopAttempt = Promise.resolve().then(async () => {
+                        try {
+                            const stopped = await requestOwnedCEStop(activation.appId);
+                            activation.stopState = stopped ? "confirmed" : "failed";
+                        }
+                        catch (cause) {
+                            activation.stopState = "failed";
+                            throw cause;
+                        }
+                    });
+                }
+                await activation.stopAttempt;
+                return activation.stopState === "confirmed" ? null : "There is nothing to stop; no owned Cheat Engine was stopped.";
+            }, onCancel: close })));
+    };
+    const localArtifactMap = SP_REACT.useMemo(() => localTableArtifacts(status?.tables ?? []), [status]);
+    const importedArtifactMap = SP_REACT.useMemo(() => importedTableArtifacts(status?.tables ?? []), [status]);
+    // Every table this game imported, still present and verified. These stay in
+    // Search even when no provider answers, and remain the source of the separate
+    // imported-table picker as well.
+    const importedTables = SP_REACT.useMemo(() => {
+        if (!status || !profile)
+            return [];
+        const library = new Set(profile.table_library);
+        return status.tables.filter((table) => library.has(table.sha256) && table.available);
+    }, [status, profile]);
+    /**
+     * Every other verified table on this device, which this game has no
+     * association with.
+     *
+     * Reaching a stored table went entirely through the game's own library, and
+     * the association is precisely what two supported recoveries throw away.
+     * Deleting the plugin's setup state keeps `tables/` and removes `state/`;
+     * repairing a corrupt profile store replaces it with an empty one. Both say
+     * the imported tables are kept and can be chosen again, and afterwards there
+     * was no way in Game Mode to name them: the library was empty, so Home did
+     * not offer Imported, Search was handed no local tables and needs a provider
+     * row to map to the bytes, and Local file needs the original file, which is
+     * the thing the user may no longer have. Offline that is the whole of it.
+     *
+     * So the list of what is on the device is derived from the tables themselves.
+     * Nothing here is chosen for the user and nothing guesses which game a table
+     * used to belong to: choosing one is a press that associates it with the game
+     * selected now and opens the ordinary review, where the exact SHA is
+     * authorized again.
+     */
+    const storedTables = SP_REACT.useMemo(() => {
+        if (!status)
+            return [];
+        const library = new Set(profile?.table_library ?? []);
+        return status.tables.filter((table) => !library.has(table.sha256));
+    }, [status, profile]);
+    // Every verified table on the device, for the two screens that answer about
+    // exact bytes rather than about this game: the picker behind Stored, and the
+    // digest lookup a provider row is resolved through. It is never the set Search
+    // offers rows of its own from, because a standalone row there is an offer to
+    // use that table for the game being searched for, and a table stored for some
+    // other game is not that.
+    /**
+     * Which game has each stored table selected, by exact SHA.
+     *
+     * The backend refuses to remove a table any game is on, so the press that
+     * would be refused is not offered, and the row says which game is holding it
+     * rather than leaving the reader to work out why nothing happened. Read from
+     * every profile rather than from the selected game alone, because the table
+     * another game is on is exactly the one this screen lists as unassociated.
+     */
+    const tableHolders = SP_REACT.useMemo(() => aggregateTableHolders(status?.profiles ?? []), [status]);
+    const searchableTables = SP_REACT.useMemo(() => [...importedTables, ...storedTables.filter((table) => table.available)], [importedTables, storedTables]);
+    const clearFailedMark = async (sha256) => {
+        try {
+            await commitDesiredState({
+                subject: "clearing the not-working mark",
+                write: () => sha256 === undefined ? clearBlockedTables() : unblockTable(sha256),
+                verify: async () => {
+                    const listed = await refreshBlockedTables();
+                    if (listed.reason)
+                        throw new Error(listed.reason);
+                    return sha256 === undefined ? listed.tables.length === 0
+                        : !listed.tables.some((entry) => entry.sha256 === sha256 || entry.key === sha256);
+                },
+            });
+        }
+        finally {
+            await refreshBlockedTables();
+        }
+    };
+    const openTableSearch = () => {
+        const game = selectedGameRef.current;
+        if (!status || !game)
+            return;
+        logUi("panel.modal_opened", { modal: "table_search", app_id: game.appId });
+        showContextModal((close) => (SP_JSX.jsx(TableSearchModal, { gameIdentity: `${game.appId}:${game.isShortcut ? "shortcut" : "steam"}`, gameName: appDetails?.displayName || game.name, appId: game.appId, shortcutExecutable: game.isShortcut ? appDetails?.shortcutExe ?? null : null, compatibility: status?.table_compatibility?.entries ?? [], artifactResolutions: status?.artifact_resolutions?.entries ?? [], onRefreshProvenance: async () => {
+                const next = await refreshStatus();
+                return { resolutions: next.artifact_resolutions?.entries ?? [], compatibility: next.table_compatibility?.entries ?? [] };
+            }, localArtifacts: localArtifactMap, localTables: importedTables, deviceTables: searchableTables, importedArtifacts: importedArtifactMap, blockedTables: blockedLookups.byDigest, blockedArtifacts: blockedLookups.byArtifact, onRefreshBlocked: async () => blockedTableLookups((await refreshBlockedTables()).tables), onClearMarks: (sha256s) => runAction(async () => {
+                // Scoped to the tables on this screen. Advanced still clears the
+                // whole record; from here, clearing every other game's marks to
+                // retry one table would be a much larger thing than it looks.
+                //
+                // The re-read happens whatever any one of these did, so a failure
+                // part way through leaves the panel showing what is actually
+                // recorded rather than the marks it had before the press.
+                try {
+                    for (const sha256 of sha256s)
+                        await clearFailedMark(sha256);
+                    logUi("panel.marks_cleared", { count: sha256s.length });
+                }
+                finally {
+                    await refreshBlockedTables().catch(() => undefined);
+                }
+            }), onSelected: async (sha256) => {
+                const review = await runAction(async () => {
+                    await ensureProfileAssociation(sha256);
+                    return prepareReview(sha256);
+                }, { failureShownByCaller: true });
+                // Avoid stacking Review above Search and then closing the lower modal;
+                // Decky's modal/focus stack is more stable when the handoff is serial.
+                close();
+                showPreparedReview(review);
+            }, onCancel: close })));
+    };
+    const openImportedTables = () => {
+        const game = selectedGameRef.current;
+        if (!status)
+            return;
+        logUi("panel.modal_opened", {
+            modal: "imported_tables", app_id: game?.appId,
+            tables: importedTables.length, stored: storedTables.length,
+        });
+        showContextModal((close) => (SP_JSX.jsx(ImportedTablesModal, { compatibility: manageCompatibility(status.table_compatibility?.entries ?? [], game?.appId ?? null), tables: status.tables.filter((table) => profile?.table_library.includes(table.sha256)), otherTables: storedTables, owners: tableOwnerNames(status.profiles, game?.appId ?? null), canSelect: Boolean(game), activeSha256: currentProfile(statusRef.current, game)?.table_sha256 ?? null, activeAuthorized: Boolean(currentProfile(statusRef.current, game)?.execution_consent_sha256
+                && currentProfile(statusRef.current, game)?.execution_consent_sha256
+                    === currentProfile(statusRef.current, game)?.table_sha256), blockedReasons: blockedLookups.byDigest, onOpenLocalFile: openLocalTable, selectedBy: tableHolders, holderIds: tableHolderIds(status.profiles), onRefreshHolders: async () => {
+                const next = await refreshStatus();
+                return { holders: aggregateTableHolders(next.profiles), holderIds: tableHolderIds(next.profiles), activeSha256: currentProfile(next, game)?.table_sha256 ?? null };
+            }, onRevoke: async (sha256, confirmedHolderIds) => {
+                await runAction(async () => {
+                    const latest = await refreshStatus();
+                    const holders = latest.profiles.filter((holder) => holder.table_sha256 === sha256);
+                    if (holders.some((holder) => !confirmedHolderIds.includes(holder.app_id))) {
+                        throw new Error("The holder games changed. Review the refreshed list and confirm again.");
+                    }
+                    let failure = null;
+                    for (const holder of holders) {
+                        try {
+                            const current = (await refreshStatus()).profiles.find((item) => item.app_id === holder.app_id);
+                            if (current?.table_sha256 !== sha256)
+                                continue;
+                            await revokeProfileTable(holder.app_id, sha256);
+                        }
+                        catch (cause) {
+                            failure ?? (failure = cause);
+                        }
+                    }
+                    if (failure)
+                        throw failure;
+                }, { failureShownByCaller: true });
+            }, onDelete: async (sha256) => {
+                await runAction(async function deleteStoredTable() {
+                    await deleteTable(sha256);
+                }, { failureShownByCaller: true });
+                // Committed, and the answer is durable the moment the panel's own
+                // list agrees with it. What follows is reconciliation and is not
+                // awaited: a read that fails cannot make a deletion that happened
+                // into one reported as failed, and a read that is merely slow cannot
+                // hold the row on screen, keep the window's latch, or block the way
+                // out, all for a table that is already gone. The generation moved
+                // with the local answer, so a read in flight cannot put it back.
+                forgetStoredTable(sha256);
+                void refreshStatus().catch((cause) => {
+                    logUiFailure("panel.status_after_delete_failed", cause, { table: sha256.slice(0, 12) });
+                });
+            }, onSelect: async (sha256) => {
+                // The same contract as the press beside it. This screen is a modal,
+                // a window raised over it can appear behind it, and the row the press
+                // was made on is still in front of the reader: the rejection reaches
+                // the window, which says so on the row rather than over it. Swallowed
+                // here, a table whose file has gone or whose association could not be
+                // written produced exactly the failure Delete was changed to avoid.
+                const review = await runAction(async function useStoredTable() {
+                    await ensureProfileAssociation(sha256);
+                    return prepareReview(sha256);
+                }, { failureShownByCaller: true });
+                close();
+                showPreparedReview(review);
+            }, onClose: close })));
+    };
+    const importPickedTable = async (source, memberPath, password) => {
+        const appId = selectedGameRef.current?.appId ?? null;
+        const table = await importTable(source, memberPath ?? null, password ?? null, appId);
+        // With no game chosen the file still joins this device's library, which is
+        // what the backend has always allowed: the AppID it takes is optional and
+        // it uses one only to name a table in the not-working record. What cannot
+        // happen yet is the rest - a table is associated with a game and authorized
+        // for one, and there is no game to do either for. So it is imported, said
+        // to have been, and waits in Manage for a game to be chosen and Use pressed,
+        // which is the same path a table already on the device takes.
+        if (appId === null) {
+            // The import is committed by the line above, so what follows is
+            // reconciliation and is not awaited. Awaited, a status read that failed
+            // for a moment reported the whole action as a failed import, for a table
+            // that is on the device - and the reader's next move is to import it
+            // again. The same commit boundary Delete draws, for the same reason.
+            void refreshStatus().catch((cause) => {
+                logUiFailure("panel.status_after_local_import_failed", cause, { table: table.sha256.slice(0, 12) });
+            });
+            toaster.toast({ title: "CE Decky", body: `${table.filename} is on this device. Choose a game to use it.` });
+            return null;
+        }
+        await ensureProfileAssociation(table.sha256);
+        return prepareReview(table.sha256);
+    };
+    const openLocalTable = () => {
+        if (!status)
+            return;
+        // Decky's native file picker is itself a detached modal, but unlike our own
+        // showContextModal() wrapper we cannot observe its close lifecycle. Hold the
+        // automatic running-game detector for the whole picker/import handoff so a
+        // second game starting mid-pick cannot silently retarget the import/profile.
+        contextModalDepthRef.current += 1;
+        let contextReleased = false;
+        const releaseContext = () => {
+            if (contextReleased)
+                return;
+            contextReleased = true;
+            contextModalDepthRef.current = Math.max(0, contextModalDepthRef.current - 1);
+        };
+        void runAction(async () => {
+            let selected;
+            try {
+                // `includeFolders` must be true even when only a file may be chosen:
+                // with it false the picker lists the starting directory's matching files
+                // and nothing else, so there is no way to navigate anywhere. The last
+                // argument is Decky's page size, not a selection limit - passing 1 there
+                // renders exactly one entry per directory however many it holds - so it
+                // is left at the default.
+                selected = await openFilePicker(0 /* FileSelectionType.FILE */, status.user_home, true, true, undefined, ["ct", "CT", "zip", "7z", "7zip", "rar"], true, false);
+            }
+            catch (cause) {
+                if (isDeckyFilePickerCancellation(cause)) {
+                    logUi("table.file_picker_cancelled");
+                    return;
+                }
+                throw cause;
+            }
+            const source = selected.realpath || selected.path;
+            logUi("table.file_picked", { app_id: selectedGameRef.current?.appId, archive: !source.toLowerCase().endsWith(".ct") });
+            // A direct table has no member to choose. Send it through import itself
+            // so invalid exact bytes reach the durable not-working record together
+            // with the selected game; inspecting them first rejected the file before
+            // the only route that can record that outcome ever saw it.
+            if (source.toLowerCase().endsWith(".ct")) {
+                return importPickedTable(source);
+            }
+            const sourceInspection = await inspectTableSource(source);
+            if (sourceInspection.members.length === 0) {
+                return importPickedTable(source);
+            }
+            if (canAutoImportLocalMember(sourceInspection.members)) {
+                return importPickedTable(source, sourceInspection.members[0].path);
+            }
+            showContextModal((close) => (SP_JSX.jsx(ArchiveImportModal, { members: sourceInspection.members, onImport: async (memberPath, password) => {
+                    const review = await runAction(() => importPickedTable(source, memberPath, password));
+                    close();
+                    if (review)
+                        showPreparedReview(review);
+                }, onCancel: close })));
+            return null;
+        }).finally(releaseContext).then((review) => {
+            if (review)
+                showPreparedReview(review);
+        }).catch(() => undefined);
+    };
+    /**
+     * Cheat Engine ran a cheat from this table and it came straight back off.
+     *
+     * A table finds the game's code by scanning for byte patterns, so this is
+     * what a table written for a different build of the game does - every time,
+     * for as long as that build is installed. The record is kept against the
+     * exact bytes so the same file is not found, downloaded and reviewed again,
+     * and the user is asked once whether to stop using it here.
+     *
+     * Nothing durable is written until that question is answered. Marking first
+     * and asking afterwards meant the answer could not undo what had already
+     * happened without a second write, and every way of dismissing the dialog -
+     * the controller's own Back button included - had to be treated as one of the
+     * two answers. Asking first makes dismissal mean exactly what it looks like.
+     *
+     * The whole thing is best effort on top of an Apply that already failed: the
+     * user is being shown that failure either way, and nothing here may replace
+     * it with an error about bookkeeping.
+     */
+    const recordRefusedTable = async (game, tableSha256, reason) => {
+        toaster.toast({ title: "CE Decky", body: "This table did not work." });
+        // Apply can be pressed again while this is up, and every press refuses the
+        // same way. One dialog for one table is the whole message.
+        //
+        // The guard is taken when the dialog opens, not when it is decided to open
+        // one. It used to be taken here, several awaits before `showModal`, and
+        // anything that stopped the wait in between - the panel closing, the idle
+        // latch not coming free - left the table marked as asked about with nothing
+        // ever having been asked. Every later Apply then returned at this line, so
+        // a table that had refused every cheat could be applied for as long as the
+        // user cared to press, and the one question that would have retired it was
+        // never put again.
+        if (refusalDialogRef.current === tableSha256)
+            return;
+        let held = false;
+        const dismiss = () => {
+            if (held && refusalDialogRef.current === tableSha256)
+                refusalDialogRef.current = null;
+            held = false;
+        };
+        // Detached, and only once the global latch is free. Two callers reach this
+        // from inside their own `runAction`, which owns that latch until after the
+        // catch that called this returns - so awaiting the dialog here would
+        // deadlock, and opening it there let the user answer before the latch was
+        // released. That answer was rejected as "another operation is still
+        // running" with the dialog already closed: nothing happened, and nothing
+        // said so.
+        // Every branch of this says so. The question is the only thing that gets a
+        // table out of the way, and when it does not appear the user is left with a
+        // notification, a table that still applies, and nothing anywhere saying
+        // which of the several ways to not-ask was taken. It cost two rounds on the
+        // device to find that out once; it should cost a log line next time.
+        const table = tableSha256.slice(0, 12);
+        logUi("panel.table_refusal_asking", { table });
+        void (async () => {
+            // Bounded, because a latch that is never released must not swallow the
+            // question. Two callers reach this from inside their own `runAction`,
+            // which owns the latch until after the catch that called this returns, so
+            // asking immediately let the user answer before it was released and the
+            // answer was rejected as "another operation is still running" with the
+            // dialog already closed. Waiting for that is right; waiting for it
+            // forever is how the question is lost.
+            if (busyRef.current) {
+                const waited = await Promise.race([
+                    whenIdle().then(() => "idle"),
+                    new Promise((resolve) => { window.setTimeout(() => resolve("timeout"), REFUSAL_ASK_WAIT_MS); }),
+                ]);
+                if (waited === "timeout")
+                    logUiWarning("panel.table_refusal_wait_timed_out", { table });
+            }
+            // Asked whether this panel is still on screen or not.
+            //
+            // It used to be dropped when the panel had gone, on the ground that its
+            // handlers act on refs nobody updates any more. That reasoning was about
+            // a wait that outlived the press; it stopped being true when the answer
+            // became a window this panel opens after closing another one, because
+            // closing that one is itself a way for the panel to go. The question then
+            // fell into the gap it had just made: the notification arrived, the
+            // window did not, and the table went on applying.
+            //
+            // The window is Steam's, not this panel's, so it outlives the panel
+            // perfectly well. Nothing in it reads live state either: the answer
+            // re-checks the selected game against the one it was asked about and
+            // refuses if they differ, which is the same check it always made and the
+            // only one that matters here.
+            if (!mountedRef.current)
+                logUiWarning("panel.table_refusal_asked_after_panel_closed", { table });
+            // Another Apply may have got here first while this one was waiting.
+            if (refusalDialogRef.current === tableSha256) {
+                logUi("panel.table_refusal_already_open", { table });
+                return;
+            }
+            refusalDialogRef.current = tableSha256;
+            held = true;
+            // A window that could not be opened must not leave the table looking as
+            // though it had been asked about: the guard comes straight back off.
+            try {
+                openRefusalDialog();
+                logUi("panel.table_refusal_asked", { table });
+            }
+            catch (cause) {
+                dismiss();
+                logUiFailure("panel.table_refusal_dialog_failed", cause, { table });
+            }
+        })();
+        function openRefusalDialog() {
+            // Keeping the table writes nothing at all, which is also what the
+            // controller's Back button does: Steam routes gamepad cancel to
+            // `onCancel`, so that handler is reached both by the button and by a
+            // reflex press to clear the screen, and neither may leave durable state
+            // behind. Everything durable happens on the explicit "Stop using it".
+            const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "This table did not work", strDescription: `${reason} Stop using it for this game? These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`, strOKButtonText: "Stop using it", strCancelButtonText: "Keep it", onCancel: traceUiAction("panel.table_refusal.keep", () => { dismiss(); confirm.Close(); }), onOK: traceUiAction("panel.table_refusal.stop", () => {
+                    const interaction = currentUiAction();
+                    dismiss();
+                    confirm.Close();
+                    void answerWhenIdle();
+                    /**
+                     * The answer, once the latch it needs is actually free.
+                     *
+                     * The question is put by a wait that is allowed to give up on that
+                     * latch, because a latch that never comes free must not swallow it.
+                     * That leaves this press arriving while an operation still holds it,
+                     * and `runAction` refuses on the spot: the dialog had already closed
+                     * itself, so the user's answer was accepted-looking and then dropped
+                     * with "Another CE Decky operation is still running" over a table
+                     * that went on applying. Waiting here is the same reasoning as the
+                     * wait that put the question, one step later.
+                     *
+                     * If it never comes free the answer is still not silently lost. It
+                     * says the withdrawal could not be made and that the table is still
+                     * in use, which is a thing the user can act on, rather than a toast
+                     * about an operation they did not start.
+                     */
+                    async function answerWhenIdle() {
+                        if (busyRef.current) {
+                            await Promise.race([
+                                whenIdle(),
+                                new Promise((resolve) => { window.setTimeout(resolve, REFUSAL_ANSWER_WAIT_MS); }),
+                            ]);
+                        }
+                        // Re-read rather than trusting the race: the panel unmounting
+                        // releases every waiter without the operation having finished, and
+                        // another press may have taken the latch in the gap.
+                        if (busyRef.current) {
+                            const message = `${game.name} is still busy with the last thing you pressed, so this table was not stopped. Try Stop using it again in a moment.`;
+                            logUiWarning("panel.table_refusal_answer_blocked", { table });
+                            setError(message);
+                            toaster.toast({ title: "CE Decky", body: message });
+                            return;
+                        }
+                        try {
+                            await runAction(async () => {
+                                // Whatever this got through, it says so on the way out. Every
+                                // step below is a durable write, the panel that asked is very
+                                // likely gone by now, and a partial answer changes the
+                                // authority exactly as much as a whole one does.
+                                try {
+                                    await answerStopUsing();
+                                }
+                                finally {
+                                    notifyAuthorityChanged();
+                                }
+                            }, { interaction });
+                        }
+                        catch {
+                            // `runAction` has already reported it, in a dialog where it can.
+                            return;
+                        }
+                        // The user has just said this table does not work, so the next
+                        // thing they are going to do is look for one that does. The panel
+                        // they say it from is usually gone by now - the question closes
+                        // Configure cheats, which takes the quick access panel with it - so
+                        // this is a request the panel takes when it comes back rather than
+                        // a control being focused here.
+                        //
+                        // Only when the answer went through. A failure puts a dialog of its
+                        // own over the panel, and moving the ring underneath that is moving
+                        // it somewhere the user cannot see it.
+                        logUi("panel.focus_requested", { control: "search", table });
+                        requestPanelFocus("search");
+                    }
+                    async function answerStopUsing() {
+                        // This dialog outlives the press that opened it, and withdrawing an
+                        // authorization always acts on whatever game is selected now. A
+                        // game switched underneath it would have had the wrong table
+                        // revoked, so the answer only counts for the game it was asked
+                        // about.
+                        const selected = selectedGameRef.current;
+                        // A profile is keyed by AppID *and* by whether the entry is a
+                        // shortcut, and the backend treats a write that disagrees about the
+                        // second one as a different game: it resets the profile, dropping
+                        // the table library and every table's archived preferences with it.
+                        // Everything below reads the profile through `selected` and writes
+                        // it through `game`, so the two identities have to be the same one
+                        // before any of that runs.
+                        if (!selected || selected.appId !== game.appId || selected.isShortcut !== game.isShortcut) {
+                            throw new Error(`${game.name} is no longer the selected game, so nothing was changed. Select it again to stop using this table.`);
+                        }
+                        // The mark is written here, on the answer, rather than before the
+                        // question. A failure to record it is reported and never stops the
+                        // authorization from being withdrawn: the user asked to stop using
+                        // this table, and that has to happen whatever the bookkeeping does.
+                        let marked = false;
+                        // What the backend said when it could not record it. The advisory
+                        // list is bounded and refuses rather than dropping somebody else's
+                        // decision, and the way to make room is a press on a screen the user
+                        // can reach: throwing that sentence away left them with a statement
+                        // that something failed and nothing they could do about it.
+                        let markFailure = null;
+                        try {
+                            await blockTable(tableSha256, reason, game.appId);
+                            // Recorded from here on, whatever the re-read of the list does:
+                            // reporting a write that landed as one that did not is the
+                            // protection failing closed while the user is told it failed.
+                            marked = true;
+                            await refreshBlockedTables();
+                        }
+                        catch (cause) {
+                            logUiFailure("panel.refusal_mark_failed", cause, { table_sha: tableSha256.slice(0, 12) });
+                            markFailure = describeError(cause).slice(0, 240);
+                            const listed = await refreshBlockedTables();
+                            marked = listed.reason ? null : listed.tables.some((entry) => entry.sha256 === tableSha256);
+                        }
+                        // One exact-SHA command withdraws authorization, disarms automatic
+                        // startup and detaches the selection while retaining local bytes.
+                        await revokeProfileTable(game.appId, tableSha256);
+                        toaster.toast({
+                            title: "CE Decky",
+                            body: [
+                                "No longer using this table.",
+                                marked === null
+                                    ? "The not-working mark could not be confirmed; refresh the list under Advanced."
+                                    : marked
+                                        ? "It is marked as not working; clear that under Advanced."
+                                        : markFailure
+                                            ? `CE Decky could not record that it did not work: ${markFailure}`
+                                            : "CE Decky could not record that it did not work, so search may offer it again.",
+                            ].filter(Boolean).join(" "),
+                        });
+                    }
+                }) }));
+        }
+    };
+    const openCheatSelection = () => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256)
+            return;
+        if (!currentInspection || currentInspection.sha256 !== current.table_sha256) {
+            // Defence in depth: Home must never open the picker against a table other
+            // than the profile's exact current SHA. Say so instead of doing nothing.
+            setError("The inspected table no longer matches this game's selected exact table SHA. Open it again from Manage.");
+            return;
+        }
+        logUi("panel.modal_opened", {
+            modal: "cheat_selection", app_id: game.appId,
+            table_sha: current.table_sha256.slice(0, 12), live: runtimeReady,
+            // Apply mutates and then re-reads every safe control to confirm, and both
+            // exceed the same limit on a table this size, so a mutation that had
+            // succeeded came back as a partial or unknown outcome.
+            beyond_live_budget: beyondLiveControlBudget,
+            pinned: current.pinned.length, remembered: current.remembered.length,
+        });
+        showContextModal((close) => {
+            // This screen closes before the question is put. A table that ran a cheat
+            // and had it come straight back off is not a thing to configure, and the
+            // question about it opens as a window of its own: raised while this one
+            // is still up it is a window behind a window, which on the device is a
+            // toast saying the table did not work and nothing else, with Apply
+            // available again and no way to reach the one answer that helps.
+            const askAboutRefusedTable = (reason) => {
+                close();
+                return recordRefusedTable(game, current.table_sha256, reason);
+            };
+            return (SP_JSX.jsx(CheatSelectionModal, { appId: game.appId, inspection: currentInspection, live: runtimeReady, liveUnavailableReason: beyondLiveControlBudget
+                    ? `This table has more than ${MAX_LIVE_CONTROLS} switchable cheats, which is more than CE Decky can read back from Cheat Engine in one go.`
+                    : null, pinned: current.pinned, startupPreferences: current.startup, rememberedPreferences: current.remembered, configuredValues: current.configured_values ?? [], onTogglePin: (recordId, pinned) => runAction(() => togglePinnedControl(recordId, pinned)), onTableRefused: askAboutRefusedTable, onSaveConfiguredValues: async (values) => {
+                    await commitDesiredState({
+                        subject: "this table's configured values",
+                        write: () => setConfiguredValues(game.appId, current.table_sha256, values),
+                        verify: async () => configuredValuesMatch(currentProfile(await refreshStatus(), game)?.configured_values, values),
+                    });
+                    // Catching up Home is not part of the commit: a failed refresh used
+                    // to be reported as a failed write of state that is already durable.
+                    await refreshStatus().catch(() => undefined);
+                }, onValidateStartupPlan: (remembered, values) => validateEffectiveStartupPlan(game.appId, current.table_sha256, remembered, values), onSnapshot: recordLiveSnapshot, onSnapshotInvalidated: () => dropLiveSnapshot(), autoloadEnabled: Boolean(current.autoload_enabled), onCompatibilityConfirmed: async () => {
+                    await refreshStatus().catch((cause) => logUiFailure("picker.compatibility_refresh_failed", cause, { app_id: game.appId }));
+                }, onApplied: async (remembered, envelope) => {
+                    // A selection made with nothing running is only ever going to reach
+                    // Cheat Engine through auto-load, so switching cheats on there means
+                    // asking for them - turning auto-load on is what the user just asked
+                    // for, not a separate decision they have to find afterwards. What was
+                    // actually wrong was the disclosure: the first time the user heard
+                    // about it was the toast after the commit, so the picker now says it
+                    // before Apply instead.
+                    //
+                    // Both directions ask the same question, or they would fight: has the
+                    // user switched a cheat on for this table? Only that is a request to
+                    // run something, and only that starts Cheat Engine with the game.
+                    //
+                    // A stored value is not one. It is the setting a cheat uses once it
+                    // is switched on - the same rule the runtime already follows, where a
+                    // value belonging to a cheat that is off is kept and not written - so
+                    // counting it here armed auto-load for a user who had opened the
+                    // picker, typed a number and pinned a row without selecting anything.
+                    // A record explicitly switched off is not one either, and arming used
+                    // to count any record merely mentioned, so a disarm here would have
+                    // been undone by the very next Apply.
+                    const autoloadHasWork = remembered.some((preference) => preference.active === true);
+                    const armAutoload = !envelope && !current.autoload_enabled && autoloadHasWork;
+                    // The last cheat going off with nothing running leaves auto-load with
+                    // nothing to do, and armed it would still start Cheat Engine on the
+                    // next launch of this game for no cheat at all.
+                    const disarmAutoload = !envelope && current.autoload_enabled && !autoloadHasWork;
+                    await runAction(async () => {
+                        const autoloadTarget = armAutoload || disarmAutoload ? armAutoload : null;
+                        // Two independent durable mutations, reconciled one at a time. Both
+                        // are exact desired state and fully inspectable, so a lost reply is
+                        // reconcilable rather than a failure - but only per write: grouped
+                        // behind one commit, a refusal of the second was read as proof that
+                        // the first had not happened either, and the selection the backend
+                        // had already stored was reported as unsaved.
+                        await commitDesiredState({
+                            subject: "the cheats you confirmed for this table",
+                            write: () => setRememberedCheats(game.appId, current.table_sha256, remembered),
+                            verify: async () => rememberedMatches(currentProfile(await refreshStatus(), game)?.remembered, remembered),
+                        });
+                        if (autoloadTarget !== null) {
+                            try {
+                                await commitDesiredState({
+                                    subject: "the automatic loading of this table",
+                                    write: () => setAutoload(game.appId, current.table_sha256, autoloadTarget),
+                                    verify: async () => currentProfile(await refreshStatus(), game)?.autoload_enabled === autoloadTarget,
+                                });
+                            }
+                            catch (cause) {
+                                throw new PriorDurableCommitError(cause, "The cheat selection for this table");
+                            }
+                        }
+                        if (envelope)
+                            setRuntime(envelope);
+                        await refreshStatus().catch(() => undefined);
+                    });
+                    close();
+                    toaster.toast({
+                        title: "CE Decky",
+                        body: envelope
+                            ? "Cheats applied and the confirmed state was saved for this exact table."
+                            : armAutoload
+                                ? "Cheats saved and auto-load switched on, so they run when this game starts."
+                                : disarmAutoload
+                                    ? "Every cheat is off for this table, so auto-load was switched off too."
+                                    : "Cheats saved for this exact table; they are switched on when it is next loaded.",
+                    });
+                }, onCancel: close }));
+        });
+    };
+    /**
+     * Start Cheat Engine for the exact table this game already authorized.
+     *
+     * Table selection, consent and target process are durable, so the second run
+     * of a game must not have to search for and re-review the same table just to
+     * reach the runtime. This reuses the same attach path as Review and auto-load
+     * and never re-authorizes anything.
+     */
+    const startRuntimeForSelectedTable = () => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256 || !current.target_process)
+            return;
+        const tableSha = current.table_sha256;
+        const process = current.target_process;
+        if (current.execution_consent_sha256 !== tableSha) {
+            setError("This exact table is not authorized yet. Open it once from Manage and confirm it.");
+            return;
+        }
+        void runAction(async () => {
+            // The disabled state this press came from is up to a poll old, and what
+            // it is about is what the game is running right now. Read again, and only
+            // a proven absence stops the launch: a read that fails proves nothing,
+            // and a game that is running the target is the ordinary case.
+            const live = await refreshCELaunch(game.appId).catch(() => null);
+            const targetNotRunning = live ? absentLiveTarget(live.game, process) : null;
+            if (targetNotRunning) {
+                throw new Error(`${process} is not running in this game. This game is running ${targetNotRunning.join(", ")}. Set the target under Advanced, then start Cheat Engine.`);
+            }
+            const nextInspection = inspection?.sha256 === tableSha
+                ? inspection
+                : await inspectTableSha(tableSha, game.appId);
+            setInspection(nextInspection);
+            const observed = await ensureAttachedRuntime(game, process);
+            if (observed.connected && observed.status?.attached) {
+                await reconcileStartupCompatibility(game.appId, observed);
+                await captureLiveSnapshot(game.appId, nextInspection);
+                toaster.toast({ title: "CE Decky", body: "Table loaded and Cheat Engine connected." });
+            }
+            else {
+                dropLiveSnapshot();
+                toaster.toast({ title: "CE Decky", body: "Cheat Engine connected, but the target process still needs an exact PID selection in Advanced." });
+            }
+            autoloadAttemptRef.current = null;
+            clearAutoloadRetry();
+        }).catch(() => undefined);
+    };
+    /**
+     * Toggle one pinned control straight from the panel.
+     *
+     * Pinning exists so the cheats a user actually uses are one press away, so
+     * this must be a real runtime mutation with the same confirmation and
+     * remembered-state persistence the picker's Apply performs - only narrowed to
+     * this exact record.
+     */
+    const togglePinnedCheat = (recordId, active) => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256 || !currentInspection || !runtimeReady || !activeCheatSnapshotReady || !liveSnapshot)
+            return;
+        if (pinnedBusyRef.current || busyRef.current)
+            return;
+        if (!current.pinned.includes(recordId))
+            return;
+        const tableSha = current.table_sha256;
+        const controls = safeActionableControls(currentInspection);
+        const activeById = new Map(controls.flatMap((control) => {
+            if (control.id === null)
+                return [];
+            const result = latestRuntimeResult(liveSnapshot.results, control.id);
+            return [[control.id, result?.ok ? result.active : null]];
+        }));
+        const control = controls.find((candidate) => candidate.id === recordId);
+        if (!control)
+            return;
+        // A cheat that does nothing until it is given a number, pinned onto a panel
+        // that has nowhere to type one. Configure refuses to apply one of those
+        // empty, but pinning commits on its own press and Cancel closes without
+        // ever reaching that refusal, so the switch could arrive here with no value
+        // anywhere - and switching it on then freezes whatever the game happens to
+        // hold at that instant, which is the state that refusal exists to prevent.
+        //
+        // One value, resolved exactly where the row resolves it: this is what the
+        // row shows, what has to exist before the switch may be pressed, and what
+        // the press writes. Reading one source to decide and another to send is how
+        // a row reading `100` sent nothing and activated on whatever the game held.
+        const needsValue = controlNeedsValueInput(control);
+        const valueToApply = needsValue
+            ? pinnedControlValue(latestRuntimeResult(liveSnapshot.results, recordId)?.value, current.remembered?.find((item) => item.record_id === recordId)?.value, current.configured_values?.find((item) => item.record_id === recordId)?.value)
+            : null;
+        if (active && needsValue && valueToApply === null) {
+            setError(`${controlRowLabel(control)} needs a value before it can be switched on. Open Configure cheats, enter one there, and apply.`);
+            return;
+        }
+        // Project what this one toggle leaves behind, so the scripts it switched on
+        // can be released again the moment nothing under them is on. A script left
+        // running keeps its patch in the game for no cheat at all.
+        const projected = new Map(activeById);
+        projected.set(recordId, active);
+        const ancestors = active ? inactiveAncestorControls(control, controls, activeById) : [];
+        for (const ancestor of ancestors)
+            if (ancestor.id !== null)
+                projected.set(ancestor.id, true);
+        const released = unusedActiveScripts(controls, projected);
+        const releasedRows = released.flatMap((scriptId) => {
+            const script = controls.find((candidate) => candidate.id === scriptId);
+            return script ? [{ record_id: scriptId, active: false, value: null, path: script.path, label: controlRowLabel(script) }] : [];
+        });
+        const desired = active
+            ? [
+                ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
+                        record_id: ancestor.id,
+                        active: true,
+                        value: null,
+                        path: ancestor.path,
+                        label: controlRowLabel(ancestor),
+                    }]),
+                {
+                    record_id: recordId,
+                    active,
+                    value: active ? valueToApply : null,
+                    path: control.path,
+                    label: controlRowLabel(control),
+                },
+                ...releasedRows,
+            ]
+            : [
+                { record_id: recordId, active, value: null, path: control.path, label: controlRowLabel(control) },
+                ...releasedRows,
+            ];
+        pinnedBusyRef.current = recordId;
+        setPinnedBusyRecordId(recordId);
+        void runAction(async () => {
+            try {
+                const confirmed = await applyRuntimeSelection(game.appId, desired);
+                if (confirmed.compatibilityMayHaveChanged) {
+                    await refreshStatus().catch((cause) => logUiFailure("pinned.compatibility_refresh_failed", cause, { app_id: game.appId }));
+                }
+                // An unrelated unmaterialized child must not turn a successful pinned
+                // toggle into an error.
+                const finalState = await queryRuntimeControlsPartial(game.appId, controls.flatMap((control) => control.id === null ? [] : [control.id]), confirmed.envelope);
+                const touched = new Set([recordId]);
+                // The scripts around this cheat are CE Decky's own bookkeeping, so they
+                // are sent to Cheat Engine but never written into the profile as a
+                // choice - the startup profile derives them from the table anyway. Only
+                // the pinned record itself is the user's, even when it is a script.
+                const managedScripts = new Set(released);
+                for (const scriptId of enclosingControlIds(controls)) {
+                    if (scriptId !== recordId)
+                        managedScripts.add(scriptId);
+                }
+                const remembered = rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), managedScripts);
+                // Cheat Engine already holds this change, so Home must show it whether
+                // or not the durable half lands. Publishing the snapshot first also
+                // keeps a failed persistence from leaving the panel showing the state
+                // from before the toggle.
+                recordLiveSnapshot(finalState.results, finalState.envelope);
+                const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
+                if (budgetError) {
+                    throw new Error(`The runtime change was confirmed, but it was not remembered: ${budgetError}`);
+                }
+                try {
+                    await commitDesiredState({
+                        subject: "this pinned cheat's state",
+                        write: () => setRememberedCheats(game.appId, tableSha, remembered),
+                        verify: async () => rememberedMatches(currentProfile(await refreshStatus(), game)?.remembered, remembered),
+                    });
+                }
+                catch (cause) {
+                    // "It was not remembered" is a definite claim, and the reconciler
+                    // reaches one case where CE Decky knows no such thing. Saying both at
+                    // once contradicted itself.
+                    throw describeCommitFailure(cause, {
+                        definite: "The runtime change was confirmed, but it was not remembered:",
+                        unknown: "The runtime change was confirmed.",
+                    });
+                }
+                // Catching Home up is not part of the write: a failed refresh used to
+                // report durable state that is already stored as a failed change.
+                await refreshStatus().catch(() => undefined);
+            }
+            catch (cause) {
+                // This is `applyRuntimeSelection` too, so a cheat Cheat Engine ran and
+                // handed straight back off means here exactly what it means in the
+                // picker. Wiring it only there left the panel's own toggle able to
+                // produce the refusal and unable to record it.
+                if (cause?.tableRefused === true) {
+                    await recordRefusedTable(game, tableSha, describeError(cause));
+                }
+                // A failed mutation is still a live session. Reconcile the actual CE
+                // state and keep all pinned rows visible; only invalidate the snapshot
+                // when even that exact-session query fails.
+                try {
+                    const reconciled = await queryRuntimeControlsPartial(game.appId, controls.flatMap((control) => control.id === null ? [] : [control.id]));
+                    recordLiveSnapshot(reconciled.results, reconciled.envelope);
+                }
+                catch (reason) {
+                    dropLiveSnapshot(describeError(reason));
+                }
+                throw cause;
+            }
+        }).catch(() => undefined).finally(() => {
+            pinnedBusyRef.current = null;
+            setPinnedBusyRecordId(null);
+        });
+    };
+    /**
+     * Switch off every active control without stopping Cheat Engine.
+     *
+     * A user who wants the game back the way it was should not have to reopen the
+     * picker and find whatever they switched on, and should not have to end the
+     * session either: the same table stays loaded and ready to be used again.
+     */
+    const disableAllCheats = () => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256 || !currentInspection || !runtimeReady)
+            return;
+        if (pinnedBusyRef.current || busyRef.current)
+            return;
+        const tableSha = current.table_sha256;
+        const controls = safeActionableControls(currentInspection);
+        // A parent script can destroy the child MemoryRecords it created. Query and
+        // disable leaves before their enclosing scripts so every command still has
+        // a live target when the bridge processes it.
+        const recordIds = [...controls]
+            .sort((left, right) => right.path.length - left.path.length)
+            .flatMap((control) => control.id === null ? [] : [control.id]);
+        void runAction(async () => {
+            dropLiveSnapshot();
+            const result = await deactivateAllActiveControls(game.appId, recordIds);
+            // A child destroyed by a parent this call switched off is the intended
+            // outcome; the helper already accepted it and the caller must not undo
+            // that by demanding the record still answer.
+            const finalState = await queryRuntimeControlsPartial(game.appId, recordIds, result.envelope);
+            // Only the records this call actually switched off are a choice. Marking
+            // the whole table as touched wrote an explicit "off" for every supported
+            // record, including scripts that are CE Decky's own machinery and children
+            // that ceased to exist when their script went off - and the next Auto-load
+            // then waited for MemoryRecords that could never appear and failed.
+            const touched = new Set(result.deactivatedIds);
+            const remembered = rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), enclosingControlIds(controls));
+            // The game has already been changed. Whatever happens to the durable half,
+            // Home shows what Cheat Engine actually holds now.
+            recordLiveSnapshot(finalState.results, finalState.envelope);
+            const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
+            if (budgetError) {
+                throw new Error(`The cheats were switched off, but that was not remembered: ${budgetError}`);
+            }
+            try {
+                // A lost receipt here is reconcilable: the write is exact desired state
+                // the profile can be asked about, so it must not be reported as a
+                // failure after every cheat really was switched off.
+                await commitDesiredState({
+                    subject: "the cheats that were switched off",
+                    write: () => setRememberedCheats(game.appId, tableSha, remembered),
+                    verify: async () => rememberedMatches(currentProfile(await refreshStatus(), game)?.remembered, remembered),
+                });
+            }
+            catch (cause) {
+                throw describeCommitFailure(cause, {
+                    definite: "The cheats were switched off, but that was not remembered:",
+                    unknown: "The cheats were switched off.",
+                });
+            }
+            await refreshStatus().catch(() => undefined);
+            toaster.toast({
+                title: "CE Decky",
+                body: result.deactivated === 0
+                    ? "No cheat was active; Cheat Engine is still running."
+                    : `Switched off ${result.deactivated} cheat${result.deactivated === 1 ? "" : "s"}; Cheat Engine is still running.`,
+            });
+        }).catch(() => undefined);
+    };
+    const toggleAutoload = async (enabled) => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256)
+            return;
+        // Only arming is gated: a user must always be able to withdraw automatic
+        // execution, including while the prerequisites for performing it are broken.
+        if (enabled && autoloadBlockedReason)
+            return;
+        await runAction(async () => {
+            await commitDesiredState({
+                subject: enabled ? "switching Load last table & cheats on" : "switching Load last table & cheats off",
+                write: () => setAutoload(game.appId, current.table_sha256, enabled),
+                verify: async () => currentProfile(await refreshStatus(), game)?.autoload_enabled === enabled,
+            });
+            await refreshStatus().catch(() => undefined);
+            autoloadAttemptRef.current = null;
+            clearAutoloadRetry();
+        }).catch(() => undefined);
+    };
+    // Auto-load needs every identity it will act on to be settled first. It does
+    // not need the game to be running: setting a game up before playing it is the
+    // normal way to use this, and Configure cheats switches this on by itself when
+    // a selection is made with nothing running.
+    const autoloadBlockedReason = !selectedGame
+        ? "Choose a game first."
+        : !profile?.table_sha256
+            ? "Select a table for this game first."
+            : profile.execution_consent_sha256 !== profile.table_sha256
+                ? "Review and authorize this exact table first."
+                : !profile.target_process
+                    ? "Confirm the game's target process first."
+                    // Start already required the exact table to be present and verified.
+                    // Auto-load did not, so a table deleted or corrupted outside the plugin
+                    // left Load last table & cheats armed and every attempt failed in
+                    // session preparation, which could never succeed.
+                    : !activeTable
+                        ? "The selected table file is missing. Download or open it again to re-import it."
+                        : null;
+    SP_REACT.useEffect(() => {
+        if (!selectedGame || !profile?.autoload_enabled || !profile.table_sha256 || !profile.target_process)
+            return;
+        if (
+        // Managed setup is an optional capability whose failure the panel already
+        // degrades: gating Auto-load on it silently disabled the automatic
+        // workflow for a perfectly valid imported Cheat Engine while the manual
+        // Start beside it still worked. Only an active setup transition blocks.
+        !status?.ce.valid
+            || profile.execution_consent_sha256 !== profile.table_sha256
+            // The exact table must exist and be verified. Without this an externally
+            // deleted or corrupted blob left Auto-load armed and every attempt failed
+            // in session preparation, which could never succeed.
+            || !activeTable
+            || ceRunning
+            // Another game's owned Cheat Engine makes every launch here impossible,
+            // so do not enter the bounded retry loop against it.
+            || ownership.blockedReason !== null
+            // Automatic execution is the one path with no contemporaneous user
+            // decision, so a known anti-cheat must stop it before it starts.
+            || antiCheatReason !== null
+            || runtime?.connected
+            || busyRef.current
+            || contextModalDepthRef.current > 0
+            || managedSetupPending)
+            return;
+        const key = `${selectedGame.appId}:${profile.table_sha256}:${profile.target_process}`;
+        if (autoloadAttemptRef.current === key)
+            return;
+        autoloadAttemptRef.current = key;
+        void (async () => {
+            try {
+                const capability = await refreshCELaunch(selectedGame.appId);
+                const latestOwnership = launchOwnership({
+                    capability,
+                    scopeAppId: selectedGame.appId,
+                    selectedAppId: selectedGame.appId,
+                });
+                if (capability.game?.app_id !== selectedGame.appId
+                    || !capability.game.running
+                    || antiCheatBlockedReason(capability.game.windows_executables ?? []) !== null
+                    // Nobody is watching this one, so a launch the current observation
+                    // already proves cannot attach must not be made at all. Re-armed by
+                    // the next change, which is what starting the right program is.
+                    || absentLiveTarget(capability.game, profile.target_process) !== null
+                    || latestOwnership.blockedReason !== null
+                    || latestOwnership.ownedBySelected) {
+                    autoloadAttemptRef.current = null;
+                    clearAutoloadRetry();
+                    return;
+                }
+                // Capability discovery can yield while a detached workflow opens or the
+                // selected profile changes. Revalidate the exact UI identity immediately
+                // before acquiring the global mutation latch; never launch behind another
+                // modal or for a stale captured AppID/table/process tuple.
+                const latestGame = selectedGameRef.current;
+                const latestProfile = currentProfile(statusRef.current, latestGame);
+                if (busyRef.current
+                    || contextModalDepthRef.current > 0
+                    || latestGame?.appId !== selectedGame.appId
+                    || latestGame?.isShortcut !== selectedGame.isShortcut
+                    || latestProfile?.table_sha256 !== profile.table_sha256
+                    || latestProfile?.target_process !== profile.target_process
+                    || latestProfile?.execution_consent_sha256 !== profile.table_sha256
+                    || !latestProfile?.autoload_enabled) {
+                    autoloadAttemptRef.current = null;
+                    clearAutoloadRetry();
+                    return;
+                }
+                await runAction(async () => {
+                    const observed = await ensureAttachedRuntime(selectedGame, profile.target_process);
+                    if (!observed.connected)
+                        throw new Error("Auto-load started Cheat Engine, but the bridge did not stay connected.");
+                    const autoloadInspection = inspection?.sha256 === profile.table_sha256
+                        ? inspection
+                        : await inspectTableSha(profile.table_sha256, selectedGame.appId);
+                    // A fresh heartbeat proves the bridge is alive, not that the cheats
+                    // came back. Startup applies records one at a time and waits for any
+                    // an enclosing script must create, so wait for it to reach a terminal
+                    // state before saying anything to the user.
+                    const settled = await awaitStartupOutcome(selectedGame.appId, observed);
+                    await captureLiveSnapshot(selectedGame.appId, autoloadInspection);
+                    if (settled === "failed") {
+                        const envelope = await refreshRuntime(selectedGame.appId);
+                        const reason = startupFailureReason(envelope);
+                        // Auto-load runs with nobody watching, and a table written for a
+                        // different build of the game fails here first - every launch,
+                        // before the picker is ever opened. Record it from this path too.
+                        const refused = refusedStartupEnable(envelope?.status?.results ?? []);
+                        if (refused && profile.table_sha256) {
+                            await recordRefusedTable(selectedGame, profile.table_sha256, reason);
+                        }
+                        throw new Error(reason);
+                    }
+                    if (settled === "pending") {
+                        throw new Error("Auto-load started Cheat Engine, but the saved cheats had not been applied yet.");
+                    }
+                    // Runtime observation can persist the first compatibility evidence.
+                    // Converge Search/Manage without changing the successful launch outcome.
+                    await refreshStatus().catch((cause) => logUiFailure("autoload.compatibility_refresh_failed", cause, { app_id: selectedGame.appId }));
+                }, { automatic: true });
+                toaster.toast({ title: "CE Decky", body: "Last authorized table and confirmed cheats were auto-loaded." });
+                clearAutoloadRetry();
+            }
+            catch {
+                // runAction already surfaced the exact blocker, so this decides only
+                // whether the same identity may be attempted again. Latching the key
+                // here turned an ordinary startup race into a panel-lifetime failure:
+                // Auto-load stayed inert after the condition became healthy and the
+                // user had to press Load table & start CE by hand. Retry a bounded
+                // number of times on a backoff instead, and never in a tight loop.
+                const previous = autoloadRetryRef.current;
+                const attempts = previous?.key === key ? previous.attempts + 1 : 1;
+                autoloadRetryRef.current = { key, attempts };
+                if (autoloadRetryTimerRef.current !== null)
+                    clearTimeout(autoloadRetryTimerRef.current);
+                autoloadRetryTimerRef.current = null;
+                if (attempts < AUTOLOAD_RETRY_DELAYS_MS.length + 1) {
+                    autoloadAttemptRef.current = null;
+                    autoloadRetryTimerRef.current = setTimeout(() => setAutoloadRetryTick(tick => tick + 1), AUTOLOAD_RETRY_DELAYS_MS[attempts - 1]);
+                }
+            }
+        })();
+        // `targetProvenAbsent` is a wake-up rather than something this reads: the
+        // body takes its own fresh observation. It is here because the transition
+        // this exists for - a launcher first, the game seconds later - changes no
+        // other dependency, and without it Auto-load slept through it.
+    }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, clearAutoloadRetry, refreshCELaunch, runAction, captureLiveSnapshot]);
+    const pickCE = async () => {
+        if (!status)
+            return false;
+        let selected;
+        try {
+            // Folders are listed so the picker can be navigated at all; only a file
+            // may be submitted. A .zip is a whole Cheat Engine installation directory
+            // packed up on a Windows machine, which is the fallback for the day the
+            // official installer this plugin extracts is no longer downloadable. The
+            // trailing page-size argument is left at Decky's default; passing 1 there
+            // shows one entry per directory.
+            selected = await openFilePicker(0 /* FileSelectionType.FILE */, status.user_home, true, true, undefined, ["exe", "zip"], true, false);
+        }
+        catch (cause) {
+            if (isDeckyFilePickerCancellation(cause)) {
+                logUi("ce.file_picker_cancelled");
+                return false;
+            }
+            throw cause;
+        }
+        const source = selected.realpath || selected.path;
+        logUi("ce.file_picked", { archive: /\.zip$/i.test(source) });
+        if (/\.zip$/i.test(source)) {
+            const installed = await importCEArchive(source);
+            await Promise.all([refreshStatus(), refreshManagedCEOptional(), refreshCELaunch(selectedGameRef.current?.appId ?? null)]);
+            toaster.toast({
+                title: "CE Decky",
+                body: `Imported ${installed.file_count} files from ${installed.archive_root || "the archive root"} as Cheat Engine ${installed.sha256.slice(0, 8)}.`,
+            });
+            return true;
+        }
+        await importCE(source);
+        await Promise.all([refreshStatus(), refreshManagedCEOptional(), refreshCELaunch(selectedGameRef.current?.appId ?? null)]);
+        return true;
+    };
+    const refreshRuntimeProcesses = async () => {
+        const game = selectedGameRef.current;
+        if (!game)
+            throw new Error("Select a game first.");
+        const result = await sendRuntimeCommandAndWait(game.appId, { kind: "list_processes" });
+        setRuntime(result.envelope);
+        return result.envelope;
+    };
+    const retryExactAttach = async (name, pid) => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256)
+            throw new Error("Select an active table first.");
+        if (!isValidProcessBasename(name) || !Number.isSafeInteger(pid) || pid < 1) {
+            throw new Error("Choose one valid observed .exe process and exact PID.");
+        }
+        const result = await sendRuntimeCommandAndWait(game.appId, { kind: "retry_attach", value: name, target_pid: pid });
+        const next = result.envelope;
+        setRuntime(next);
+        if (!next.status?.attached || next.status.opened_process_id !== pid) {
+            throw new RuntimeOperationError(`Resident bridge did not confirm attach to PID ${pid}.`, next);
+        }
+        if (inspection?.sha256 === current.table_sha256) {
+            await captureLiveSnapshot(game.appId, inspection);
+        }
+        return next;
+    };
+    const loadGames = async () => {
+        const listed = await listInstalledGames();
+        // Steam's library is the account's; this device's own manifests and its own
+        // shortcut store are what say which of it is here. Best effort on purpose:
+        // a backend that cannot answer leaves the whole list rather than hiding a
+        // game the user has.
+        const library = await readLocalLibrary().catch((cause) => {
+            logUiFailure("panel.local_library_unreadable", cause);
+            return null;
+        });
+        const next = [...gamesOnThisDevice(listed, library)];
+        logUi("panel.games_listed", {
+            listed: listed.length,
+            offered: next.length,
+            installed: library?.steam_app_ids.length ?? null,
+            unstartable: library?.unstartable_app_ids.length ?? null,
+            shortcuts: library?.shortcut_app_ids.length ?? null,
+            reason: library?.reason ?? null,
+            shortcuts_reason: library?.shortcuts_reason ?? null,
+        });
+        setGames(next);
+        return next;
+    };
+    const runCELaunchSelfTest = async (toolId) => {
+        if (!toolId)
+            throw new Error("Choose an installed Proton tool first.");
+        const operation = await awaitLaunchOutcome(await startCESelfTest(toolId), true);
+        await refreshCELaunch(selectedGameRef.current?.appId ?? null);
+        if (operation.state !== "stopped" || !operation.bridge) {
+            throw new Error(operation.error || operation.message || "Cheat Engine self-test did not complete.");
+        }
+        toaster.toast({ title: "CE Decky", body: "Cheat Engine started and the bridge answered; Steam state was unchanged." });
+    };
+    const saveAdvancedTarget = async (value) => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        const process = value.trim();
+        if (!game || !current?.table_sha256)
+            throw new Error("Select an active table first.");
+        if (!isValidProcessBasename(process))
+            throw new Error("Target process must be one .exe basename, not a path.");
+        const capability = await refreshCELaunch(game.appId);
+        if (capability.recovered || capability.operations.some((operation) => operation.app_id === game.appId && ["starting", "running", "connected"].includes(operation.state))) {
+            await stopOwnedCE(game.appId);
+        }
+        // The same exact desired state the picker saves, and the same reason to
+        // ask the profile rather than trust a rejected reply: this has already
+        // stopped a running Cheat Engine by now.
+        await commitDesiredState({
+            subject: "the target process",
+            write: () => saveProfile(game.appId, appDetails?.displayName || game.name, game.isShortcut, current.table_sha256, process),
+            verify: async () => currentProfile(await refreshStatus(), game)?.target_process === process,
+        });
+        setTargetProcess(process);
+        // Catching Home up is not part of the write. The profile is already stored,
+        // so a failed status read must not report the saved target as unsaved.
+        await refreshStatus().catch(() => undefined);
+        autoloadAttemptRef.current = null;
+        clearAutoloadRetry();
+    };
+    const togglePinnedControl = async (recordId, pinned) => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256)
+            throw new Error("Select an active table first.");
+        const tableSha = current.table_sha256;
+        // Pinning is exact desired state, so a lost reply is asked about rather than
+        // reported as a failed pin the profile is already holding - which left the
+        // picker showing the previous pin state over a committed one.
+        const committed = { pinned: null };
+        await commitDesiredState({
+            subject: pinned ? "pinning this cheat to Home" : "unpinning this cheat from Home",
+            write: async () => {
+                committed.pinned = (await setPinnedControl(game.appId, tableSha, recordId, pinned)).pinned;
+            },
+            verify: async () => {
+                const after = currentProfile(await refreshStatus(), game);
+                if (!after || after.pinned.includes(recordId) !== pinned)
+                    return false;
+                committed.pinned = after.pinned;
+                return true;
+            },
+        });
+        await refreshStatus().catch(() => undefined);
+        return committed.pinned ?? [];
+    };
+    const clearStartupActions = async () => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (!game || !current?.table_sha256)
+            throw new Error("Select an active table first.");
+        const tableSha = current.table_sha256;
+        // Clearing is exact desired state - an empty startup list for this exact
+        // table - so a lost reply is asked about rather than reported as a failed
+        // clear of actions the profile no longer holds.
+        const committed = { remaining: null };
+        await commitDesiredState({
+            subject: "this table's saved startup actions",
+            write: async () => {
+                committed.remaining = (await clearStartupPreference(game.appId, tableSha, null)).startup.length;
+            },
+            verify: async () => {
+                const after = currentProfile(await refreshStatus(), game);
+                // Identity moving out from under the write is not a confirmation of it.
+                if (!after || after.table_sha256 !== tableSha || after.startup.length > 0)
+                    return false;
+                committed.remaining = after.startup.length;
+                return true;
+            },
+        });
+        await refreshStatus().catch(() => undefined);
+        return committed.remaining ?? 0;
+    };
+    const forgetCEImport = async () => {
+        await clearCEImport();
+        return refreshAdvancedContext();
+    };
+    const revokeProfileTable = async (appId, tableSha) => {
+        const latest = (await refreshStatus()).profiles.find((item) => item.app_id === appId);
+        const alreadyRevoked = latest?.table_sha256 === null && latest.previous_table_sha256 === tableSha
+            && latest.table_history[tableSha]?.execution_consent === false && !latest.autoload_enabled;
+        if (!latest || (latest.table_sha256 !== tableSha && !alreadyRevoked)) {
+            throw new Error("The selected table changed. Refresh Manage before revoking it.");
+        }
+        if (!alreadyRevoked)
+            await stopOwnedCE(appId, tableSha);
+        // Withdrawal is exact desired state and the profile is the authority on it,
+        // so a lost reply must not report a revocation that already happened as a
+        // failure - which invited the user to press it again.
+        await commitDesiredState({
+            subject: "withdrawing this table's execution authorization",
+            write: () => revokeTable(appId, tableSha),
+            verify: async () => {
+                const after = (await refreshStatus()).profiles.find((item) => item.app_id === appId);
+                // An unreadable profile proves nothing about consent, and neither does
+                // one that has moved to another table: that table's consent field
+                // trivially differs from this SHA, while this table's own consent was
+                // archived into `table_history` when the selection changed and is
+                // restored the moment it is selected again. Reporting the withdrawal as
+                // done would leave an authorization that comes back by itself. Fail
+                // closed on identity, exactly as clearing the startup actions does.
+                return Boolean(after && after.table_sha256 === null && !after.autoload_enabled
+                    && after.execution_consent_sha256 === null
+                    && after.table_history[tableSha]?.execution_consent === false);
+            },
+        });
+        // Consent is already withdrawn; a failed status read is not a failed
+        // revocation.
+        await refreshStatus().catch(() => undefined);
+    };
+    const revokeConsent = async () => {
+        const game = selectedGameRef.current;
+        const current = currentProfile(statusRef.current, game);
+        if (game && current?.table_sha256)
+            await revokeProfileTable(game.appId, current.table_sha256);
+    };
+    const refreshAdvancedContext = async (gameOverride) => {
+        const game = selectedGameRef.current ;
+        const [nextStatus, , nextLaunch, nextDetails, nextRuntime] = await Promise.all([
+            refreshStatus(),
+            refreshManagedCEOptional(),
+            refreshCELaunch(game?.appId ?? null),
+            game ? readAppDetails(game.appId) : Promise.resolve(null),
+            game ? refreshRuntime(game.appId) : Promise.resolve(null),
+        ]);
+        if (game && nextDetails?.isShortcut !== game.isShortcut) {
+            throw new Error(`Steam identity changed for AppID ${game.appId}; refusing to refresh the old game context.`);
+        }
+        const nextProfile = currentProfile(nextStatus, game);
+        let nextInspection = null;
+        if (nextProfile?.table_sha256 && nextStatus.tables.some((candidate) => candidate.sha256 === nextProfile.table_sha256 && candidate.available)) {
+            nextInspection = await inspectTableSha(nextProfile.table_sha256, game?.appId ?? null);
+        }
+        return {
+            status: nextStatus,
+            ceLaunch: nextLaunch,
+            runtime: nextRuntime,
+            appDetails: nextDetails,
+            inspection: nextInspection,
+            targetProcess: nextProfile?.target_process ?? "",
+        };
+    };
+    const openAdvanced = (gameOptions = games) => {
+        if (!status)
+            return;
+        showContextModal((close) => (SP_JSX.jsx(AdvancedModal, { status: status, games: gameOptions, selectedGame: selectedGame, appDetails: appDetails, inspection: inspection, targetProcess: targetProcess, ceLaunch: ceLaunchView, launchProtonToolId: launchProtonToolId, runtime: runtime, selfTest: selfTest, busy: busy, onRefreshGames: () => runAction(loadGames), onSaveTargetProcess: (value) => runAction(() => saveAdvancedTarget(value)).then(() => { close(); }), onPickCE: () => runAction(pickCE).then((imported) => { if (imported)
+                close(); }), onClearCEImport: () => runAction(forgetCEImport), onRunSelfTest: () => runAction(async () => {
+                const result = await runSelfTest();
+                setSelfTest(result);
+                toaster.toast({ title: "CE Decky", body: selfTestSummary(result).toast });
+                return result;
+            }), onLaunchProtonChange: setLaunchProtonToolId, onRunCELaunchSelfTest: (toolId) => runAction(() => runCELaunchSelfTest(toolId)), onRefreshRuntime: () => selectedGameRef.current
+                ? runAction(() => refreshRuntime(selectedGameRef.current.appId))
+                : Promise.resolve(null), onRefreshProcesses: () => runAction(refreshRuntimeProcesses), onRetryAttach: (name, pid) => runAction(() => retryExactAttach(name, pid)), onRepairSessionState: () => runAction(async () => {
+                const game = selectedGameRef.current;
+                if (!game)
+                    throw new Error("Choose a game first.");
+                return repairSessionState(game.appId);
+            }), onRepairOwnedLaunchState: () => runAction(async () => {
+                const game = selectedGameRef.current;
+                if (!game)
+                    throw new Error("Choose a game first.");
+                return repairOwnedLaunchState(game.appId);
+            }), onRepairProfileState: () => runAction(async () => {
+                return repairProfileState();
+            }), onClearStartup: () => runAction(clearStartupActions), onRevokeConsent: () => runAction(revokeConsent).then(() => { close(); }), onLoadDiagnostics: () => getDiagnosticsSnapshot(), onCollectSupportBundle: () => {
+                // Read the panel's own record at the moment of the press, so the
+                // archive describes the session that produced the problem.
+                const panel = readSupportLog();
+                return createSupportBundle(panel.entries, panel.dropped);
+            }, blockedTables: blockedTables, blockedTablesReason: blockedTablesReason, onRefreshBlockedTables: () => refreshBlockedTables(), onUnblockTable: (sha256) => runAction(() => clearFailedMark(sha256)), onClearBlockedTables: () => runAction(() => clearFailedMark()), onLoadProviderSources: () => getProviderSources(), onSetProviderEnabled: (providerId, enabled) => runAction(() => commitSourceSelection(`${enabled ? "using" : "not using"} ${providerDisplayName(providerId)}`, () => setProviderEnabled(providerId, enabled), sourceSwitched(providerId, enabled))), onResetProviderSources: () => runAction(() => commitSourceSelection("using every table source", () => resetProviderSources(), everySourceOn)), onResetProviderDiagnostics: () => runAction(() => commitSourceSelection("the counters being cleared", () => resetProviderDiagnostics(), countsReadable)), onCheckRemoval: () => runAction(getRemovalReadiness), onDeleteManagedData: (scope) => runAction(async () => {
+                try {
+                    return await deleteManagedData(scope);
+                }
+                finally {
+                    // Everything the deleted files were backing on this side goes with
+                    // them: cached search outcomes name sources whose choice may have
+                    // been reset, and the retirement marks are the ephemeral half of a
+                    // durable blocked-table record that has just been erased.
+                    //
+                    // In a finally, because a deletion commits before the call returns:
+                    // a reply lost after that point leaves the files gone and this
+                    // side describing them, and reconciling only on the success path is
+                    // exactly how it kept describing them.
+                    forgetSearchOutcomes();
+                    if (scope !== "cache") {
+                        forgetAllRejectedArtifacts();
+                        // Invalidate before reconciliation, including an uncertain reply.
+                        // Reads started before deletion cannot publish the old authority.
+                        statusGenerationRef.current += 1;
+                        runtimeGenerationRef.current += 1;
+                        blockedGenerationRef.current += 1;
+                        statusRef.current = null;
+                        setStatus(null);
+                        setRuntime(null);
+                        dropLiveSnapshot();
+                        blockedTablesRef.current = { tables: [], reason: null };
+                        setBlockedTables([]);
+                        await refreshStatus().catch((cause) => {
+                            logUiFailure("panel.status_after_bulk_delete_failed", cause, { scope });
+                        });
+                        await refreshBlockedTables().catch(() => undefined);
+                    }
+                }
+            }), onRefreshAll: () => runAction(() => refreshAdvancedContext()), onClose: close })));
+    };
+    const openGamePicker = (gameOptions) => {
+        // Only the ambiguity this cannot resolve by itself is marked. One running
+        // game is auto-selected and never reaches here, and an ordinary Change game
+        // is about the library rather than about what is running.
+        const ambiguousRunning = !selectedGameRef.current && runningGamesRef.current.length > 1
+            ? runningGamesRef.current
+            : [];
+        showContextModal((close) => (SP_JSX.jsx(GamePickerModal, { games: gameOptions, runningGames: ambiguousRunning, selectedGame: selectedGameRef.current, onPick: async (game) => {
+                await runAction(async () => {
+                    // Asked again here, and not only where this was opened. The picker
+                    // is open for as long as the user takes to read a library, the
+                    // detector is suppressed for all of it, and the game can start in
+                    // that window. The modal keeps the refusal in front of the press
+                    // that made it and the selection stays where it was.
+                    await refuseWhileSelectedGameRuns("commit");
+                    const next = await hydrateGame(game, "manual");
+                    if (!next)
+                        throw new Error("Game selection was superseded before its exact context could be confirmed.");
+                });
+                close();
+            }, onCancel: close })));
+    };
+    if (!status) {
+        // While the first read is still in flight every control here is a
+        // placeholder and stays disabled. Once it has failed, Retry is the one
+        // control that has to be pressable: nothing else in this branch does
+        // anything, so without it the panel could only recover by being remounted.
+        const bootstrapFailed = error !== null;
+        return SP_JSX.jsx(HomePanel, { pluginVersion: null, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
+    }
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
+                void runAction(async () => {
+                    // Before the library is even read, because the answer decides whether
+                    // there is anything to open. The row's disabled state is up to three
+                    // seconds old and this is the press itself.
+                    await refuseWhileSelectedGameRuns("open");
+                    return await loadGames();
+                }).then(openGamePicker).catch(() => undefined);
+            }, table: activeTable, tableSource: tableSource, onSearchTable: openTableSearch, searchButtonRef: searchButtonRef, preferSearchFocus: preferSearchFocus, selectedTableMissing: profile?.table_sha256 && !activeTable
+                ? "The file for this game's selected table is gone. Download or open it again, or pick another."
+                : null, tableMarkedNotWorking: selectedTableMarkedNotWorking, tableEvidence: profile?.table_sha256
+                ? status?.table_compatibility?.entries.find((entry) => (entry.app_id === selectedGame?.appId && entry.table_sha256 === profile.table_sha256))
+                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, onStopCE: () => {
+                const pending = launchInProgress;
+                if (pending) {
+                    // The launch that is still waiting owns the busy latch, so cancelling
+                    // it cannot go through `runAction`; the backend stop is safe for a
+                    // `starting`/`running` operation and the awaiting caller then ends
+                    // with the stopped state instead of its own timeout.
+                    void stopOwnedCE(pending.appId).catch((cause) => setError(describeError(cause)));
+                    return;
+                }
+                if (selectedGameRef.current)
+                    void runAction(() => stopOwnedCE(selectedGameRef.current.appId)).catch(() => undefined);
+            }, onAdvanced: () => openAdvanced(), busy: busy || (managedCE === null && managedCEError === null), error: error }) }));
+}
+/**
+ * Record a render crash on its way to Decky's own boundary.
+ *
+ * `ErrorBoundary` from `@decky/ui` takes no error callback, so a component that
+ * threw while rendering produced Decky's fallback and nothing else: the one
+ * class of UI bug a user cannot describe was also the one that left no trace.
+ * This sits inside it, writes the failure to the support log, and then rethrows
+ * on the next render so Decky's boundary still handles the display exactly as
+ * before.
+ */
+class SupportLogBoundary extends SP_REACT.Component {
+    constructor() {
+        super(...arguments);
+        this.state = { error: null };
+    }
+    static getDerivedStateFromError(error) {
+        return { error };
+    }
+    componentDidCatch(error, info) {
+        logUiFailure("panel.render_crashed", error, { component_stack: info?.componentStack ?? null });
+    }
+    render() {
+        if (this.state.error !== null)
+            throw this.state.error;
+        return this.props.children;
+    }
+}
+var index = definePlugin(() => {
+    // Started here rather than inside the panel, and stopped by `onDismount`
+    // below. Opening any modal unmounts the panel, and what a modal recorded
+    // before something went wrong is exactly what a report needs, so the flush
+    // has to outlive every one of them.
+    const stopSupportLogFlush = startSupportLogFlush();
+    // One id per factory invocation, which is one per row Decky adds, and never
+    // the batch id the whole loaded module shares: two imports of this bundle
+    // issued in the same millisecond resolve to one module URL and call this
+    // factory twice, so the module is not what a row is.
+    const panelInstance = nextPanelInstance();
+    // The renderer beside the row, because the row says which panel this is and
+    // the renderer says which generation of the frontend it belongs to. An
+    // install reads the second to know whether a record it is looking at came
+    // from the frontend it replaced.
+    const panelLifetime = {
+        panel_instance: panelInstance,
+        panel_renderer: panelRenderer(),
+        // When this renderer started, which is what says which side of a frontend
+        // reload a row belongs to: one created by the reload started after it was
+        // asked for, and the one being replaced started before. A moment rather
+        // than an age, because an age is compared against however long the reader
+        // has been waiting and would classify this same fixed record differently
+        // on two reads of it.
+        renderer_started_at_ms: String(rendererStartedAt()),
+    };
+    logUi("panel.mounted", panelLifetime);
+    return {
+        name: "CE Decky",
+        titleView: SP_JSX.jsx("div", { className: DFL.staticClasses.Title, children: "CE Decky" }),
+        content: SP_JSX.jsx(DFL.ErrorBoundary, { children: SP_JSX.jsx(SupportLogBoundary, { children: SP_JSX.jsx(Content, {}) }) }),
+        icon: SP_JSX.jsx("div", { style: { fontWeight: 700 }, children: "CE" }),
+        onDismount() {
+            // Recorded before the flush is stopped, so the durable record ends on the
+            // entry that says this was an ordinary dismount. A record that stops on
+            // anything else is a frontend that did not get to say goodbye, which is
+            // what separates a closed panel from a wedged one.
+            logUi("panel.dismounted", panelLifetime);
+            stopSupportLogFlush();
+            console.log("CE Decky frontend dismounted");
+        },
+    };
+});
+
+export { index as default };
+//# sourceMappingURL=index.js.map

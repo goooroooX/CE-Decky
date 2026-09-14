@@ -1,0 +1,19 @@
+{
+  "schema": 3,
+  "visible_version": "7.7",
+  "artifact_filename": "CheatEngine77.exe",
+  "artifact_url": "https://d1dj9aohuk02ls.cloudfront.net/f/CheatEngine/2129/CheatEngine77.exe",
+  "allowed_hosts": ["d1dj9aohuk02ls.cloudfront.net"],
+  "sha256": "cf0f4b6002555677984233c95856683959be83a5def3dc12175a8296eb22676b",
+  "size": 34690856,
+  "max_size": 67108864,
+  "reviewed_at": "2026-08-22",
+  "reviewed_authenticode_subject": "CN=Cheat Engine EZ, O=Cheat Engine EZ, C=NL",
+  "publisher_key_sha256": "c6b1fd6c80b1687e348bf4d08bfc5234ea793f4e832c112b7774a4b959ba98c1",
+  "rediscovery": {
+    "page_url": "https://www.cheatengine.org/downloads.php",
+    "page_hosts": ["www.cheatengine.org", "cheatengine.org"],
+    "max_page_bytes": 1048576,
+    "max_helper_bytes": 33554432
+  }
+}

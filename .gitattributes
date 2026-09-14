@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.7z binary
+
+# Third-party runtime distributions are committed for the Store builder and
+# are stored byte for byte: normalising their line endings would make the
+# recorded tree digest disagree between a checkout and the machine that
+# recorded it, for a change nobody made.
+py_modules/vendor/** -text

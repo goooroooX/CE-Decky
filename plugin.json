@@ -1,0 +1,11 @@
+{
+  "name": "CE Decky",
+  "author": "Dmitry Nikolaenya",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["cheat", "trainer"],
+    "description": "Manage Cheat Engine tables and live table controls from SteamOS Game Mode.",
+    "image": "https://raw.githubusercontent.com/goooroooX/CE-Decky/main/docs/assets/readme-panels.png"
+  }
+}

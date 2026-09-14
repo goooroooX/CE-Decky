@@ -1,0 +1,570 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from hashlib import sha256 as _sha256
+import io
+import re
+import xml.etree.ElementTree as ET
+import unicodedata
+
+from .atomic import read_regular_bytes
+from .table_markers import is_auto_assembler_marker, is_embedded_file, is_form_marker, is_lua_marker, local_tag
+from .table_store import MAX_CT_BYTES, MAX_XML_ELEMENTS, TableContentError, _FORBIDDEN_XML_MARKERS
+from .text import fit_utf8, is_unsafe_display_character, utf8_len
+
+MAX_INSPECTION_ENTRIES = 100_000
+MAX_INSPECTION_DEPTH = 128
+MAX_DESCRIPTION_BYTES = 4096
+MAX_VARIABLE_TYPE_BYTES = 1024
+# What one record's own value list may be, measured against real tables rather
+# than picked. The largest list observed on this device is 268.6 KiB of 6508
+# values, and one table carries three of them: at 256 KiB the first of the three
+# refused the whole table, and at 4096 values each of the three silently lost
+# 2412 of the items it exists to let the user choose between. Both are headroom
+# over that, and neither is the real bound: the whole `.CT` is already limited
+# to `MAX_CT_BYTES`, and the size of the list is what the byte limit guards
+# before it is split at all.
+# What one dropped whole list is marked with, so the count of values lost and
+# the count of lists lost stay two different numbers.
+DROPPED_VALUE_LIST = "CT dropdown list beyond the size limit"
+MAX_DROPDOWN_BYTES = 1024 * 1024
+MAX_DROPDOWN_VALUES = 16_384
+MAX_DROPDOWN_VALUE_BYTES = 4096
+MAX_DROPDOWN_LABEL_BYTES = 4096
+# What a colliding label is told apart by. The value it is made from is
+# table semantics and is never trimmed, but this hint is display text, and a
+# long value must not push the label it disambiguates off the screen.
+MAX_DROPDOWN_HINT_BYTES = 64
+MAX_TABLE_VERSION_BYTES = 256
+MAX_ADDRESS_HINT_BYTES = 256 * 1024
+MAX_PROCESS_CANDIDATES = 256
+# `aobscanmodule(name,Game.exe,AOB)` is the standard Cheat Engine idiom for
+# naming the target module, so a comma and the surrounding parentheses have to
+# delimit a hint just like a path separator or a quote does.
+_PROCESS_RE = re.compile(r"(?i)(?:^|[\\/\s\"',(\[=])((?:[^\\/\s\"',()\[\]=]+\.exe))(?:$|[+\-\s\"',)\]:])")
+
+
+# A table author's own "attach to the game" button. Its script opens the game's
+# process and does nothing else: no patch, no allocation, nothing to disable.
+# CE Decky attaches by exact PID before any of this runs, so the record is
+# machinery rather than a cheat, and switching it on would re-open the process
+# by name and can move Cheat Engine off the exact process CE Decky attached to.
+# Recognised by what the script does, never by what it is called: a body with no
+# assembly in it cannot change the game.
+#
+# Every line has to be one attach call and nothing else, which is a parse rather
+# than a search. Asking only whether a line contains an attach call anywhere
+# classified a line that opens the process and then does something else as if
+# the something else were not there, and a `process(...)` of the author's own
+# writing is not Cheat Engine's anything: neither is identifiable, so neither
+# may hide a record. Anything this cannot read as canonical stays an ordinary
+# script, which is the visible outcome.
+ATTACH_CALL_NAMES = frozenset({"openprocess", "attachtoprocess", "getprocessidfromprocessname"})
+_ATTACH_STATEMENT_RE = re.compile(r"(?i)^\s*(?:local\s+[A-Za-z_]\w*\s*=\s*)?([A-Za-z_]\w*)\s*\(")
+_CALL_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+
+
+def _script_sections(text: str) -> tuple[str, str]:
+    """Split an Auto Assembler script into its ENABLE and DISABLE bodies."""
+    enable, _, rest = text.partition("[ENABLE]")
+    if not rest:
+        return "", ""
+    body, _, disable = rest.partition("[DISABLE]")
+    return body, disable
+
+
+def _is_attach_statement(line: str) -> bool:
+    """Whether this whole line is one recognized attach call and nothing else."""
+    match = _ATTACH_STATEMENT_RE.match(line)
+    if match is None or match.group(1).casefold() not in ATTACH_CALL_NAMES:
+        return False
+    depth = 0
+    for index in range(line.index("(", match.end(1) - 1), len(line)):
+        character = line[index]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth:
+                continue
+            # Anything after the call closes is another statement on this line,
+            # and the call is then not all this line does.
+            if line[index + 1:].strip() not in {"", ";"}:
+                return False
+            # `openProcess(getProcessIDFromProcessName("game.exe"))` is the same
+            # idiom nested; anything else inside it is not identifiable.
+            return all(
+                name.casefold() in ATTACH_CALL_NAMES
+                for name in _CALL_NAME_RE.findall(line[match.end():index])
+            )
+    return False
+
+
+def _is_attach_only(text: str | None) -> bool:
+    if not text or "[ENABLE]" not in text:
+        return False
+    enable, disable = _script_sections(text)
+    if _meaningful_script_lines(disable):
+        return False
+    lines = _meaningful_script_lines(enable)
+    if not lines:
+        return False
+    return all(_is_attach_statement(line) for line in lines)
+
+
+def _meaningful_script_lines(body: str) -> list[str]:
+    """Script lines that do something: no comments, no mode markers, no labels."""
+    lines: list[str] = []
+    for raw in body.splitlines():
+        line = raw.split("//", 1)[0].strip()
+        if not line or line.startswith("{$") or line in {"{", "}"} or line.endswith(":"):
+            continue
+        if line.startswith("{") and line.endswith("}"):
+            continue
+        lines.append(line)
+    return lines
+
+
+@dataclass(frozen=True)
+class TableControl:
+    id: int | None
+    description: str
+    path: tuple[str, ...]
+    variable_type: str | None
+    kind: str
+    group_header: bool
+    has_assembler_script: bool
+    dropdown_values: tuple[tuple[str, str], ...] = ()
+    dropdown_read_only: bool = False
+    # This record only attaches Cheat Engine to the game; it is not a cheat.
+    attach_only: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        value = asdict(self)
+        value["path"] = list(self.path)
+        value["dropdown_values"] = [list(item) for item in self.dropdown_values]
+        return value
+
+
+@dataclass(frozen=True)
+class TableInspection:
+    sha256: str
+    table_version: str | None
+    total_entries: int
+    has_lua: bool
+    has_auto_assembler: bool
+    embedded_files: int
+    process_candidates: tuple[str, ...]
+    controls: tuple[TableControl, ...]
+    ambiguous_record_ids: tuple[int, ...] = ()
+    unsupported_record_id_count: int = 0
+    # A designed window the table carries. Cheat Engine instantiates it when the
+    # table is opened and its controls carry Lua handlers, so a table with one
+    # runs code and puts a window on screen while carrying no `<LuaScript>` at
+    # all - which Review used to describe as no executable content.
+    has_forms: bool = False
+    # Labels this had to remove an invisible or bidirectional character from,
+    # and values it could not carry. Both used to refuse the whole table.
+    sanitized_labels: int = 0
+    dropped_values: int = 0
+    # Whole value lists too large to carry, counted apart from the values.
+    # One of them is one picker gone from a record, not one value: the list this
+    # was added for holds 6508 of them, and counting it among the values told
+    # the user reading Review that a table which lost a picker had lost a value.
+    dropped_value_lists: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "sha256": self.sha256,
+            "table_version": self.table_version,
+            "total_entries": self.total_entries,
+            "has_lua": self.has_lua,
+            "has_auto_assembler": self.has_auto_assembler,
+            "has_forms": self.has_forms,
+            "sanitized_labels": self.sanitized_labels,
+            "dropped_values": self.dropped_values,
+            "dropped_value_lists": self.dropped_value_lists,
+            "embedded_files": self.embedded_files,
+            "process_candidates": list(self.process_candidates),
+            "controls": [control.as_dict() for control in self.controls],
+            "ambiguous_record_ids": list(self.ambiguous_record_ids),
+            "unsupported_record_id_count": self.unsupported_record_id_count,
+        }
+
+
+class TableBlobUnavailable(ValueError):
+    """The stored file could not be read, or is not the bytes it is filed under.
+
+    Separate from every refusal below it because it says nothing about a table:
+    the file is missing, unreadable or not what this digest names, which is a
+    state of the store on this device rather than a property of any content. A
+    caller that records what it could not use has to be able to tell the two
+    apart, or a table nobody has a copy of any more is written down as one that
+    does not work.
+    """
+
+
+def read_table_root(path: Path, sha256: str) -> tuple[ET.Element, bytes]:
+    """One exact stored table as a DOM, or the reason it is not one.
+
+    Every guard that stands between a file on disk and a parsed table lives
+    here: the bounded read, the exact digest, the DTD refusal, the structural
+    preflight and the root-element check. It is a function of its own because
+    the source view reads the same bytes for a different purpose, and a second
+    reader that parsed what this one refuses would be a weaker reader of the
+    same untrusted file rather than another view of it.
+    """
+    digest = _normalize_sha(sha256)
+    try:
+        data = read_regular_bytes(path, max_bytes=MAX_CT_BYTES)
+    except (OSError, ValueError) as exc:
+        raise TableBlobUnavailable("table blob is missing or is not a regular file") from exc
+    if not data:
+        raise TableBlobUnavailable("table blob is empty")
+    if _sha256(data).hexdigest() != digest:
+        raise TableBlobUnavailable("table blob failed exact SHA-256 verification before inspection")
+    _reject_dtd_and_entities_bytes(data)
+    _preflight_xml_structure(data)
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise TableContentError(f"the file is not a valid Cheat Engine table: its XML is malformed ({exc})") from exc
+    if local_tag(root.tag) != "CheatTable":
+        raise TableContentError("the file is not a Cheat Engine table: its XML root is not CheatTable")
+    return root, data
+
+
+def inspect_table(path: Path, sha256: str) -> TableInspection:
+    digest = _normalize_sha(sha256)
+    root, _ = read_table_root(path, digest)
+
+    controls: list[TableControl] = []
+    processes: set[str] = set()
+    # What this table could not be taken exactly as written. Counted rather than
+    # swallowed: a label that had a spoofing character removed, and a value this
+    # cannot carry, are both things the user is entitled to be told about.
+    sanitized: list[str] = []
+    dropped: list[str] = []
+    has_lua = False
+    has_auto_assembler = False
+    has_forms = False
+    embedded_files = 0
+    total_entries = 0
+
+    # The markers themselves are classified in one place, so what Review says a
+    # table carries and what the store recorded about the same bytes cannot
+    # disagree.
+    for parent in root.iter():
+        parent_tag = local_tag(parent.tag)
+        for element in parent:
+            tag = local_tag(element.tag)
+            if is_lua_marker(tag, element.text):
+                has_lua = True
+            if is_auto_assembler_marker(tag, element.text):
+                has_auto_assembler = True
+            # A window is recognised from the element and the container it sits
+            # in, so the root itself is not a candidate: `<CheatTable>` holds no
+            # window of its own and is the only element with no parent here.
+            if is_form_marker(tag, parent_tag):
+                has_forms = True
+            if is_embedded_file(tag):
+                embedded_files += 1
+
+    top_entries = _first_child(root, "CheatEntries")
+    if top_entries is not None:
+        for child in top_entries:
+            if local_tag(child.tag) == "CheatEntry":
+                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped)
+                if total_entries > MAX_INSPECTION_ENTRIES:
+                    raise ValueError(".CT inspection exceeds entry limit")
+
+    id_counts: dict[int, int] = {}
+    unsupported_ids = 0
+    for control in controls:
+        if control.id is None:
+            unsupported_ids += 1
+        else:
+            id_counts[control.id] = id_counts.get(control.id, 0) + 1
+
+    return TableInspection(
+        sha256=digest,
+        table_version=_display_text(root.attrib.get("CheatEngineTableVersion"), "CT table version", MAX_TABLE_VERSION_BYTES, sanitized) if root.attrib.get("CheatEngineTableVersion") is not None else None,
+        total_entries=total_entries,
+        has_lua=has_lua,
+        has_forms=has_forms,
+        sanitized_labels=len(sanitized),
+        dropped_values=sum(1 for item in dropped if item != DROPPED_VALUE_LIST),
+        dropped_value_lists=dropped.count(DROPPED_VALUE_LIST),
+        # An Auto Assembler record with no script body is a control kind, not
+        # something the table can execute, so the kind and the marker are
+        # answered separately.
+        has_auto_assembler=has_auto_assembler,
+        embedded_files=embedded_files,
+        # Two hints can differ only in case, and casefold alone then leaves the
+        # order to set iteration, so the same table would not always inspect to
+        # the same result. The exact spelling breaks the tie.
+        process_candidates=tuple(sorted(processes, key=lambda name: (name.casefold(), name))),
+        controls=tuple(controls),
+        ambiguous_record_ids=tuple(sorted(record_id for record_id, count in id_counts.items() if count > 1)),
+        unsupported_record_id_count=unsupported_ids,
+    )
+
+
+def _preflight_xml_structure(data: bytes) -> None:
+    """Bound total XML structure before building the inspector DOM."""
+    element_count = 0
+    entry_depth = 0
+    try:
+        for event, element in ET.iterparse(io.BytesIO(data), events=("start", "end")):
+            tag = local_tag(element.tag)
+            if event == "start":
+                element_count += 1
+                if element_count > MAX_XML_ELEMENTS:
+                    raise ValueError(f".CT XML exceeds element limit ({MAX_XML_ELEMENTS})")
+                if tag == "CheatEntry":
+                    entry_depth += 1
+                    if entry_depth > MAX_INSPECTION_DEPTH:
+                        raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
+            else:
+                if tag == "CheatEntry":
+                    entry_depth -= 1
+                element.clear()
+    except ET.ParseError as exc:
+        raise TableContentError(f"the file is not a valid Cheat Engine table: its XML is malformed ({exc})") from exc
+
+
+def _walk_entry(
+    element: ET.Element,
+    parents: tuple[str, ...],
+    controls: list[TableControl],
+    processes: set[str],
+    sanitized: list[str] | None = None,
+    dropped: list[str] | None = None,
+) -> int:
+    if len(parents) >= MAX_INSPECTION_DEPTH:
+        raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
+    description = _display_text(_child_text(element, "Description") or "", "CT control description", MAX_DESCRIPTION_BYTES, sanitized).strip('"').strip() or "<unnamed>"
+    path = parents + (description,)
+    raw_id = (_child_text(element, "ID") or "").strip()
+    try:
+        record_id = int(raw_id)
+        if record_id < 0 or record_id > 0x7FFFFFFF:
+            record_id = None
+    except ValueError:
+        record_id = None
+    variable_type_raw = _optional_text(_child_text(element, "VariableType"))
+    variable_type = _display_text(variable_type_raw, "CT VariableType", MAX_VARIABLE_TYPE_BYTES, sanitized) if variable_type_raw is not None else None
+    group_header = (_child_text(element, "GroupHeader") or "").strip() == "1"
+    assembler_text = _child_text(element, "AssemblerScript")
+    has_assembler = assembler_text is not None or (variable_type or "").casefold() == "auto assembler script"
+
+    dropdown = _parse_dropdown(_child_text(element, "DropDownList") or "", sanitized, dropped)
+    dropdown_read_only = (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
+    address = _child_text(element, "Address") or ""
+    for candidate in _process_candidates(address, "CT Address"):
+        processes.add(candidate)
+    # Cheat Engine writes `{ Game : <exe> }` into every Auto Assembler script it
+    # generates, and disassembly lines carry the module too. A table that names
+    # no process in any Address usually still names it here, which is the only
+    # place the author's intent is recorded at all.
+    if assembler_text:
+        for candidate in _process_candidates(assembler_text, "CT AssemblerScript"):
+            processes.add(candidate)
+
+    # A record that declares itself read-only is a dropdown whether or not the
+    # table author left the list empty. Classifying it as a value made the
+    # picker offer a text field for a record that says it accepts nothing, and
+    # the backend's `dropdown_read_only and dropdown_values` guards then let any
+    # value through because the second half was false.
+    kind = (
+        "group" if group_header
+        else "script" if has_assembler
+        else "dropdown" if dropdown or dropdown_read_only
+        else "value"
+    )
+    controls.append(
+        TableControl(
+            id=record_id,
+            description=description,
+            path=path,
+            variable_type=variable_type,
+            kind=kind,
+            group_header=group_header,
+            has_assembler_script=has_assembler,
+            attach_only=_is_attach_only(assembler_text),
+            dropdown_values=dropdown,
+            dropdown_read_only=dropdown_read_only,
+        )
+    )
+
+    count = 1
+    nested = _first_child(element, "CheatEntries")
+    if nested is not None:
+        for child in nested:
+            if local_tag(child.tag) == "CheatEntry":
+                count += _walk_entry(child, path, controls, processes, sanitized, dropped)
+                if count > MAX_INSPECTION_ENTRIES:
+                    raise ValueError(".CT inspection exceeds entry limit")
+    return count
+
+
+def _unique_dropdown_label(label: str, value: str, seen: set[str]) -> str:
+    """A display label no other value in this dropdown already renders as.
+
+    Cleaning and cutting labels is what keeps a table with one decorated line
+    usable, but two lines whose labels differ only in what was removed then
+    render as the same controller choice, and nothing on screen says which of
+    them writes which value. The value is what is actually written, so the value
+    is what tells them apart; it is added to the display text only, and the
+    semantic value carried alongside it is untouched.
+    """
+    if label not in seen:
+        return label
+    hint = _display_text(value, "CT dropdown label", MAX_DROPDOWN_HINT_BYTES)
+    ordinal = 0
+    while True:
+        ordinal += 1
+        suffix = f" ({hint})" if ordinal == 1 else f" ({hint}) #{ordinal}"
+        # The ceiling bounds what the panel renders, so the label gives up its
+        # tail to the part that distinguishes it rather than the other way
+        # round.
+        head = _fit(label, "CT dropdown label", max(0, MAX_DROPDOWN_LABEL_BYTES - utf8_len(suffix, "CT dropdown label")))
+        candidate = f"{head}{suffix}".strip()
+        if candidate and candidate not in seen:
+            return candidate
+
+
+def _parse_dropdown(raw: str, sanitized: list[str] | None = None, dropped: list[str] | None = None) -> tuple[tuple[str, str], ...]:
+    if utf8_len(raw, "CT dropdown") > MAX_DROPDOWN_BYTES:
+        # This record's list is dropped, not the table. It was the last limit in
+        # here that still refused a whole file for one record: a good table of
+        # 323 entries was unreadable, and therefore unusable and unloadable,
+        # because one of its item lists was 12 KiB over. Every other limit in
+        # this parser already drops what it cannot carry and counts it, which is
+        # what let the four tables refused for one label or one over-long value
+        # be imported.
+        if dropped is not None:
+            dropped.append(DROPPED_VALUE_LIST)
+        return ()
+    values: list[tuple[str, str]] = []
+    labels: set[str] = set()
+    for line in raw.splitlines():
+        # Values are executable table semantics; do not normalize their
+        # whitespace.  Only labels are presentation text.
+        if not line.strip():
+            continue
+        value, sep, label = line.partition(":")
+        if not value.strip():
+            continue
+        if len(values) >= MAX_DROPDOWN_VALUES:
+            # Counted once per value actually left out. A single marker raised
+            # as soon as the limit was reached said that a list ending exactly
+            # on the limit had lost something, and that a list which lost a
+            # thousand values had lost one.
+            if dropped is not None:
+                dropped.append("CT dropdown value beyond the limit")
+            continue
+        if utf8_len(value, "CT dropdown value") > MAX_DROPDOWN_VALUE_BYTES:
+            # The value is table semantics and is never trimmed, so a line this
+            # cannot carry is dropped. One of 82 sampled tables was refused
+            # outright for a single such line.
+            if dropped is not None:
+                dropped.append("CT dropdown value")
+            continue
+        display_label = label.strip() if sep else value
+        display_label = _display_text(display_label, "CT dropdown label", MAX_DROPDOWN_LABEL_BYTES, sanitized)
+        # A label that cleaned down to nothing renders as its own value, which
+        # is what the picker already showed for a blank one.
+        display_label = display_label or _display_text(value, "CT dropdown label", MAX_DROPDOWN_LABEL_BYTES)
+        display_label = _unique_dropdown_label(display_label, value, labels)
+        labels.add(display_label)
+        values.append((value, display_label))
+    return tuple(values)
+
+
+def _process_candidates(text: str, field: str = "CT Address") -> tuple[str, ...]:
+    if utf8_len(text, field) > MAX_ADDRESS_HINT_BYTES:
+        raise ValueError(f".{field.removeprefix('CT ')} exceeds process-hint scan limit")
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in _PROCESS_RE.finditer(text.replace("\t", " ")):
+        raw_name = Path(match.group(1)).name
+        name = _display_text(raw_name, "CT process hint", 1024)
+        # Unlike a label, this is offered as the executable to attach to. A name
+        # that had a spoofing character removed must not be presented under the
+        # cleaned spelling it was made to imitate, so it is dropped instead.
+        if name != raw_name:
+            continue
+        key = name.casefold()
+        if key.endswith(".exe") and key not in seen:
+            seen.add(key)
+            out.append(name)
+            if len(out) > MAX_PROCESS_CANDIDATES:
+                raise ValueError(".CT contains too many process hints")
+    return tuple(out)
+
+
+def _display_text(value: str, field: str, max_bytes: int, sanitized: list[str] | None = None) -> str:
+    """Normalize untrusted CT text that is rendered in the Decky UI.
+
+    Semantic values such as dropdown values are kept byte-for-byte separately;
+    only display text is normalized. Invisible and bidirectional formatting
+    characters are removed, so a table cannot visually spoof a filename, a
+    process or a control label.
+
+    Removing them rather than refusing the table is the whole point. Measured
+    across a sample of 82 tables served by FearLess, three carried a control
+    description with such a character and one carried an over-long dropdown
+    value: refusing cost the user the entire table, which was otherwise
+    perfectly good, for a decoration in one label. The project already holds
+    that a validation failure drops the value, the row or the page it belongs
+    to and never a table that is otherwise obtainable. What is dropped is
+    counted rather than swallowed, because a label that had a spoofing
+    character removed is exactly the thing worth being told about.
+    """
+    text = unicodedata.normalize("NFC", value)
+    text = re.sub(r"[\t\r\n]+", " ", text).strip()
+    cleaned = "".join(ch for ch in text if not is_unsafe_display_character(ch))
+    if cleaned != text and sanitized is not None:
+        sanitized.append(field)
+    # The byte ceiling bounds what the panel has to render. Cutting the label to
+    # it costs a long name its tail; raising cost the table.
+    return _fit(cleaned, field, max_bytes)
+
+
+def _fit(text: str, field: str, max_bytes: int) -> str:
+    """The longest leading part of `text` that fits the field's byte ceiling."""
+    return fit_utf8(text, field, max_bytes)
+
+
+def _first_child(element: ET.Element, name: str) -> ET.Element | None:
+    return next((child for child in element if local_tag(child.tag) == name), None)
+
+
+def _child_text(element: ET.Element, name: str) -> str | None:
+    child = _first_child(element, name)
+    return child.text if child is not None else None
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _normalize_sha(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("inspection SHA-256 must be a string")
+    digest = value.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("inspection SHA-256 must be a 64-character hexadecimal digest")
+    return digest
+
+
+
+def _reject_dtd_and_entities_bytes(data: bytes) -> None:
+    probe = data.upper()
+    if any(marker in probe for marker in _FORBIDDEN_XML_MARKERS):
+        raise TableContentError(".CT XML DTD/entity declarations are not accepted")
