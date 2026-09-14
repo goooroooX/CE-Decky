@@ -54,8 +54,14 @@ def _write_reproducible_member(zf: zipfile.ZipFile, path: Path, arcname: Path) -
     info = zipfile.ZipInfo(str(arcname).replace("\\", "/"), ZIP_TIMESTAMP)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.create_system = 3
-    mode = stat.S_IMODE(path.stat(follow_symlinks=False).st_mode)
-    info.external_attr = ((stat.S_IFREG | mode) & 0xFFFF) << 16
+    # The mode is normalized rather than copied, because the filesystem's is not
+    # a property of the source. Git records one bit of it, so two checkouts of
+    # the same commit can hold the same bytes at 0600 and at 0644 and produce
+    # two different archives from one tree. That happened here: a member left at
+    # 0600 in one working tree made its ZIP disagree with the one CI builds from
+    # a clean checkout, which is the archive a release attests.
+    executable = bool(path.stat(follow_symlinks=False).st_mode & stat.S_IXUSR)
+    info.external_attr = ((stat.S_IFREG | (0o755 if executable else 0o644)) & 0xFFFF) << 16
     with path.open("rb") as handle:
         zf.writestr(info, handle.read())
 
