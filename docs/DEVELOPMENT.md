@@ -270,7 +270,7 @@ Create the Decky archive with:
 python scripts/package_plugin.py
 ```
 
-The deterministic ZIP is written to `artifacts/CE-Decky-v<version>.zip`. It includes runtime frontend/backend files, README, licenses, and notices; it excludes source tests, Cheat Engine, tables, and the local frontend source-digest stamp. Packaging fails closed unless `dist/index.js` was produced for the current frontend sources by the official Rollup build, then imports the backend from a freshly unpacked ZIP under Python isolated mode. The release profile also runs `target_package_probe.py` against that exact artifact.
+The deterministic ZIP is written to `artifacts/CE-Decky-v<version>.zip`. Deterministic here means reproducible from any checkout of the commit, not merely stable on one machine: timestamps are fixed and member permissions are normalized to 0644 or 0755 by the executable bit, because Git records only that one bit and a file left at 0600 in somebody's working tree would otherwise build a different archive from identical content. That is what makes the release attestation something a reader can check against their own build. It includes runtime frontend/backend files, README, licenses, and notices; it excludes source tests, Cheat Engine, tables, and the local frontend source-digest stamp. Packaging fails closed unless `dist/index.js` was produced for the current frontend sources by the official Rollup build, then imports the backend from a freshly unpacked ZIP under Python isolated mode. The release profile also runs `target_package_probe.py` against that exact artifact.
 
 `artifacts/` and staging directories are ignored. Never commit generated archives.
 
