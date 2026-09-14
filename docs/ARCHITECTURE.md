@@ -48,11 +48,22 @@ plugin-owned `proton runinprefix` launch into the running game's own prefix
 - Review Stop state belongs to one activation attempt. Its completion checkpoints await that attempt's pending Stop, and only a confirmed stop rejects that activation. The panel also drains the attempt's Stop before releasing a failed activation; stale Review callbacks cannot stop a newer activation. Advisory status refreshes do not decide whether the stop RPC succeeded.
 - `src/` owns Steam/Decky UI integration because SteamClient APIs are available in the frontend environment. It reads Steam identity (AppDetails, install folders, the shortcut store) and writes no Steam state at all.
 - `py_modules/ce_decky/ce_launch.py` owns Cheat Engine process lifetime: exact prefix resolution, live game-container observation, corroborated Gamescope-display resolution, deterministic argv/environment planning, launcher process-group ownership, and isolated-prefix Wine cleanup for self-tests. It is the only component that starts Cheat Engine, and it never touches Steam state.
-- `main.py` is a thin Decky entrypoint. It first probes `xml.etree` and
-  `html.parser`; when the Decky Loader PyInstaller runtime omits those
-  pure-Python stdlib modules, it adds the verbatim CPython 3.11.7 `xml`,
-  `html`, and `_markupbase` fallback under `py_modules/stdlib_fallback/`
-  without shadowing a complete host stdlib.
+- `main.py` is a thin Decky entrypoint. It puts `py_modules/` and then
+  `py_modules/vendor/` on `sys.path`, so the vendored distributions precede this
+  plugin's own package. It then probes `xml.etree` and `html.parser`; when the
+  Decky Loader PyInstaller runtime omits those pure-Python stdlib modules, it
+  adds the verbatim CPython 3.11.7 `xml`, `html`, and `_markupbase` fallback
+  under `py_modules/stdlib_fallback/` without shadowing a complete host stdlib.
+- `py_modules/vendor/` is the plugin's third-party Python runtime, committed and
+  shipped rather than installed. Nothing here authors it: it is the hash-pinned
+  `requirements-runtime.lock` rendered by `scripts/update_runtime_vendor.py`,
+  and its identity is the tree digest recorded beside that lock, which the
+  repository rules check before anything is packaged. It is pure Python by
+  construction, because a native artifact in it would be a binary this project
+  ships without reviewing. It is committed because the official Decky Store
+  builder copies `py_modules/` exactly as the repository holds it and has no
+  dependency-install phase, so a tree produced at packaging time would reach
+  this project's own archive and never the Store's.
 - `py_modules/ce_decky/` owns filesystem state, validation, profiles, session preparation, runtime protocol, and diagnostics.
 - `PluginService.get_status()` includes the exact `plugin_dir` Decky supplied beside its existing user/settings/runtime paths. The authenticated target installer uses that self-report only after the loader inventory and installed metadata agree on the same plugin identity and version; it is diagnostic authority, not a path the frontend may mutate.
 - `py_modules/ce_decky/poll_counters.py` holds one process-wide monotonic count, with wall and per-thread processor time, for each repeating path a live session runs. Counts are taken at the RPC boundary for the two calls the panel's detector makes, and inside the launch module for the supervisor's scan and the process-table walk, so an internal caller such as the support bundle is not mistaken for the panel. `PluginService.get_poll_counters()` and its `get_poll_counters` RPC read the snapshot and increment nothing, which is why that RPC exists at all: reading through a counted path would make the reading one of the counts. It is the only RPC the frontend deliberately does not call, recorded as such in `tests/test_rpc_contract.py`, and the same snapshot reaches the support bundle inside `diagnostics_snapshot()`.
