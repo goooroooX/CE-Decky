@@ -502,7 +502,13 @@ describe("the section list, as a page", () => {
     render(<TableCodeModal sha256={SHA} filename="Game.CT" onBack={vi.fn()} />);
     const footer = await screen.findByTestId("table-code-footer");
 
-    expect(footer.querySelector("[data-nav-entry]")?.getAttribute("data-nav-entry")).toBe("4");
+    // The footer is on screen before the index it pages through has arrived, so
+    // waiting for the footer is waiting for the wrong thing: its preferred-child
+    // position is undefined until the section count is known. Wait for the
+    // answer this asserts, not for the container it appears in.
+    await waitFor(() => {
+      expect(footer.querySelector("[data-nav-entry]")?.getAttribute("data-nav-entry")).toBe("4");
+    });
     expect(screen.getByRole("button", { name: "Next \u203a" }).getAttribute("data-preferred-focus")).toBe("true");
   });
 

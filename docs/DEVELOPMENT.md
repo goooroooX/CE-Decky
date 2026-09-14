@@ -248,7 +248,7 @@ UI confidence is split into layers so off-target automation does not pretend to 
 2. **Bundle contract on every build.** `scripts/test_dist_fallback.mjs` imports `dist/index.js` with the minimum Decky/React boundary and verifies the plugin factory. Python RPC contract tests keep frontend call names synchronized with the backend.
 3. **Component tests for decomposed workflows.** Vitest and Testing Library cover the extracted provider catalog component with explicit Decky API mocks: loading/results/failures, focus order, direct import, cancellation, and the imported-without-consent boundary. Prefer state/action assertions over large snapshots.
 4. **Optional installed-browser harness for stable mocked screens.** On Linux/Steam Machine, `python scripts/browser_harness.py` verifies or bootstraps the exact pinned Chrome for Testing archive under ignored `build/browser-runtime/`, exports its executable only to the child QA process, and runs the browser profile; `--profile auto` combines ordinary change routing and browser QA in the same delegated run. `--check`, `--install-only`, and `--stage browser-headless-probe` cover read-only discovery, one-time bootstrap, and exact reruns without system/Flatpak installation. The pin was selected from GoogleChromeLabs `chrome-for-testing` commit `c1decc26ccd28463f6e2fe3c8d490d7a5a13adbd`, then bound to exact archive and executable size/SHA-256; the browser and archive are local QA cache and never enter plugin/source packages. Other hosts may use `CE_DECKY_BROWSER` or normal Chrome/Chromium discovery with `python scripts/qa.py --profile browser`. The probe starts one isolated process group, waits for a JavaScript-set title through loopback DevTools endpoints, records the product version, and stops the complete group before deleting its disposable profile. Build future QAM-sized screen fixtures on the same raw-CDP lifecycle before adding Playwright. Mocked screenshots are presentation regression evidence, not Decky compatibility evidence.
-Two shapes of component test have failed on the CI runner and never here, and
+Three shapes of component test have failed on the CI runner and never here, and
 both were the test rather than the screen. A press that starts an async action
 commits its state on a microtask, so a fake clock advanced in the same statement
 races it: flush the press first. And `findBy` waits for the thing it names, not
@@ -259,6 +259,12 @@ control it lands on, so awaiting that control and then reading
 `document.activeElement` races it in the same way.
 Wait for what the answer puts on the screen, and check an absence only after
 something proves the answer arrived.
+
+A container is not its contents, which is the same mistake one level out: a
+footer whose paging depends on a fetched index is on screen before that index
+arrives, so awaiting the footer and then reading an attribute the index
+decides passes on a fast machine and races on a loaded one. Wrap the
+assertion in `waitFor` rather than the element in `findBy`.
 
 Keep browser tests independent of Steam private DOM/class names. Prefer stable component boundaries and accessible labels. A UI test should fail for a user-visible regression, not a harmless markup refactor.
 
