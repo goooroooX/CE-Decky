@@ -67,6 +67,10 @@ Python worker threads created by `asyncio.to_thread()` cannot be stopped by canc
 
 The implementation treats persisted and imported local files as potentially stale or externally modified. Reads of exact runtime/table/JSON state are bounded and do not follow the final symlink component; critical imports compare stable descriptor identity before/after reading. Managed table subdirectories are revalidated before use, Windows/Wine filename ambiguity is rejected before private-runtime materialization, and strict JSON rejects duplicate keys, non-finite numeric constants and invalid Unicode. Runtime heartbeat bytes and modification time are captured from the same open file descriptor so an atomic path replacement cannot splice content from one heartbeat with timing metadata from another.
 
+## Provider adapter boundary
+
+The host allowlists, the rejection of non-public addresses and the refusal of an HTTPS-to-HTTP downgrade are in **Non-negotiable controls** and hold for every source alike. What follows is what each adapter is additionally held to, one source per entry.
+
 A URL a provider declared while a search runs is held to the transport's structural policy before any row promises a download from it, and an entry in a provider's own sitemap is held to it before contributing identity to that provider's cached index, so a document with the wrong root or an entry from another origin cannot poison an index that is then recorded as complete. A failed download that ends as provider-unavailable is recorded against that provider with its bounded reason and, where the provider stated one, its status, while the deadline it had already named is preserved rather than overwritten.
 
 Anonymous adapters never extract browser cookies, accept account credentials, or perform global GitHub search.
