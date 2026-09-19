@@ -137,7 +137,7 @@ ssh <user>@<target-ip> 'cd <mirror>; python3 scripts/target_panel_read.py --open
 
 Two bounds are what make it safe to have. The name has to be one of the presses that opens a screen, and anything that authorizes, downloads, writes or destroys is refused by name, so **Use this table**, **Delete these** and **Apply** are not reachable through it. And a disabled control is reported as disabled rather than activated, because a press Steam would have refused is not evidence about anything.
 
-This is not synthetic input and it is not the exception to the rule below: nothing fabricates a controller event, and nothing reaches Steam's own interface. Everything outside that list is still a person with a controller.
+Nothing here fabricates a controller event and nothing reaches Steam's own interface: these are this plugin's own buttons, activated through the handlers it wrote, which is what makes reaching one of its screens a thing to do rather than a thing to ask for.
 
 Two other helpers drive rather than read, and they differ in where they run:
 
@@ -146,7 +146,7 @@ Two other helpers drive rather than read, and they differ in where they run:
 
 ## What the maintainer still has to do
 
-Reaching a running game and a live attached session needs a person at the device, and no amount of tooling changes that. What the section above reaches is this plugin's own screens, through its own handlers; a game, Steam's own interface and anything that authorizes or writes are outside it. Never fabricate controller input to get to a screen. Ask, then measure:
+Reaching a running game and a live attached session needs a person at the device, and no amount of tooling changes that. What the section above reaches is this plugin's own screens, through its own handlers. A game, Steam's own interface and the controls that authorize or destroy are outside it, and they are what to ask for. Ask, then measure:
 
 - start the game and bring it to a steady frame rate;
 - install Cheat Engine through the plugin, and attach the session from the quick access menu;

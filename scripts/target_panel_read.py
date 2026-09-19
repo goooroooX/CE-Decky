@@ -40,8 +40,10 @@ a press that Steam would have refused is not evidence about anything.
 
 None of this fabricates controller input, and none of it reaches Steam's own
 interface: it is this plugin's own buttons, the ones its component tests press
-by the same names. Anything outside that list is still a person with a
-controller, which is what the contract's rule about synthetic input is for.
+by the same names. So reaching one of this plugin's screens is a thing to do
+rather than a thing to ask somebody for. What is outside the list - a running
+game, Steam's own interface, and the controls that authorize, download, write
+or destroy - is what still needs a person at the device.
 
 Works the same against the machine it runs on and against a Steam Deck over
 SSH, because it is the device's own CEF endpoint either way: run it on the

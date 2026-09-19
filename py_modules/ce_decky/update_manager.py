@@ -273,12 +273,72 @@ class PluginUpdateManager:
             # answers what the newest release is, and after an install nobody
             # has asked that question yet. The next check answers it.
             fields.update({"latest_version": None, "checked_at": None, "last_error": None, "archive_name": None})
+            # And the file an earlier attempt left for a manual install is no
+            # longer a route to anywhere: this device is now on the version it
+            # holds. One file, replaced by the next attempt and removed by a
+            # success, which is what the storage contract says it is.
+            self._discard_kept_archive(record.get("last_result"))
         self.state.update(**fields)
         self.result_path.unlink(missing_ok=True)
         log_activity(
             self.logger, "info", "update.result_consumed",
             ok=result["ok"], version=result.get("version"), error=result.get("error"),
         )
+
+    def _discard_kept_archive(self, previous: object) -> None:
+        """Remove the archive a failed install left, once nobody needs it.
+
+        Deliberately narrow about what it will delete: a path under the name
+        this writes, a regular file, never a symlink. It is removing something
+        from the user's own home directory, and the only thing it is entitled
+        to remove there is the copy it put there itself.
+        """
+        if not isinstance(previous, dict):
+            return
+        kept = previous.get("archive_kept_at")
+        if not isinstance(kept, str) or not kept:
+            return
+        path = Path(kept)
+        if not path.name.startswith(KEPT_ARCHIVE_PREFIX) or path.suffix != ".zip":
+            return
+        try:
+            if path.is_symlink() or not path.is_file():
+                return
+            path.unlink()
+        except OSError as exc:
+            log_failure(self.logger, "update.kept_archive_not_removed", exc, expected=True)
+            return
+        log_activity(self.logger, "info", "update.kept_archive_removed", path=str(path))
+
+    def _settled_result_fields(self) -> dict[str, object]:
+        """Whether what the last install did is still worth a row on a screen.
+
+        Said once. An outcome with nothing left to act on - an update that
+        worked, or one that failed before anything was verified - is a line the
+        user has either seen or no longer needs, and leaving it there meant a
+        refusal from weeks ago sat under the update state for ever.
+
+        The one outcome that stays is the one with an action attached: a failed
+        install that kept the verified release for a manual install. That row
+        names a path, and it goes only when the path does - when the file is
+        gone, or when this device is already on that version and the file is
+        an installer for the past.
+        """
+        result = self.state.load().get("last_result")
+        if not isinstance(result, dict):
+            return {}
+        kept = result.get("archive_kept_at")
+        if result.get("ok") or not isinstance(kept, str) or not kept:
+            return {"last_result": None}
+        try:
+            superseded = parse_version(str(result.get("version"))) <= parse_version(self.current_version)
+        except UpdateError:
+            superseded = True
+        try:
+            missing = not Path(kept).is_file()
+        except OSError:  # pragma: no cover - a home directory that cannot be read
+            missing = False
+        return {"last_result": None} if superseded or missing else {}
 
     # --------------------------------------------------------------- checking
 
@@ -373,7 +433,9 @@ class PluginUpdateManager:
         # Laid over the record for the answer this returns, so that a state
         # write this deliberately does not fail the check over cannot make the
         # check report the previous answer either.
-        written = self._record(**answer)
+        # A check that answered is also the moment to let go of an outcome
+        # nobody can act on any more.
+        written = self._record(**answer, **self._settled_result_fields())
         log_activity(
             self.logger, "info", "update.checked",
             forced=forced, current=self.current_version, latest=latest,

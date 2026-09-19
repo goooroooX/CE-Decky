@@ -820,3 +820,93 @@ def test_a_suspended_updater_neither_checks_nor_starts(tmp_path: Path, spawned):
 
     manager.resume()
     assert asyncio.run(manager.check(forced=True))["latest_version"] == "0.9.28"
+
+
+def test_an_outcome_nobody_can_act_on_is_said_once_and_then_let_go(tmp_path: Path):
+    """"The last update did not install" is not a permanent fixture of a screen.
+
+    It was written and never taken back, so a refusal from weeks ago - and a
+    success, which is a line worth seeing exactly once - sat under the update
+    state until another install replaced it.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+
+    # An update that worked: seen once, gone at the next check that answered.
+    manager.state.update(last_result={
+        "attempt": "a" * 32, "version": "0.9.27", "ok": True, "error": None,
+        "archive_kept_at": None, "at": time.time(), "restart_requested": True,
+    })
+    assert asyncio.run(manager.check(forced=True))["last_result"] is None
+
+    # A refusal that kept nothing: there is no action attached to it either.
+    manager._last_forced_at = 0.0
+    manager.state.update(last_result={
+        "attempt": "b" * 32, "version": None, "ok": False, "error": "this is already the newest release",
+        "archive_kept_at": None, "at": time.time(), "restart_requested": False,
+    })
+    assert asyncio.run(manager.check(forced=True))["last_result"] is None
+
+
+def test_a_failed_install_that_kept_the_release_keeps_its_row(tmp_path: Path):
+    """That row names a path, and it goes when the path does.
+
+    The manual route is the only thing a failed install leaves a user, and a
+    check succeeding a minute later says nothing about whether they have
+    installed it yet.
+    """
+    manager = _manager(tmp_path, FakeNetwork(), version="0.9.27")
+    kept = tmp_path / "home" / "CE-Decky-update-v0.9.28.zip"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes(b"a verified release")
+    failed = {
+        "attempt": "c" * 32, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
+        "archive_kept_at": str(kept), "at": time.time(), "restart_requested": False,
+    }
+    manager.state.update(last_result=failed)
+    assert asyncio.run(manager.check(forced=True))["last_result"]["archive_kept_at"] == str(kept)
+
+    # Installed by hand, or deleted: the row has nothing left to name.
+    kept.unlink()
+    manager._last_forced_at = 0.0
+    assert asyncio.run(manager.check(forced=True))["last_result"] is None
+
+    # And the same file, against a device that is already on that version, is
+    # an installer for the past.
+    kept.write_bytes(b"a verified release")
+    arrived = _manager(tmp_path / "arrived", FakeNetwork(), version="0.9.28")
+    arrived.state.update(last_result=failed)
+    assert asyncio.run(arrived.check(forced=True))["last_result"] is None
+
+
+def test_a_successful_install_removes_the_file_an_earlier_failure_left(tmp_path: Path):
+    """One file, replaced by the next attempt and removed by a success.
+
+    That is what the storage contract says this is, and it was the half that was
+    not done: the archive stayed in the user's home directory after the update
+    it was a fallback for had succeeded.
+    """
+    manager = _manager(tmp_path, FakeNetwork(), version="0.9.28")
+    kept = tmp_path / "home" / "CE-Decky-update-v0.9.28.zip"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes(b"a verified release")
+    stranger = tmp_path / "home" / "holiday-photos.zip"
+    stranger.write_bytes(b"not ours")
+    manager.state.update(
+        last_result={
+            "attempt": "d" * 32, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
+            "archive_kept_at": str(kept), "at": time.time() - 60, "restart_requested": False,
+        },
+        install={"attempt": "e" * 32, "version": "0.9.28", "started_at": time.time()},
+    )
+
+    manager.consume_runner_result()
+    assert manager.state.load()["last_result"]["ok"] is True
+    assert kept.exists() is False
+
+    # And it removes what it put there, not whatever a path happens to name.
+    manager.state.update(last_result={
+        "attempt": "f" * 32, "version": "0.9.28", "ok": False, "error": "x",
+        "archive_kept_at": str(stranger), "at": time.time(), "restart_requested": False,
+    }, install={"attempt": "g" * 32, "version": "0.9.28", "started_at": time.time()})
+    manager.consume_runner_result()
+    assert stranger.exists() is True
