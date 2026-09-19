@@ -3669,13 +3669,7 @@ function Content() {
    */
   const updateState = status?.update ?? null;
   const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
-  // The panel offers the press only where it can be carried out. A device with
-  // no interpreter for the installer would otherwise carry an orange button
-  // whose every press fails; Advanced still shows the finding and says why it
-  // cannot be installed from here.
-  const panelUpdateVersion = updateState?.auto_check && updateState.install_supported
-    ? offeredUpdateVersion
-    : null;
+  const panelUpdateVersion = panelUpdateOffer(updateState);
   const mascotVisible = status?.preferences?.mascot_visible ?? true;
 
   const openUpdateModal = () => {

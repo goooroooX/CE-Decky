@@ -5102,6 +5102,22 @@ function updateCheckedOn(seconds) {
     const when = new Date(seconds * 1000);
     return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }
+/**
+ * The version the home panel offers, which is not the same as the one it knows.
+ *
+ * Three things have to hold before a press belongs on a 300 pixel panel: there
+ * is a newer release, the user has not switched automatic checking off, and
+ * this device can actually carry the install out. Advanced shows the finding
+ * whatever the last two say, because that is the screen the switch is on and
+ * the screen that explains an install this device cannot do.
+ */
+function panelUpdateOffer(update) {
+    if (!update || !update.update_available || !update.latest_version)
+        return null;
+    if (!update.auto_check || !update.install_supported)
+        return null;
+    return update.latest_version;
+}
 
 /**
  * How many refused status reads in a row are allowed before this window gives
@@ -9990,14 +10006,14 @@ function UpdateModal({ currentVersion, targetVersion, gameRunning, onStart, onPo
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("update_modal.cancel_back", () => { if (!busyRef.current && !installing)
             onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: gameRunning
                                         ? "Installing replaces Steam's interface process. This closes the Decky panel and can interrupt the game that is running."
-                                        : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), SP_JSX.jsx(ModalActions, { children: installing ? (SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
+                                        : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), !installing && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
                                     if (inFlight) {
                                         void abandon();
                                         return;
                                     }
                                     if (!busyRef.current)
                                         onClose();
-                                }), children: inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: busy && !settled, onClick: traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion }), children: settled ? "Try again" : busy ? "Starting…" : "Update" })] })) })] }) }));
+                                }), children: inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: busy && !settled, onClick: traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion }), children: settled ? "Try again" : busy ? "Starting…" : "Update" })] }) }))] }) }));
 }
 
 function ArchiveImportModal({ members, onImport, onCancel }) {
@@ -15611,7 +15627,7 @@ function Content() {
      */
     const updateState = status?.update ?? null;
     const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
-    const panelUpdateVersion = updateState?.auto_check ? offeredUpdateVersion : null;
+    const panelUpdateVersion = panelUpdateOffer(updateState);
     const mascotVisible = status?.preferences?.mascot_visible ?? true;
     const openUpdateModal = () => {
         const target = offeredUpdateVersion;
