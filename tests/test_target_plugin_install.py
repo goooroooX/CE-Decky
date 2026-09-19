@@ -502,8 +502,8 @@ def test_install_command_resolves_the_root_when_the_caller_omits_it(
     plugin_root, _settings_dir = _live_plugin_tree(tmp_path)
     observed: list[Path] = []
 
-    def install(_artifact, _sha, root, _url, _replace, _timeout):
-        observed.append(root)
+    def install(_artifact, _sha, root, _url, _replace, _timeout, expect_version=None):
+        observed.append((root, expect_version))
         return _authority_report(root, version="0.9.15", package_sha="a" * 64)
 
     monkeypatch.setattr(
@@ -518,7 +518,9 @@ def test_install_command_resolves_the_root_when_the_caller_omits_it(
         "install", str(tmp_path / "package.zip"), "--json",
         "--sha256", "a" * 64, "--replace",
     ]) == 0
-    assert observed == [plugin_root]
+    # The version expectation is the repository's unless the caller names one,
+    # which only the deliberately older update-path build ever does.
+    assert observed == [(plugin_root, None)]
 
 
 def test_install_records_are_bounded_and_readable_back(tmp_path: Path) -> None:

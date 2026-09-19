@@ -1231,6 +1231,7 @@ def install_package(
     decky_url: str,
     replace: bool,
     timeout: float,
+    expect_version: str | None = None,
 ) -> dict[str, object]:
     if not plugin_root.is_absolute() or plugin_root.name != PACKAGE_ROOT or plugin_root.parent.name != "plugins":
         raise RuntimeError("--plugin-root must be an absolute <homebrew>/plugins/CE-Decky path")
@@ -1241,7 +1242,7 @@ def install_package(
     # Taken before the first mutation, so it describes the machine this install
     # arrived on rather than the one it left behind.
     running_before = _running_apps()
-    report = inspect_package(artifact)
+    report = inspect_package(artifact, expect_version=expect_version)
     artifact = Path(str(report["artifact"]))
     if not report["ok"]:
         raise RuntimeError(f"target package probe failed: {report['errors']!r}")
@@ -1479,6 +1480,13 @@ def _parser() -> argparse.ArgumentParser:
         "--remote-root", default=DEFAULT_REMOTE_ROOT, metavar="PATH",
         help=f"where that mirror is, relative to the remote home (default: {DEFAULT_REMOTE_ROOT})",
     )
+    install.add_argument(
+        "--expect-version", metavar="X.Y.Z",
+        help=(
+            "the version this package should carry, instead of this checkout's. Only for the "
+            "deliberately older build `build_downgrade_package.py` makes to exercise the update path"
+        ),
+    )
     install.add_argument("--timeout", type=float, default=30.0)
     install.add_argument(
         "--json", action="store_true",
@@ -1659,6 +1667,7 @@ def main(argv: list[str] | None = None) -> int:
             args.decky_url.rstrip("/"),
             args.replace,
             args.timeout,
+            args.expect_version,
         )
         # What this cost, from the helper itself. An install is bounded by a
         # timeout sized from what one costs on the host running it, and until

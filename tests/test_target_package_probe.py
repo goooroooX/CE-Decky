@@ -141,3 +141,35 @@ def test_ce_and_table_payloads_are_never_vendored(monkeypatch, tmp_path: Path):
     report = target_package_probe.inspect_package(package)
     assert report["ok"] is False
     assert any("forbidden CE/table payloads" in error for error in report["errors"])
+
+
+def test_a_named_version_replaces_the_repository_in_the_comparison(tmp_path, monkeypatch):
+    """The one package that is deliberately not this checkout's own artifact.
+
+    `build_downgrade_package.py` produces a build that calls itself older than
+    the release it is going to install, which is the only way to exercise the
+    plugin's own update path. The expectation moves; the checks do not: the
+    package's own two version strings must still agree with each other and with
+    what the caller named.
+    """
+    _repo(tmp_path, version="0.9.28")
+    monkeypatch.setattr(target_package_probe, "ROOT", tmp_path)
+    package = _package(tmp_path, version="0.9.26", backend_version="0.9.26")
+
+    repository = target_package_probe.inspect_package(package)
+    assert repository["ok"] is False
+    assert any("packaged version mismatch" in error for error in repository["errors"])
+
+    named = target_package_probe.inspect_package(package, expect_version="0.9.26")
+    assert named["ok"] is True
+    assert named["version"] == "0.9.26"
+    assert named["repository_version"] == "0.9.28"
+    assert named["expected_version_source"] == "caller"
+
+    # A package whose own halves disagree is refused whatever is named for it.
+    other = tmp_path / "other"
+    other.mkdir()
+    mismatched = _package(other, version="0.9.26", backend_version="0.9.25")
+    refused = target_package_probe.inspect_package(mismatched, expect_version="0.9.26")
+    assert refused["ok"] is False
+    assert any("packaged backend version mismatch" in error for error in refused["errors"])

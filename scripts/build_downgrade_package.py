@@ -141,6 +141,14 @@ def main() -> None:
     print(f"downgrade package: {artifact}")
     print(f"sha256: {digest.hexdigest()}")
     print(f"it reports {target}; this tree is {current}")
+    # Printed whole, because the installer refuses a package whose version is not
+    # this checkout's unless it is told which version to expect, and that refusal
+    # is the check doing its job rather than something to work around.
+    print(
+        "install it with:\n"
+        f"  python3 scripts/target_plugin_install.py install {artifact.relative_to(ROOT)} "
+        f"--sha256 {digest.hexdigest()} --expect-version {target} --replace"
+    )
 
 
 if __name__ == "__main__":

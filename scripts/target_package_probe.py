@@ -64,7 +64,17 @@ def _backend_version(text: str) -> str | None:
     return matches[0] if len(matches) == 1 and matches[0].strip() else None
 
 
-def inspect_package(path: Path) -> dict[str, object]:
+def inspect_package(path: Path, *, expect_version: str | None = None) -> dict[str, object]:
+    """Whether this ZIP is the exact installable artifact of this repository.
+
+    `expect_version` is for the one package that is deliberately not that: the
+    build `scripts/build_downgrade_package.py` makes in order to exercise the
+    plugin's own update path, which has to call itself older than the release it
+    is going to install. It replaces the repository's version in the comparison
+    and nothing else: the package's own two version strings must still agree with
+    each other and with the version the caller named, so a package that is not
+    what it says it is still fails here.
+    """
     raw = path.expanduser()
     if raw.is_symlink():
         raise ValueError("plugin package must not be a symlink")
@@ -76,7 +86,8 @@ def inspect_package(path: Path) -> dict[str, object]:
         raise ValueError("plugin package must be a regular ZIP file")
 
     repository_package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-    expected_version = repository_package.get("version") if isinstance(repository_package, dict) else None
+    repository_version = repository_package.get("version") if isinstance(repository_package, dict) else None
+    expected_version = expect_version if expect_version is not None else repository_version
     if not isinstance(expected_version, str) or not expected_version:
         raise ValueError("repository package version is invalid")
     repository_backend_version = _backend_version(
@@ -171,9 +182,12 @@ def inspect_package(path: Path) -> dict[str, object]:
         errors.append(f"package vendors forbidden CE/table payloads: {forbidden_payloads[:8]!r}")
     if prefix_missing:
         errors.append(f"required directory payloads missing: {prefix_missing!r}")
-    if repository_backend_version != expected_version:
+    # The repository's own two version strings are checked against each other
+    # whatever the caller expects of the package, because a checkout that
+    # disagrees with itself is a finding about the checkout.
+    if repository_backend_version != repository_version:
         errors.append(
-            f"repository backend version mismatch: package={expected_version!r} backend={repository_backend_version!r}"
+            f"repository backend version mismatch: package={repository_version!r} backend={repository_backend_version!r}"
         )
     if packaged_version != expected_version:
         errors.append(
@@ -192,6 +206,8 @@ def inspect_package(path: Path) -> dict[str, object]:
         "bytes": info.st_size,
         "declared_uncompressed_bytes": declared_bytes,
         "version": expected_version,
+        "repository_version": repository_version,
+        "expected_version_source": "caller" if expect_version is not None else "repository",
         "repository_backend_version": repository_backend_version,
         "packaged_version": packaged_version,
         "packaged_backend_version": packaged_backend_version,
@@ -214,13 +230,20 @@ def _parser() -> argparse.ArgumentParser:
         nargs="?",
         default=str(ROOT / "artifacts" / f"CE-Decky-v{version}.zip"),
     )
+    parser.add_argument(
+        "--expect-version",
+        help=(
+            "the version this package should carry, instead of the repository's. "
+            "For the deliberately older build that exercises the plugin's update path"
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        report = inspect_package(Path(args.package))
+        report = inspect_package(Path(args.package), expect_version=args.expect_version)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"target package probe: {exc}", file=sys.stderr)
         return 2
