@@ -5085,16 +5085,24 @@ function updateSummary(state, currentVersion) {
     }
     const checked = updateCheckedOn(state.checked_at);
     const when = checked ? `Checked ${checked}.` : "Not checked yet.";
+    // What was found and whether anything has answered since are two facts, and
+    // a screen that carried only the first said "v0.9.28 is available. Checked
+    // <date>" on a device that had been unable to reach GitHub for a week. The
+    // date is the last check that answered, so the attempt that did not is the
+    // part a reader cannot otherwise see.
+    const sinceThen = state.last_error
+        ? ` The last check ${checked ? "since then " : ""}did not finish: ${state.last_error}`
+        : "";
     if (state.update_available && state.latest_version) {
         return {
             label: `v${state.latest_version} is available`,
-            description: `This device is on v${state.current_version}. ${when}`,
+            description: `This device is on v${state.current_version}. ${when}${sinceThen}`,
         };
     }
     if (state.last_error) {
         return {
             label: `CE Decky v${state.current_version}`,
-            description: `The last check did not finish: ${state.last_error}`,
+            description: `${when}${sinceThen}`,
         };
     }
     if (!state.auto_check && !state.checked_at) {

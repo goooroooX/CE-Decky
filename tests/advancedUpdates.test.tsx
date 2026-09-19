@@ -96,6 +96,20 @@ describe("Advanced, Plugin updates", () => {
     expect(screen.getByText("Automatic installation is unavailable here")).toBeTruthy();
   });
 
+  it("says a finding is older than the last attempt when nothing has answered since", () => {
+    // A device that has been unable to reach GitHub for a week still has a real
+    // finding, and the date beside it is the last check that answered. Showing
+    // only those two read as an offer confirmed on that date, with no sign that
+    // every attempt since had failed.
+    render(<AdvancedModal {...props({
+      update: updateState({ checked_at: 1_760_000_000, last_error: "GitHub is rate limiting this device" }),
+    })} />);
+    expect(screen.getByText("v0.9.28 is available")).toBeTruthy();
+    const line = screen.getByText(/This device is on v0\.9\.27\./);
+    expect(line.textContent).toContain("Checked 2025-10-09.");
+    expect(line.textContent).toContain("The last check since then did not finish: GitHub is rate limiting this device");
+  });
+
   it("never reads a check that did not finish as being up to date", () => {
     render(<AdvancedModal {...props({
       update: updateState({ update_available: false, latest_version: "0.9.27", last_error: "GitHub is rate limiting this device" }),
