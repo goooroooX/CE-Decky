@@ -10,7 +10,10 @@ import type {
   ManagedCECapability,
   ManagedCECompletion,
   ManagedCEInstallStatus,
+  PanelPreferences,
   PluginStatus,
+  PluginUpdateOperation,
+  PluginUpdateState,
   PreparedSession,
   ProviderDefinition,
   ProviderCandidateInput,
@@ -69,6 +72,16 @@ export const startManagedCEInstall = callable<[force?: boolean], ManagedCEInstal
 export const pollManagedCEInstall = callable<[operationId: string], ManagedCEInstallStatus>("poll_managed_ce_install");
 export const completeManagedCEInstall = callable<[operationId: string], ManagedCECompletion>("complete_managed_ce_install");
 export const cancelManagedCEInstall = callable<[operationId: string], ManagedCEInstallStatus>("cancel_managed_ce_install");
+// Updating the plugin itself. The status call already carries what the panel
+// draws, so these are the four presses and nothing else: the switch, the forced
+// check, the install, and the cancel that only reaches the half this device
+// still owns.
+export const setUpdateAutoCheck = callable<[enabled: boolean], PluginUpdateState>("set_update_auto_check");
+export const setMascotVisible = callable<[visible: boolean], PanelPreferences>("set_mascot_visible");
+export const checkForUpdate = callable<[], PluginUpdateState>("check_for_update");
+export const startPluginUpdate = callable<[], PluginUpdateOperation>("start_plugin_update");
+export const pollPluginUpdate = callable<[operationId: string], PluginUpdateOperation>("poll_plugin_update");
+export const cancelPluginUpdate = callable<[operationId: string], PluginUpdateOperation>("cancel_plugin_update");
 export const getProviderCapabilities = callable<[], ProviderDefinition[]>("get_provider_capabilities");
 export const searchTables = callable<[
   gameIdentity: { display_name: string; shortcut_executable?: string | null },

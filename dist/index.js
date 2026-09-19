@@ -985,6 +985,16 @@ const startManagedCEInstall = callable("start_managed_ce_install");
 const pollManagedCEInstall = callable("poll_managed_ce_install");
 const completeManagedCEInstall = callable("complete_managed_ce_install");
 const cancelManagedCEInstall = callable("cancel_managed_ce_install");
+// Updating the plugin itself. The status call already carries what the panel
+// draws, so these are the four presses and nothing else: the switch, the forced
+// check, the install, and the cancel that only reaches the half this device
+// still owns.
+const setUpdateAutoCheck = callable("set_update_auto_check");
+const setMascotVisible = callable("set_mascot_visible");
+const checkForUpdate = callable("check_for_update");
+const startPluginUpdate = callable("start_plugin_update");
+const pollPluginUpdate = callable("poll_plugin_update");
+const cancelPluginUpdate = callable("cancel_plugin_update");
 callable("get_provider_capabilities");
 const searchTables = callable("search_tables");
 const pollTableSearch = callable("poll_table_search");
@@ -1960,6 +1970,12 @@ function densityCss() {
         // The accent CE Decky marks its own emphasis with, shared by the row that
         // heads a list and available to anything else that needs it.
         "--ce-accent: hsla(203, 89%, 66%, 0.85)",
+        // The one press on this panel that is not about the game in front of the
+        // user, and the only thing here drawn in the mascot's own orange. Sampled
+        // from `docs/assets/hexpaw.png` rather than chosen beside it, so the panel
+        // carries one orange instead of two that nearly match.
+        "--ce-update-accent: #fd5605",
+        "--ce-update-accent-text: #ffffff",
         // The row that heads a list is the list's first row of data, not the
         // caption above it: it is set a step darker than the panel and holds the
         // rows that follow off itself.
@@ -2955,8 +2971,11 @@ const mediumActionStyle = {
     fontSize: 13,
     lineHeight: "18px",
 };
-function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small" }) {
-    const style = size === "medium" ? mediumActionStyle : smallActionStyle;
+function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small", tone }) {
+    const base = size === "medium" ? mediumActionStyle : smallActionStyle;
+    const style = tone === "update"
+        ? { ...base, background: "var(--ce-update-accent)", color: "var(--ce-update-accent-text)" }
+        : base;
     // Never hand Steam's controller click event to a workflow callback: several
     // of them forward their argument, and an event reaching Steam's game list is
     // exactly the leak the panel tests guard against.
@@ -5032,6 +5051,56 @@ function selfTestSummary(result) {
 function selfTestCheckLabel(name) {
     const words = name.replace(/[_-]+/g, " ").trim();
     return words === "" ? "unnamed check" : words.charAt(0).toUpperCase() + words.slice(1);
+}
+/**
+ * The update section's own first line, said in the state the device is in.
+ *
+ * Five states, and each one leads with the thing a reader acts on. A failed
+ * check is the one that must not read as "up to date": a device that could not
+ * ask is not a device that has nothing to install, and the two used to look the
+ * same on every updater anybody has used.
+ */
+function updateSummary(state, currentVersion) {
+    if (!state) {
+        return {
+            label: `CE Decky v${currentVersion}`,
+            description: "This build does not report its update state.",
+        };
+    }
+    const checked = updateCheckedOn(state.checked_at);
+    const when = checked ? `Checked ${checked}.` : "Not checked yet.";
+    if (state.update_available && state.latest_version) {
+        return {
+            label: `v${state.latest_version} is available`,
+            description: `This device is on v${state.current_version}. ${when}`,
+        };
+    }
+    if (state.last_error) {
+        return {
+            label: `CE Decky v${state.current_version}`,
+            description: `The last check did not finish: ${state.last_error}`,
+        };
+    }
+    if (!state.auto_check && !state.checked_at) {
+        return {
+            label: `CE Decky v${state.current_version}`,
+            description: "Automatic checking is off. Check now asks once, without switching it back on.",
+        };
+    }
+    if (!state.checked_at) {
+        return {
+            label: `CE Decky v${state.current_version}`,
+            description: "No check has run yet. One happens after a table search, or press Check now.",
+        };
+    }
+    return { label: `CE Decky v${state.current_version} is up to date`, description: when };
+}
+/** The day a check ran, which is all a user needs to place it. */
+function updateCheckedOn(seconds) {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0)
+        return null;
+    const when = new Date(seconds * 1000);
+    return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }
 
 /**
@@ -8097,7 +8166,7 @@ const HEXPAW_DATA_URI = "data:image/png;base64,"
  * must be reachable without scrolling the quick-access column.
  */
 function HomePanel(props) {
-    const { pluginVersion, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
+    const { pluginVersion, updateVersion, onUpdate, mascotVisible, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
     const workflowBlocked = busy || setupPending;
     const searchDisabled = workflowBlocked || !game;
     // See `preferSearchFocus`: the mount decides, and nothing after it does.
@@ -8165,7 +8234,7 @@ function HomePanel(props) {
         : runningDetectionAvailable
             ? runningGameCount > 1 ? `${runningGameCount} games running; choose one` : "Start a game or choose one"
             : "Automatic detection is unavailable; choose one";
-    return (SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsx("div", { style: { display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }, children: SP_JSX.jsx("img", { src: HEXPAW_DATA_URI, alt: "HexPaw, the CE Decky mascot", width: 112, style: { width: 112, height: "auto", display: "block" } }) }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Setup" }), ceReady ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", truncate: true, label: ceStatusText, description: ceDetail || "Ready", actions: setupPending ? undefined : (SP_JSX.jsx(SmallButton, { disabled: busy || ceRunning || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.reinstall", onReinstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: reinstallLabel.startsWith("Reinstall") ? "Reinstall" : "Install" })) }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", label: "Cheat Engine is not installed", description: ceStatusText }) }), !setupPending && !setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.download_and_install_ce", () => onInstall(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Download and install CE" }) }))] })), ceIdentityBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-owned-elsewhere", truncate: true, label: "Cheat Engine setup is busy", description: ceIdentityBlockedReason }) })), setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-status-error", truncate: true, label: "Setup status unavailable", description: setupStatusError, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.retry", onRetrySetupStatus, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Retry" }) }) })), installOperation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-progress", truncate: true, label: installOperation.state.replace(/_/g, " "), description: `${installOperation.message}${installOperation.error ? ` · ${installOperation.error}` : ""}`, actions: installBusy ? SP_JSX.jsx(SmallButton, { disabled: managedCancelling, onClick: traceUiAction("home_panel.cancel", onCancelInstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: managedCancelling ? "Cancelling…" : "Cancel" }) : undefined }) })), installBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: 24 }, children: SP_JSX.jsx(DFL.Spinner, { "aria-label": "CE setup in progress", style: { width: 18, height: 18, flexShrink: 0 } }) }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "game-row", truncate: true, scroll: true, label: game ? appDetails?.displayName || game.name : "No game selected", description: gameDetail, actions: SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || gameChangeBlocked, onClick: traceUiAction("home_panel.choose_game", onChooseGame, { app_id: game?.appId, table_sha: table?.sha256 }), children: game ? "Change" : "Choose" }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "table-row", truncate: true, scroll: true, label: table ? table.filename : selectedTableMissing ? "Selected table is missing" : "No table selected", description: table
+    return (SP_JSX.jsxs(DensePanel, { children: [mascotVisible && (SP_JSX.jsx("div", { style: { display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }, children: SP_JSX.jsx("img", { src: HEXPAW_DATA_URI, alt: "HexPaw, the CE Decky mascot", width: 112, style: { width: 112, height: "auto", display: "block" } }) })), updateVersion && (SP_JSX.jsx("div", { style: { padding: "0 16px", margin: "0 0 6px" }, children: SP_JSX.jsx(SmallButton, { grow: true, tone: "update", disabled: busy, onClick: traceUiAction("home_panel.update", onUpdate, { version: updateVersion }), children: `Update to v${updateVersion}` }) })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Setup" }), ceReady ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", truncate: true, label: ceStatusText, description: ceDetail || "Ready", actions: setupPending ? undefined : (SP_JSX.jsx(SmallButton, { disabled: busy || ceRunning || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.reinstall", onReinstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: reinstallLabel.startsWith("Reinstall") ? "Reinstall" : "Install" })) }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", label: "Cheat Engine is not installed", description: ceStatusText }) }), !setupPending && !setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.download_and_install_ce", () => onInstall(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Download and install CE" }) }))] })), ceIdentityBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-owned-elsewhere", truncate: true, label: "Cheat Engine setup is busy", description: ceIdentityBlockedReason }) })), setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-status-error", truncate: true, label: "Setup status unavailable", description: setupStatusError, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.retry", onRetrySetupStatus, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Retry" }) }) })), installOperation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-progress", truncate: true, label: installOperation.state.replace(/_/g, " "), description: `${installOperation.message}${installOperation.error ? ` · ${installOperation.error}` : ""}`, actions: installBusy ? SP_JSX.jsx(SmallButton, { disabled: managedCancelling, onClick: traceUiAction("home_panel.cancel", onCancelInstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: managedCancelling ? "Cancelling…" : "Cancel" }) : undefined }) })), installBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: 24 }, children: SP_JSX.jsx(DFL.Spinner, { "aria-label": "CE setup in progress", style: { width: 18, height: 18, flexShrink: 0 } }) }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "game-row", truncate: true, scroll: true, label: game ? appDetails?.displayName || game.name : "No game selected", description: gameDetail, actions: SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || gameChangeBlocked, onClick: traceUiAction("home_panel.choose_game", onChooseGame, { app_id: game?.appId, table_sha: table?.sha256 }), children: game ? "Change" : "Choose" }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "table-row", truncate: true, scroll: true, label: table ? table.filename : selectedTableMissing ? "Selected table is missing" : "No table selected", description: table
                                 ? `${tableSource} · ${table.sha256.slice(0, 8)}${tableMarkedNotWorking ? " · marked as not working" : ""}`
                                 : selectedTableMissing ?? "Search online, or open one this device already has", leadingMark: table ? SP_JSX.jsx(CompatibilityMark, { evidence: tableEvidence, blocked: tableBlocked }) : undefined, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: searchButtonRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: openOnSearch, disabled: searchDisabled, onClick: traceUiAction("home_panel.search", onSearchTable, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Search" }) }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.manage", onOpenImportedTables, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Manage" })] })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "runtime-row", truncate: true, tone: "header", status: runtimeRowStatus, label: launchPending ? "Starting Cheat Engine" : tableLoadFailed ? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected", description: launchPending
                                 ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
@@ -9091,7 +9160,7 @@ function totalManagedBytes(removal) {
 }
 function AdvancedModal(props) {
     useUiSurface("AdvancedModal");
-    const { status, games, selectedGame, appDetails, inspection, targetProcess, ceLaunch, launchProtonToolId, blockedTables: blockedTablesProp = [], blockedTablesReason: blockedTablesReasonProp = null, onRefreshBlockedTables, onUnblockTable, onClearBlockedTables, onLoadProviderSources, onSetProviderEnabled, onResetProviderSources, onResetProviderDiagnostics, onLoadDiagnostics, onCollectSupportBundle, runtime, selfTest, busy, onRefreshGames, onSaveTargetProcess, onPickCE, onClearCEImport, onRunSelfTest, onLaunchProtonChange, onRunCELaunchSelfTest, onRefreshRuntime, onRefreshProcesses, onRetryAttach, onRepairSessionState, onRepairOwnedLaunchState, onRepairProfileState, onClearStartup, onRevokeConsent, onCheckRemoval, onDeleteManagedData, onRefreshAll, onClose, targetHarness, } = props;
+    const { status, games, selectedGame, appDetails, inspection, targetProcess, ceLaunch, launchProtonToolId, blockedTables: blockedTablesProp = [], blockedTablesReason: blockedTablesReasonProp = null, onRefreshBlockedTables, onUnblockTable, onClearBlockedTables, onLoadProviderSources, onSetProviderEnabled, onResetProviderSources, onResetProviderDiagnostics, onLoadDiagnostics, onCollectSupportBundle, runtime, selfTest, busy, onRefreshGames, onSaveTargetProcess, onPickCE, onClearCEImport, onRunSelfTest, onLaunchProtonChange, onRunCELaunchSelfTest, onRefreshRuntime, onRefreshProcesses, onRetryAttach, onRepairSessionState, onRepairOwnedLaunchState, onRepairProfileState, onClearStartup, onRevokeConsent, onCheckRemoval, onDeleteManagedData, onRefreshAll, onClose, update = null, onSetUpdateAutoCheck, onCheckForUpdate, onStartUpdate, onSetMascotVisible, targetHarness, } = props;
     const [gamesView, setGamesView] = SP_REACT.useState(games);
     const [selectedGameView] = SP_REACT.useState(selectedGame);
     const [appDetailsView, setAppDetailsView] = SP_REACT.useState(appDetails);
@@ -9133,6 +9202,18 @@ function AdvancedModal(props) {
     const [supportBundleError, setSupportBundleError] = SP_REACT.useState(null);
     const [localBusy, setLocalBusy] = SP_REACT.useState(false);
     const localBusyRef = SP_REACT.useRef(false);
+    // Its own copy, like every other view here: this screen is opened with a
+    // snapshot of the parent's props and is never re-rendered from them, so a
+    // switch flipped or a check run here has to repaint from what the call
+    // returned.
+    const [updateView, setUpdateView] = SP_REACT.useState(update);
+    const [updateError, setUpdateError] = SP_REACT.useState(null);
+    const [mascotVisible, setMascotVisible] = SP_REACT.useState(status.preferences?.mascot_visible ?? true);
+    // Advanced shows a finding whether or not automatic checking is on, unlike
+    // the home panel: this is the screen the switch is on, and a user who has
+    // just turned it back on has come here to see what it found.
+    const updateAvailable = Boolean(updateView?.update_available && updateView.latest_version);
+    const updateSummaryView = updateSummary(updateView, statusView.version);
     // Which table sources are on, and what each one last did. Loaded when this
     // screen opens rather than passed in, because nothing on the panel needs it
     // and reading it on every panel refresh would be a file read per poll.
@@ -9715,7 +9796,19 @@ function AdvancedModal(props) {
     if (debugOpen) {
         return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.debug.back", () => setDebugOpen(false)), children: SP_JSX.jsx(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: SP_JSX.jsx(DensePanel, { children: SP_JSX.jsx(DebugDetails, { snapshot: debug, loading: blocked, error: debugError, gameNames: gameNames, onRefresh: loadDebug, onBack: () => setDebugOpen(false) }) }) }) }));
     }
-    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Advanced / Diagnostics" }), SP_JSX.jsx(PanelRow, { truncate: true, label: `CE Decky ${statusView.version}`, description: statusView.ce.valid ? `Cheat Engine ${statusView.ce.version ?? "of unknown version"} · ${statusView.ce.sha256?.slice(0, 8)}` : statusView.ce.reason ?? "Cheat Engine is not ready", help: "Diagnostics and recovery for when the normal panel cannot finish something. Refresh re-reads every backend fact, Self-test checks the plugin's own paths and permissions, and Debug opens the backend's full diagnostics snapshot. Nothing on this screen is needed for ordinary use.", actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.refresh", () => { void invoke(onRefreshAll, reconcileContext); }), children: "Refresh" }), SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.self_test", () => { void invoke(onRunSelfTest, setSelfTestView); }), children: "Self-test" }), SP_JSX.jsx("div", { ref: openerRef("debug"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.debug", () => openSubScreen("debug", openDebug)), children: "Debug" }) })] })) }), selfTestSummaryView && SP_JSX.jsx(PanelRow, { truncate: true, label: selfTestSummaryView.label, description: selfTestSummaryView.counts }), selfTestSummaryView?.failures.map((check) => (SP_JSX.jsx(PanelRow, { status: true, testId: `self-test-failure-${check.name}`, label: `${selfTestCheckLabel(check.name)} ${check.blocking === false ? "(warning)" : "(blocker)"}`, description: check.detail || "the check failed and reported no detail" }, check.name))), statusView.profile_state_reason && (SP_JSX.jsx(PanelRow, { testId: "profile-state-repair", truncate: true, label: "Game settings cannot be read", description: statusView.profile_state_reason, help: "CE Decky keeps every game's table choice, authorization and cheat selection in one file. When that file is unreadable, no game can be configured until it is replaced. Discarding it keeps the unreadable file as evidence and starts an empty one; your Cheat Engine installation and your imported tables are untouched, and you re-choose a table per game afterwards from Stored on the home panel, which needs no network.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.profile.discard", () => { void repair(onRepairProfileState); }), children: "Discard" }) }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Report a problem" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "support-bundle", label: "Collect support bundle", description: supportBundleError
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin updates" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-state", label: updateSummaryView.label, description: updateError ?? updateSummaryView.description, help: "CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one request, and it never sends anything about you. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version.", actions: onCheckForUpdate ? (SP_JSX.jsx(SmallButton, { disabled: blocked || Boolean(updateView?.checking), onClick: traceUiAction("advanced_modal.check_for_update", () => {
+                                            setUpdateError(null);
+                                            void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
+                                        }), children: "Check now" })) : undefined }), updateAvailable && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx(SmallButton, { grow: true, tone: "update", disabled: blocked, onClick: traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "After you search for a table, and at most once every few hours. Switched off, CE Decky never contacts GitHub about updates and the panel offers none.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
+                                            setUpdateError(null);
+                                            void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
+                                        }, (enabled) => ({ enabled })), bottomSeparator: "none" }) })), updateView?.last_result && !updateView.last_result.ok && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-manual-route", label: "The last update did not install", description: updateView.last_result.archive_kept_at
+                                        ? `${updateView.last_result.error ?? "Decky did not complete the install."} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
+                                        : updateView.last_result.error ?? "Decky did not complete the install.", help: updateView.last_result.archive_kept_at
+                                        ? "That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. The release page has the same file if you would rather download it again."
+                                        : "Nothing was kept, because nothing was verified: the failure happened before or during the download. Open the release page and install from there, or try again.", actions: updateView.page_url ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.open_release_page", () => { void openExternalWeb(updateView.page_url); }), children: "Release page" })) : undefined })), updateView?.last_result?.ok && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-last-result", label: `Updated to v${updateView.last_result.version}`, description: "The last update installed and this is the version that came back." })), updateView && !updateView.install_supported && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-unsupported", label: "Automatic installation is unavailable here", description: "This device has no python3 for the updater to run in, so an update has to be installed from Decky by hand." }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Panel appearance" }), onSetMascotVisible && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show the mascot", description: "HexPaw, above the first section of the CE Decky panel. Switching it off gives that height back to the cheats.", checked: mascotVisible, disabled: blocked, onChange: traceUiAction("advanced_modal.mascot_visible", (visible) => {
+                                            void invoke(() => onSetMascotVisible(visible), (next) => setMascotVisible(next.mascot_visible));
+                                        }, (visible) => ({ visible })), bottomSeparator: "none" }) }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Advanced / Diagnostics" }), SP_JSX.jsx(PanelRow, { truncate: true, label: `CE Decky ${statusView.version}`, description: statusView.ce.valid ? `Cheat Engine ${statusView.ce.version ?? "of unknown version"} · ${statusView.ce.sha256?.slice(0, 8)}` : statusView.ce.reason ?? "Cheat Engine is not ready", help: "Diagnostics and recovery for when the normal panel cannot finish something. Refresh re-reads every backend fact, Self-test checks the plugin's own paths and permissions, and Debug opens the backend's full diagnostics snapshot. Nothing on this screen is needed for ordinary use.", actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.refresh", () => { void invoke(onRefreshAll, reconcileContext); }), children: "Refresh" }), SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.self_test", () => { void invoke(onRunSelfTest, setSelfTestView); }), children: "Self-test" }), SP_JSX.jsx("div", { ref: openerRef("debug"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.debug", () => openSubScreen("debug", openDebug)), children: "Debug" }) })] })) }), selfTestSummaryView && SP_JSX.jsx(PanelRow, { truncate: true, label: selfTestSummaryView.label, description: selfTestSummaryView.counts }), selfTestSummaryView?.failures.map((check) => (SP_JSX.jsx(PanelRow, { status: true, testId: `self-test-failure-${check.name}`, label: `${selfTestCheckLabel(check.name)} ${check.blocking === false ? "(warning)" : "(blocker)"}`, description: check.detail || "the check failed and reported no detail" }, check.name))), statusView.profile_state_reason && (SP_JSX.jsx(PanelRow, { testId: "profile-state-repair", truncate: true, label: "Game settings cannot be read", description: statusView.profile_state_reason, help: "CE Decky keeps every game's table choice, authorization and cheat selection in one file. When that file is unreadable, no game can be configured until it is replaced. Discarding it keeps the unreadable file as evidence and starts an empty one; your Cheat Engine installation and your imported tables are untouched, and you re-choose a table per game afterwards from Stored on the home panel, which needs no network.", actions: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.profile.discard", () => { void repair(onRepairProfileState); }), children: "Discard" }) }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Report a problem" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "support-bundle", label: "Collect support bundle", description: supportBundleError
                                         ? supportBundleError
                                         : supportBundle
                                             ? `Saved ${supportBundle.filename} (${formatBytes(supportBundle.size_bytes)}) in your home folder.`
@@ -9787,6 +9880,124 @@ function AdvancedModal(props) {
                                                 }, { process: selectedAttach?.name, pid: selectedAttach?.pid }), children: "Retry attach" }) }), liveTargetOverride && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "live-target-override", truncate: true, label: `Attached to ${liveTargetOverride}, this session only`, description: `${profile?.target_process} is still what this game will use next time. Saving stops the Cheat Engine running now and uses ${liveTargetOverride} from the next start.`, actions: (SP_JSX.jsx(SmallButton, { disabled: blocked || !profile?.table_sha256, onClick: traceUiAction("advanced_modal.stop_ce_and_save", () => { void invoke(() => onSaveTargetProcess(liveTargetOverride)); }), children: "Stop CE and save" })) }) }))] })), (runtimeView?.status?.processes.length ?? 0) > 0 && runtimeProcessOptions.length === 0 && (SP_JSX.jsx(PanelRow, { label: "Attach candidates", description: "The bridge reported no valid .exe process basenames." }))] }), onLoadProviderSources && (SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Table sources" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "provider-sources", label: sourcesSummaryLabel, description: sourcesSummaryDescription, trailing: providerSources && providerSources.total > 0 && providerSources.enabled_count === 0 ? "all off" : undefined, help: sourcesSummaryHelp, actions: (SP_JSX.jsx("div", { ref: openerRef("sources"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.choose", () => openSubScreen("sources", () => { setSourcesOpen(true); void reloadProviderSources(); })), children: "Choose" }) })) })] })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables that did not work" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "blocked-tables", label: blockedSummaryLabel, description: blockedSummaryDescription, trailing: newestBlockedAt ? `newest ${newestBlockedAt}` : undefined, help: blockedSummaryHelp, actions: blockedManageable ? (SP_JSX.jsx("div", { ref: openerRef("blocked"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.review", () => openSubScreen("blocked", () => { setBlockedPages(1); setBlockedOpen(true); })), children: "Review" }) })) : undefined })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin data" }), SP_JSX.jsx(PanelRow, { truncate: true, label: removal ? removal.can_delete_managed_data ? "Safe to remove" : "Removal is blocked" : "Plugin data on disk", description: removal
                                         ? `${totalManagedFiles(removal)} file(s) · ${formatBytes(totalManagedBytes(removal))} under ${removal.managed_root}`
                                         : "See what CE Decky has put on disk and what removing it would leave behind.", help: "Reports what removing CE Decky would leave on disk - your downloaded tables, game profiles and its managed Cheat Engine - and anything that would block deleting it, such as a Cheat Engine process CE Decky still owns or session state it cannot read. Nothing is deleted by looking: the report itself offers deletion, and that asks which data to remove and confirms it first.", actions: SP_JSX.jsx("div", { ref: openerRef("removal"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.check", () => { void invoke(onCheckRemoval, (next) => { setRemoval(next); openSubScreen("removal", () => setRemovalOpen(true)); }); }), children: "Check" }) }) }), removal && !removal.can_delete_managed_data && (SP_JSX.jsx(PanelRow, { truncate: true, label: `${removal.blockers.length} blocker(s)`, description: removal.blockers.join("; ") }))] }), targetHarness] }), SP_JSX.jsx("div", { style: { padding: "0 16px 8px" }, children: SP_JSX.jsx(DFL.DialogButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.close_2", close), children: "Close" }) })] }) }));
+}
+
+/** How often this asks the backend what the update it started is doing. */
+const POLL_INTERVAL_MS = 1000;
+/**
+ * How long it goes on asking. The release archive is a little over a megabyte,
+ * so this is patience for a slow connection rather than a deadline on anything:
+ * the window stops reporting, and the durable record is what says how it ended.
+ */
+const POLL_ATTEMPTS = 180;
+/**
+ * The one confirmation an update gets, and then the only view of it there is.
+ *
+ * Three things have to be said before the press and none can be discovered
+ * afterwards: which version replaces which, that Steam's own interface is
+ * restarted as part of it, and that there is no way back once installing
+ * starts. The last is why this window exists rather than the button acting
+ * directly, and it is also why the window stays open afterwards: the download
+ * is the only part of an update anything here can still report or stop.
+ *
+ * It stops watching at `installing` rather than on a failure. From that state
+ * Decky is replacing this plugin, so the backend that would answer the next
+ * question is being stopped and this panel is about to be replaced with it.
+ */
+function UpdateModal({ currentVersion, targetVersion, gameRunning, onStart, onPoll, onCancelUpdate, onClose }) {
+    useUiSurface("UpdateModal");
+    const [operation, setOperation] = SP_REACT.useState(null);
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const [cancelling, setCancelling] = SP_REACT.useState(false);
+    const [error, setError] = SP_REACT.useState(null);
+    const busyRef = SP_REACT.useRef(false);
+    const operationRef = SP_REACT.useRef(null);
+    const liveRef = SP_REACT.useRef(true);
+    SP_REACT.useEffect(() => () => { liveRef.current = false; }, []);
+    const follow = async (operationId) => {
+        for (let attempt = 0; attempt < POLL_ATTEMPTS && liveRef.current; attempt += 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
+            if (!liveRef.current)
+                return;
+            let snapshot;
+            try {
+                snapshot = await onPoll(operationId);
+            }
+            catch (cause) {
+                // The backend going away during its own replacement is the install
+                // working. Anything else is a read that failed and is asked again.
+                logUiFailure("update_modal.poll_failed", cause, { operation_id: operationId });
+                continue;
+            }
+            if (!liveRef.current)
+                return;
+            setOperation(snapshot);
+            if (snapshot.state === "installing")
+                return;
+            if (snapshot.state === "failed" || snapshot.state === "cancelled") {
+                busyRef.current = false;
+                setBusy(false);
+                setCancelling(false);
+                return;
+            }
+        }
+    };
+    const confirm = async () => {
+        if (busyRef.current)
+            return;
+        busyRef.current = true;
+        setBusy(true);
+        setError(null);
+        const record = startUiOperation("update.start", { to_version: targetVersion });
+        try {
+            const started = await onStart();
+            operationRef.current = started.operation_id;
+            setOperation(started);
+            record.completed();
+            void follow(started.operation_id);
+        }
+        catch (cause) {
+            record.failed(cause);
+            setError(describeError(cause));
+            busyRef.current = false;
+            setBusy(false);
+        }
+    };
+    const abandon = async () => {
+        const operationId = operationRef.current;
+        if (!operationId || cancelling)
+            return;
+        setCancelling(true);
+        try {
+            setOperation(await onCancelUpdate(operationId));
+            busyRef.current = false;
+            setBusy(false);
+        }
+        catch (cause) {
+            setError(describeError(cause));
+        }
+        finally {
+            setCancelling(false);
+        }
+    };
+    const state = operation?.state ?? null;
+    // Installing is the point of no return, and Back has to respect it as much as
+    // the buttons do: there is nothing left here to abandon, and a window that
+    // closes on its own reads as an update that stopped.
+    const installing = state === "installing";
+    const inFlight = state === "checking" || state === "downloading";
+    const settled = state === "failed" || state === "cancelled";
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("update_modal.cancel_back", () => { if (!busyRef.current && !installing)
+            onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: gameRunning
+                                        ? "Installing replaces Steam's interface process. This closes the Decky panel and can interrupt the game that is running."
+                                        : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), SP_JSX.jsx(ModalActions, { children: installing ? (SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
+                                    if (inFlight) {
+                                        void abandon();
+                                        return;
+                                    }
+                                    if (!busyRef.current)
+                                        onClose();
+                                }), children: inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: busy && !settled, onClick: traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion }), children: settled ? "Try again" : busy ? "Starting…" : "Update" })] })) })] }) }));
 }
 
 function ArchiveImportModal({ members, onImport, onCancel }) {
@@ -15375,7 +15586,44 @@ function Content() {
                         await refreshBlockedTables().catch(() => undefined);
                     }
                 }
+            }), update: updateState, onSetUpdateAutoCheck: (enabled) => runAction(async () => {
+                const next = await setUpdateAutoCheck(enabled);
+                await refreshStatus().catch(() => undefined);
+                return next;
+            }), onCheckForUpdate: () => runAction(async () => {
+                const next = await checkForUpdate();
+                await refreshStatus().catch(() => undefined);
+                return next;
+            }), onStartUpdate: () => { close(); openUpdateModal(); }, onSetMascotVisible: (visible) => runAction(async () => {
+                const next = await setMascotVisible(visible);
+                await refreshStatus().catch(() => undefined);
+                return next;
             }), onRefreshAll: () => runAction(() => refreshAdvancedContext()), onClose: close })));
+    };
+    /**
+     * What the panel knows about updates right now, from the status it already reads.
+     *
+     * `updateVersion` applies the one rule the home panel has about this: with
+     * automatic checking switched off nothing is offered there, whatever an
+     * earlier check found. Advanced still shows the finding, because that screen
+     * is where the switch is and a user who has just turned it back on should see
+     * why it matters.
+     */
+    const updateState = status?.update ?? null;
+    const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
+    const panelUpdateVersion = updateState?.auto_check ? offeredUpdateVersion : null;
+    const mascotVisible = status?.preferences?.mascot_visible ?? true;
+    const openUpdateModal = () => {
+        const target = offeredUpdateVersion;
+        if (!status || !target)
+            return;
+        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, gameRunning: runningGamesRef.current.length > 0, onStart: () => startPluginUpdate(), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
+                close();
+                // What the press changed about this device is in the status the panel
+                // reads: a cancelled update, a failed one, and the record of what the
+                // last check found all live there.
+                void refreshStatus().catch(() => undefined);
+            } })));
     };
     const openGamePicker = (gameOptions) => {
         // Only the ambiguity this cannot resolve by itself is marked. One running
@@ -15405,9 +15653,9 @@ function Content() {
         // control that has to be pressable: nothing else in this branch does
         // anything, so without it the panel could only recover by being remounted.
         const bootstrapFailed = error !== null;
-        return SP_JSX.jsx(HomePanel, { pluginVersion: null, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
+        return SP_JSX.jsx(HomePanel, { pluginVersion: null, updateVersion: null, onUpdate: () => undefined, mascotVisible: true, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
     }
-    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, updateVersion: panelUpdateVersion, onUpdate: openUpdateModal, mascotVisible: mascotVisible, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
                 void runAction(async () => {
                     // Before the library is even read, because the answer decides whether
                     // there is anything to open. The row's disabled state is up to three

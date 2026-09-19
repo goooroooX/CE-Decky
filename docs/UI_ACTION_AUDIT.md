@@ -63,46 +63,49 @@ Each identifier below names one owned callback location, even when several rows 
 |---|---|---|
 | `action_failure_modal.close` | `src/modals/ActionFailureModal.tsx` | `onClose` |
 | `action_failure_modal.on_close` | `src/modals/ActionFailureModal.tsx` | `onClose` |
+| `advanced_modal.back` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setRemovalOpen(false); }` |
 | `advanced_modal.back_2` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setSourcesOpen(false); }` |
 | `advanced_modal.back_3` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setBlockedOpen(false); }` |
-| `advanced_modal.back` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setRemovalOpen(false); }` |
 | `advanced_modal.blocked.back` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setBlockedOpen(false); }` |
 | `advanced_modal.blocked.clear` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(() => onUnblockTable(blockedKey(entry)), () => { void reloadBlockedTables(); });...` |
 | `advanced_modal.blocked.show_more` | `src/modals/AdvancedModal.tsx` | `() => setBlockedPages((pages) => pages + 1)` |
 | `advanced_modal.cancel` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setDeleteScope(null); }` |
 | `advanced_modal.check` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onCheckRemoval, (next) => { setRemoval(next); openSubScreen("removal", () => set...` |
+| `advanced_modal.check_for_update` | `src/modals/AdvancedModal.tsx` | `() => { setUpdateError(null); void invoke(onCheckForUpdate, setUpdateView, ...); }` |
 | `advanced_modal.choose` | `src/modals/AdvancedModal.tsx` | `() => openSubScreen("sources", () => { setSourcesOpen(true); void reloadProviderSources(); })` |
 | `advanced_modal.clear_all` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onClearBlockedTables, () => { setBlockedPages(1); void reloadBlockedTables(); })...` |
-| `advanced_modal.close_2` | `src/modals/AdvancedModal.tsx` | `close` |
 | `advanced_modal.close` | `src/modals/AdvancedModal.tsx` | `close` |
+| `advanced_modal.close_2` | `src/modals/AdvancedModal.tsx` | `close` |
 | `advanced_modal.collect` | `src/modals/AdvancedModal.tsx` | `() => { setSupportBundleError(null); void collectSupportBundle(); }` |
 | `advanced_modal.consent.revoke` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onRevokeConsent); }` |
-| `advanced_modal.debug.back` | `src/modals/AdvancedModal.tsx` | `() => setDebugOpen(false)` |
 | `advanced_modal.debug` | `src/modals/AdvancedModal.tsx` | `() => openSubScreen("debug", openDebug)` |
+| `advanced_modal.debug.back` | `src/modals/AdvancedModal.tsx` | `() => setDebugOpen(false)` |
+| `advanced_modal.delete` | `src/modals/AdvancedModal.tsx` | `() => { setDeleteError(null); setDeleted(null); setDeleteScope("cache"); }` |
 | `advanced_modal.delete.cancel_back` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setDeleteScope(null); }` |
 | `advanced_modal.delete.confirm` | `src/modals/AdvancedModal.tsx` | `() => { confirm.Close(); void performDelete(deleteScope); }` |
 | `advanced_modal.delete.keep` | `src/modals/AdvancedModal.tsx` | `() => confirm.Close()` |
 | `advanced_modal.delete_these` | `src/modals/AdvancedModal.tsx` | `() => { const confirm = showModal( <ConfirmModal strTitle="Delete this plugin data?" strDescription=...` |
-| `advanced_modal.delete` | `src/modals/AdvancedModal.tsx` | `() => { setDeleteError(null); setDeleted(null); setDeleteScope("cache"); }` |
 | `advanced_modal.exact_process_pid` | `src/modals/AdvancedModal.tsx` | `(option) => setAttachCandidate(String(option.data))` |
 | `advanced_modal.forget` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onClearCEImport, reconcileContext); }` |
 | `advanced_modal.import` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onPickCE); }` |
 | `advanced_modal.look_inside` | `src/modals/AdvancedModal.tsx` | `() => openSubScreen("code", () => setCodeOpen(true))` |
+| `advanced_modal.mascot_visible` | `src/modals/AdvancedModal.tsx` | `(visible: boolean) => { void invoke(() => onSetMascotVisible(visible), ...); }` |
 | `advanced_modal.open` | `src/modals/AdvancedModal.tsx` | `() => { openSourcePage(tableOrigin.source_page); }` |
+| `advanced_modal.open_release_page` | `src/modals/AdvancedModal.tsx` | `() => { void openExternalWeb(updateView.page_url); }` |
 | `advanced_modal.ownership.repair` | `src/modals/AdvancedModal.tsx` | `() => { void repair(onRepairOwnedLaunchState); }` |
 | `advanced_modal.processes` | `src/modals/AdvancedModal.tsx` | `() => { if (runtimeSessionReady) { void invoke(onRefreshProcesses, (next) => { setRuntimeView(next);...` |
 | `advanced_modal.profile.discard` | `src/modals/AdvancedModal.tsx` | `() => { void repair(onRepairProfileState); }` |
+| `advanced_modal.refresh` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onRefreshAll, reconcileContext); }` |
 | `advanced_modal.refresh_library` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onRefreshGames, setGamesView); }` |
 | `advanced_modal.refresh_runtime` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onRefreshRuntime, setRuntimeView); }` |
-| `advanced_modal.refresh` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onRefreshAll, reconcileContext); }` |
 | `advanced_modal.removal.back` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setRemovalOpen(false); }` |
 | `advanced_modal.reset_counts` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onResetProviderDiagnostics, (next) => { void reloadProviderSources(next); }, (ca...` |
 | `advanced_modal.retry_attach` | `src/modals/AdvancedModal.tsx` | `() => { if (!selectedAttach) return; void invoke(() => onRetryAttach(selectedAttach.name, selectedAt...` |
 | `advanced_modal.review` | `src/modals/AdvancedModal.tsx` | `() => openSubScreen("blocked", () => { setBlockedPages(1); setBlockedOpen(true); })` |
-| `advanced_modal.save_as_target` | `src/modals/AdvancedModal.tsx` | `() => { if (!selectedObservedTarget) return; void invoke(() => onSaveTargetProcess(selectedObservedT...` |
 | `advanced_modal.save` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(() => onSaveTargetProcess(targetDraft)); }` |
-| `advanced_modal.self_test_proton` | `src/modals/AdvancedModal.tsx` | `(option) => { const value = String(option.data); setProtonDraft(value); onLaunchProtonChange(value);...` |
+| `advanced_modal.save_as_target` | `src/modals/AdvancedModal.tsx` | `() => { if (!selectedObservedTarget) return; void invoke(() => onSaveTargetProcess(selectedObservedT...` |
 | `advanced_modal.self_test` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(onRunSelfTest, setSelfTestView); }` |
+| `advanced_modal.self_test_proton` | `src/modals/AdvancedModal.tsx` | `(option) => { const value = String(option.data); setProtonDraft(value); onLaunchProtonChange(value);...` |
 | `advanced_modal.session.discard` | `src/modals/AdvancedModal.tsx` | `() => { void repair(onRepairSessionState); }` |
 | `advanced_modal.source.toggle` | `src/modals/AdvancedModal.tsx` | `() => { void invoke( () => onSetProviderEnabled(source.provider, !source.enabled), (next) => { void ...` |
 | `advanced_modal.sources.back` | `src/modals/AdvancedModal.tsx` | `() => { if (!busy && !localBusyRef.current) setSourcesOpen(false); }` |
@@ -114,12 +117,14 @@ Each identifier below names one owned callback location, even when several rows 
 | `advanced_modal.target_from_observed_processes` | `src/modals/AdvancedModal.tsx` | `(option) => setObservedTargetDraft(String(option.data))` |
 | `advanced_modal.target_process` | `src/modals/AdvancedModal.tsx` | `(event: any) => setTargetDraft(String(event.target.value ?? ""))` |
 | `advanced_modal.test` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(() => onRunCELaunchSelfTest(protonDraft)); }` |
+| `advanced_modal.update` | `src/modals/AdvancedModal.tsx` | `onStartUpdate` |
+| `advanced_modal.update_auto_check` | `src/modals/AdvancedModal.tsx` | `(enabled: boolean) => { setUpdateError(null); void invoke(() => onSetUpdateAutoCheck(enabled), ...); }` |
 | `advanced_modal.use_running_target` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(() => onSaveTargetProcess(absentTargetCandidates[0])); }` |
 | `advanced_modal.verify` | `src/modals/AdvancedModal.tsx` | `() => { void invoke(() => onRunCELaunchSelfTest(protonDraft)); }` |
 | `advanced_modal.what_to_delete` | `src/modals/AdvancedModal.tsx` | `(option) => { setDeleteError(null); setDeleteScope(String(option.data) as ManagedDataScope); }` |
 | `archive_import_modal.archive_password_not_stored` | `src/modals/ArchiveImportModal.tsx` | `(event: any) => setPassword(String(event.target.value ?? ""))` |
-| `archive_import_modal.cancel_back` | `src/modals/ArchiveImportModal.tsx` | `() => { if (!busyRef.current) onCancel(); }` |
 | `archive_import_modal.cancel` | `src/modals/ArchiveImportModal.tsx` | `() => { if (!busyRef.current) onCancel(); }` |
+| `archive_import_modal.cancel_back` | `src/modals/ArchiveImportModal.tsx` | `() => { if (!busyRef.current) onCancel(); }` |
 | `archive_import_modal.import` | `src/modals/ArchiveImportModal.tsx` | `() => void submit()` |
 | `archive_import_modal.table` | `src/modals/ArchiveImportModal.tsx` | `(option) => { setMemberPath(String(option.data)); setPassword(""); }` |
 | `catalog.clear_marks` | `src/providerCatalog.tsx` | `() => void clearMarks()` |
@@ -128,8 +133,8 @@ Each identifier below names one owned callback location, even when several rows 
 | `catalog.saved_choice.cancel` | `src/providerCatalog.tsx` | `onClose` |
 | `catalog.search` | `src/providerCatalog.tsx` | `() => void search()` |
 | `cheat_selection_modal.active` | `src/modals/CheatSelectionModal.tsx` | `(checked) => touchActive(recordId, checked)` |
-| `cheat_selection_modal.apply_2` | `src/modals/CheatSelectionModal.tsx` | `() => void apply()` |
 | `cheat_selection_modal.apply` | `src/modals/CheatSelectionModal.tsx` | Guard applying/pinning, dismiss the prompt and call `apply` |
+| `cheat_selection_modal.apply_2` | `src/modals/CheatSelectionModal.tsx` | `() => void apply()` |
 | `cheat_selection_modal.cancel` | `src/modals/CheatSelectionModal.tsx` | `requestClose` |
 | `cheat_selection_modal.discard` | `src/modals/CheatSelectionModal.tsx` | `() => { if (applyingRef.current \|\| pinningRef.current) return; setConfirmingClose(false); setStaged(...` |
 | `cheat_selection_modal.edit_value` | `src/modals/CheatSelectionModal.tsx` | `(event: any) => touchValue(recordId, String(event.target.value ?? ""))` |
@@ -146,13 +151,13 @@ Each identifier below names one owned callback location, even when several rows 
 | `debug_details.refresh` | `src/components/DebugDetails.tsx` | `onRefresh` |
 | `debug_details.sessions_next` | `src/components/DebugDetails.tsx` | `() => setSessionPage(stepPage(safePage, apps.length, SESSION_PAGE_SIZE, 1))` |
 | `debug_details.sessions_previous` | `src/components/DebugDetails.tsx` | `() => setSessionPage(stepPage(safePage, apps.length, SESSION_PAGE_SIZE, -1))` |
-| `game_picker_modal.cancel_back` | `src/modals/GamePickerModal.tsx` | `() => { if (!busyRef.current) onCancel(); }` |
 | `game_picker_modal.cancel` | `src/modals/GamePickerModal.tsx` | `() => { if (!busyRef.current) onCancel(); }` |
+| `game_picker_modal.cancel_back` | `src/modals/GamePickerModal.tsx` | `() => { if (!busyRef.current) onCancel(); }` |
 | `game_picker_modal.game` | `src/modals/GamePickerModal.tsx` | `(option) => setSelection(String(option.data))` |
 | `game_picker_modal.use_this_game` | `src/modals/GamePickerModal.tsx` | `() => void submit()` |
 | `home_panel.advanced` | `src/components/HomePanel.tsx` | `onAdvanced` |
-| `home_panel.cancel_ce_launch` | `src/components/HomePanel.tsx` | `onStopCE` |
 | `home_panel.cancel` | `src/components/HomePanel.tsx` | `onCancelInstall` |
+| `home_panel.cancel_ce_launch` | `src/components/HomePanel.tsx` | `onStopCE` |
 | `home_panel.choose_game` | `src/components/HomePanel.tsx` | `onChooseGame` |
 | `home_panel.configure_cheats` | `src/components/HomePanel.tsx` | `() => onChooseCheats()` |
 | `home_panel.disable_all` | `src/components/HomePanel.tsx` | `onDisableAllCheats` |
@@ -165,9 +170,10 @@ Each identifier below names one owned callback location, even when several rows 
 | `home_panel.search` | `src/components/HomePanel.tsx` | `onSearchTable` |
 | `home_panel.stop_ce` | `src/components/HomePanel.tsx` | `onStopCE` |
 | `home_panel.toggle_cheat` | `src/components/HomePanel.tsx` | `(active) => onTogglePinnedCheat(row.recordId, active)` |
+| `home_panel.update` | `src/components/HomePanel.tsx` | `onUpdate` |
 | `imported_tables_modal.back` | `src/modals/ImportedTablesModal.tsx` | `close` |
-| `imported_tables_modal.close_2` | `src/modals/ImportedTablesModal.tsx` | `close` |
 | `imported_tables_modal.close` | `src/modals/ImportedTablesModal.tsx` | `close` |
+| `imported_tables_modal.close_2` | `src/modals/ImportedTablesModal.tsx` | `close` |
 | `imported_tables_modal.delete_or_confirm` | `src/modals/ImportedTablesModal.tsx` | `() => { if (armed === table.sha256) { setArmed(null); remove(table.sha256); return; } setFailure(nul...` |
 | `imported_tables_modal.filter_by_name_or_digest` | `src/modals/ImportedTablesModal.tsx` | `(event: any) => moveTo(() => { setFilter(String(event.target.value ?? "")); setPage(0); })` |
 | `imported_tables_modal.local_file` | `src/modals/ImportedTablesModal.tsx` | `() => { onClose(); onOpenLocalFile(); }` |
@@ -187,25 +193,28 @@ Each identifier below names one owned callback location, even when several rows 
 | `provider_catalog.retry_download` | `src/providerCatalog.tsx` | `onRetryDownload` |
 | `provider_catalog.search_query` | `src/providerCatalog.tsx` | `(event: any) => setQuery(String(event.target.value ?? ""))` |
 | `provider_catalog.use_saved_copy` | `src/providerCatalog.tsx` | `onUse` |
-| `table_acquisition_modal.cancel_back` | `src/modals/TableAcquisitionModal.tsx` | `() => void cancel()` |
 | `table_acquisition_modal.cancel` | `src/modals/TableAcquisitionModal.tsx` | `() => void cancel()` |
+| `table_acquisition_modal.cancel_back` | `src/modals/TableAcquisitionModal.tsx` | `() => void cancel()` |
 | `table_acquisition_modal.import_selected_table` | `src/modals/TableAcquisitionModal.tsx` | `() => void complete(selectedMember?.path ?? null)` |
 | `table_acquisition_modal.password` | `src/modals/TableAcquisitionModal.tsx` | `(event: any) => setPassword(String(event.target.value ?? ""))` |
 | `table_acquisition_modal.retry_status` | `src/modals/TableAcquisitionModal.tsx` | `() => { setReadError(null); setReadAttempt((attempt) => attempt + 1); }` |
 | `table_acquisition_modal.table_in_downloaded_archive` | `src/modals/TableAcquisitionModal.tsx` | `(option) => { setMemberPath(String(option.data)); setPassword(""); }` |
-| `table_code_modal.back_to_the_list` | `src/modals/TableCodeModal.tsx` | `closeSection` |
 | `table_code_modal.back` | `src/modals/TableCodeModal.tsx` | `onBack` |
+| `table_code_modal.back_to_the_list` | `src/modals/TableCodeModal.tsx` | `closeSection` |
 | `table_code_modal.cancel_back` | `src/modals/TableCodeModal.tsx` | `onBack` |
 | `table_code_modal.close_section` | `src/modals/TableCodeModal.tsx` | `closeSection` |
 | `table_code_modal.read_section` | `src/modals/TableCodeModal.tsx` | `() => void open(entry)` |
 | `table_review_modal.abort` | `src/modals/TableReviewModal.tsx` | `() => void abort()` |
-| `table_review_modal.cancel_back` | `src/modals/TableReviewModal.tsx` | `() => { if (!busyRef.current && !abortingRef.current) onCancel(); }` |
 | `table_review_modal.cancel` | `src/modals/TableReviewModal.tsx` | `() => { if (!busyRef.current && !abortingRef.current) onCancel(); }` |
+| `table_review_modal.cancel_back` | `src/modals/TableReviewModal.tsx` | `() => { if (!busyRef.current && !abortingRef.current) onCancel(); }` |
 | `table_review_modal.game_process` | `src/modals/TableReviewModal.tsx` | `(option) => { const next = String(option.data); setSelector(next); if (next !== CUSTOM_PROCESS) setC...` |
-| `table_review_modal.look_inside_this_table` | `src/modals/TableReviewModal.tsx` | `openCode` |
 | `table_review_modal.look_inside` | `src/modals/TableReviewModal.tsx` | `openCode` |
+| `table_review_modal.look_inside_this_table` | `src/modals/TableReviewModal.tsx` | `openCode` |
 | `table_review_modal.on_rescan_2` | `src/modals/TableReviewModal.tsx` | `onRescan` |
 | `table_review_modal.process_exe_basename` | `src/modals/TableReviewModal.tsx` | `(event: any) => setCustomProcess(String(event.target.value ?? ""))` |
 | `table_review_modal.use_this_table` | `src/modals/TableReviewModal.tsx` | `() => void use()` |
 | `table_search_modal.cancel` | `src/modals/TableSearchModal.tsx` | `cancel` |
 | `table_search_modal.close` | `src/modals/TableSearchModal.tsx` | `cancel` |
+| `update_modal.cancel_back` | `src/modals/UpdateModal.tsx` | `() => { if (!busyRef.current && !installing) onClose(); }` |
+| `update_modal.not_now` | `src/modals/UpdateModal.tsx` | `() => { if (inFlight) { void abandon(); return; } if (!busyRef.current) onClose(); }` |
+| `update_modal.update` | `src/modals/UpdateModal.tsx` | `() => { void confirm(); }` |

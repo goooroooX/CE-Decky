@@ -364,7 +364,57 @@ export interface PluginStatus {
   table_state_reason: string | null;
   table_catalog_errors?: Array<{ path: string; error: string }>;
   profile_state_reason: string | null;
+  update?: PluginUpdateState;
+  preferences?: PanelPreferences;
   features: Record<string, boolean>;
+}
+
+/** Whether the mascot is drawn on the home panel. Durable, and on by default. */
+export interface PanelPreferences {
+  mascot_visible: boolean;
+}
+
+/** One update this device is downloading, verifying or installing. */
+export interface PluginUpdateOperation {
+  operation_id: string;
+  /**
+   * `installing` is the point of no return, and the panel treats it as one.
+   *
+   * Decky replaces this plugin from there, which stops the backend that would
+   * answer the next poll: nothing after that state is reported to this frontend
+   * at all, and what happened is read from the durable record by the panel that
+   * loads after the interface restarts.
+   */
+  state: "checking" | "downloading" | "installing" | "failed" | "cancelled";
+  version: string | null;
+  message: string;
+  error: string | null;
+}
+
+/** What the last update did, as the backend that loaded afterwards read it. */
+export interface PluginUpdateResult {
+  version: string | null;
+  ok: boolean;
+  error: string | null;
+  /** Where the verified archive was left for a manual install, when one failed. */
+  archive_kept_at: string | null;
+  at: number | null;
+  restart_requested: boolean;
+}
+
+export interface PluginUpdateState {
+  current_version: string;
+  auto_check: boolean;
+  latest_version: string | null;
+  update_available: boolean;
+  checked_at: number | null;
+  last_error: string | null;
+  page_url: string;
+  last_result: PluginUpdateResult | null;
+  /** Whether this device has an interpreter the detached installer can run. */
+  install_supported: boolean;
+  checking: boolean;
+  operation: PluginUpdateOperation | null;
 }
 
 export interface SelfTestCheck {

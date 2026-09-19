@@ -60,6 +60,12 @@ import {
   setExecutionConsent,
   setProviderEnabled,
   setRememberedCheats,
+  setMascotVisible,
+  setUpdateAutoCheck,
+  checkForUpdate,
+  startPluginUpdate,
+  pollPluginUpdate,
+  cancelPluginUpdate,
   startCESelfTest,
   startManagedCEInstall,
   stopCEForGame,
@@ -84,6 +90,7 @@ import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
 import { AdvancedModal, type AdvancedContextSnapshot } from "./modals/AdvancedModal";
+import { UpdateModal } from "./modals/UpdateModal";
 import { ArchiveImportModal } from "./modals/ArchiveImportModal";
 import { CheatSelectionModal } from "./modals/CheatSelectionModal";
 import { GamePickerModal } from "./modals/GamePickerModal";
@@ -3628,8 +3635,61 @@ function Content() {
             }
           }
         })}
+        update={updateState}
+        onSetUpdateAutoCheck={(enabled) => runAction(async () => {
+          const next = await setUpdateAutoCheck(enabled);
+          await refreshStatus().catch(() => undefined);
+          return next;
+        })}
+        onCheckForUpdate={() => runAction(async () => {
+          const next = await checkForUpdate();
+          await refreshStatus().catch(() => undefined);
+          return next;
+        })}
+        onStartUpdate={() => { close(); openUpdateModal(); }}
+        onSetMascotVisible={(visible) => runAction(async () => {
+          const next = await setMascotVisible(visible);
+          await refreshStatus().catch(() => undefined);
+          return next;
+        })}
         onRefreshAll={() => runAction(() => refreshAdvancedContext())}
         onClose={close}
+      />
+    ));
+  };
+
+  /**
+   * What the panel knows about updates right now, from the status it already reads.
+   *
+   * `updateVersion` applies the one rule the home panel has about this: with
+   * automatic checking switched off nothing is offered there, whatever an
+   * earlier check found. Advanced still shows the finding, because that screen
+   * is where the switch is and a user who has just turned it back on should see
+   * why it matters.
+   */
+  const updateState = status?.update ?? null;
+  const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
+  const panelUpdateVersion = updateState?.auto_check ? offeredUpdateVersion : null;
+  const mascotVisible = status?.preferences?.mascot_visible ?? true;
+
+  const openUpdateModal = () => {
+    const target = offeredUpdateVersion;
+    if (!status || !target) return;
+    showContextModal((close) => (
+      <UpdateModal
+        currentVersion={status.version}
+        targetVersion={target}
+        gameRunning={runningGamesRef.current.length > 0}
+        onStart={() => startPluginUpdate()}
+        onPoll={(operationId) => pollPluginUpdate(operationId)}
+        onCancelUpdate={(operationId) => cancelPluginUpdate(operationId)}
+        onClose={() => {
+          close();
+          // What the press changed about this device is in the status the panel
+          // reads: a cancelled update, a failed one, and the record of what the
+          // last check found all live there.
+          void refreshStatus().catch(() => undefined);
+        }}
       />
     ));
   };
@@ -3672,6 +3732,9 @@ function Content() {
     const bootstrapFailed = error !== null;
     return <HomePanel
       pluginVersion={null}
+      updateVersion={null}
+      onUpdate={() => undefined}
+      mascotVisible
       ceReady={false}
       ceStatusText="Loading plugin status…"
       installAvailable={false}
@@ -3732,6 +3795,9 @@ function Content() {
     <>
       <HomePanel
       pluginVersion={`v${status.version}`}
+      updateVersion={panelUpdateVersion}
+      onUpdate={openUpdateModal}
+      mascotVisible={mascotVisible}
       ceReady={status.ce.valid}
       ceStatusText={ceStatusText}
       installAvailable={installAvailable}

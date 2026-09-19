@@ -1,6 +1,6 @@
 import { isArchiveFilename } from "./tableImport";
 import type { GameSummary } from "./steam/client";
-import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableInspection, TableStatus } from "./types";
+import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, PluginUpdateState, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableInspection, TableStatus } from "./types";
 
 // One 1280x800 Game Mode viewport fits roughly six compact record rows beside
 // the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
@@ -2295,4 +2295,58 @@ export function selfTestSummary(result: SelfTestResult): SelfTestSummary {
 export function selfTestCheckLabel(name: string): string {
   const words = name.replace(/[_-]+/g, " ").trim();
   return words === "" ? "unnamed check" : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The update section's own first line, said in the state the device is in.
+ *
+ * Five states, and each one leads with the thing a reader acts on. A failed
+ * check is the one that must not read as "up to date": a device that could not
+ * ask is not a device that has nothing to install, and the two used to look the
+ * same on every updater anybody has used.
+ */
+export function updateSummary(
+  state: PluginUpdateState | null,
+  currentVersion: string,
+): { label: string; description: string } {
+  if (!state) {
+    return {
+      label: `CE Decky v${currentVersion}`,
+      description: "This build does not report its update state.",
+    };
+  }
+  const checked = updateCheckedOn(state.checked_at);
+  const when = checked ? `Checked ${checked}.` : "Not checked yet.";
+  if (state.update_available && state.latest_version) {
+    return {
+      label: `v${state.latest_version} is available`,
+      description: `This device is on v${state.current_version}. ${when}`,
+    };
+  }
+  if (state.last_error) {
+    return {
+      label: `CE Decky v${state.current_version}`,
+      description: `The last check did not finish: ${state.last_error}`,
+    };
+  }
+  if (!state.auto_check && !state.checked_at) {
+    return {
+      label: `CE Decky v${state.current_version}`,
+      description: "Automatic checking is off. Check now asks once, without switching it back on.",
+    };
+  }
+  if (!state.checked_at) {
+    return {
+      label: `CE Decky v${state.current_version}`,
+      description: "No check has run yet. One happens after a table search, or press Check now.",
+    };
+  }
+  return { label: `CE Decky v${state.current_version} is up to date`, description: when };
+}
+
+/** The day a check ran, which is all a user needs to place it. */
+export function updateCheckedOn(seconds: number | null): string | null {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return null;
+  const when = new Date(seconds * 1000);
+  return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }

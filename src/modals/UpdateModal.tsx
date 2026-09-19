@@ -1,0 +1,210 @@
+import { useUiSurface } from "../useUiSurface";
+import { traceUiAction, startUiOperation } from "../uiActions";
+import { DialogButton, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
+import { useEffect, useRef, useState } from "react";
+import { DensePanel, PanelRow, SectionHeading } from "../components/PanelDensity";
+import { ModalActions, modalActionStyle } from "../components/ModalActions";
+import { describeError } from "../errors";
+import { logUiFailure } from "../supportLog";
+import type { PluginUpdateOperation } from "../types";
+
+/** How often this asks the backend what the update it started is doing. */
+const POLL_INTERVAL_MS = 1000;
+/**
+ * How long it goes on asking. The release archive is a little over a megabyte,
+ * so this is patience for a slow connection rather than a deadline on anything:
+ * the window stops reporting, and the durable record is what says how it ended.
+ */
+const POLL_ATTEMPTS = 180;
+
+interface Props {
+  currentVersion: string;
+  targetVersion: string;
+  /** Whether a game is running right now, which the interface restart can displace. */
+  gameRunning: boolean;
+  onStart: () => Promise<PluginUpdateOperation>;
+  onPoll: (operationId: string) => Promise<PluginUpdateOperation>;
+  onCancelUpdate: (operationId: string) => Promise<PluginUpdateOperation>;
+  onClose: () => void;
+}
+
+/**
+ * The one confirmation an update gets, and then the only view of it there is.
+ *
+ * Three things have to be said before the press and none can be discovered
+ * afterwards: which version replaces which, that Steam's own interface is
+ * restarted as part of it, and that there is no way back once installing
+ * starts. The last is why this window exists rather than the button acting
+ * directly, and it is also why the window stays open afterwards: the download
+ * is the only part of an update anything here can still report or stop.
+ *
+ * It stops watching at `installing` rather than on a failure. From that state
+ * Decky is replacing this plugin, so the backend that would answer the next
+ * question is being stopped and this panel is about to be replaced with it.
+ */
+export function UpdateModal(
+  { currentVersion, targetVersion, gameRunning, onStart, onPoll, onCancelUpdate, onClose }: Props,
+) {
+  useUiSurface("UpdateModal");
+  const [operation, setOperation] = useState<PluginUpdateOperation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const busyRef = useRef(false);
+  const operationRef = useRef<string | null>(null);
+  const liveRef = useRef(true);
+
+  useEffect(() => () => { liveRef.current = false; }, []);
+
+  const follow = async (operationId: string) => {
+    for (let attempt = 0; attempt < POLL_ATTEMPTS && liveRef.current; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
+      if (!liveRef.current) return;
+      let snapshot: PluginUpdateOperation;
+      try {
+        snapshot = await onPoll(operationId);
+      } catch (cause) {
+        // The backend going away during its own replacement is the install
+        // working. Anything else is a read that failed and is asked again.
+        logUiFailure("update_modal.poll_failed", cause, { operation_id: operationId });
+        continue;
+      }
+      if (!liveRef.current) return;
+      setOperation(snapshot);
+      if (snapshot.state === "installing") return;
+      if (snapshot.state === "failed" || snapshot.state === "cancelled") {
+        busyRef.current = false;
+        setBusy(false);
+        setCancelling(false);
+        return;
+      }
+    }
+  };
+
+  const confirm = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    const record = startUiOperation("update.start", { to_version: targetVersion });
+    try {
+      const started = await onStart();
+      operationRef.current = started.operation_id;
+      setOperation(started);
+      record.completed();
+      void follow(started.operation_id);
+    } catch (cause) {
+      record.failed(cause);
+      setError(describeError(cause));
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const abandon = async () => {
+    const operationId = operationRef.current;
+    if (!operationId || cancelling) return;
+    setCancelling(true);
+    try {
+      setOperation(await onCancelUpdate(operationId));
+      busyRef.current = false;
+      setBusy(false);
+    } catch (cause) {
+      setError(describeError(cause));
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const state = operation?.state ?? null;
+  // Installing is the point of no return, and Back has to respect it as much as
+  // the buttons do: there is nothing left here to abandon, and a window that
+  // closes on its own reads as an update that stopped.
+  const installing = state === "installing";
+  const inFlight = state === "checking" || state === "downloading";
+  const settled = state === "failed" || state === "cancelled";
+
+  return (
+    <ModalRoot onCancel={traceUiAction("update_modal.cancel_back", () => { if (!busyRef.current && !installing) onClose(); })}>
+      <Focusable style={{ minWidth: 420, maxWidth: 600 }}>
+        <DensePanel>
+          <PanelSection>
+            <SectionHeading>Update CE Decky</SectionHeading>
+            <PanelSectionRow>
+              <PanelRow
+                tone="header"
+                testId="update-versions"
+                label={`v${currentVersion} to v${targetVersion}`}
+                description="The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky."
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <PanelRow
+                status
+                testId="update-restart-warning"
+                label="Steam's interface restarts"
+                description={gameRunning
+                  ? "Installing replaces Steam's interface process. This closes the Decky panel and can interrupt the game that is running."
+                  : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds."}
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <PanelRow
+                status
+                testId="update-no-cancel"
+                label="It cannot be cancelled once it starts installing"
+                description="Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced."
+              />
+            </PanelSectionRow>
+            {operation && (
+              <PanelSectionRow>
+                <PanelRow
+                  truncate
+                  testId="update-progress"
+                  label={installing ? "Installing" : operation.state.replace(/_/g, " ")}
+                  description={operation.error ?? operation.message}
+                  trailing={inFlight || installing ? <Spinner style={{ width: 14, height: 14 }} /> : undefined}
+                />
+              </PanelSectionRow>
+            )}
+            {error && (
+              <PanelSectionRow>
+                <PanelRow testId="update-modal-error" label="The update could not be started" description={error} />
+              </PanelSectionRow>
+            )}
+          </PanelSection>
+        </DensePanel>
+        <ModalActions>
+          {installing ? (
+            <PanelRow
+              status
+              testId="update-installing-note"
+              label="Steam's interface is restarting"
+              description="This window closes with it. CE Decky reports what happened once the panel comes back."
+            />
+          ) : (
+            <>
+              <DialogButton
+                style={modalActionStyle}
+                disabled={cancelling}
+                onClick={traceUiAction("update_modal.not_now", () => {
+                  if (inFlight) { void abandon(); return; }
+                  if (!busyRef.current) onClose();
+                })}
+              >
+                {inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now"}
+              </DialogButton>
+              <DialogButton
+                style={modalActionStyle}
+                disabled={busy && !settled}
+                onClick={traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion })}
+              >
+                {settled ? "Try again" : busy ? "Starting…" : "Update"}
+              </DialogButton>
+            </>
+          )}
+        </ModalActions>
+      </Focusable>
+    </ModalRoot>
+  );
+}

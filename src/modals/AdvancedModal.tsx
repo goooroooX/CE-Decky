@@ -9,6 +9,7 @@ import {
   PanelSection,
   PanelSectionRow,
   TextField,
+  ToggleField,
   showModal,
 } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -20,8 +21,8 @@ import { TableCodeModal } from "./TableCodeModal";
 import { openExternalWeb } from "../externalNavigation";
 import { logUiFailure } from "../supportLog";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
-import { absentLiveTarget, blockedKey, blockedRecordedOn, blockedRowDetail, blockedRowLabel, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
-import type { BlockedTable, CELaunchCapability, CEStatus, DiagnosticsSnapshot, ManagedDataDeletion, ManagedDataScope, PluginStatus, ProviderSourceStatus, ProviderSourcesSnapshot, RemovalReadiness, RuntimeEnvelope, SelfTestResult, SupportBundleResult, TableInspection } from "../types";
+import { absentLiveTarget, blockedKey, blockedRecordedOn, updateSummary, blockedRowDetail, blockedRowLabel, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
+import type { BlockedTable, CELaunchCapability, CEStatus, DiagnosticsSnapshot, ManagedDataDeletion, ManagedDataScope, PanelPreferences, PluginStatus, PluginUpdateState, ProviderSourceStatus, ProviderSourcesSnapshot, RemovalReadiness, RuntimeEnvelope, SelfTestResult, SupportBundleResult, TableInspection } from "../types";
 
 export interface AdvancedContextSnapshot {
   status: PluginStatus;
@@ -84,6 +85,13 @@ interface Props {
   onRefreshBlockedTables?: () => Promise<{ tables: BlockedTable[]; reason: string | null }>;
   onUnblockTable?: (sha256: string) => Promise<void>;
   onClearBlockedTables?: () => Promise<void>;
+  /** What the last update check found, and what the last update did. */
+  update?: PluginUpdateState | null;
+  onSetUpdateAutoCheck?: (enabled: boolean) => Promise<PluginUpdateState>;
+  onCheckForUpdate?: () => Promise<PluginUpdateState>;
+  /** Open the same confirmation the home panel's orange button opens. */
+  onStartUpdate?: () => void;
+  onSetMascotVisible?: (visible: boolean) => Promise<PanelPreferences>;
   onRefreshAll: () => Promise<AdvancedContextSnapshot>;
   onClose: () => void;
   /** Temporary campaign-only target harness; absent in ordinary builds. */
@@ -396,6 +404,7 @@ export function AdvancedModal(props: Props) {
     runtime, selfTest, busy, onRefreshGames, onSaveTargetProcess,
     onPickCE, onClearCEImport, onRunSelfTest, onLaunchProtonChange, onRunCELaunchSelfTest, onRefreshRuntime,
     onRefreshProcesses, onRetryAttach, onRepairSessionState, onRepairOwnedLaunchState, onRepairProfileState, onClearStartup, onRevokeConsent, onCheckRemoval, onDeleteManagedData, onRefreshAll, onClose,
+    update = null, onSetUpdateAutoCheck, onCheckForUpdate, onStartUpdate, onSetMascotVisible,
     targetHarness,
   } = props;
   const [gamesView, setGamesView] = useState(games);
@@ -439,6 +448,18 @@ export function AdvancedModal(props: Props) {
   const [supportBundleError, setSupportBundleError] = useState<string | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
   const localBusyRef = useRef(false);
+  // Its own copy, like every other view here: this screen is opened with a
+  // snapshot of the parent's props and is never re-rendered from them, so a
+  // switch flipped or a check run here has to repaint from what the call
+  // returned.
+  const [updateView, setUpdateView] = useState<PluginUpdateState | null>(update);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [mascotVisible, setMascotVisible] = useState<boolean>(status.preferences?.mascot_visible ?? true);
+  // Advanced shows a finding whether or not automatic checking is on, unlike
+  // the home panel: this is the screen the switch is on, and a user who has
+  // just turned it back on has come here to see what it found.
+  const updateAvailable = Boolean(updateView?.update_available && updateView.latest_version);
+  const updateSummaryView = updateSummary(updateView, statusView.version);
   // Which table sources are on, and what each one last did. Loaded when this
   // screen opens rather than passed in, because nothing on the panel needs it
   // and reading it on every panel refresh would be a file read per poll.
@@ -1346,6 +1367,125 @@ export function AdvancedModal(props: Props) {
         {/* Diagnostics is a dense reference screen, not a workflow: every action
             here is rare, so none of them earns a full-width row. */}
         <DensePanel>
+        {/* Updating the plugin, and what the panel looks like, are the two
+            things on this screen that are about CE Decky itself rather than
+            about a game, a table or a fault. They lead it for that reason: a
+            user who came here to update should not have to walk the whole of
+            the diagnostics to find out how. */}
+        <PanelSection>
+          <SectionHeading>Plugin updates</SectionHeading>
+          <PanelRow
+            truncate
+            testId="update-state"
+            label={updateSummaryView.label}
+            description={updateError ?? updateSummaryView.description}
+            help="CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one request, and it never sends anything about you. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version."
+            actions={onCheckForUpdate ? (
+              <SmallButton
+                disabled={blocked || Boolean(updateView?.checking)}
+                onClick={traceUiAction("advanced_modal.check_for_update", () => {
+                  setUpdateError(null);
+                  void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
+                })}
+              >
+                Check now
+              </SmallButton>
+            ) : undefined}
+          />
+          {/* The same press as the orange button on the panel, and the same
+              confirmation behind it. It is here because this screen is where a
+              user who has just switched checking back on already is. */}
+          {updateAvailable && onStartUpdate && (
+            <ActionRow testId="update-install">
+              <SmallButton
+                grow
+                tone="update"
+                disabled={blocked}
+                onClick={traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version })}
+              >
+                {`Update to v${updateView?.latest_version}`}
+              </SmallButton>
+            </ActionRow>
+          )}
+          {onSetUpdateAutoCheck && (
+            <PanelSectionRow>
+              <ToggleField
+                label="Check for updates automatically"
+                description="After you search for a table, and at most once every few hours. Switched off, CE Decky never contacts GitHub about updates and the panel offers none."
+                checked={Boolean(updateView?.auto_check)}
+                disabled={blocked}
+                onChange={traceUiAction("advanced_modal.update_auto_check", (enabled: boolean) => {
+                  setUpdateError(null);
+                  void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
+                }, (enabled: boolean) => ({ enabled }))}
+                bottomSeparator="none"
+              />
+            </PanelSectionRow>
+          )}
+          {/* The automatic route has failed and the file it verified is still
+              on the device, so the manual one is a path and two sentences
+              rather than a download to repeat. */}
+          {updateView?.last_result && !updateView.last_result.ok && (
+            <PanelRow
+              truncate
+              scroll
+              testId="update-manual-route"
+              label="The last update did not install"
+              description={updateView.last_result.archive_kept_at
+                ? `${updateView.last_result.error ?? "Decky did not complete the install."} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
+                : updateView.last_result.error ?? "Decky did not complete the install."}
+              help={updateView.last_result.archive_kept_at
+                ? "That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. The release page has the same file if you would rather download it again."
+                : "Nothing was kept, because nothing was verified: the failure happened before or during the download. Open the release page and install from there, or try again."}
+              actions={updateView.page_url ? (
+                <SmallButton
+                  disabled={blocked}
+                  onClick={traceUiAction("advanced_modal.open_release_page", () => { void openExternalWeb(updateView.page_url); })}
+                >
+                  Release page
+                </SmallButton>
+              ) : undefined}
+            />
+          )}
+          {updateView?.last_result?.ok && (
+            <PanelRow
+              truncate
+              testId="update-last-result"
+              label={`Updated to v${updateView.last_result.version}`}
+              description="The last update installed and this is the version that came back."
+            />
+          )}
+          {updateView && !updateView.install_supported && (
+            <PanelRow
+              truncate
+              testId="update-unsupported"
+              label="Automatic installation is unavailable here"
+              description="This device has no python3 for the updater to run in, so an update has to be installed from Decky by hand."
+            />
+          )}
+        </PanelSection>
+
+        <PanelSection>
+          <SectionHeading>Panel appearance</SectionHeading>
+          {onSetMascotVisible && (
+            <PanelSectionRow>
+              <ToggleField
+                label="Show the mascot"
+                description="HexPaw, above the first section of the CE Decky panel. Switching it off gives that height back to the cheats."
+                checked={mascotVisible}
+                disabled={blocked}
+                onChange={traceUiAction("advanced_modal.mascot_visible", (visible: boolean) => {
+                  void invoke(
+                    () => onSetMascotVisible(visible),
+                    (next) => setMascotVisible(next.mascot_visible),
+                  );
+                }, (visible: boolean) => ({ visible }))}
+                bottomSeparator="none"
+              />
+            </PanelSectionRow>
+          )}
+        </PanelSection>
+
         <PanelSection>
           <SectionHeading>Advanced / Diagnostics</SectionHeading>
           <PanelRow

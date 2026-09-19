@@ -198,6 +198,12 @@ function densityCss(): string | null {
     // The accent CE Decky marks its own emphasis with, shared by the row that
     // heads a list and available to anything else that needs it.
     "--ce-accent: hsla(203, 89%, 66%, 0.85)",
+    // The one press on this panel that is not about the game in front of the
+    // user, and the only thing here drawn in the mascot's own orange. Sampled
+    // from `docs/assets/hexpaw.png` rather than chosen beside it, so the panel
+    // carries one orange instead of two that nearly match.
+    "--ce-update-accent: #fd5605",
+    "--ce-update-accent-text: #ffffff",
     // The row that heads a list is the list's first row of data, not the
     // caption above it: it is set a step darker than the panel and holds the
     // rows that follow off itself.
@@ -1489,7 +1495,7 @@ export const mediumActionStyle: CSSProperties = {
   lineHeight: "18px",
 };
 
-export function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small" }: {
+export function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small", tone }: {
   children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
@@ -1507,8 +1513,20 @@ export function SmallButton({ children, onClick, disabled, preferredFocus, grow,
    */
   grow?: boolean;
   size?: "small" | "medium";
+  /**
+   * `update` is the mascot's orange, and it is used for exactly one press.
+   *
+   * A colour that marks everything marks nothing, so this is deliberately not a
+   * palette of tones: the only control that takes it is the one offering a new
+   * version of the plugin, which is the single thing on this panel that is not
+   * about the game the user is playing.
+   */
+  tone?: "update";
 }) {
-  const style = size === "medium" ? mediumActionStyle : smallActionStyle;
+  const base = size === "medium" ? mediumActionStyle : smallActionStyle;
+  const style = tone === "update"
+    ? { ...base, background: "var(--ce-update-accent)", color: "var(--ce-update-accent-text)" }
+    : base;
   // Never hand Steam's controller click event to a workflow callback: several
   // of them forward their argument, and an event reaching Steam's game list is
   // exactly the leak the panel tests guard against.

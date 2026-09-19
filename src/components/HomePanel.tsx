@@ -11,6 +11,19 @@ import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from 
 
 interface Props {
   pluginVersion: string | null;
+  /**
+   * The version to offer, when there is one to offer at all.
+   *
+   * `null` is the ordinary case and draws nothing: no row, no height, and no
+   * focus stop, so a panel with nothing to say about updates is the panel that
+   * shipped before this existed. It is also `null` while automatic checking is
+   * switched off, whatever an older check found, because a user who turned this
+   * off asked not to be told.
+   */
+  updateVersion: string | null;
+  onUpdate: () => void;
+  /** Whether the mascot is drawn. The user's own durable choice, on by default. */
+  mascotVisible: boolean;
   ceReady: boolean;
   ceStatusText: string;
   installAvailable: boolean;
@@ -182,6 +195,9 @@ interface Props {
 export function HomePanel(props: Props) {
   const {
     pluginVersion,
+    updateVersion,
+    onUpdate,
+    mascotVisible,
     ceReady,
     ceStatusText,
     installAvailable,
@@ -334,14 +350,39 @@ export function HomePanel(props: Props) {
           otherwise sits directly on. Width stays an HTML attribute so the
           artwork is still 112px wide if the density CSS cannot resolve Steam's
           class names and is not injected at all. */}
-      <div style={{ display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }}>
-        <img
-          src={HEXPAW_DATA_URI}
-          alt="HexPaw, the CE Decky mascot"
-          width={112}
-          style={{ width: 112, height: "auto", display: "block" }}
-        />
-      </div>
+      {mascotVisible && (
+        <div style={{ display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }}>
+          <img
+            src={HEXPAW_DATA_URI}
+            alt="HexPaw, the CE Decky mascot"
+            width={112}
+            style={{ width: 112, height: "auto", display: "block" }}
+          />
+        </div>
+      )}
+      {/* Directly under the mark and above everything the panel is actually
+          for, because it is the one thing here that is not about the game in
+          front of the user and it has to be seen without scrolling a 300 pixel
+          column. It is drawn only when there is a version to offer, so the
+          panel is otherwise exactly what it was: this whole block is absent
+          rather than disabled, which is what keeps it out of the controller's
+          path as well as off the screen.
+
+          Deliberately not asking for the initial focus. Two controls asking is
+          not a preference Steam can settle, and what a panel opens on is
+          already decided between Search and Advanced. */}
+      {updateVersion && (
+        <div style={{ padding: "0 16px", margin: "0 0 6px" }}>
+          <SmallButton
+            grow
+            tone="update"
+            disabled={busy}
+            onClick={traceUiAction("home_panel.update", onUpdate, { version: updateVersion })}
+          >
+            {`Update to v${updateVersion}`}
+          </SmallButton>
+        </div>
+      )}
       <PanelSection>
         <SectionHeading>Setup</SectionHeading>
         {ceReady ? (
