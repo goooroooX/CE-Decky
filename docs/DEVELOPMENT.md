@@ -476,8 +476,9 @@ To prepare a release without publishing it:
 
 1. Confirm the synchronized development version and date in `package.json`, `AGENTS.md`, and `CHANGELOG.md`.
 2. Confirm the newest changelog heading is `## x.y.z — YYYY-MM-DD` and contains only concise labeled outcomes.
-3. Run `python scripts/qa.py --profile release --bootstrap`; omit `--bootstrap` when lock fingerprints are already current.
-4. Review the package contents and checksums.
+3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is for somebody deciding whether to install the release: what is new, what is fixed, how to install it, one line per change. `docs/release-notes/README.md` states the shape, and `scripts/check_release.py` refuses a tag whose file is missing or empty.
+4. Run `python scripts/qa.py --profile release --bootstrap`; omit `--bootstrap` when lock fingerprints are already current.
+5. Review the package contents and checksums.
 
 Only after explicit user approval, create and push the exact tag `v<version>`. `.github/workflows/release.yml` then:
 
@@ -486,7 +487,7 @@ Only after explicit user approval, create and push the exact tag `v<version>`. `
 - runs the full gate and its deterministic packaging;
 - creates the plugin ZIP and `SHA256SUMS`; the reviewed repository tag is the source authority;
 - creates a GitHub build-provenance attestation for the plugin archive;
-- publishes a GitHub Release from the already-pushed tag, marking SemVer prerelease versions as prereleases.
+- publishes a GitHub Release from the already-pushed tag, marking SemVer prerelease versions as prereleases. Its description is `docs/release-notes/v<version>.md` with GitHub's own generated commit list appended under it.
 
 Do not create or move tags to repair a failed release. Fix the cause in a new commit, choose the appropriate new version/tag, and preserve the failed workflow as evidence.
 

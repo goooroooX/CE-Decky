@@ -53,6 +53,25 @@ def _unverified_subjects() -> list[str]:
     return subjects
 
 
+def _release_notes(tag: str) -> Path:
+    """The file published as this release's description.
+
+    Written for somebody deciding whether to install the release, and reviewed
+    in the commit the tag points at rather than typed into the web form after
+    the workflow has already published. A tag without one is refused here, where
+    it costs nothing, rather than by the release step after the archives are up.
+    """
+    notes = ROOT / "docs" / "release-notes" / f"{tag}.md"
+    if not notes.is_file():
+        raise SystemExit(
+            f"missing release notes for {tag}: write {notes.relative_to(ROOT)}, "
+            "see docs/release-notes/README.md"
+        )
+    if not notes.read_text(encoding="utf-8").strip():
+        raise SystemExit(f"{notes.relative_to(ROOT)} is empty")
+    return notes
+
+
 def main() -> None:
     parser = ArgumentParser(description="Validate CE Decky release metadata.")
     parser.add_argument("--tag", help="Git tag to validate, for example v0.3.0")
@@ -99,6 +118,7 @@ def main() -> None:
         expected_tag = f"v{version}"
         if args.tag != expected_tag:
             raise SystemExit(f"release tag {args.tag!r} does not match {expected_tag!r}")
+        _release_notes(args.tag)
         if "-" not in version:
             unverified = _unverified_subjects()
             if unverified:

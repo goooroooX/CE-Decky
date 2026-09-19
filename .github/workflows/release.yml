@@ -66,6 +66,15 @@ jobs:
           if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
             prerelease=(--prerelease)
           fi
+          # The description is the reviewed file this tag points at, with
+          # GitHub's own commit list under it. Built here rather than passed as
+          # two flags so the body that is published is one file this step can be
+          # read against.
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          cp "$notes" release-body.md
+          printf '\n' >> release-body.md
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" -q .body >> release-body.md
           gh release create "$GITHUB_REF_NAME" \
             artifacts/*.zip artifacts/SHA256SUMS \
-            --verify-tag --generate-notes "${prerelease[@]}"
+            --verify-tag --notes-file release-body.md "${prerelease[@]}"
