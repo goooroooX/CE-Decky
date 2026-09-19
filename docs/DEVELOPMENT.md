@@ -337,6 +337,16 @@ binary payload, no development directory, and the same isolated backend import
 --profile store` is the same thing as a stage, and it reports INCOMPLETE rather
 than failing on a host with no container engine.
 
+That build copies the whole working directory into `/tmp/decky/<random>` first
+and leaves the copy there, so it costs as much of this device's tmpfs as the
+checkout does, `build/` included. On 2026-09-19 three copies from an earlier day
+plus a two gigabyte `build/` filled the 7.7 GiB tmpfs and the build failed with a
+log whose last line is an ordinary `skipping non-regular file` notice and no
+error at all. What it looks like is a Store build that broke; what it is, is a
+full disk. Check `df -h /tmp` before believing the failure, remove the stale
+copies - each one holds this repository's own files, `AGENTS.md` among them - and
+run it again.
+
 The CLI version is pinned to the one `decky-plugin-database` downloads in its
 own workflow. Moving it is deliberate, because that build is what a submission
 is judged by. The builder image is Alpine with Node 20 and pnpm 9, and it runs
