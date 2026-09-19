@@ -12350,6 +12350,38 @@ function readSelectedGame() {
         return null;
     }
 }
+/**
+ * Remember whether the mascot was on, for the moment before the status arrives.
+ *
+ * Every modal this plugin opens closes the quick-access panel, so the panel is
+ * rebuilt constantly and each rebuild starts with no backend status at all. The
+ * preference lives in the backend, which is right, and the render before the
+ * first read has to guess: guessing "on" drew the image for a second in the
+ * face of every user who had switched it off, on every remount.
+ *
+ * This is the last answer the backend gave in this browser session, so the
+ * guess is the user's own most recent state rather than the default. It decides
+ * nothing else: the status that arrives a moment later is the authority, and a
+ * blocked or empty store just means the first frame guesses "on" as before.
+ */
+const MASCOT_KEY = "ce-decky.mascot-visible.v1";
+function rememberMascotVisible(visible) {
+    try {
+        window.localStorage.setItem(MASCOT_KEY, visible ? "1" : "0");
+    }
+    catch {
+        // Private windows and blocked site data are normal; the panel loses the
+        // convenience and behaves as it did before.
+    }
+}
+function readMascotVisible() {
+    try {
+        return window.localStorage.getItem(MASCOT_KEY) !== "0";
+    }
+    catch {
+        return true;
+    }
+}
 
 // Bounded Auto-load backoff. A game settles in seconds, not minutes: the target
 // executable can appear after its launcher, and the first bridge heartbeat and
@@ -15654,7 +15686,14 @@ function Content() {
     const updateState = status?.update ?? null;
     const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
     const panelUpdateVersion = panelUpdateOffer(updateState);
-    const mascotVisible = status?.preferences?.mascot_visible ?? true;
+    // The backend is the authority and this is the frame before it answers: a
+    // panel is rebuilt every time a modal opens, and guessing "on" showed the
+    // image to the user who had just switched it off, once per rebuild.
+    const mascotVisible = status?.preferences?.mascot_visible ?? readMascotVisible();
+    SP_REACT.useEffect(() => {
+        if (status?.preferences)
+            rememberMascotVisible(status.preferences.mascot_visible);
+    }, [status?.preferences?.mascot_visible]);
     const openUpdateModal = () => {
         const target = offeredUpdateVersion;
         if (!status || !target)
@@ -15695,7 +15734,7 @@ function Content() {
         // control that has to be pressable: nothing else in this branch does
         // anything, so without it the panel could only recover by being remounted.
         const bootstrapFailed = error !== null;
-        return SP_JSX.jsx(HomePanel, { pluginVersion: null, updateVersion: null, onUpdate: () => undefined, mascotVisible: true, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
+        return SP_JSX.jsx(HomePanel, { pluginVersion: null, updateVersion: null, onUpdate: () => undefined, mascotVisible: mascotVisible, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
     }
     return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, updateVersion: panelUpdateVersion, onUpdate: openUpdateModal, mascotVisible: mascotVisible, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
                 void runAction(async () => {

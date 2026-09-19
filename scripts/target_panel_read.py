@@ -214,6 +214,30 @@ _READ = """
 # Steam's own navigation, reached the way `@decky/ui` reaches it, plus Decky's
 # own plugin selection. `999` is the tab Decky registers itself as, which is the
 # value its `QuickAccessTab` enum carries.
+# Closing is the pair of opening, and it exists for what a panel does across the
+# two rather than for tidiness: this one re-reads the backend every time it comes
+# back into view, so anything that changed while it was on screen is only picked
+# up after it has actually gone away. Without a way to close it, no probe here
+# can produce that transition, and a reader that can only ever open the panel
+# reports a stale panel as the panel.
+_CLOSE = """
+(() => {
+  const store = window.SteamUIStore;
+  const win = store && store.GetFocusedWindowInstance ? store.GetFocusedWindowInstance() : null;
+  const menus = win && win.MenuStore;
+  if (!menus) {
+    return JSON.stringify({ closed: false, reason: "this page has no Steam menu store to close" });
+  }
+  for (const name of ["CloseSideMenus", "HideSideMenus", "CloseQuickAccessMenu"]) {
+    if (typeof menus[name] === "function") {
+      menus[name]();
+      return JSON.stringify({ closed: true, via: name });
+    }
+  }
+  return JSON.stringify({ closed: false, reason: "this Steam build offers no menu close call this knows" });
+})()
+"""
+
 _OPEN = """
 (() => {
   const store = window.SteamUIStore;
@@ -345,6 +369,36 @@ def open_panel(pages: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
         except ValueError:
             continue
         if answer.get("opened"):
+            return answer
+        last = answer
+    return last
+
+
+def close_panel(pages: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
+    """Ask Steam to put the quick access menu away, through its own call."""
+    last: dict[str, Any] = {"closed": False, "reason": "no page answered"}
+    for page in pages:
+        url = str(page.get("webSocketDebuggerUrl", ""))
+        if not url:
+            continue
+        connection = DevToolsSocket(url, timeout)
+        try:
+            request = connection.send("Runtime.evaluate", {
+                "expression": _CLOSE, "returnByValue": True, "timeout": int(timeout * 1000),
+            })
+            reply = connection.await_reply(request, time.monotonic() + timeout)
+        except (ProbeError, TimeoutError, OSError):
+            continue
+        finally:
+            connection.close()
+        value = ((reply.get("result") or {}).get("result") or {}).get("value")
+        if not isinstance(value, str):
+            continue
+        try:
+            answer = json.loads(value)
+        except ValueError:
+            continue
+        if answer.get("closed"):
             return answer
         last = answer
     return last
@@ -483,6 +537,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--open", action="store_true", help="open the quick access panel on this plugin's page first")
     parser.add_argument(
+        "--reopen", action="store_true",
+        help="close the quick access panel and open it again, so the panel re-reads the backend before it is read",
+    )
+    parser.add_argument(
         "--press", action="append", default=[], metavar="LABEL",
         help="open one of this plugin's screens by the name on its control; repeat to go deeper",
     )
@@ -502,7 +560,16 @@ def main() -> int:
     except ProbeError as exc:
         print(f"panel read: {exc}", file=sys.stderr)
         return 1
-    if args.open:
+    if args.reopen:
+        closed = close_panel(pages, args.timeout)
+        if not closed.get("closed"):
+            print(f"panel read: could not close the panel: {closed.get('reason')}", file=sys.stderr)
+            return 1
+        print(f"closed the quick access panel via {closed.get('via')}")
+        # Long enough for the panel to see the change and settle, and short
+        # enough that this stays one command.
+        time.sleep(1.5)
+    if args.open or args.reopen:
         opened = open_panel(pages, args.timeout)
         if not opened.get("opened"):
             print(f"panel read: could not open the panel: {opened.get('reason')}", file=sys.stderr)

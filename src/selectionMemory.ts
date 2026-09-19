@@ -56,3 +56,36 @@ export function readSelectedGame(): RememberedSelection | null {
     return null;
   }
 }
+
+/**
+ * Remember whether the mascot was on, for the moment before the status arrives.
+ *
+ * Every modal this plugin opens closes the quick-access panel, so the panel is
+ * rebuilt constantly and each rebuild starts with no backend status at all. The
+ * preference lives in the backend, which is right, and the render before the
+ * first read has to guess: guessing "on" drew the image for a second in the
+ * face of every user who had switched it off, on every remount.
+ *
+ * This is the last answer the backend gave in this browser session, so the
+ * guess is the user's own most recent state rather than the default. It decides
+ * nothing else: the status that arrives a moment later is the authority, and a
+ * blocked or empty store just means the first frame guesses "on" as before.
+ */
+const MASCOT_KEY = "ce-decky.mascot-visible.v1";
+
+export function rememberMascotVisible(visible: boolean): void {
+  try {
+    window.localStorage.setItem(MASCOT_KEY, visible ? "1" : "0");
+  } catch {
+    // Private windows and blocked site data are normal; the panel loses the
+    // convenience and behaves as it did before.
+  }
+}
+
+export function readMascotVisible(): boolean {
+  try {
+    return window.localStorage.getItem(MASCOT_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}

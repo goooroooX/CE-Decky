@@ -120,7 +120,7 @@ import { logUi, logUiFailure, logUiWarning, readSupportLog } from "./supportLog"
 import { nextPanelInstance, panelRenderer, startSupportLogFlush } from "./supportFlush";
 import { elapsedSince, monotonicNow, rendererStartedAt } from "./elapsed";
 import { PriorDurableCommitError, commitDesiredState, configuredValuesMatch, describeCommitFailure, rememberedMatches } from "./durableWrite";
-import { forgetSelectedGame, readSelectedGame, rememberSelectedGame } from "./selectionMemory";
+import { forgetSelectedGame, readMascotVisible, readSelectedGame, rememberMascotVisible, rememberSelectedGame } from "./selectionMemory";
 
 // Bounded Auto-load backoff. A game settles in seconds, not minutes: the target
 // executable can appear after its launcher, and the first bridge heartbeat and
@@ -3670,7 +3670,13 @@ function Content() {
   const updateState = status?.update ?? null;
   const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
   const panelUpdateVersion = panelUpdateOffer(updateState);
-  const mascotVisible = status?.preferences?.mascot_visible ?? true;
+  // The backend is the authority and this is the frame before it answers: a
+  // panel is rebuilt every time a modal opens, and guessing "on" showed the
+  // image to the user who had just switched it off, once per rebuild.
+  const mascotVisible = status?.preferences?.mascot_visible ?? readMascotVisible();
+  useEffect(() => {
+    if (status?.preferences) rememberMascotVisible(status.preferences.mascot_visible);
+  }, [status?.preferences?.mascot_visible]);
 
   const openUpdateModal = () => {
     const target = offeredUpdateVersion;
@@ -3734,7 +3740,7 @@ function Content() {
       pluginVersion={null}
       updateVersion={null}
       onUpdate={() => undefined}
-      mascotVisible
+      mascotVisible={mascotVisible}
       ceReady={false}
       ceStatusText="Loading plugin status…"
       installAvailable={false}
