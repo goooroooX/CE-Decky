@@ -372,7 +372,11 @@ export function HomePanel(props: Props) {
           not a preference Steam can settle, and what a panel opens on is
           already decided between Search and Advanced. */}
       {updateVersion && (
-        <div style={{ padding: "0 16px", margin: "0 0 6px" }}>
+        // Named like every other row on this panel, because what is on screen
+        // is read by test id here: the component tests and the device's own
+        // panel reader both find a control that way, and a press nobody can
+        // name is a press nobody checks.
+        <div data-testid="panel-update" style={{ padding: "0 16px", margin: "0 0 6px" }}>
           <SmallButton
             grow
             tone="update"

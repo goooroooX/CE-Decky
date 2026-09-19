@@ -67,6 +67,7 @@ describe("the update offer on the home panel", () => {
   it("draws nothing at all when there is no update to offer", () => {
     const view = render(<HomePanel {...props()} />);
     expect(screen.queryByText(/Update to v/)).toBeNull();
+    expect(screen.queryByTestId("panel-update")).toBeNull();
     // Not merely invisible: a disabled control is still a stop the controller
     // walks through, and the panel has to be exactly what it was before.
     const controls = view.container.querySelectorAll("button");
@@ -79,6 +80,9 @@ describe("the update offer on the home panel", () => {
     render(<HomePanel {...props({ updateVersion: "0.9.28", onUpdate })} />);
     const button = screen.getByText("Update to v0.9.28");
     expect(button.getAttribute("data-background")).toBe("var(--ce-update-accent)");
+    // Named, so the component tests and the device's own panel reader can both
+    // find it by the same id every other row here carries.
+    expect(screen.getByTestId("panel-update")).toBeTruthy();
     fireEvent.click(button);
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
