@@ -88,6 +88,8 @@ Versions represent completed product changes, not sessions or review rounds. Bef
 
 Keep the version and its date synchronized in `package.json`, `py_modules/ce_decky/__init__.py`, this file, and the newest `CHANGELOG.md` heading. There is no `Unreleased` section. Changelog entries use only `[New]`, `[Changed]`, `[Fixed]`, `[Security]`, or `[Limitation]`; add concise outcomes at the top of the current version and do not rewrite an older release. One version's entries are a single unbroken list: a blank line between two of them starts a second list and `tests/test_changelog_shape.py` refuses it, so a new entry goes directly above the one below it, which is what `python scripts/changelog.py add` does for you rather than anchoring an edit on text that changes every round.
 
+An entry states what is true of the device now, not how the change came about. A review round, a static analysis, a device session and a fix to a fix are how the work happened and belong in the commit message; the reader of this file wants the outcome. Write no entry whose subject is the process: `A second review round over this version`, `What a static review found`, `Four more from the static review`. Work that never reached a release has no outcome of its own either: a defect introduced and fixed inside the version that introduces it is part of the entry for the thing itself, not a line beside it, so fold it in and keep one entry per outcome. Entries that share a subject are one entry; a version that has collected a line per round is restructured before it ships rather than published as a diary.
+
 ## Validation and CI
 
 `python scripts/qa.py` is the only ordinary validation entrypoint. Its default `auto` profile routes the working-tree changes, or `HEAD` on a clean tree.
