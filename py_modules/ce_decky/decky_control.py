@@ -54,6 +54,22 @@ class DeckyWebSocketClosed(RuntimeError):
     """The Decky websocket closed before returning the requested RPC reply."""
 
 
+def next_request_id() -> int:
+    """An id no other client's reply can be carrying.
+
+    Decky delivers a reply to sockets that did not ask for it, so an id used by
+    convention rather than drawn cannot tell this call's answer from a replay of
+    somebody else's. It matters wherever a wrong answer would change a
+    conclusion: the readback that decides an install landed is drawn from here.
+
+    The install handshake below keeps its fixed ids on purpose. Its prompt is
+    validated field by field against what was asked for, and what it concludes
+    is checked afterwards by that same readback, so an early reply there can
+    only stop a wait rather than invent an outcome.
+    """
+    return secrets.randbelow(1_000_000) + 1000
+
+
 def require_loopback(decky_url: str) -> tuple[str, int]:
     """The host and port of a Decky URL, once it is one this may talk to.
 

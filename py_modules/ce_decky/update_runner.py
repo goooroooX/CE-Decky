@@ -37,6 +37,7 @@ from .decky_control import (
     auth_token,
     install_and_confirm,
     loader_plugin_matches,
+    next_request_id,
     request_frontend_reload,
 )
 
@@ -102,7 +103,10 @@ def _await_installed_version(decky_url: str, version: str, log: _Log) -> bool:
         try:
             token = auth_token(decky_url, CONNECT_TIMEOUT_SECONDS)
             with DeckyWebSocket.connect(decky_url, token, CONNECT_TIMEOUT_SECONDS) as ws:
-                matches = loader_plugin_matches(ws, 3)
+                # A drawn id, because this answer is what decides that the
+                # install landed, and Decky's replies are not private to the
+                # socket that asked for them.
+                matches = loader_plugin_matches(ws, next_request_id())
             if len(matches) == 1 and matches[0].get("version") == version and matches[0].get("disabled") is not True:
                 return True
             last = f"loader reports {len(matches)} entries, version {matches[0].get('version') if matches else None}"
