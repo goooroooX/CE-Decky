@@ -324,7 +324,10 @@ class PluginService:
         # What the detached installer did while this process did not exist. Read
         # once, at load, because that is when its result file is there to read.
         try:
-            self.plugin_updates.consume_runner_result()
+            # Loading is a mutation boundary, so this is where the updater does
+            # the durable half of its reconciling: the status call this panel
+            # polls only projects what is already known.
+            self.plugin_updates.maintain()
         except Exception as exc:  # noqa: BLE001 - a report must never block backend load
             log_failure(self.logger, "update.result_not_consumed", exc, expected=True)
 
@@ -2046,7 +2049,7 @@ class PluginService:
             if isinstance(operation, dict):
                 with self._mutation_lock:
                     self._reconcile_plugin_update_reservation(operation)
-            elif self._plugin_update_reservation is not None and not self.plugin_updates.has_active_operation():
+            elif self._plugin_update_reservation is not None and operation is None:
                 # Nothing is running and nothing names it any more: a
                 # reservation taken for a start that never became an operation.
                 with self._mutation_lock:
@@ -2471,6 +2474,12 @@ class PluginService:
         with self._mutation_lock:
             for refusal in self._deletion_refusals():
                 raise ValueError(refusal)
+            # What proves the recovery archive lives in the state directory, and
+            # the archive itself lives in the user's home, which this scope
+            # deliberately leaves alone. Clearing one and not the other left a
+            # large file in that home with nothing left to say what version it
+            # is, what its digest is, or that it is installable at all.
+            carried = None if "settings" in keys else self.plugin_updates.preserved_recovery()
             selected = [entry for entry in self._managed_directories() if entry[0] in keys]
             results = [_clear_managed_directory(key, label, path) for key, label, path, _ in selected]
             # Re-establish the tree before anything else runs, and forget what
@@ -2486,6 +2495,8 @@ class PluginService:
                     "error": f"could not be re-established: {str(exc)[:400]}",
                 })
             self._reset_after_deletion(keys)
+            if carried is not None:
+                self.plugin_updates.restore_recovery(carried)
             return results
 
     def _deletion_refusals(self) -> list[str]:

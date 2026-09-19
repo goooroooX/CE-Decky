@@ -1226,12 +1226,12 @@ def test_a_second_press_joins_the_press_already_running(tmp_path: Path):
     assert len(network.calls) == 1, "and the floor still allowed only one request"
 
 
-def test_the_status_call_settles_an_adopted_install_that_has_run_out_of_time(tmp_path: Path):
-    """The call a panel makes is the call that has to stop saying `installing`.
+def test_an_adopted_install_that_has_run_out_of_time_stops_being_reported(tmp_path: Path):
+    """Adoption must not leave a panel reporting an install for ever.
 
-    Adoption made a reload honest about an installer still being out there; what
-    it must not do is leave a panel reporting one for ever, because the calls
-    that reconcile were the ones made only when something was about to refuse.
+    The status call projects rather than writes, so what it stops saying is said
+    by what it can see: an attempt older than any install is not adopted, and
+    the first boundary that may write settles it durably.
     """
     manager = _pending(tmp_path)
     manager.consume_runner_result()
@@ -1241,10 +1241,14 @@ def test_the_status_call_settles_an_adopted_install_that_has_run_out_of_time(tmp
     manager.state.update(install={
         **record["install"], "started_at": time.time() - INSTALL_PENDING_LIMIT_SECONDS - 60,
     })
-    snapshot = manager.snapshot()
-    assert snapshot["operation"]["state"] == "failed"
-    assert "never reported back" in snapshot["last_result"]["error"]
+    manager._operation = None
+    assert manager.snapshot()["operation"] is None, "a read reports it as over"
+    assert manager.state.load()["install"] is not None, "and changes nothing while doing so"
+
+    # The boundary that may write is what closes it.
     assert manager.has_active_operation() is False
+    assert "never reported back" in manager.state.load()["last_result"]["error"]
+    assert manager.state.load()["install"] is None
 
 
 def test_a_future_start_on_a_disk_that_takes_nothing_still_ages_out(tmp_path: Path, monkeypatch):
@@ -1309,8 +1313,12 @@ def test_a_recovery_for_a_version_this_device_already_runs_is_retired(tmp_path: 
         arrived = _manager(tmp_path / f"arrived-{version}", FakeNetwork(), version=version)
         _kept(arrived)
         arrived.state.update(recovery={**recovery, "path": str(arrived.kept_archive_path)})
+        # A read stops offering it and leaves the device exactly as it was.
         assert arrived.snapshot()["recovery"] is None
-        assert arrived.kept_archive_path.exists() is False, "and the file goes with the offer"
+        assert arrived.kept_archive_path.is_file()
+        # The boundary that may write is what removes it, file and record.
+        arrived.maintain()
+        assert arrived.kept_archive_path.exists() is False
         assert arrived.state.load()["recovery"] is None
 
     # A record this cannot read deletes nothing and offers nothing.
@@ -1318,4 +1326,5 @@ def test_a_recovery_for_a_version_this_device_already_runs_is_retired(tmp_path: 
     _kept(unreadable)
     unreadable.state.update(recovery={**recovery, "version": None, "path": str(unreadable.kept_archive_path)})
     assert unreadable.snapshot()["recovery"] is None
-    assert unreadable.kept_archive_path.is_file()
+    unreadable.maintain()
+    assert unreadable.kept_archive_path.is_file(), "nothing is deleted on a record this cannot read"

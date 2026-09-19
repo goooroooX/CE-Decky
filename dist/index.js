@@ -9990,8 +9990,13 @@ const RESTART_GRACE_MS = 45000;
  */
 function UpdateModal({ currentVersion, targetVersion, gameRunning, adopted = null, onStart, onPoll, onCancelUpdate, onClose }) {
     useUiSurface("UpdateModal");
-    const [operation, setOperation] = SP_REACT.useState(adopted);
-    const [busy, setBusy] = SP_REACT.useState(Boolean(adopted));
+    // An operation that has already ended is not something to adopt. The panel
+    // does not pass one, and this window does not act on one either: it opens as
+    // the ordinary confirmation, which is what a user pressing Update after a
+    // failure is asking for.
+    const following = adopted && adopted.state !== "failed" && adopted.state !== "cancelled" ? adopted : null;
+    const [operation, setOperation] = SP_REACT.useState(following);
+    const [busy, setBusy] = SP_REACT.useState(Boolean(following));
     const [cancelling, setCancelling] = SP_REACT.useState(false);
     const [error, setError] = SP_REACT.useState(null);
     const busyRef = SP_REACT.useRef(false);
@@ -10010,11 +10015,11 @@ function UpdateModal({ currentVersion, targetVersion, gameRunning, adopted = nul
     // press that did has already happened, and asking again would be a second
     // download and a second installer beside the first.
     SP_REACT.useEffect(() => {
-        if (!adopted)
+        if (!following)
             return;
         busyRef.current = true;
-        operationRef.current = adopted.operation_id;
-        void follow(adopted.operation_id);
+        operationRef.current = following.operation_id;
+        void follow(following.operation_id);
         // Once, for the operation this window opened on.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -15726,6 +15731,19 @@ function Content() {
                     // side describing them, and reconciling only on the success path is
                     // exactly how it kept describing them.
                     forgetSearchOutcomes();
+                    if (scope === "all") {
+                        // "Everything" promises a first-run CE Decky, and this side keeps
+                        // durable choices of its own that the file sweep cannot reach:
+                        // the game the user picked by hand, which a panel mounting with
+                        // no game running restores by itself, and the remembered answer
+                        // for whether the mascot is drawn before the backend has said. A
+                        // deletion that leaves either of them is a first run that opens
+                        // on the state it was supposed to have forgotten.
+                        forgetSelectedGame();
+                        setSelectedGame(null);
+                        selectedGameRef.current = null;
+                        rememberMascotVisible(true);
+                    }
                     if (scope !== "cache") {
                         forgetAllRejectedArtifacts();
                         // Invalidate before reconciliation, including an uncertain reply.
@@ -15776,8 +15794,16 @@ function Content() {
     // the backend goes on with it. The panel adopts it from the status it already
     // reads - holding down everything the plugin being replaced would interrupt,
     // and offering the way back into the window that reports it.
-    const runningUpdate = updateState?.operation ?? null;
-    const updateRunning = Boolean(runningUpdate && !["failed", "cancelled"].includes(runningUpdate.state));
+    // Only an update that is still happening. An operation the backend has
+    // already settled is history, and handing it to the window as something to
+    // follow made every control on that window a no-op: it opened busy, waiting
+    // for news about work that had already ended, so Try again, Not now and Back
+    // all did nothing until a poll happened to say what the status already had.
+    const settledUpdate = ["failed", "cancelled"];
+    const runningUpdate = updateState?.operation && !settledUpdate.includes(updateState.operation.state)
+        ? updateState.operation
+        : null;
+    const updateRunning = runningUpdate !== null;
     // The backend is the authority and this is the frame before it answers: a
     // panel is rebuilt every time a modal opens, and guessing "on" showed the
     // image to the user who had just switched it off, once per rebuild.

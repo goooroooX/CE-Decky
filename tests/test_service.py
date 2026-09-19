@@ -1,6 +1,7 @@
 from pathlib import Path
 import asyncio
 import json
+from hashlib import sha256
 import logging
 import struct
 import threading
@@ -1771,3 +1772,81 @@ def test_deleting_everything_takes_the_recovery_archive_with_it(tmp_path: Path):
 
     asyncio.run(service.delete_managed_data("all"))
     assert kept.exists() is False
+
+
+def test_reading_the_status_changes_nothing_about_an_update(tmp_path: Path):
+    """`get_status()` writes nothing, and the updater is part of that promise.
+
+    The panel polls this call and so do read-only helpers, whose whole value is
+    that observing the device does not change it. The updater's reconciling -
+    folding in a runner's result, writing down when a start time in this clock's
+    future was first seen, removing a recovery archive this plugin has outgrown -
+    happens at the boundaries that may write, not here.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("test"))
+    service.initialize()
+    updates = service.plugin_updates
+
+    body = b"a verified release this device already runs"
+    updates.kept_archive_path.parent.mkdir(parents=True, exist_ok=True)
+    updates.kept_archive_path.write_bytes(body)
+    updates.state.update(
+        install={
+            "attempt": "a" * 32, "operation_id": "o" * 32, "version": "9.9.9",
+            "started_at": time.time() + 30 * 24 * 3600, "digest": "b" * 64,
+        },
+        recovery={
+            "attempt": "c" * 32, "version": "0.0.1", "sha256": sha256(body).hexdigest(),
+            "path": str(updates.kept_archive_path),
+        },
+    )
+    updates.result_path.write_text(json.dumps({
+        "schema": 1, "attempt": "a" * 32, "version": "9.9.9", "ok": False,
+        "error": "Decky refused the install", "archive_kept_at": None,
+        "finished_at": time.time(), "restart_requested": False,
+    }), encoding="utf-8")
+
+    before = {
+        path: path.read_bytes()
+        for path in (updates.state.path, updates.result_path, updates.kept_archive_path)
+    }
+    status = service.get_status()
+    assert isinstance(status["update"], dict)
+    for path, content in before.items():
+        assert path.is_file(), f"{path.name} was removed by a status read"
+        assert path.read_bytes() == content, f"{path.name} was rewritten by a status read"
+
+    # And the boundary that may write does all of it.
+    updates.maintain()
+    assert updates.result_path.exists() is False
+    assert updates.state.load()["last_result"]["ok"] is False
+    assert updates.kept_archive_path.exists() is False
+
+
+def test_deleting_saved_setup_keeps_the_recovery_archive_and_what_proves_it(tmp_path: Path):
+    """The file is in the user's home and its proof is in the state directory.
+
+    This scope deliberately keeps the first and clears the second, which left a
+    large file in that home with nothing to say what version it is, what its
+    digest is, or that it can be installed at all.
+    """
+    service, _paths = _managed_data_service(tmp_path)
+    updates = service.plugin_updates
+    body = b"a verified release nobody installed"
+    updates.kept_archive_path.parent.mkdir(parents=True, exist_ok=True)
+    updates.kept_archive_path.write_bytes(body)
+    recovery = {
+        "attempt": "a" * 32, "version": "9.9.9", "sha256": sha256(body).hexdigest(),
+        "path": str(updates.kept_archive_path),
+    }
+    updates.state.update(recovery=recovery)
+
+    asyncio.run(service.delete_managed_data("setup"))
+    assert updates.kept_archive_path.is_file()
+    assert updates.state.load()["recovery"] == recovery
+    assert service.get_status()["update"]["recovery"]["version"] == "9.9.9"
+
+    asyncio.run(service.delete_managed_data("all"))
+    assert updates.kept_archive_path.exists() is False
+    assert updates.state.load().get("recovery") is None

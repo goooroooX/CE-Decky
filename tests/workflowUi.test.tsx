@@ -535,6 +535,28 @@ describe("Home panel and managed setup", () => {
     expect(screen.queryByText("Game.CT")).toBeNull();
   });
 
+  it("returns this side to first run when everything is deleted", async () => {
+    // "Everything" promises a first-run CE Decky, and this side keeps durable
+    // choices the file sweep cannot reach: the game the user picked by hand,
+    // which a panel mounting with no game running restores by itself. A
+    // deletion that leaves it is a first run that opens on the state it was
+    // supposed to have forgotten.
+    window.localStorage.setItem("ce-decky.selected-game.v1", JSON.stringify({ appId: 99, isShortcut: false, at: Date.now() }));
+    api.deleteManagedData.mockResolvedValue({ scope: "all", deleted: [], failed: [], readiness: null });
+    renderContent();
+    await screen.findByText("Game.CT");
+    const advanced = await openAdvanced();
+
+    await act(async () => { await advanced.props.onDeleteManagedData("all"); });
+    expect(window.localStorage.getItem("ce-decky.selected-game.v1")).toBeNull();
+
+    // A narrower scope is not a first run and leaves the choice alone.
+    window.localStorage.setItem("ce-decky.selected-game.v1", JSON.stringify({ appId: 99, isShortcut: false, at: Date.now() }));
+    api.deleteManagedData.mockResolvedValue({ scope: "cache", deleted: [], failed: [], readiness: null });
+    await act(async () => { await advanced.props.onDeleteManagedData("cache"); });
+    expect(window.localStorage.getItem("ce-decky.selected-game.v1")).not.toBeNull();
+  });
+
   it.each([false, true])("gives user-started setup one failure owner (reinstall=%s)", async (force) => {
     api.getStatus.mockResolvedValue(status(false, force));
     api.getManagedCECapability.mockResolvedValue({

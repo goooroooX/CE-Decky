@@ -70,8 +70,13 @@ export function UpdateModal(
   { currentVersion, targetVersion, gameRunning, adopted = null, onStart, onPoll, onCancelUpdate, onClose }: Props,
 ) {
   useUiSurface("UpdateModal");
-  const [operation, setOperation] = useState<PluginUpdateOperation | null>(adopted);
-  const [busy, setBusy] = useState(Boolean(adopted));
+  // An operation that has already ended is not something to adopt. The panel
+  // does not pass one, and this window does not act on one either: it opens as
+  // the ordinary confirmation, which is what a user pressing Update after a
+  // failure is asking for.
+  const following = adopted && adopted.state !== "failed" && adopted.state !== "cancelled" ? adopted : null;
+  const [operation, setOperation] = useState<PluginUpdateOperation | null>(following);
+  const [busy, setBusy] = useState(Boolean(following));
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
@@ -92,10 +97,10 @@ export function UpdateModal(
   // press that did has already happened, and asking again would be a second
   // download and a second installer beside the first.
   useEffect(() => {
-    if (!adopted) return;
+    if (!following) return;
     busyRef.current = true;
-    operationRef.current = adopted.operation_id;
-    void follow(adopted.operation_id);
+    operationRef.current = following.operation_id;
+    void follow(following.operation_id);
     // Once, for the operation this window opened on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

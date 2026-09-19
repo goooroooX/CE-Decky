@@ -190,6 +190,24 @@ describe("the update confirmation", () => {
     }
   });
 
+  it("opens as an ordinary confirmation for an update that already ended", async () => {
+    // The press after a failure is a user asking to try again. Handing the
+    // window the settled operation made every control on it a no-op: it opened
+    // busy, waiting for news about work that had already finished.
+    const props = modal({ adopted: operation({ state: "failed", message: "The update could not be installed", error: "Decky refused it" }) });
+    render(<UpdateModal {...props} />);
+    expect(props.onPoll).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByText("Update")); });
+    expect(props.onStart).toHaveBeenCalledWith("0.9.28");
+
+    // And leaving is leaving, rather than waiting for an answer nobody owes.
+    cleanup();
+    const cancelled = modal({ adopted: operation({ state: "cancelled", message: "The update was cancelled" }) });
+    render(<UpdateModal {...cancelled} />);
+    fireEvent.click(screen.getByText("Not now"));
+    expect(cancelled.onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("adopts an update that was already running when it opened", async () => {
     // Every modal closes the panel, so the window that started an update is
     // destroyed as soon as the user looks at anything else while the update

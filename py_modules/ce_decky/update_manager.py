@@ -177,6 +177,10 @@ class PluginUpdateManager:
         # every second and re-reading a megabyte for each of them answers a
         # question that has not changed.
         self._archive_identity: tuple[str, int, int] | None = None
+        # When this backend first saw an install whose start time is in this
+        # clock's future, by attempt. Memory, so that a status read can measure
+        # an age without writing anything down.
+        self._observed_starts: dict[str, float] = {}
 
     # ---------------------------------------------------------------- reading
 
@@ -197,16 +201,21 @@ class PluginUpdateManager:
         return {**self.state.load(), **self._unwritten} if self._unwritten else self.state.load()
 
     def snapshot(self, fresh: dict[str, object] | None = None) -> dict[str, object]:
-        """What the panel needs, and nothing a screen cannot act on."""
-        # An install is settled and adopted here as well as where a refusal
-        # asks, because this is the call a panel makes: on every mount and after
-        # every action, while the other calls happen only when something is
-        # about to be refused. Without it an installer that outlived its backend
-        # was invisible to the screen until a deletion was attempted, and one
-        # that had outlived any install went on saying it was installing.
-        self._reconcile_installing()
+        """What the panel needs, and nothing a screen cannot act on.
+
+        A projection, and nothing else. The panel polls this call and so do
+        read-only developer helpers, and `get_status()` promises all of them
+        that it writes nothing: a probe that changes the device by observing it
+        is the one thing a diagnostic must never be. So an install this backend
+        did not start is adopted in memory here, and the durable side - folding
+        in a runner's result, writing down when a start time in this clock's
+        future was first seen, removing a recovery archive this plugin has
+        outgrown - happens in `maintain()`, which the boundaries that are
+        allowed to change the device call: loading, polling an update, starting
+        one, refusing a deletion, and the scheduler's own tick.
+        """
         if self._operation is None:
-            self._adopt_pending_install(self._stored().get("install"))
+            self._adopt_pending_install(self._stored().get("install"), persist=False)
         record = self._stored()
         if fresh:
             record = {**record, **fresh}
@@ -230,7 +239,7 @@ class PluginUpdateManager:
             # has downloaded anything replaces what the last update did and
             # leaves this alone, because this is a file on the device that can
             # still be installed by hand.
-            "recovery": self._recovery_still_there(),
+            "recovery": self._recovery_view(),
             "install_supported": self._interpreter is not None,
             "checking": self._checking,
             "operation": dict(self._operation) if self._operation is not None else None,
@@ -301,7 +310,7 @@ class PluginUpdateManager:
         except (OSError, ValueError) as exc:
             log_failure(self.logger, "update.result_unreadable", exc, expected=True)
         if result is None and isinstance(pending, dict):
-            started = self._observed_start(pending)
+            started = self._observed_start(pending, persist=True)
             target = pending.get("version")
             if target == self.current_version:
                 result = {
@@ -325,7 +334,9 @@ class PluginUpdateManager:
             # as the operation this backend owns is what makes a reload stop
             # being a way to start a second privileged install beside the first,
             # or to delete the tree underneath it.
-            self._adopt_pending_install(pending)
+            # Reached from `maintain()` and from loading, both of which may
+            # write, so the origin this works out is written down.
+            self._adopt_pending_install(pending, persist=True)
             return
         fields: dict[str, object] = {"last_result": result, "install": None}
         if result["ok"]:
@@ -389,7 +400,7 @@ class PluginUpdateManager:
         )
         return True
 
-    def _observed_start(self, pending: dict[str, object]) -> float | None:
+    def _observed_start(self, pending: dict[str, object], *, persist: bool) -> float | None:
         """When this install started, on a clock that can be measured against.
 
         A handheld whose battery ran flat boots behind everything written on
@@ -411,14 +422,21 @@ class PluginUpdateManager:
         now = time.time()
         if float(started) <= now:
             return float(started)
-        self._record(install={**pending, "started_at": now})
-        log_activity(
-            self.logger, "info", "update.pending_start_normalised",
-            attempt=pending.get("attempt"), recorded=started, observed=now,
-        )
-        return now
+        # Remembered here first, so that reading the state does not write to it
+        # and so that repeated reads measure from one moment rather than from
+        # each of themselves. The key is the attempt, because that is what the
+        # origin belongs to.
+        key = str(pending.get("attempt") or started)
+        observed = self._observed_starts.setdefault(key, now)
+        if persist and pending.get("started_at") != observed:
+            self._record(install={**pending, "started_at": observed})
+            log_activity(
+                self.logger, "info", "update.pending_start_normalised",
+                attempt=pending.get("attempt"), recorded=started, observed=observed,
+            )
+        return observed
 
-    def _adopt_pending_install(self, pending: object) -> None:
+    def _adopt_pending_install(self, pending: object, *, persist: bool) -> None:
         """Own an install this backend did not start but the record is waiting on.
 
         The operation it rebuilds is deliberately not cancellable and carries
@@ -433,7 +451,7 @@ class PluginUpdateManager:
         # Only an install that could still be running. An older one is settled
         # by the record itself, and adopting it would block every later update
         # behind an installer that stopped existing long ago.
-        started = self._observed_start(pending)
+        started = self._observed_start(pending, persist=persist)
         if started is None or time.time() - started > INSTALL_PENDING_LIMIT_SECONDS:
             return
         attempt = pending.get("attempt")
@@ -515,39 +533,66 @@ class PluginUpdateManager:
             "path": str(self.kept_archive_path),
         }
 
-    def _recovery_still_there(self) -> dict[str, object] | None:
+    def _recovery_view(self) -> dict[str, object] | None:
         """The recovery this device is holding, re-proved before it is offered.
 
-        Two things stop it being one. The file may no longer be the release it
-        says, which is what the digest answers. And this device may already be
-        running that version: the whole point of the file is that a user can
-        install it through Decky by hand, and when they have, nothing in this
-        plugin's own transaction ever runs to notice - the plugin is simply
-        replaced and the next backend starts at the version the file holds. It
-        went on offering them an installer for what they were already running.
+        Three things stop it being one, and none of them changes anything here:
+        this is what a status read is allowed to do. The record may be one this
+        cannot read. The file may no longer be the release it says, which is
+        what the digest answers. And this device may already be running that
+        version - the whole point of the file is that a user can install it
+        through Decky by hand, and when they have, nothing in this plugin's own
+        transaction runs to notice, because the plugin is simply replaced and
+        the next backend starts at the version the file holds. Removing it is
+        `_retire_superseded_recovery`, at a boundary that may write.
         """
         recovery = self._stored().get("recovery")
-        if not isinstance(recovery, dict):
-            return None
-        version = recovery.get("version")
-        try:
-            superseded = parse_version(str(version)) <= parse_version(self.current_version)
-        except UpdateError:
-            # A record this cannot read is not a record this may act on: it is
-            # not offered, and nothing is deleted on the strength of it.
-            return None
-        if superseded:
-            # The file this removes is its own, by name and by directory, the
-            # same one it would have offered.
-            self.discard_kept_archive()
-            log_activity(
-                self.logger, "info", "update.recovery_superseded",
-                version=version, running=self.current_version,
-            )
+        if not isinstance(recovery, dict) or self._recovery_superseded(recovery) is not False:
             return None
         if not self._archive_matches(recovery.get("sha256")):
             return None
         return recovery
+
+    def _recovery_superseded(self, recovery: dict[str, object]) -> bool | None:
+        """Whether this plugin has reached the version that file holds.
+
+        `None` is a record this cannot read, which is neither offered nor acted
+        on: nothing is deleted on the strength of a version that will not parse.
+        """
+        try:
+            return parse_version(str(recovery.get("version"))) <= parse_version(self.current_version)
+        except UpdateError:
+            return None
+
+    def _retire_superseded_recovery(self) -> None:
+        """Remove a recovery archive this plugin has outgrown, file and record."""
+        recovery = self._stored().get("recovery")
+        if not isinstance(recovery, dict) or self._recovery_superseded(recovery) is not True:
+            return
+        # The file this removes is its own, by name and by directory, the same
+        # one it would have offered.
+        self.discard_kept_archive()
+        log_activity(
+            self.logger, "info", "update.recovery_superseded",
+            version=recovery.get("version"), running=self.current_version,
+        )
+
+    def preserved_recovery(self) -> dict[str, object] | None:
+        """What proves the recovery archive, for carrying across a deletion.
+
+        The archive is in the user's home and what proves it is in the state
+        directory, so a scope that clears one and not the other leaves a large
+        file with nothing to say what version it is or that it can be installed
+        at all. Only a recovery that is still provably there is carried.
+        """
+        return self._recovery_view()
+
+    def restore_recovery(self, recovery: dict[str, object]) -> None:
+        """Put back what a deletion cleared, for the file it deliberately kept."""
+        if not isinstance(recovery, dict) or not self._archive_matches(recovery.get("sha256")):
+            return
+        self._record(recovery=recovery)
+        log_activity(self.logger, "info", "update.recovery_carried", version=recovery.get("version"))
 
     def discard_kept_archive(self) -> bool:
         """Remove the recovery archive this device is holding, and forget it.
@@ -817,6 +862,11 @@ class PluginUpdateManager:
             await asyncio.sleep(SCHEDULE_FIRST_DELAY_SECONDS)
             while True:
                 try:
+                    # A device nobody is looking at still has an installer that
+                    # may have stopped and a recovery archive that may have been
+                    # used. The status call no longer writes, so this tick is
+                    # where that is noticed when no screen is open.
+                    self.maintain()
                     if self.should_check():
                         # Awaited rather than spawned. A task nobody retrieves
                         # the result of reports its failure as an unretrieved
@@ -843,9 +893,30 @@ class PluginUpdateManager:
         # Asked here as well as where a second update would be refused: this is
         # the call the window watching an install makes every second, and it is
         # the one that has to stop saying `installing` when the installer is no
-        # longer there to finish.
-        self._reconcile_installing()
+        # longer there to finish. It is a poll of one operation rather than the
+        # panel's status read, so it is allowed to change what it finds.
+        self.maintain()
         return dict(self._operation)
+
+    def maintain(self) -> None:
+        """The durable half of reconciling, at a boundary that may write.
+
+        Everything here is something a read must not do: consuming the file a
+        detached installer left and deleting it, writing down the moment a start
+        time in this clock's future was first seen, and removing a recovery
+        archive whose version this plugin has reached. The status call projects
+        what is already known; this is where the device changes, and it is
+        called from the paths that are allowed to change it.
+        """
+        # In this order: fold in what an installer left and settle an attempt
+        # that has outlived any install, settle the operation this backend is
+        # holding, adopt one it is not, and let go of a recovery archive this
+        # plugin has outgrown.
+        self.consume_runner_result()
+        self._reconcile_installing()
+        if self._operation is None:
+            self._adopt_pending_install(self._stored().get("install"), persist=True)
+        self._retire_superseded_recovery()
 
     def has_active_operation(self) -> bool:
         """Whether an update is happening, including one this backend did not start.
@@ -856,11 +927,9 @@ class PluginUpdateManager:
         Everything that has to hold that boundary asks through here - a second
         update, and deleting the tree the first one is installing from.
         """
-        self._reconcile_installing()
+        self.maintain()
         if self._task is not None and not self._task.done():
             return True
-        if self._operation is None:
-            self._adopt_pending_install(self._stored().get("install"))
         operation = self._operation
         return operation is not None and str(operation.get("state")) not in _SETTLED_STATES
 
@@ -893,8 +962,11 @@ class PluginUpdateManager:
         operation_id = str(operation.get("operation_id"))
         if self.result_path.is_file():
             self.consume_runner_result()
-            if self._settled_by_record(operation_id):
-                return
+        # Asked whether or not there was a file to fold in a moment ago: what
+        # settles this operation is the record, and the fold may already have
+        # happened - `maintain()` does it before this runs.
+        if self._settled_by_record(operation_id):
+            return
         process = self._process
         if process is None:
             # An install this backend adopted from the record rather than
