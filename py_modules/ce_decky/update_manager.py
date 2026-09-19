@@ -58,6 +58,7 @@ from .plugin_update import (
     digest_from_sums,
     parse_release,
     parse_version,
+    release_version,
 )
 
 RESULT_FILENAME = "plugin-update-result.json"
@@ -247,7 +248,7 @@ class PluginUpdateManager:
         self._checking = True
         self._last_check_attempt = time.monotonic()
         try:
-            offer = await self._read_latest_release()
+            latest, offer = await self._read_latest_release()
         except Exception as exc:  # noqa: BLE001 - every failure is a line on a screen
             # Cleared before the snapshot rather than in a `finally`, which runs
             # after the returned expression is evaluated: the screen would
@@ -262,16 +263,15 @@ class PluginUpdateManager:
         finally:
             self._checking = False
         self._offer = offer
-        self.state.update(**checked_now(offer, current_version=self.current_version))
+        self.state.update(**checked_now(offer, latest, current_version=self.current_version))
         log_activity(
             self.logger, "info", "update.checked",
-            forced=forced, current=self.current_version,
-            latest=offer.version if offer is not None else self.current_version,
-            available=offer is not None,
+            forced=forced, current=self.current_version, latest=latest, available=offer is not None,
         )
         return self.snapshot()
 
-    async def _read_latest_release(self) -> ReleaseOffer | None:
+    async def _read_latest_release(self) -> tuple[str, ReleaseOffer | None]:
+        """The newest stable release, and what of it this device can install."""
         response = await self.network.get(
             LATEST_RELEASE_URL,
             allowed_hosts=API_HOSTS,
@@ -294,7 +294,7 @@ class PluginUpdateManager:
             payload = json.loads(response.body)
         except ValueError as exc:
             raise UpdateError("the release answer is not readable JSON") from exc
-        return parse_release(payload, current_version=self.current_version)
+        return str(release_version(payload)), parse_release(payload, current_version=self.current_version)
 
     def start_background_checks(self) -> None:
         """Look, on a timer, at whether a check is owed. Started once per load."""
@@ -396,8 +396,8 @@ class PluginUpdateManager:
     async def _run(self, operation_id: str) -> None:
         archive: Path | None = None
         try:
-            offer = await self._read_latest_release()
-            self.state.update(**checked_now(offer, current_version=self.current_version))
+            latest, offer = await self._read_latest_release()
+            self.state.update(**checked_now(offer, latest, current_version=self.current_version))
             if offer is None:
                 raise UpdateError("this is already the newest release")
             self._offer = offer

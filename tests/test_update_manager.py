@@ -102,6 +102,20 @@ def test_a_device_on_the_newest_release_is_offered_nothing(tmp_path: Path):
     assert snapshot["latest_version"] == "0.9.27"
 
 
+def test_a_build_ahead_of_the_release_records_what_was_actually_published(tmp_path: Path):
+    """A development build is newer than the newest release, and says so.
+
+    The record answers what the newest release is. Answering with the running
+    version because there was nothing to install would state something untrue on
+    every build between two releases, which is every build this is developed on.
+    """
+    manager = _manager(tmp_path, FakeNetwork(release=_release_payload("0.9.27")), version="0.9.28")
+    snapshot = asyncio.run(manager.check(forced=False))
+    assert snapshot["latest_version"] == "0.9.27"
+    assert snapshot["current_version"] == "0.9.28"
+    assert snapshot["update_available"] is False
+
+
 def test_checking_is_armed_by_search_activity_and_paced_by_the_interval(tmp_path: Path):
     network = FakeNetwork()
     quiet = _manager(tmp_path / "quiet", network, searched_at=time.time() - update_manager.ACTIVE_WINDOW_SECONDS - 60)

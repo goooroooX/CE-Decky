@@ -172,6 +172,24 @@ def _asset_url(asset: Any, expected_name: str) -> str | None:
     return url
 
 
+def release_version(payload: Any) -> Version:
+    """The version this release publishes, whether or not it is an update.
+
+    Recorded even when it is older than the running build, because the durable
+    record says what the newest release is and a field that answered with the
+    running version instead would state something that is not true on any
+    development build. What a screen acts on is the comparison, not this.
+    """
+    if not isinstance(payload, dict):
+        raise UpdateError("release payload is not an object")
+    if payload.get("draft") is True or payload.get("prerelease") is True:
+        raise UpdateError("newest release is not a stable release")
+    offered = version_from_tag(payload.get("tag_name"))
+    if offered.is_prerelease:
+        raise UpdateError("newest release is not a stable release")
+    return offered
+
+
 def parse_release(payload: Any, *, current_version: str) -> ReleaseOffer | None:
     """What this release offers a device on `current_version`, if anything.
 
@@ -180,14 +198,8 @@ def parse_release(payload: Any, *, current_version: str) -> ReleaseOffer | None:
     and a release missing either of its two assets all raise, because each of
     those is something to say on the screen rather than silence.
     """
-    if not isinstance(payload, dict):
-        raise UpdateError("release payload is not an object")
-    if payload.get("draft") is True or payload.get("prerelease") is True:
-        raise UpdateError("newest release is not a stable release")
+    offered = release_version(payload)
     tag = payload.get("tag_name")
-    offered = version_from_tag(tag)
-    if offered.is_prerelease:
-        raise UpdateError("newest release is not a stable release")
     running = parse_version(current_version)
     if offered <= running:
         return None
@@ -266,12 +278,17 @@ class UpdateStateStore:
         return record
 
 
-def checked_now(offer: ReleaseOffer | None, *, current_version: str) -> dict[str, Any]:
-    """The record one successful check leaves behind."""
+def checked_now(offer: ReleaseOffer | None, latest: str, *, current_version: str) -> dict[str, Any]:
+    """The record one successful check leaves behind.
+
+    `latest` is what the release itself published, which on a development build
+    is legitimately older than what is running; the offer is what this device
+    could install, which is nothing in that case.
+    """
     return {
         "checked_at": time.time(),
         "current_version": current_version,
-        "latest_version": offer.version if offer is not None else current_version,
+        "latest_version": latest,
         "archive_name": offer.archive_name if offer is not None else None,
         "page_url": offer.page_url if offer is not None else RELEASES_PAGE_URL,
         "last_error": None,
