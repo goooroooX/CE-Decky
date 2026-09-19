@@ -421,7 +421,20 @@ class PluginUpdateManager:
             _discard(archive)
             reason = _reason(exc)
             self._set(operation_id, state="failed", message="The update could not be installed", error=reason)
-            self.state.update(last_error=reason)
+            # Recorded as what the last update did, never as what the last check
+            # found. They are different questions and the screen asks them
+            # separately: an install that refused itself was being reported as a
+            # check that did not finish, on a device whose check had in fact
+            # just succeeded. Nothing is kept here for a manual install, because
+            # nothing got as far as being verified.
+            self.state.update(last_result={
+                "version": self._offer.version if self._offer is not None else None,
+                "ok": False,
+                "error": reason,
+                "archive_kept_at": None,
+                "at": time.time(),
+                "restart_requested": False,
+            })
             log_failure(
                 self.logger, "update.install_failed", exc,
                 expected=isinstance(exc, (UpdateError, NetworkError, ValueError, OSError)),

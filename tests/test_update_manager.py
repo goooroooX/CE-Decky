@@ -307,3 +307,26 @@ def test_an_install_that_never_reported_back_is_settled_by_the_running_version(t
     running.state.update(install={"version": "0.9.28", "started_at": time.time()})
     running.consume_runner_result()
     assert running.state.load().get("last_result") is None
+
+
+def test_an_install_that_refused_itself_is_not_reported_as_a_failed_check(tmp_path: Path, spawned):
+    """Two different questions, asked separately on the screen.
+
+    A device whose check had just succeeded reported `the last check did not
+    finish: this is already the newest release`, which is an install refusing
+    itself written into the field the check summary reads.
+    """
+    manager = _manager(tmp_path, FakeNetwork(release=_release_payload("0.9.27")))
+
+    async def scenario():
+        started = await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    snapshot = manager.snapshot()
+    assert snapshot["last_error"] is None
+    assert snapshot["last_result"]["ok"] is False
+    assert "already the newest" in snapshot["last_result"]["error"]
+    assert snapshot["last_result"]["archive_kept_at"] is None
