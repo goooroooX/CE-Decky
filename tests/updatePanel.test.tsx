@@ -19,7 +19,7 @@ vi.mock("@decky/ui", async () => (await import("./deckyUiMock")).deckyUiMock({
 
 import { HomePanel } from "../src/components/HomePanel";
 import { UpdateModal } from "../src/modals/UpdateModal";
-import { updateSummary } from "../src/uiModel";
+import { panelUpdateOffer, updateSummary } from "../src/uiModel";
 import type { PluginUpdateOperation, PluginUpdateState } from "../src/types";
 
 const game = { appId: 10, name: "Game", sortAs: "Game", isShortcut: false };
@@ -143,8 +143,10 @@ describe("the update confirmation", () => {
       expect(screen.getByText("Stop")).toBeTruthy();
       await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
       expect(screen.getByText("Steam's interface is restarting")).toBeTruthy();
-      // Nothing left to press, and the controller's Back is refused too.
+      // Nothing left to press, and the controller's Back is refused too. The
+      // actions row goes rather than carrying a sentence where its controls were.
       expect(screen.queryByText("Stop")).toBeNull();
+      expect(screen.queryByTestId("modal-actions")).toBeNull();
       fireEvent.click(screen.getByText("controller-back"));
       expect(props.onClose).not.toHaveBeenCalled();
       const polls = props.onPoll.mock.calls.length;
@@ -198,5 +200,19 @@ describe("what the update section says it is", () => {
     expect(updateSummary(state({ update_available: false, latest_version: "0.9.27" }), "0.9.27").label)
       .toContain("up to date");
     expect(updateSummary(null, "0.9.27").label).toBe("CE Decky v0.9.27");
+  });
+});
+
+describe("which version the panel itself offers", () => {
+  it("offers one only when it exists, is wanted, and can be installed here", () => {
+    expect(panelUpdateOffer(state())).toBe("0.9.28");
+    // Switched off, the finding stays in Advanced and leaves the panel alone.
+    expect(panelUpdateOffer(state({ auto_check: false }))).toBeNull();
+    // No interpreter for the installer: an orange button whose every press
+    // fails is worse than the row in Advanced that says why.
+    expect(panelUpdateOffer(state({ install_supported: false }))).toBeNull();
+    expect(panelUpdateOffer(state({ update_available: false }))).toBeNull();
+    expect(panelUpdateOffer(state({ latest_version: null }))).toBeNull();
+    expect(panelUpdateOffer(null)).toBeNull();
   });
 });

@@ -395,3 +395,68 @@ def test_an_install_that_refused_itself_is_not_reported_as_a_failed_check(tmp_pa
     assert snapshot["last_result"]["ok"] is False
     assert "already the newest" in snapshot["last_result"]["error"]
     assert snapshot["last_result"]["archive_kept_at"] is None
+
+
+def test_the_scheduler_asks_on_its_own_and_is_paced_by_the_interval(tmp_path: Path, monkeypatch):
+    """The half of automatic checking that no press is behind.
+
+    A device whose owner is playing rather than searching still owes itself a
+    check once its window is open, and it must not spend a request per tick to
+    find that out. The timings are the only thing shortened here; what decides
+    whether a pass happens is the arming, the interval and the switch.
+    """
+    network = FakeNetwork()
+    monkeypatch.setattr(update_manager, "SCHEDULE_FIRST_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(update_manager, "SCHEDULE_INTERVAL_SECONDS", 0.01)
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        manager.start_background_checks()
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        asked_once = len(network.calls)
+        # The record is aged past the interval, which is the only thing that
+        # makes another pass due.
+        manager.state.update(checked_at=time.time() - update_manager.CHECK_INTERVAL_SECONDS - 1)
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        asked_again = len(network.calls)
+        await manager.close()
+        return asked_once, asked_again
+
+    once, again = asyncio.run(scenario())
+    assert once == 1, "twenty ticks inside one interval are one request"
+    assert again == 2, "the tick after the interval expires asks again"
+
+
+def test_the_scheduler_asks_for_nothing_while_the_switch_is_off(tmp_path: Path, monkeypatch):
+    network = FakeNetwork()
+    monkeypatch.setattr(update_manager, "SCHEDULE_FIRST_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(update_manager, "SCHEDULE_INTERVAL_SECONDS", 0.01)
+    manager = _manager(tmp_path, network, auto_check=False)
+
+    async def scenario():
+        manager.start_background_checks()
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        await manager.close()
+        return len(network.calls)
+
+    assert asyncio.run(scenario()) == 0
+
+
+def test_closing_stops_the_scheduler_rather_than_leaving_it_running(tmp_path: Path, monkeypatch):
+    """Unload cancels it; a task left behind would outlive the plugin's loop."""
+    network = FakeNetwork()
+    monkeypatch.setattr(update_manager, "SCHEDULE_FIRST_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(update_manager, "SCHEDULE_INTERVAL_SECONDS", 0.01)
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        manager.start_background_checks()
+        await asyncio.sleep(0.05)
+        await manager.close()
+        return manager._schedule_task
+
+    task = asyncio.run(scenario())
+    assert task is not None and task.done()

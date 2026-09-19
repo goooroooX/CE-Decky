@@ -2402,6 +2402,11 @@ class PluginService:
             refusals.append("a Cheat Engine installation is still in progress; cancel it first")
         if self.acquisitions.has_active():
             refusals.append("a table download is still in progress; cancel it first")
+        if self.plugin_updates.has_active_operation():
+            # The same case as a table download: an update owns a staged archive
+            # under the temporary root this deletes, and once it has been handed
+            # to Decky the plugin is being replaced as well.
+            refusals.append("a plugin update is still in progress; wait for it to finish")
         return refusals
 
     def _live_owned_launch_for_deletion(self) -> bool:

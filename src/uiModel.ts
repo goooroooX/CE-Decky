@@ -2350,3 +2350,18 @@ export function updateCheckedOn(seconds: number | null): string | null {
   const when = new Date(seconds * 1000);
   return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }
+
+/**
+ * The version the home panel offers, which is not the same as the one it knows.
+ *
+ * Three things have to hold before a press belongs on a 300 pixel panel: there
+ * is a newer release, the user has not switched automatic checking off, and
+ * this device can actually carry the install out. Advanced shows the finding
+ * whatever the last two say, because that is the screen the switch is on and
+ * the screen that explains an install this device cannot do.
+ */
+export function panelUpdateOffer(update: PluginUpdateState | null): string | null {
+  if (!update || !update.update_available || !update.latest_version) return null;
+  if (!update.auto_check || !update.install_supported) return null;
+  return update.latest_version;
+}

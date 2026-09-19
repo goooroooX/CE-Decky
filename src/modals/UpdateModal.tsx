@@ -167,6 +167,20 @@ export function UpdateModal(
                 />
               </PanelSectionRow>
             )}
+            {/* Once Decky has it there is nothing left to press, so the window
+                says what is happening where everything else on it is said. It
+                used to say it in the row the actions live in, which is one
+                horizontal group of controls and not a place for a sentence. */}
+            {installing && (
+              <PanelSectionRow>
+                <PanelRow
+                  status
+                  testId="update-installing-note"
+                  label="Steam's interface is restarting"
+                  description="This window closes with it. CE Decky reports what happened once the panel comes back."
+                />
+              </PanelSectionRow>
+            )}
             {error && (
               <PanelSectionRow>
                 <PanelRow testId="update-modal-error" label="The update could not be started" description={error} />
@@ -174,15 +188,8 @@ export function UpdateModal(
             )}
           </PanelSection>
         </DensePanel>
-        <ModalActions>
-          {installing ? (
-            <PanelRow
-              status
-              testId="update-installing-note"
-              label="Steam's interface is restarting"
-              description="This window closes with it. CE Decky reports what happened once the panel comes back."
-            />
-          ) : (
+        {!installing && (
+          <ModalActions>
             <>
               <DialogButton
                 style={modalActionStyle}
@@ -202,8 +209,8 @@ export function UpdateModal(
                 {settled ? "Try again" : busy ? "Starting…" : "Update"}
               </DialogButton>
             </>
-          )}
-        </ModalActions>
+          </ModalActions>
+        )}
       </Focusable>
     </ModalRoot>
   );

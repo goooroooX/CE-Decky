@@ -863,6 +863,15 @@ def test_deleting_managed_data_refuses_while_a_download_is_in_flight(tmp_path: P
     assert "tmp" in _present(paths)
 
 
+def test_deleting_managed_data_refuses_while_a_plugin_update_is_in_flight(tmp_path: Path):
+    """An update owns a staged archive under the tree this deletes."""
+    service, paths = _managed_data_service(tmp_path)
+    service.plugin_updates.has_active_operation = Mock(return_value=True)
+    with pytest.raises(ValueError, match="plugin update"):
+        asyncio.run(service.delete_managed_data("all"))
+    assert "tmp" in _present(paths)
+
+
 def test_deleting_managed_data_never_follows_a_symlink_out_of_the_owned_tree(tmp_path: Path):
     """Recursive deletion through a symlink would delete outside the plugin."""
     service, paths = _managed_data_service(tmp_path)

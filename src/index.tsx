@@ -85,7 +85,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -3669,7 +3669,13 @@ function Content() {
    */
   const updateState = status?.update ?? null;
   const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
-  const panelUpdateVersion = updateState?.auto_check ? offeredUpdateVersion : null;
+  // The panel offers the press only where it can be carried out. A device with
+  // no interpreter for the installer would otherwise carry an orange button
+  // whose every press fails; Advanced still shows the finding and says why it
+  // cannot be installed from here.
+  const panelUpdateVersion = updateState?.auto_check && updateState.install_supported
+    ? offeredUpdateVersion
+    : null;
   const mascotVisible = status?.preferences?.mascot_visible ?? true;
 
   const openUpdateModal = () => {
