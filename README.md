@@ -41,6 +41,10 @@ CE Decky is not in the Decky store yet, so install the release ZIP by hand.
 
 Updating is the same steps with a newer ZIP; Decky replaces the plugin in place and your tables, settings and authorizations are kept.
 
+After the first install CE Decky can do that part itself. When a newer release exists the panel shows an orange **Update to vX.Y.Z** button above everything else; pressing it says which version replaces which, warns that Steam's interface restarts, and, once you confirm, downloads the release, checks it against the checksum published with it, and hands it to Decky to install. The download can be stopped; from the moment Decky starts replacing the plugin it cannot, because the panel is part of what is being replaced.
+
+It only looks when you are actually using the plugin: a check happens after you have searched for a table recently, at most once every few hours, and it is one request that carries nothing about you. **Advanced -> Plugin updates** has a **Check now** press and the switch that turns all of it off; switched off, nothing contacts GitHub and no button appears. If an install fails, the checked release is kept in your home folder and that screen names the exact path, so you can install it by hand from Decky's developer mode without downloading it again.
+
 ## First run: install Cheat Engine
 
 The plugin ships no Cheat Engine code. The first panel row says Cheat Engine is not installed and offers **Install**.
@@ -144,8 +148,10 @@ Removing the plugin through Decky deliberately leaves this directory alone, so y
 
 ## Advanced and troubleshooting
 
-**Advanced…** is diagnostics rather than settings:
+**Advanced…** opens with the two things that are settings rather than diagnostics, and everything under them is diagnostics:
 
+- **Plugin updates**: whether CE Decky checks for its own updates, a **Check now**, and the same update press as the panel. A check that failed says so rather than reading as up to date.
+- **Panel appearance**: whether the mascot is drawn on the panel. On by default, and switching it off gives that height back to the cheats. The choice survives an update and a reinstall.
 - **Table sources**: the five sites search asks, each with what it has actually done on this device. All of them are on to begin with; switching one off stops it completely, and switching it back on costs nothing. Tables you already downloaded are unaffected either way.
 - **Registered Cheat Engine** and **Target process**: what is registered, and the exact game `.exe` Cheat Engine attaches to, overridable when the automatic choice picks a launcher instead of the game.
 - **Proton and prefix**: the Proton build the game is actually running under, its compatibility data directory, the game's Wine prefix, and the Windows executables observed inside it. An attached start depends on all of these.

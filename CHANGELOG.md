@@ -2,6 +2,11 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.28 — 2026-09-19
+
+- [New] CE Decky notices its own new releases and installs one on an explicit press. When an update is available the panel carries an orange Update to vX.Y.Z button above everything else, and pressing it says which version replaces which, that Steam's interface restarts, and that installing cannot be cancelled once it starts. The release is downloaded, checked against the checksum the release itself publishes, and handed to Decky's own installer, so nothing here needs root and nothing replaces the plugin directory by hand. Advanced, Plugin updates has the same press, a Check now, and the switch that turns the whole thing off; with it off nothing contacts GitHub and the panel offers nothing. Automatic checking is armed by use rather than by a clock: it asks only after you have searched for a table recently, at most once every few hours, which is how the table listing already decides whether it owes itself a refresh.
+- [New] The panel mascot can be switched off. Advanced, Panel appearance carries the switch, it is on by default, and the choice lives beside the Cheat Engine registration in the plugin's own settings, so it survives an update and a reinstall. Switched off, the image is absent rather than hidden: the height it took goes back to the cheats.
+
 ## 0.9.27 — 2026-09-14
 
 - [Fixed] Rebuilding the committed runtime dependencies no longer depends on which interpreter started the command. SteamOS ships a system python3 with no pip, so running the documented command the documented way produced a pip traceback out of a failed subprocess. It borrows the development environment this project already caches when the interpreter it was started by cannot install, and says which command creates that environment when there is none.

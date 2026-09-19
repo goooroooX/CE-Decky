@@ -1,6 +1,6 @@
 {
   "name": "ce-decky",
-  "version": "0.9.27",
+  "version": "0.9.28",
   "description": "Decky Loader plugin for managing Cheat Engine tables on SteamOS",
   "type": "module",
   "private": true,
