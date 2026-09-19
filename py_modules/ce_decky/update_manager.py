@@ -250,7 +250,14 @@ class PluginUpdateManager:
         takes, it is reported as one that did not finish rather than left
         pending for ever.
         """
-        record = self.state.load()
+        # The effective record rather than the file. On a device whose storage
+        # has stopped taking writes, this is called again on every status read,
+        # and reading the file each time discarded what the last call worked
+        # out: the moment a future start time was first noticed was written
+        # down in memory and then thrown away and taken again, so the attempt
+        # was newly begun for ever and the device went on refusing every update
+        # and every deletion.
+        record = self._stored()
         pending = record.get("install")
         attempt = pending.get("attempt") if isinstance(pending, dict) else None
         result: dict[str, object] | None = None
@@ -348,8 +355,13 @@ class PluginUpdateManager:
             if proven is not None:
                 fields["recovery"] = proven
             result["archive_kept_at"] = proven["path"] if proven is not None else None
-        self.state.update(**fields)
-        self.result_path.unlink(missing_ok=True)
+        # Settling is a report, not an authorization, so it follows the same
+        # rule as every other write here: a disk that cannot take it does not
+        # get to keep this backend believing an install is still running. The
+        # runner's file is left where it is when the write failed, because the
+        # backend that loads next has nothing else to read it from.
+        if self._record(**fields):
+            self.result_path.unlink(missing_ok=True)
         log_activity(
             self.logger, "info", "update.result_consumed",
             ok=result["ok"], version=result.get("version"), error=result.get("error"),
@@ -504,9 +516,34 @@ class PluginUpdateManager:
         }
 
     def _recovery_still_there(self) -> dict[str, object] | None:
-        """The recovery this device is holding, re-proved before it is offered."""
+        """The recovery this device is holding, re-proved before it is offered.
+
+        Two things stop it being one. The file may no longer be the release it
+        says, which is what the digest answers. And this device may already be
+        running that version: the whole point of the file is that a user can
+        install it through Decky by hand, and when they have, nothing in this
+        plugin's own transaction ever runs to notice - the plugin is simply
+        replaced and the next backend starts at the version the file holds. It
+        went on offering them an installer for what they were already running.
+        """
         recovery = self._stored().get("recovery")
         if not isinstance(recovery, dict):
+            return None
+        version = recovery.get("version")
+        try:
+            superseded = parse_version(str(version)) <= parse_version(self.current_version)
+        except UpdateError:
+            # A record this cannot read is not a record this may act on: it is
+            # not offered, and nothing is deleted on the strength of it.
+            return None
+        if superseded:
+            # The file this removes is its own, by name and by directory, the
+            # same one it would have offered.
+            self.discard_kept_archive()
+            log_activity(
+                self.logger, "info", "update.recovery_superseded",
+                version=version, running=self.current_version,
+            )
             return None
         if not self._archive_matches(recovery.get("sha256")):
             return None

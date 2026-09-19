@@ -70,6 +70,25 @@ def _manager(tmp_path: Path, network, *, auto_check=True, searched_at=None, vers
     )
 
 
+def _refuses(**_fields):
+    """A state store that takes nothing, for the device whose disk has stopped."""
+    raise OSError("read-only file system")
+
+
+class _Clock:
+    """Wall time this test moves, for ageing something out without waiting."""
+
+    def __init__(self, base: float) -> None:
+        self.base = base
+        self.offset = 0.0
+
+    def advance(self, seconds: float) -> None:
+        self.offset += seconds
+
+    def __call__(self) -> float:
+        return self.base + self.offset
+
+
 class FakeProcess:
     """The detached installer, as much of it as the manager ever touches.
 
@@ -1226,3 +1245,77 @@ def test_the_status_call_settles_an_adopted_install_that_has_run_out_of_time(tmp
     assert snapshot["operation"]["state"] == "failed"
     assert "never reported back" in snapshot["last_result"]["error"]
     assert manager.has_active_operation() is False
+
+
+def test_a_future_start_on_a_disk_that_takes_nothing_still_ages_out(tmp_path: Path, monkeypatch):
+    """The fallback has to survive being read again, which is all it ever is.
+
+    Reconciling read the file rather than what this backend had worked out, so
+    the moment a future start time was first noticed was written down in memory
+    and then thrown away and taken again on the next status read. The attempt
+    was newly begun for ever, and the device went on refusing every update and
+    every deletion.
+    """
+    manager = _pending(tmp_path, started_at=time.time() + 30 * 24 * 3600)
+    monkeypatch.setattr(manager.state, "update", _refuses)
+
+    manager.consume_runner_result()
+    first = manager._stored()["install"]["started_at"]
+    assert manager.has_active_operation() is True
+
+    # Read again, and again: the origin is where it was.
+    clock = _Clock(base=time.time())
+    monkeypatch.setattr(update_manager.time, "time", clock)
+    manager.snapshot()
+    manager.has_active_operation()
+    assert manager._stored()["install"]["started_at"] == first
+
+    # And the limit runs from it, on a disk that is still taking nothing.
+    clock.advance(INSTALL_PENDING_LIMIT_SECONDS + 60)
+    assert manager.has_active_operation() is False
+    assert "never reported back" in manager._stored()["last_result"]["error"]
+    assert manager._stored().get("install") is None
+    assert manager.snapshot()["operation"]["state"] == "failed"
+
+    # A new update may still fail on a disk that takes nothing - it has to write
+    # down that an installer is being started before it starts one - but it must
+    # not fail because this device believes the old one is still running.
+    async def retry():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(retry())
+    assert status["state"] == "failed", "the disk is what stops it"
+    assert "already running" not in str(status["error"]), "and not this device's own memory"
+
+
+def test_a_recovery_for_a_version_this_device_already_runs_is_retired(tmp_path: Path):
+    """The manual route works by this plugin being replaced without it noticing.
+
+    Nothing in this transaction runs when a user installs the saved release
+    through Decky themselves: the plugin is replaced and the next backend simply
+    starts at that version. Offering them an installer for what they are already
+    running is the one outcome the fallback must not end in.
+    """
+    holding = _manager(tmp_path / "holding", FakeNetwork(), version="0.9.27")
+    digest = _kept(holding)
+    recovery = {"attempt": "a" * 32, "version": "0.9.28", "sha256": digest, "path": str(holding.kept_archive_path)}
+    holding.state.update(recovery=recovery)
+    assert holding.snapshot()["recovery"]["version"] == "0.9.28"
+    assert holding.kept_archive_path.is_file()
+
+    for version in ("0.9.28", "0.9.29"):
+        arrived = _manager(tmp_path / f"arrived-{version}", FakeNetwork(), version=version)
+        _kept(arrived)
+        arrived.state.update(recovery={**recovery, "path": str(arrived.kept_archive_path)})
+        assert arrived.snapshot()["recovery"] is None
+        assert arrived.kept_archive_path.exists() is False, "and the file goes with the offer"
+        assert arrived.state.load()["recovery"] is None
+
+    # A record this cannot read deletes nothing and offers nothing.
+    unreadable = _manager(tmp_path / "unreadable", FakeNetwork(), version="0.9.28")
+    _kept(unreadable)
+    unreadable.state.update(recovery={**recovery, "version": None, "path": str(unreadable.kept_archive_path)})
+    assert unreadable.snapshot()["recovery"] is None
+    assert unreadable.kept_archive_path.is_file()
