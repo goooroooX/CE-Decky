@@ -116,9 +116,13 @@ class PluginUpdateManager:
         self.state = UpdateStateStore(paths.state_root / STATE_FILENAME)
         self.result_path = paths.state_root / RESULT_FILENAME
         self._offer: ReleaseOffer | None = None
+        # Looked up once per plugin load. The status call asks whether an
+        # install is possible at all, and that must not become a PATH scan per
+        # status read on a device where nothing about it can change while this
+        # process runs.
+        self._interpreter = system_interpreter()
         self._operation: dict[str, object] | None = None
         self._task: "asyncio.Task[None] | None" = None
-        self._check_task: "asyncio.Task[None] | None" = None
         self._schedule_task: "asyncio.Task[None] | None" = None
         self._checking = False
         self._last_check_attempt = 0.0
@@ -145,7 +149,7 @@ class PluginUpdateManager:
             "last_error": record.get("last_error"),
             "page_url": record.get("page_url") or RELEASES_PAGE_URL,
             "last_result": record.get("last_result"),
-            "install_supported": system_interpreter() is not None,
+            "install_supported": self._interpreter is not None,
             "checking": self._checking,
             "operation": dict(self._operation) if self._operation is not None else None,
         }
@@ -245,6 +249,10 @@ class PluginUpdateManager:
         try:
             offer = await self._read_latest_release()
         except Exception as exc:  # noqa: BLE001 - every failure is a line on a screen
+            # Cleared before the snapshot rather than in a `finally`, which runs
+            # after the returned expression is evaluated: the screen would
+            # otherwise be handed a failed check that says it is still running.
+            self._checking = False
             self.state.update(checked_at=time.time(), last_error=_reason(exc))
             log_failure(
                 self.logger, "update.check_failed", exc,
@@ -311,8 +319,14 @@ class PluginUpdateManager:
             await asyncio.sleep(SCHEDULE_FIRST_DELAY_SECONDS)
             while True:
                 try:
-                    if self.should_check() and (self._check_task is None or self._check_task.done()):
-                        self._check_task = asyncio.create_task(self.check(forced=False))
+                    if self.should_check():
+                        # Awaited rather than spawned. A task nobody retrieves
+                        # the result of reports its failure as an unretrieved
+                        # exception at some later garbage collection, which is a
+                        # line in the log with no run attached to it; this tick
+                        # has nothing else to do while the request is out, and
+                        # unload cancels it through this coroutine.
+                        await self.check(forced=False)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - a tick failure fails nothing else
@@ -348,7 +362,7 @@ class PluginUpdateManager:
             raise RuntimeError("plugin is unloading")
         if self.has_active_operation():
             raise ValueError("a plugin update is already running")
-        if system_interpreter() is None:
+        if self._interpreter is None:
             raise ValueError(
                 "this device has no python3 to run the updater with; "
                 "install the release manually from Decky instead"
@@ -447,7 +461,7 @@ class PluginUpdateManager:
         install begins, which is what lets it keep working while the tree it
         was imported from is being replaced.
         """
-        interpreter = system_interpreter()
+        interpreter = self._interpreter
         if interpreter is None:
             raise ValueError("this device has no python3 to run the updater with")
         record = self.state.load()
@@ -500,10 +514,10 @@ class PluginUpdateManager:
 
     async def close(self) -> None:
         self._closing = True
-        for task in (self._schedule_task, self._check_task, self._task):
+        for task in (self._schedule_task, self._task):
             if task is not None and not task.done():
                 task.cancel()
-        tasks = [task for task in (self._schedule_task, self._check_task, self._task) if task is not None]
+        tasks = [task for task in (self._schedule_task, self._task) if task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

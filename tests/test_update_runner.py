@@ -156,3 +156,17 @@ def test_the_install_waits_out_the_webhelper_spacing_it_was_given(tmp_path: Path
     slept.clear()
     update_runner.run(_args(tmp_path, archive, digest, not_before=900.0))
     assert not any(value > 1 for value in slept)
+
+
+def test_a_path_decky_cannot_be_handed_is_refused_with_the_archive_kept(tmp_path: Path, loader):
+    # A path that does not survive the round trip through a file URI: Decky
+    # would open something else, or nothing, and report neither.
+    awkward = tmp_path / "Steam Deck games"
+    awkward.mkdir()
+    archive, digest = _archive(awkward)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is False
+    assert "file URI" in str(result["error"])
+    assert loader["installed"] == []
+    # It was verified before that refusal, so the manual route still has it.
+    assert result["archive_kept_at"] == str(tmp_path / "home" / "CE-Decky-v0.9.28.zip")

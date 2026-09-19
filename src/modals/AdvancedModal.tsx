@@ -1440,7 +1440,7 @@ export function AdvancedModal(props: Props) {
               actions={updateView.page_url ? (
                 <SmallButton
                   disabled={blocked}
-                  onClick={traceUiAction("advanced_modal.open_release_page", () => { void openExternalWeb(updateView.page_url); })}
+                  onClick={traceUiAction("advanced_modal.open_release_page", () => openSourcePage(updateView.page_url))}
                 >
                   Release page
                 </SmallButton>

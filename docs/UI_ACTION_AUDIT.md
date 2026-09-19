@@ -91,7 +91,7 @@ Each identifier below names one owned callback location, even when several rows 
 | `advanced_modal.look_inside` | `src/modals/AdvancedModal.tsx` | `() => openSubScreen("code", () => setCodeOpen(true))` |
 | `advanced_modal.mascot_visible` | `src/modals/AdvancedModal.tsx` | `(visible: boolean) => { void invoke(() => onSetMascotVisible(visible), ...); }` |
 | `advanced_modal.open` | `src/modals/AdvancedModal.tsx` | `() => { openSourcePage(tableOrigin.source_page); }` |
-| `advanced_modal.open_release_page` | `src/modals/AdvancedModal.tsx` | `() => { void openExternalWeb(updateView.page_url); }` |
+| `advanced_modal.open_release_page` | `src/modals/AdvancedModal.tsx` | `() => openSourcePage(updateView.page_url)` |
 | `advanced_modal.ownership.repair` | `src/modals/AdvancedModal.tsx` | `() => { void repair(onRepairOwnedLaunchState); }` |
 | `advanced_modal.processes` | `src/modals/AdvancedModal.tsx` | `() => { if (runtimeSessionReady) { void invoke(onRefreshProcesses, (next) => { setRuntimeView(next);...` |
 | `advanced_modal.profile.discard` | `src/modals/AdvancedModal.tsx` | `() => { void repair(onRepairProfileState); }` |

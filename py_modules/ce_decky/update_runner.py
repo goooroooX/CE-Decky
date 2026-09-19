@@ -174,6 +174,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         if observed != args.digest:
             raise RuntimeError("the staged update archive no longer matches its verified digest")
         verified = True
+        # Decky is handed a `file://` URI and opens the path inside it. A path
+        # this cannot represent without percent-encoding is one the loader may
+        # open somewhere else or not at all, so it is refused here, where the
+        # archive can still be kept for a manual install, rather than discovered
+        # as an install that silently did nothing.
+        if archive.as_uri()[len("file://"):] != str(archive):
+            raise RuntimeError(f"this path cannot be handed to Decky as a file URI: {archive}")
         _wait_out_spacing(args.not_before, log)
         token = auth_token(args.decky_url, CONNECT_TIMEOUT_SECONDS)
         started = time.monotonic()
