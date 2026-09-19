@@ -78,7 +78,12 @@ KEPT_ARCHIVE_PREFIX = "CE-Decky-update-"
 # a Python that can be given a module to run.
 SYSTEM_INTERPRETERS = ("/usr/bin/python3", "/usr/local/bin/python3")
 
-_TERMINAL_STATES = frozenset({"installing", "failed", "cancelled"})
+# The states an update is over in. `installing` is deliberately not one of
+# them: the install is happening in another process and this plugin is being
+# replaced, so a second start would download again and spawn a second installer
+# into the middle of that. What reports the outcome is the record the next
+# backend reads, and a retry after a failure goes through it.
+_SETTLED_STATES = frozenset({"failed", "cancelled"})
 
 
 def system_interpreter() -> str | None:
@@ -350,7 +355,7 @@ class PluginUpdateManager:
         if self._task is not None and not self._task.done():
             return True
         operation = self._operation
-        return operation is not None and str(operation.get("state")) not in _TERMINAL_STATES
+        return operation is not None and str(operation.get("state")) not in _SETTLED_STATES
 
     async def start(self) -> dict[str, object]:
         """Begin one update: read the release again, fetch it, verify it, install.

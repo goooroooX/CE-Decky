@@ -36,6 +36,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import secrets  # noqa: E402
+
 import host_platform  # noqa: E402
 from target_plugin_install import (  # noqa: E402
     DEFAULT_DECKY_URL,
@@ -46,11 +48,22 @@ from target_plugin_install import (  # noqa: E402
     _await_reply,
 )
 
-REQUEST_ID = 91
+def request_id() -> int:
+    """A different id for every call, because a reply is not private to its socket.
+
+    Decky delivers a plugin method's result to clients other than the one that
+    asked, so a fixed id cannot tell this call's answer from the replay of an
+    earlier one carrying the same id. Two identical calls a few seconds apart
+    were observed on this project's device to return one answer twice: the
+    backend's own log showed one call, and the helper printed a reply for two.
+    An id drawn per call makes that indistinguishable case impossible.
+    """
+    return secrets.randbelow(1_000_000) + 1000
 
 
 def call(method: str, args: list[object], decky_url: str, timeout: float) -> object:
     """One method on the live backend, with its answer or its refusal."""
+    identity = request_id()
     token = _auth_token(decky_url, min(timeout, 10.0))
     with DeckyWebSocket.connect(decky_url, token, timeout) as socket:
         socket.send_json({
@@ -61,9 +74,9 @@ def call(method: str, args: list[object], decky_url: str, timeout: float) -> obj
             # nested list arrives as a single argument and the backend refuses
             # it, which is a confusing way to learn this.
             "args": [PLUGIN_NAME, method, *args],
-            "id": REQUEST_ID,
+            "id": identity,
         })
-        return _await_reply(socket, REQUEST_ID)
+        return _await_reply(socket, identity)
 
 
 def main(argv: list[str] | None = None) -> int:

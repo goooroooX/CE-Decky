@@ -229,6 +229,25 @@ def test_an_install_that_has_reached_decky_can_no_longer_be_cancelled(tmp_path: 
     asyncio.run(scenario())
 
 
+def test_a_second_update_is_refused_while_one_is_still_running(tmp_path: Path, spawned):
+    """Two presses are one update, and the second says so rather than racing it."""
+    manager = _manager(tmp_path, FakeNetwork())
+
+    async def scenario():
+        started = await manager.start()
+        with pytest.raises(ValueError, match="already running"):
+            await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+        # Still refused afterwards: this one has reached Decky and the plugin is
+        # being replaced, so there is nothing here for a second one to do.
+        with pytest.raises(ValueError, match="already running"):
+            await manager.start()
+        return manager.status(started["operation_id"])
+
+    assert asyncio.run(scenario())["state"] == "installing"
+    assert len(spawned) == 1
+
+
 def test_the_runners_result_is_folded_into_the_record_and_consumed(tmp_path: Path):
     manager = _manager(tmp_path, FakeNetwork(), version="0.9.28")
     manager.state.update(install={"version": "0.9.28", "started_at": time.time()}, latest_version="0.9.28")
