@@ -170,3 +170,21 @@ def test_a_path_decky_cannot_be_handed_is_refused_with_the_archive_kept(tmp_path
     assert loader["installed"] == []
     # It was verified before that refusal, so the manual route still has it.
     assert result["archive_kept_at"] == str(tmp_path / "home" / "CE-Decky-v0.9.28.zip")
+
+
+def test_the_token_is_never_asked_for_anywhere_but_loopback():
+    """The credential that installs plugins does not leave this device.
+
+    The socket that uses the token refused a non-loopback URL from the start.
+    The request for the token itself did not, so a caller naming another host
+    would have sent the credential there first and been refused afterwards.
+    """
+    from ce_decky import decky_control
+
+    for url in ("http://example.net:1337", "https://127.0.0.1:1337", "http://decky.example.net:1337"):
+        with pytest.raises(ValueError, match="loopback"):
+            decky_control.auth_token(url, 1.0)
+        with pytest.raises(ValueError, match="loopback"):
+            decky_control.DeckyWebSocket.connect(url, "token", 1.0)
+    assert decky_control.require_loopback("http://localhost:1337") == ("localhost", 1337)
+    assert decky_control.require_loopback(decky_control.DEFAULT_DECKY_URL) == ("127.0.0.1", 1337)

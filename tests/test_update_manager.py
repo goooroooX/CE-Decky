@@ -142,6 +142,71 @@ def test_check_now_ignores_the_arming_but_keeps_its_floor(tmp_path: Path):
     assert len(network.calls) == 1
 
 
+def test_a_background_check_does_not_spend_the_floor_a_press_is_owed(tmp_path: Path):
+    """The floor is about presses, and a tick is not one.
+
+    Sharing it meant a scheduler tick seconds earlier answered Check now from a
+    record whose age the user cannot see, which is the one thing that press
+    exists to settle.
+    """
+    network = FakeNetwork()
+    manager = _manager(tmp_path, network)
+    asyncio.run(manager.check(forced=False))
+    assert len(network.calls) == 1
+    asyncio.run(manager.check(forced=True))
+    assert len(network.calls) == 2
+
+
+def test_a_download_that_fails_leaves_nothing_in_the_staging_tree(tmp_path: Path, spawned):
+    """The partial file is the caller's problem and the caller never sees it.
+
+    The path only reaches `_run` when the download returns it, so a transfer
+    that raises has to take its own file with it or leave a partial archive in
+    the managed tree until something else happens to clear it.
+    """
+    network = FakeNetwork()
+    staging = PluginPaths.for_tests(tmp_path).temp_root / "updates"
+
+    async def half_a_download(url, destination: Path, **_kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"half of an arch")
+        raise OSError("the connection went away")
+
+    network.download = half_a_download  # type: ignore[assignment]
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        started = await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    assert list(staging.glob("*")) == []
+    assert spawned == []
+
+
+def test_a_failed_install_names_this_runs_offer_and_not_an_older_one(tmp_path: Path, spawned):
+    """What the last update tried is this run's answer, not a stale finding."""
+    network = FakeNetwork()
+    manager = _manager(tmp_path, network)
+    # A check that found something, the way an armed device would have.
+    asyncio.run(manager.check(forced=True))
+    assert manager.snapshot()["latest_version"] == "0.9.28"
+    # The release is pulled before the press lands.
+    network.release = _release_payload("0.9.27")
+
+    async def scenario():
+        await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    result = manager.snapshot()["last_result"]
+    assert result["ok"] is False
+    assert result["version"] is None
+    assert "already the newest" in result["error"]
+
+
 def test_a_failed_check_is_a_line_on_the_screen_rather_than_an_exception(tmp_path: Path):
     network = FakeNetwork()
     network.failure = ProviderRateLimited("60", "GitHub is rate limiting this device")

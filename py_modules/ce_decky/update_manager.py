@@ -131,7 +131,7 @@ class PluginUpdateManager:
         self._task: "asyncio.Task[None] | None" = None
         self._schedule_task: "asyncio.Task[None] | None" = None
         self._checking = False
-        self._last_check_attempt = 0.0
+        self._last_forced_at = 0.0
         self._closing = False
 
     # ---------------------------------------------------------------- reading
@@ -248,12 +248,16 @@ class PluginUpdateManager:
         """
         if self._closing:
             raise RuntimeError("plugin is unloading")
-        if forced and time.monotonic() - self._last_check_attempt < FORCED_CHECK_FLOOR_SECONDS and self._last_check_attempt:
+        # The floor is about presses. Pacing a press against the background
+        # timer as well would answer Check now from a record the user cannot
+        # see the age of, on a device whose scheduler happened to tick first.
+        if forced and self._last_forced_at and time.monotonic() - self._last_forced_at < FORCED_CHECK_FLOOR_SECONDS:
             return self.snapshot()
         if self._checking:
             return self.snapshot()
         self._checking = True
-        self._last_check_attempt = time.monotonic()
+        if forced:
+            self._last_forced_at = time.monotonic()
         try:
             latest, offer = await self._read_latest_release()
         except Exception as exc:  # noqa: BLE001 - every failure is a line on a screen
@@ -402,6 +406,10 @@ class PluginUpdateManager:
 
     async def _run(self, operation_id: str) -> None:
         archive: Path | None = None
+        # This run's own offer. Reading `self._offer` here would name whatever
+        # an earlier check happened to find, on exactly the path where this run
+        # found something different or nothing at all.
+        offer: ReleaseOffer | None = None
         try:
             latest, offer = await self._read_latest_release()
             self.state.update(**checked_now(offer, latest, current_version=self.current_version))
@@ -428,7 +436,7 @@ class PluginUpdateManager:
             # just succeeded. Nothing is kept here for a manual install, because
             # nothing got as far as being verified.
             self.state.update(last_result={
-                "version": self._offer.version if self._offer is not None else None,
+                "version": offer.version if offer is not None else None,
                 "ok": False,
                 "error": reason,
                 "archive_kept_at": None,
@@ -457,15 +465,22 @@ class PluginUpdateManager:
         _clear(staging)
         staging.mkdir(parents=True, exist_ok=True)
         destination = staging / offer.archive_name
-        response = await self.network.download(
-            offer.archive_url, destination, allowed_hosts=ASSET_HOSTS, max_bytes=MAX_ARCHIVE_BYTES,
-        )
-        if response.status != 200:
-            raise UpdateError(f"the release archive answered {response.status}")
-        observed = await asyncio.to_thread(_file_digest, destination)
-        if observed != digest:
+        # Every way out of the transfer but the one that returns the file takes
+        # the file with it. A cancelled or failed download leaves a partial
+        # archive in the managed tree otherwise, and the caller cannot clean it
+        # up because it never learned the path.
+        try:
+            response = await self.network.download(
+                offer.archive_url, destination, allowed_hosts=ASSET_HOSTS, max_bytes=MAX_ARCHIVE_BYTES,
+            )
+            if response.status != 200:
+                raise UpdateError(f"the release archive answered {response.status}")
+            observed = await asyncio.to_thread(_file_digest, destination)
+            if observed != digest:
+                raise UpdateError("the downloaded archive is not what this release says it is")
+        except BaseException:
             destination.unlink(missing_ok=True)
-            raise UpdateError("the downloaded archive is not what this release says it is")
+            raise
         log_activity(
             self.logger, "info", "update.archive_verified",
             version=offer.version, bytes=destination.stat().st_size, sha256=digest[:12],

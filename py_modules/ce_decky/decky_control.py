@@ -54,6 +54,22 @@ class DeckyWebSocketClosed(RuntimeError):
     """The Decky websocket closed before returning the requested RPC reply."""
 
 
+def require_loopback(decky_url: str) -> tuple[str, int]:
+    """The host and port of a Decky URL, once it is one this may talk to.
+
+    Decky's token is what authorizes installing a plugin on this device, and it
+    is handed to whoever asks on loopback. Every route to it therefore checks
+    where it is being asked, not only the socket that uses it afterwards: the
+    token request used to take the URL as given, so a caller that named another
+    host would have sent the credential there and only the connection after it
+    would have refused.
+    """
+    parsed = urlsplit(decky_url)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("Decky URL must be loopback HTTP")
+    return parsed.hostname, parsed.port or 80
+
+
 def receive_exact(sock: socket.socket, size: int) -> bytes:
     chunks: list[bytes] = []
     remaining = size
@@ -74,17 +90,14 @@ class DeckyWebSocket:
 
     @classmethod
     def connect(cls, decky_url: str, token: str, timeout: float) -> "DeckyWebSocket":
-        parsed = urlsplit(decky_url)
-        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
-            raise ValueError("Decky URL must be loopback HTTP")
-        port = parsed.port or 80
-        sock = socket.create_connection((parsed.hostname, port), timeout=timeout)
+        hostname, port = require_loopback(decky_url)
+        sock = socket.create_connection((hostname, port), timeout=timeout)
         sock.settimeout(timeout)
         key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
         path = f"/ws?auth={quote(token, safe='')}"
         request = (
             f"GET {path} HTTP/1.1\r\n"
-            f"Host: {parsed.hostname}:{port}\r\n"
+            f"Host: {hostname}:{port}\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
@@ -283,6 +296,7 @@ def install_and_confirm(ws: Any, artifact_url: str, version: str, package_sha: s
 
 
 def auth_token(decky_url: str, timeout: float) -> str:
+    require_loopback(decky_url)
     opener = build_opener(ProxyHandler({}))
     with opener.open(f"{decky_url}/auth/token", timeout=timeout) as response:
         token = response.read(4096).decode("utf-8").strip()
