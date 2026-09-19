@@ -299,6 +299,12 @@ class PluginUpdateManager:
         if not isinstance(kept, str) or not kept:
             return
         path = Path(kept)
+        # Its own name, in the one directory this ever writes it to. The record
+        # is a file on disk and the path in it is what this is about to delete,
+        # so what makes the claim above true is that both halves are checked
+        # rather than either one.
+        if path.parent != self.paths.user_home:
+            return
         if not path.name.startswith(KEPT_ARCHIVE_PREFIX) or path.suffix != ".zip":
             return
         try:
@@ -335,7 +341,10 @@ class PluginUpdateManager:
         except UpdateError:
             superseded = True
         try:
-            missing = not Path(kept).is_file()
+            path = Path(kept)
+            # A symlink where this left a file is not the file it left, and the
+            # row would be offering a manual install of whatever it points at.
+            missing = path.is_symlink() or not path.is_file()
         except OSError:  # pragma: no cover - a home directory that cannot be read
             missing = False
         return {"last_result": None} if superseded or missing else {}

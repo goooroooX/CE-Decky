@@ -910,3 +910,40 @@ def test_a_successful_install_removes_the_file_an_earlier_failure_left(tmp_path:
     }, install={"attempt": "g" * 32, "version": "0.9.28", "started_at": time.time()})
     manager.consume_runner_result()
     assert stranger.exists() is True
+
+
+def test_only_a_check_that_answered_lets_go_of_the_last_outcome(tmp_path: Path):
+    """A check that could not be made says nothing about an install that failed."""
+    network = FakeNetwork()
+    network.failure = ProviderRateLimited("60", "GitHub is rate limiting this device")
+    manager = _manager(tmp_path, network)
+    spent = {
+        "attempt": "h" * 32, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
+        "archive_kept_at": None, "at": time.time(), "restart_requested": False,
+    }
+    manager.state.update(last_result=spent)
+    snapshot = asyncio.run(manager.check(forced=True))
+    assert snapshot["last_result"] == spent
+    assert "rate limiting" in snapshot["last_error"]
+
+
+def test_the_file_removed_by_a_success_is_the_one_this_wrote(tmp_path: Path):
+    """A path in the record is what this is about to delete, so it is checked.
+
+    Both halves: the name this gives the file it keeps, and the one directory it
+    ever writes it to.
+    """
+    manager = _manager(tmp_path, FakeNetwork(), version="0.9.28")
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir(parents=True, exist_ok=True)
+    impostor = elsewhere / "CE-Decky-update-v0.9.28.zip"
+    impostor.write_bytes(b"not the copy this put anywhere")
+    manager.state.update(
+        last_result={
+            "attempt": "i" * 32, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
+            "archive_kept_at": str(impostor), "at": time.time(), "restart_requested": False,
+        },
+        install={"attempt": "j" * 32, "version": "0.9.28", "started_at": time.time()},
+    )
+    manager.consume_runner_result()
+    assert impostor.exists() is True
