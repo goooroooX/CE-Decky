@@ -300,8 +300,15 @@ that and still restores them. The artifact is named
 release, and the SHA-256 it prints is what the install command takes:
 
 ```bash
-python scripts/target_plugin_install.py install --package artifacts/CE-Decky-downgrade-v0.9.27.zip --sha256 <printed digest> --replace
+python scripts/target_plugin_install.py install artifacts/CE-Decky-downgrade-v0.9.27.zip --sha256 <printed digest> --expect-version 0.9.27 --replace
 ```
+
+`--expect-version` is required for this one package and for nothing else. The
+installer proves that a ZIP is the exact installable artifact of this checkout,
+and a build made to be older deliberately is not that; naming the version moves
+what the package is compared against and moves nothing else, so a package whose
+own two version strings disagree still fails. The helper prints the whole
+command.
 
 From there the run is the real one: open the panel, press **Check now**, take the
 orange button, and confirm. What proves it afterwards is the panel reporting the
