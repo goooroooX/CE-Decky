@@ -351,10 +351,17 @@ class PluginService:
         """
         try:
             with self._mutation_lock:
-                found = self.config_store.take_legacy_preferences()
-                if found:
+                found = self.config_store.legacy_preferences()
+                # Stored before the configuration is rewritten, so nothing that
+                # happens in between can leave the user's choices in neither
+                # file; and only where this store has nothing of its own, so a
+                # stale copy in the configuration cannot overwrite a switch the
+                # user has since changed.
+                if found and not self.preferences.path.exists():
                     self.preferences.set(**found)
                     log_activity(self.logger, "info", "preferences.adopted", moved=sorted(found))
+                if self.config_store.strip_legacy_preferences():
+                    log_activity(self.logger, "info", "preferences.removed_from_config")
         except Exception as exc:  # noqa: BLE001 - a move must never block backend load
             log_failure(self.logger, "preferences.adoption_failed", exc, expected=True)
 

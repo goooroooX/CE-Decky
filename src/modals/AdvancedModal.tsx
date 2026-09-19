@@ -13,7 +13,7 @@ import {
   showModal,
 } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ActionGroup, ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, focusFirstEnabled } from "../components/PanelDensity";
+import { ActionGroup, ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, UPDATE_ACTION_CLASS, focusFirstEnabled } from "../components/PanelDensity";
 import { DestructiveAction, ModalActions, modalActionStyle } from "../components/ModalActions";
 import { DebugDetails } from "../components/DebugDetails";
 import { describeError } from "../errors";
@@ -1397,14 +1397,18 @@ export function AdvancedModal(props: Props) {
               user who has just switched checking back on already is. */}
           {updateAvailable && updateView?.install_supported && onStartUpdate && (
             <ActionRow testId="update-install">
-              <SmallButton
-                grow
-                tone="update"
-                disabled={blocked}
-                onClick={traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version })}
-              >
-                {`Update to v${updateView?.latest_version}`}
-              </SmallButton>
+              {/* The box carries the colour, not the button: `CONTENTS_ONLY`
+                  leaves the control exactly where the row put it, and the rule
+                  behind that class stands aside while the ring is on it. */}
+              <div className={UPDATE_ACTION_CLASS} style={CONTENTS_ONLY}>
+                <SmallButton
+                  grow
+                  disabled={blocked}
+                  onClick={traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version })}
+                >
+                  {`Update to v${updateView?.latest_version}`}
+                </SmallButton>
+              </div>
             </ActionRow>
           )}
           {onSetUpdateAutoCheck && (

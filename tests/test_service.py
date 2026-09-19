@@ -1645,3 +1645,22 @@ def test_a_switch_is_stored_where_an_older_build_will_not_trip_over_it(tmp_path:
     }
     stored = json.loads((paths.settings_dir / "preferences.json").read_text(encoding="utf-8"))
     assert stored == {"schema": 1, "update_auto_check": False, "mascot_visible": False}
+
+
+def test_a_switch_changed_since_the_move_is_not_overwritten_by_the_old_copy(tmp_path: Path):
+    """The configuration's copy is a seed, used once, and only where there is
+    nothing else: a device whose configuration still carries it because an
+    earlier attempt could not finish must not have today's choice replaced by
+    last week's."""
+    paths = PluginPaths.for_tests(tmp_path)
+    paths.ensure()
+    paths.config_path.write_text(json.dumps({"schema": 1, "mascot_visible": False}), encoding="utf-8")
+    (paths.settings_dir / "preferences.json").write_text(
+        json.dumps({"schema": 1, "mascot_visible": True, "update_auto_check": True}), encoding="utf-8",
+    )
+
+    service = PluginService(paths, logging.getLogger("test-preferences-seed"))
+    service.initialize()
+
+    assert service.preferences.load().mascot_visible is True
+    assert "mascot_visible" not in json.loads(paths.config_path.read_text(encoding="utf-8"))

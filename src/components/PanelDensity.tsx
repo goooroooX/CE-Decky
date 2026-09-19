@@ -128,9 +128,12 @@ const NOTE_CLASS = "ce-decky-note";
  * rule that stops applying while anything inside is focused, which hands the
  * focused appearance back to Steam without knowing any of its class names.
  *
- * The class goes on the control itself where the caller renders one, and on a
- * box around it where the caller renders Steam's own `ButtonItem`, which owns
- * the button inside it; the rule covers both.
+ * The class always goes on a box around the control rather than on the control
+ * itself. Steam's own button is a component out of its shipped bundle, and
+ * whether it merges a className with its own or replaces them with it is not
+ * something this repository can read; a box is the same in either case, and
+ * `CONTENTS_ONLY` keeps it out of the layout where the control is already
+ * placed by a row.
  */
 export const UPDATE_ACTION_CLASS = "ce-decky-update";
 /** Marks a row that is currently showing its revealed block. */
@@ -403,8 +406,7 @@ function densityCss(): string | null {
     // label and a control's worth of height. It is inset like the fields around
     // it and set at description weight.
     `${scope} .${NOTE_CLASS} { padding: 2px 20px 5px; font-size: 11px; line-height: 15px; color: hsla(0, 0%, 100%, 0.62); }`,
-    `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button,`
-      + ` ${scope} button.${UPDATE_ACTION_CLASS}:not(:focus-within)`
+    `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button`
       + ` { background: var(--ce-update-accent); color: var(--ce-update-accent-text); }`,
     `${sectionSelector} { margin-bottom: 6px; }`,
     // Steam renders a section heading at 16px/22px with 8px beneath it; five
@@ -1512,7 +1514,7 @@ export const mediumActionStyle: CSSProperties = {
   lineHeight: "18px",
 };
 
-export function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small", tone }: {
+export function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small" }: {
   children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
@@ -1530,21 +1532,12 @@ export function SmallButton({ children, onClick, disabled, preferredFocus, grow,
    */
   grow?: boolean;
   size?: "small" | "medium";
-  /**
-   * `update` is the mascot's orange, and it is used for exactly one press.
-   *
-   * A colour that marks everything marks nothing, so this is deliberately not a
-   * palette of tones: the only control that takes it is the one offering a new
-   * version of the plugin, which is the single thing on this panel that is not
-   * about the game the user is playing.
-   */
-  tone?: "update";
 }) {
   const style = size === "medium" ? mediumActionStyle : smallActionStyle;
   // Never hand Steam's controller click event to a workflow callback: several
   // of them forward their argument, and an event reaching Steam's game list is
   // exactly the leak the panel tests guard against.
   return (
-    <DialogButton className={tone === "update" ? UPDATE_ACTION_CLASS : undefined} style={grow ? { ...style, flex: "1 1 auto" } : style} disabled={disabled} preferredFocus={preferredFocus} onClick={() => onClick()}>{children}</DialogButton>
+    <DialogButton style={grow ? { ...style, flex: "1 1 auto" } : style} disabled={disabled} preferredFocus={preferredFocus} onClick={() => onClick()}>{children}</DialogButton>
   );
 }

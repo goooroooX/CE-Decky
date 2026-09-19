@@ -95,8 +95,8 @@ class ConfigStore:
             raise ValueError(f"unsupported config schema: {config.schema}")
         return config
 
-    def take_legacy_preferences(self) -> dict[str, bool]:
-        """Lift the preferences 0.9.28 briefly stored here, and rewrite without them.
+    def legacy_preferences(self) -> dict[str, bool]:
+        """The preferences 0.9.28 briefly stored here, if this file still has them.
 
         They belong in their own file, for the reason `preferences.py` gives:
         this one is parsed strictly, so a key an older build does not know costs
@@ -104,20 +104,28 @@ class ConfigStore:
         device that ran one of those builds already has them here, and they are
         the user's own choices, so they are moved rather than dropped.
 
-        Returns what was found, so the caller can seed the store that owns them
-        now. An empty answer is every ordinary device, and nothing is written.
+        Reading and removing are deliberately two calls. Rewriting this file
+        first and storing them afterwards puts the user's choices nowhere at all
+        if anything goes wrong between the two, and what goes wrong there is a
+        full disk or a plugin being stopped, both of which this project has met.
         """
         raw = load_json(self.path, {}, max_bytes=256 * 1024)
         if not isinstance(raw, dict):
             raise ValueError("config root must be a JSON object")
-        found = {
+        return {
             key: raw[key] for key in LEGACY_CONFIG_KEYS
             if key in raw and isinstance(raw[key], bool)
         }
+
+    def strip_legacy_preferences(self) -> bool:
+        """Rewrite this file without them. Returns whether it had any."""
+        raw = load_json(self.path, {}, max_bytes=256 * 1024)
+        if not isinstance(raw, dict):
+            raise ValueError("config root must be a JSON object")
         if not set(raw) & _MIGRATED_KEYS:
-            return found
+            return False
         self.save(Config.from_mapping(raw))
-        return found
+        return True
 
     def save(self, config: Config) -> None:
         # Re-validate our own serialized state before persistence so callers cannot

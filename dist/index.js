@@ -1917,9 +1917,12 @@ const NOTE_CLASS = "ce-decky-note";
  * rule that stops applying while anything inside is focused, which hands the
  * focused appearance back to Steam without knowing any of its class names.
  *
- * The class goes on the control itself where the caller renders one, and on a
- * box around it where the caller renders Steam's own `ButtonItem`, which owns
- * the button inside it; the rule covers both.
+ * The class always goes on a box around the control rather than on the control
+ * itself. Steam's own button is a component out of its shipped bundle, and
+ * whether it merges a className with its own or replaces them with it is not
+ * something this repository can read; a box is the same in either case, and
+ * `CONTENTS_ONLY` keeps it out of the layout where the control is already
+ * placed by a row.
  */
 const UPDATE_ACTION_CLASS = "ce-decky-update";
 /** Marks a row that is currently showing its revealed block. */
@@ -2175,8 +2178,7 @@ function densityCss() {
         // label and a control's worth of height. It is inset like the fields around
         // it and set at description weight.
         `${scope} .${NOTE_CLASS} { padding: 2px 20px 5px; font-size: 11px; line-height: 15px; color: hsla(0, 0%, 100%, 0.62); }`,
-        `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button,`
-            + ` ${scope} button.${UPDATE_ACTION_CLASS}:not(:focus-within)`
+        `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button`
             + ` { background: var(--ce-update-accent); color: var(--ce-update-accent-text); }`,
         `${sectionSelector} { margin-bottom: 6px; }`,
         // Steam renders a section heading at 16px/22px with 8px beneath it; five
@@ -2988,12 +2990,12 @@ const mediumActionStyle = {
     fontSize: 13,
     lineHeight: "18px",
 };
-function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small", tone }) {
+function SmallButton({ children, onClick, disabled, preferredFocus, grow, size = "small" }) {
     const style = size === "medium" ? mediumActionStyle : smallActionStyle;
     // Never hand Steam's controller click event to a workflow callback: several
     // of them forward their argument, and an event reaching Steam's game list is
     // exactly the leak the panel tests guard against.
-    return (SP_JSX.jsx(DFL.DialogButton, { className: tone === "update" ? UPDATE_ACTION_CLASS : undefined, style: grow ? { ...style, flex: "1 1 auto" } : style, disabled: disabled, preferredFocus: preferredFocus, onClick: () => onClick(), children: children }));
+    return (SP_JSX.jsx(DFL.DialogButton, { style: grow ? { ...style, flex: "1 1 auto" } : style, disabled: disabled, preferredFocus: preferredFocus, onClick: () => onClick(), children: children }));
 }
 
 /**
@@ -9829,7 +9831,7 @@ function AdvancedModal(props) {
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin updates" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-state", label: updateSummaryView.label, description: updateError ?? updateSummaryView.description, help: "CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version.", actions: onCheckForUpdate ? (SP_JSX.jsx(SmallButton, { disabled: blocked || Boolean(updateView?.checking), onClick: traceUiAction("advanced_modal.check_for_update", () => {
                                             setUpdateError(null);
                                             void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
-                                        }), children: "Check now" })) : undefined }), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx(SmallButton, { grow: true, tone: "update", disabled: blocked, onClick: traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "After you search for a table, and at most once every few hours. Switched off, no check happens on its own and the panel offers nothing; Check now above still asks once when you press it.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
+                                        }), children: "Check now" })) : undefined }), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx("div", { className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { grow: true, disabled: blocked, onClick: traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "After you search for a table, and at most once every few hours. Switched off, no check happens on its own and the panel offers nothing; Check now above still asks once when you press it.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
                                             setUpdateError(null);
                                             void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
                                         }, (enabled) => ({ enabled })), bottomSeparator: "none" }) })), updateView?.last_result && !updateView.last_result.ok && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-manual-route", label: "The last update did not install", description: updateView.last_result.archive_kept_at

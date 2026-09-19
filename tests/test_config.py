@@ -77,15 +77,18 @@ def test_config_carries_no_preference_of_its_own(tmp_path: Path):
     assert loaded.imported_ce_sha256 == "b" * 64
     assert not hasattr(loaded, "mascot_visible")
 
-    # Taking them rewrites the file without them, so every earlier build reads
-    # it again, and hands the caller what the user had chosen.
-    assert store.take_legacy_preferences() == {"update_auto_check": False, "mascot_visible": False}
+    # Reading them is one call and removing them is another, so a caller can
+    # store the user's choices before this file stops carrying them.
+    assert store.legacy_preferences() == {"update_auto_check": False, "mascot_visible": False}
+    assert json.loads(path.read_text())["mascot_visible"] is False
+    assert store.strip_legacy_preferences() is True
     written = json.loads(path.read_text())
     assert "update_auto_check" not in written and "mascot_visible" not in written
     assert written["imported_ce_sha256"] == "b" * 64
     assert written["acknowledged_security_notice"] is True
     # Settled: an ordinary file has nothing to move and is not rewritten.
-    assert store.take_legacy_preferences() == {}
+    assert store.legacy_preferences() == {}
+    assert store.strip_legacy_preferences() is False
 
 
 def test_config_still_refuses_a_field_nobody_wrote(tmp_path: Path):

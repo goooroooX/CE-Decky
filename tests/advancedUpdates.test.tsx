@@ -70,7 +70,12 @@ describe("Advanced, Plugin updates", () => {
     const view = props();
     render(<AdvancedModal {...view} />);
     expect(screen.getByText("v0.9.28 is available")).toBeTruthy();
-    fireEvent.click(screen.getByText("Update to v0.9.28"));
+    const press = screen.getByText("Update to v0.9.28");
+    // The colour is on a box around the control rather than on the control, so
+    // Steam's own focused appearance still wins while the ring is on it, and
+    // nothing here depends on how Steam's own button treats a className.
+    expect(press.closest(".ce-decky-update")).toBeTruthy();
+    fireEvent.click(press);
     expect(view.onStartUpdate).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText("Check now"));
