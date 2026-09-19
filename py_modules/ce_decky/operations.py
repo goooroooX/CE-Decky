@@ -11,6 +11,38 @@ from .activity_log import log_activity, log_failure, safe_log_text
 
 T = TypeVar("T")
 
+
+def drainable_tasks(tasks: Sequence["asyncio.Task | None"]) -> list["asyncio.Task"]:
+    """The tasks the running loop can actually wait on, out of the ones held.
+
+    On the device there is one loop for the whole plugin process and this filter
+    removes nothing: `docs/FIELD_NOTES.md` records Decky's own `run_forever` and
+    the reading that confirms it, and a scheduler started during load is still
+    pending on that loop at unload.
+
+    It is here for every other caller. A test, a developer helper or a probe may
+    construct an owner, run something on one loop and close it from another, and
+    a task belonging to a loop that is closed, or merely to a different one,
+    cannot be made to run again by anything the closing coroutine does. Handing
+    one to `asyncio.gather` asks that other loop to schedule a callback, which
+    on Python 3.11 - the version the authoritative CI gate runs and the version
+    Decky ships on the device - is `RuntimeError: Event loop is closed` raised
+    out of `close()`. Python 3.13 takes a shortcut for a future that is already
+    done and hides it, which is why this is a rule rather than something a local
+    run discovers.
+
+    So a drain list is what this loop started and can still stop. Everything
+    else is already quiesced, and waiting on it is neither possible nor owed.
+    """
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:  # pragma: no cover - close() is always awaited
+        return []
+    return [
+        task for task in tasks
+        if task is not None and not task.done() and task.get_loop() is running
+    ]
+
 # How long a drain may take before it says so, and how often it says it again.
 #
 # Decky gives a plugin five seconds to stop and then sends SIGKILL. Every drain

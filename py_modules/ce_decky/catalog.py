@@ -35,7 +35,7 @@ from .network import (
     ProviderRateLimited,
     is_transport_ready_url,
 )
-from .operations import drain_through_cancellation
+from .operations import drain_through_cancellation, drainable_tasks
 from .providers import (
     ARTIFACT_SUFFIXES,
     MAX_ARTIFACT_BYTES,
@@ -1964,7 +1964,7 @@ class CatalogService:
         self._index_schedule_task = None
         candidates = (self._fearless_index_task, self._playground_index_task, schedule)
         had_task = any(task is not None for task in candidates)
-        live = self._drainable(candidates)
+        live = drainable_tasks(candidates)
         # Written before anything is waited on, because everything below it is a
         # wait and a wait is what Decky's five second stop budget kills silently.
         if had_task or self._fearless_index_writes:
@@ -1991,7 +1991,7 @@ class CatalogService:
         # write of this marker, so it cannot be the await an unload dies at.
         self._persist_owed_search_marker()
         pending_writes = len(self._fearless_index_writes)
-        writes = self._drainable(tuple(self._fearless_index_writes))
+        writes = drainable_tasks(tuple(self._fearless_index_writes))
         if writes:
             # Each pending write is a native worker Python cannot stop; unload
             # cancellation is not permission to orphan one mid-file.
@@ -2028,38 +2028,6 @@ class CatalogService:
             log_failure(self.logger, "fearless.search_marker_not_persisted", exc, expected=True)
             return
         log_activity(self.logger, "info", "fearless.search_marker_persisted")
-
-    @staticmethod
-    def _drainable(tasks: tuple[asyncio.Task | None, ...]) -> list[asyncio.Task]:
-        """The tasks this loop can actually wait on, out of the ones held.
-
-        On the device there is one loop for the whole plugin process and this
-        filter removes nothing: `docs/FIELD_NOTES.md` records Decky's own
-        `run_forever` and the reading that confirms it, and the scheduler
-        started during load is still pending on that loop at unload.
-
-        It is here for every other caller. A test, a developer helper or a probe
-        may construct this service, run something on one loop and close it from
-        another, and a task belonging to a loop that is closed, or merely to a
-        different one, cannot be made to run again by anything this coroutine
-        does. Handing one to `asyncio.gather` asks that other loop to schedule a
-        callback, which on Python 3.11, the version the authoritative CI gate
-        runs and the version Decky ships on the device, is `RuntimeError: Event
-        loop is closed` raised out of `close()`. Python 3.13 takes a shortcut
-        for a future that is already done and hides it.
-
-        So the drain list is what this loop started and can still stop.
-        Everything else is already quiesced, and waiting on it is neither
-        possible nor owed.
-        """
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:  # pragma: no cover - close() is always awaited
-            return []
-        return [
-            task for task in tasks
-            if task is not None and not task.done() and task.get_loop() is running
-        ]
 
     async def search(
         self, display_name: str, executable: str | None = None, progress_token: str | None = None,

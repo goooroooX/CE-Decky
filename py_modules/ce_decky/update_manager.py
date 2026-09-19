@@ -36,6 +36,7 @@ import uuid
 from .activity_log import log_activity, log_failure
 from .child_env import child_environment
 from .network import NetworkError, ProviderRateLimited
+from .operations import drainable_tasks
 from .paths import PluginPaths
 from .plugin_update import (
     ACTIVE_WINDOW_SECONDS,
@@ -624,11 +625,19 @@ class PluginUpdateManager:
         self._closing = True
 
     async def close(self) -> None:
+        """Stop what this loop started, and wait for it.
+
+        Only what this loop started: a task belonging to another loop, or to one
+        that has already been closed, cannot be cancelled or waited on from
+        here, and asking anyway raises `Event loop is closed` out of unload on
+        the Python the device runs. On the device this removes nothing, because
+        Decky keeps one loop for the whole plugin process; it is for every other
+        caller, and `drainable_tasks` is where the reasoning is written down.
+        """
         self._closing = True
-        for task in (self._schedule_task, self._activity_task, self._task):
-            if task is not None and not task.done():
-                task.cancel()
-        tasks = [task for task in (self._schedule_task, self._activity_task, self._task) if task is not None]
+        tasks = drainable_tasks((self._schedule_task, self._activity_task, self._task))
+        for task in tasks:
+            task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

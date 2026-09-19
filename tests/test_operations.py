@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from ce_decky import operations
-from ce_decky.operations import OperationRegistry, drained_to_thread
+from ce_decky.operations import OperationRegistry, drainable_tasks, drained_to_thread
 
 
 @pytest.mark.asyncio
@@ -277,3 +277,35 @@ async def test_a_drain_that_is_spinning_rather_than_waiting_says_which_it_is(cap
     # Bounded, so a spin cannot itself become the flood that hides the answer.
     assert len(absorbed) == 1
     assert len(spinning) <= len(operations.DRAIN_SPIN_TURNS)
+
+
+def test_a_task_belonging_to_a_closed_loop_is_never_drained():
+    """The filter every owner's `close()` puts between itself and `gather`.
+
+    A task belonging to a loop that has been closed cannot be made to run again
+    by the loop doing the closing, and asking anyway is not a no-op: `gather`
+    registers a callback on that task's loop, which on Python 3.11 - what CI
+    runs and what Decky ships on the device - raises `Event loop is closed` out
+    of unload. Python 3.13 takes a shortcut for a task that is already done and
+    hides it, so this is a rule rather than something a local run discovers.
+    """
+    finished = asyncio.new_event_loop()
+    try:
+        elsewhere = finished.create_task(asyncio.sleep(0))
+        finished.run_until_complete(elsewhere)
+    finally:
+        finished.close()
+
+    async def ask() -> None:
+        live = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+        try:
+            assert drainable_tasks((elsewhere, live, None)) == [live]
+            # And what the filter exists to prevent, asked on the loop that
+            # would otherwise ask it: a finished task from a closed loop still
+            # reaches for that loop the moment anything waits on it.
+            await asyncio.gather(*drainable_tasks((elsewhere,)), return_exceptions=True)
+        finally:
+            live.cancel()
+            await asyncio.gather(live, return_exceptions=True)
+
+    asyncio.run(ask())

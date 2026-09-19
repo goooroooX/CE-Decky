@@ -581,3 +581,24 @@ def test_a_check_recorded_in_this_clocks_future_is_owed_rather_than_skipped(tmp_
     # An ordinary recent check is still paced, which is what this must not cost.
     manager.state.update(checked_at=time.time())
     assert manager.should_check() is False
+
+
+def test_closing_from_another_loop_does_not_reach_for_the_one_that_is_gone(tmp_path: Path):
+    """Load and unload, each on a loop that is closed before the next runs.
+
+    Deliberately not the device's shape: Decky keeps one event loop for the
+    plugin process, as `docs/FIELD_NOTES.md` records. It is every other caller -
+    a test, a probe, a developer helper - and what one of them met: the
+    scheduler started during load was handed to `gather` by a `close()` running
+    somewhere else, which on Python 3.11, the version CI runs and the version
+    Decky ships on the device, is `RuntimeError: Event loop is closed` raised
+    out of unload itself.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+
+    async def load() -> None:
+        manager.start_background_checks()
+
+    asyncio.run(load())
+    asyncio.run(manager.close())
+    assert manager._closing is True
