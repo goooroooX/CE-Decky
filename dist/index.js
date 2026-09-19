@@ -9817,10 +9817,10 @@ function AdvancedModal(props) {
     if (debugOpen) {
         return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.debug.back", () => setDebugOpen(false)), children: SP_JSX.jsx(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: SP_JSX.jsx(DensePanel, { children: SP_JSX.jsx(DebugDetails, { snapshot: debug, loading: blocked, error: debugError, gameNames: gameNames, onRefresh: loadDebug, onBack: () => setDebugOpen(false) }) }) }) }));
     }
-    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin updates" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-state", label: updateSummaryView.label, description: updateError ?? updateSummaryView.description, help: "CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one request, and it never sends anything about you. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version.", actions: onCheckForUpdate ? (SP_JSX.jsx(SmallButton, { disabled: blocked || Boolean(updateView?.checking), onClick: traceUiAction("advanced_modal.check_for_update", () => {
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin updates" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-state", label: updateSummaryView.label, description: updateError ?? updateSummaryView.description, help: "CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version.", actions: onCheckForUpdate ? (SP_JSX.jsx(SmallButton, { disabled: blocked || Boolean(updateView?.checking), onClick: traceUiAction("advanced_modal.check_for_update", () => {
                                             setUpdateError(null);
                                             void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
-                                        }), children: "Check now" })) : undefined }), updateAvailable && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx(SmallButton, { grow: true, tone: "update", disabled: blocked, onClick: traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "After you search for a table, and at most once every few hours. Switched off, CE Decky never contacts GitHub about updates and the panel offers none.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
+                                        }), children: "Check now" })) : undefined }), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx(SmallButton, { grow: true, tone: "update", disabled: blocked, onClick: traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "After you search for a table, and at most once every few hours. Switched off, no check happens on its own and the panel offers nothing; Check now above still asks once when you press it.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
                                             setUpdateError(null);
                                             void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
                                         }, (enabled) => ({ enabled })), bottomSeparator: "none" }) })), updateView?.last_result && !updateView.last_result.ok && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-manual-route", label: "The last update did not install", description: updateView.last_result.archive_kept_at
@@ -9912,6 +9912,17 @@ const POLL_INTERVAL_MS = 1000;
  */
 const POLL_ATTEMPTS = 180;
 /**
+ * How long this waits for Steam's interface to take the window away.
+ *
+ * Installing normally ends with the webhelper being replaced, which destroys
+ * this window a few seconds later, so there is nothing to press and Back is
+ * refused. If that restart never happens - the runner reports it as a request
+ * that failed - refusing Back for ever would leave a window with no way out of
+ * it at all, on a panel whose backend has already been replaced. After this the
+ * way out comes back, and it says what it is and is not doing.
+ */
+const RESTART_GRACE_MS = 45000;
+/**
  * The one confirmation an update gets, and then the only view of it there is.
  *
  * Three things have to be said before the press and none can be discovered
@@ -9934,6 +9945,9 @@ function UpdateModal({ currentVersion, targetVersion, gameRunning, onStart, onPo
     const busyRef = SP_REACT.useRef(false);
     const operationRef = SP_REACT.useRef(null);
     const liveRef = SP_REACT.useRef(true);
+    // Whether the interface restart this window is waiting for has taken longer
+    // than it ever takes when it works.
+    const [restartOverdue, setRestartOverdue] = SP_REACT.useState(false);
     SP_REACT.useEffect(() => () => { liveRef.current = false; }, []);
     const follow = async (operationId) => {
         for (let attempt = 0; attempt < POLL_ATTEMPTS && liveRef.current; attempt += 1) {
@@ -10002,23 +10016,30 @@ function UpdateModal({ currentVersion, targetVersion, gameRunning, onStart, onPo
         }
     };
     const state = operation?.state ?? null;
+    const installingNow = state === "installing";
+    SP_REACT.useEffect(() => {
+        if (!installingNow)
+            return;
+        const timer = window.setTimeout(() => setRestartOverdue(true), RESTART_GRACE_MS);
+        return () => window.clearTimeout(timer);
+    }, [installingNow]);
     // Installing is the point of no return, and Back has to respect it as much as
     // the buttons do: there is nothing left here to abandon, and a window that
     // closes on its own reads as an update that stopped.
-    const installing = state === "installing";
+    const installing = installingNow && !restartOverdue;
     const inFlight = state === "checking" || state === "downloading";
     const settled = state === "failed" || state === "cancelled";
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("update_modal.cancel_back", () => { if (!busyRef.current && !installing)
             onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: gameRunning
                                         ? "Installing replaces Steam's interface process. This closes the Decky panel and can interrupt the game that is running."
-                                        : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), !installing && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
-                                    if (inFlight) {
-                                        void abandon();
-                                        return;
-                                    }
-                                    if (!busyRef.current)
-                                        onClose();
-                                }), children: inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: busy && !settled, onClick: traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion }), children: settled ? "Try again" : busy ? "Starting…" : "Update" })] }) }))] }) }));
+                                        : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), installingNow && restartOverdue && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
+                                if (inFlight) {
+                                    void abandon();
+                                    return;
+                                }
+                                if (!busyRef.current)
+                                    onClose();
+                            }), children: inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: busy && !settled, onClick: traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion }), children: settled ? "Try again" : busy ? "Starting…" : "Update" })] }))] }) }));
 }
 
 function ArchiveImportModal({ members, onImport, onCancel }) {

@@ -1379,7 +1379,7 @@ export function AdvancedModal(props: Props) {
             testId="update-state"
             label={updateSummaryView.label}
             description={updateError ?? updateSummaryView.description}
-            help="CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one request, and it never sends anything about you. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version."
+            help="CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version."
             actions={onCheckForUpdate ? (
               <SmallButton
                 disabled={blocked || Boolean(updateView?.checking)}
@@ -1395,7 +1395,7 @@ export function AdvancedModal(props: Props) {
           {/* The same press as the orange button on the panel, and the same
               confirmation behind it. It is here because this screen is where a
               user who has just switched checking back on already is. */}
-          {updateAvailable && onStartUpdate && (
+          {updateAvailable && updateView?.install_supported && onStartUpdate && (
             <ActionRow testId="update-install">
               <SmallButton
                 grow
@@ -1411,7 +1411,7 @@ export function AdvancedModal(props: Props) {
             <PanelSectionRow>
               <ToggleField
                 label="Check for updates automatically"
-                description="After you search for a table, and at most once every few hours. Switched off, CE Decky never contacts GitHub about updates and the panel offers none."
+                description="After you search for a table, and at most once every few hours. Switched off, no check happens on its own and the panel offers nothing; Check now above still asks once when you press it."
                 checked={Boolean(updateView?.auto_check)}
                 disabled={blocked}
                 onChange={traceUiAction("advanced_modal.update_auto_check", (enabled: boolean) => {
