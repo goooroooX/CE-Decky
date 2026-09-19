@@ -105,9 +105,14 @@ describe("Advanced, Plugin updates", () => {
       update: updateState({ checked_at: 1_760_000_000, last_error: "GitHub is rate limiting this device" }),
     })} />);
     expect(screen.getByText("v0.9.28 is available")).toBeTruthy();
-    const line = screen.getByText(/This device is on v0\.9\.27\./);
-    expect(line.textContent).toContain("Checked 2025-10-09.");
-    expect(line.textContent).toContain("The last check since then did not finish: GitHub is rate limiting this device");
+    // The date beside the finding is the check that answered, not the attempt
+    // that did not.
+    expect(screen.getByText(/This device is on v0\.9\.27\./).textContent).toContain("Checked 2025-10-09.");
+    // And the attempt that did not is a row of its own: appended to the line
+    // above it would sit past the end of a line that is cut to one.
+    const failure = screen.getByTestId("update-check-failed");
+    expect(failure.textContent).toContain("The last check did not finish");
+    expect(failure.textContent).toContain("GitHub is rate limiting this device");
   });
 
   it("never reads a check that did not finish as being up to date", () => {
@@ -115,7 +120,7 @@ describe("Advanced, Plugin updates", () => {
       update: updateState({ update_available: false, latest_version: "0.9.27", last_error: "GitHub is rate limiting this device" }),
     })} />);
     expect(screen.queryByText(/is up to date/)).toBeNull();
-    expect(screen.getByText(/rate limiting/)).toBeTruthy();
+    expect(screen.getByTestId("update-check-failed").textContent).toContain("rate limiting");
   });
 
   it("names the kept file and the release page after a failed install", () => {
@@ -128,6 +133,10 @@ describe("Advanced, Plugin updates", () => {
     })} />);
     expect(screen.getByText("The last update did not install")).toBeTruthy();
     expect(screen.getByText(new RegExp(kept.replace(/[/.]/g, "\\$&")))).toBeTruthy();
+    // Two sentences, not one run together: what goes first is somebody else's
+    // message and it ends where it ends.
+    expect(screen.getByTestId("update-manual-route").textContent)
+      .toContain("Decky refused the install. The checked release is saved at");
     fireEvent.click(screen.getByText("Release page"));
     expect(openExternalWeb).toHaveBeenCalledWith("https://github.com/x/y/releases/tag/v0.9.28");
   });

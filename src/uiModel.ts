@@ -2318,23 +2318,21 @@ export function updateSummary(
   const checked = updateCheckedOn(state.checked_at);
   const when = checked ? `Checked ${checked}.` : "Not checked yet.";
   // What was found and whether anything has answered since are two facts, and
-  // a screen that carried only the first said "v0.9.28 is available. Checked
-  // <date>" on a device that had been unable to reach GitHub for a week. The
-  // date is the last check that answered, so the attempt that did not is the
-  // part a reader cannot otherwise see.
-  const sinceThen = state.last_error
-    ? ` The last check ${checked ? "since then " : ""}did not finish: ${state.last_error}`
-    : "";
+  // this line carries the first. The second is a row of its own rather than a
+  // clause appended here: these rows are cut to one line until they are opened,
+  // so a sentence added to the end of this one is a sentence nobody reads.
+  // What this line owes the reader is the date, which is the last check that
+  // answered rather than the last one attempted.
   if (state.update_available && state.latest_version) {
     return {
       label: `v${state.latest_version} is available`,
-      description: `This device is on v${state.current_version}. ${when}${sinceThen}`,
+      description: `This device is on v${state.current_version}. ${when}`,
     };
   }
   if (state.last_error) {
     return {
       label: `CE Decky v${state.current_version}`,
-      description: `${when}${sinceThen}`,
+      description: when,
     };
   }
   if (!state.auto_check && !state.checked_at) {
@@ -2350,6 +2348,26 @@ export function updateSummary(
     };
   }
   return { label: `CE Decky v${state.current_version} is up to date`, description: when };
+}
+
+/**
+ * One sentence, ended, so the next one can follow it.
+ *
+ * What goes in front of it here is somebody else's message - Decky's, GitHub's,
+ * an exception's - and those end where they end. Joining one to a sentence of
+ * ours gave the screen "Decky did not report this plugin at the new version The
+ * checked release is saved at /home/...".
+ */
+export function sentence(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === "") return trimmed;
+  // Started as well as ended. These messages are written as clauses, because
+  // most of them are read inside one: `this is already the newest release`
+  // under a label is a fragment, and on screen it looked like a line that had
+  // lost its beginning. Only an ASCII lower-case letter is raised, so a path,
+  // a version or a quoted name is left exactly as it was written.
+  const opened = /^[a-z]/.test(trimmed) ? `${trimmed[0].toUpperCase()}${trimmed.slice(1)}` : trimmed;
+  return /[.!?:;]$/.test(opened) ? opened : `${opened}.`;
 }
 
 /** The day a check ran, which is all a user needs to place it. */

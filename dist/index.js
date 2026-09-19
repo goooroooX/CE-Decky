@@ -5086,23 +5086,21 @@ function updateSummary(state, currentVersion) {
     const checked = updateCheckedOn(state.checked_at);
     const when = checked ? `Checked ${checked}.` : "Not checked yet.";
     // What was found and whether anything has answered since are two facts, and
-    // a screen that carried only the first said "v0.9.28 is available. Checked
-    // <date>" on a device that had been unable to reach GitHub for a week. The
-    // date is the last check that answered, so the attempt that did not is the
-    // part a reader cannot otherwise see.
-    const sinceThen = state.last_error
-        ? ` The last check ${checked ? "since then " : ""}did not finish: ${state.last_error}`
-        : "";
+    // this line carries the first. The second is a row of its own rather than a
+    // clause appended here: these rows are cut to one line until they are opened,
+    // so a sentence added to the end of this one is a sentence nobody reads.
+    // What this line owes the reader is the date, which is the last check that
+    // answered rather than the last one attempted.
     if (state.update_available && state.latest_version) {
         return {
             label: `v${state.latest_version} is available`,
-            description: `This device is on v${state.current_version}. ${when}${sinceThen}`,
+            description: `This device is on v${state.current_version}. ${when}`,
         };
     }
     if (state.last_error) {
         return {
             label: `CE Decky v${state.current_version}`,
-            description: `${when}${sinceThen}`,
+            description: when,
         };
     }
     if (!state.auto_check && !state.checked_at) {
@@ -5118,6 +5116,26 @@ function updateSummary(state, currentVersion) {
         };
     }
     return { label: `CE Decky v${state.current_version} is up to date`, description: when };
+}
+/**
+ * One sentence, ended, so the next one can follow it.
+ *
+ * What goes in front of it here is somebody else's message - Decky's, GitHub's,
+ * an exception's - and those end where they end. Joining one to a sentence of
+ * ours gave the screen "Decky did not report this plugin at the new version The
+ * checked release is saved at /home/...".
+ */
+function sentence(text) {
+    const trimmed = text.trim();
+    if (trimmed === "")
+        return trimmed;
+    // Started as well as ended. These messages are written as clauses, because
+    // most of them are read inside one: `this is already the newest release`
+    // under a label is a fragment, and on screen it looked like a line that had
+    // lost its beginning. Only an ASCII lower-case letter is raised, so a path,
+    // a version or a quoted name is left exactly as it was written.
+    const opened = /^[a-z]/.test(trimmed) ? `${trimmed[0].toUpperCase()}${trimmed.slice(1)}` : trimmed;
+    return /[.!?:;]$/.test(opened) ? opened : `${opened}.`;
 }
 /** The day a check ran, which is all a user needs to place it. */
 function updateCheckedOn(seconds) {
@@ -9839,12 +9857,12 @@ function AdvancedModal(props) {
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin updates" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-state", label: updateSummaryView.label, description: updateError ?? updateSummaryView.description, help: "CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version.", actions: onCheckForUpdate ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.check_for_update", () => {
                                             setUpdateError(null);
                                             void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
-                                        }), children: "Check now" })) : undefined }), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx("div", { className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { grow: true, disabled: blocked, onClick: traceUiAction("advanced_modal.update", () => onStartUpdate(String(updateView?.latest_version)), { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "After you search for a table, and at most once every few hours. Switched off, no check happens on its own and the panel offers nothing; Check now above still asks once when you press it.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
+                                        }), children: "Check now" })) : undefined }), updateView?.last_error && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-check-failed", label: "The last check did not finish", description: sentence(updateView.last_error) })), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx("div", { className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { grow: true, disabled: blocked, onClick: traceUiAction("advanced_modal.update", () => onStartUpdate(String(updateView?.latest_version)), { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "Only after you search for a table, and at most once every few hours. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
                                             setUpdateError(null);
                                             void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
                                         }, (enabled) => ({ enabled })), bottomSeparator: "none" }) })), updateView?.last_result && !updateView.last_result.ok && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-manual-route", label: "The last update did not install", description: updateView.last_result.archive_kept_at
-                                        ? `${updateView.last_result.error ?? "Decky did not complete the install."} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
-                                        : updateView.last_result.error ?? "Decky did not complete the install.", help: updateView.last_result.archive_kept_at
+                                        ? `${sentence(updateView.last_result.error ?? "Decky did not complete the install.")} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
+                                        : sentence(updateView.last_result.error ?? "Decky did not complete the install."), help: updateView.last_result.archive_kept_at
                                         ? "That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. The release page has the same file if you would rather download it again."
                                         : "Nothing was kept, because nothing was verified: the failure happened before or during the download. Open the release page and install from there, or try again.", actions: updateView.page_url ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.open_release_page", () => openSourcePage(updateView.page_url)), children: "Release page" })) : undefined })), updateView?.last_result?.ok && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-last-result", label: `Updated to v${updateView.last_result.version}`, description: "The last update installed and this is the version that came back." })), updateView && !updateView.install_supported && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-unsupported", label: "Automatic installation is unavailable here", description: "This device has no python3 for the updater to run in, so an update has to be installed from Decky by hand." }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Panel appearance" }), onSetMascotVisible && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show the mascot", description: "HexPaw, above the first section of the CE Decky panel. Switching it off gives that height back to the cheats.", checked: mascotVisible, disabled: blocked, onChange: traceUiAction("advanced_modal.mascot_visible", (visible) => {
                                             void invoke(() => onSetMascotVisible(visible), (next) => setMascotVisible(next.mascot_visible));

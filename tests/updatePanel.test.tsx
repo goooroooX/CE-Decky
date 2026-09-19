@@ -19,7 +19,7 @@ vi.mock("@decky/ui", async () => (await import("./deckyUiMock")).deckyUiMock({
 
 import { HomePanel } from "../src/components/HomePanel";
 import { UpdateModal } from "../src/modals/UpdateModal";
-import { panelUpdateOffer, updateSummary } from "../src/uiModel";
+import { panelUpdateOffer, sentence, updateSummary } from "../src/uiModel";
 import type { PluginUpdateOperation, PluginUpdateState } from "../src/types";
 
 const game = { appId: 10, name: "Game", sortAs: "Game", isShortcut: false };
@@ -288,7 +288,27 @@ describe("what the update section says it is", () => {
       "0.9.27",
     );
     expect(summary.label).not.toContain("up to date");
-    expect(summary.description).toContain("rate limiting");
+    // The reason is a row of its own on the screen, because these rows are cut
+    // to one line until they are opened and somebody else's error message is
+    // the wrong thing to put past the end of one. What this line owes is the
+    // date, and it is the date of the last check that answered.
+    expect(summary.description).toContain("Checked");
+    expect(summary.description).not.toContain("rate limiting");
+  });
+
+  it("makes one sentence out of a message written as a clause", () => {
+    // These come from the backend, from Decky and from exceptions, and they are
+    // written to be read inside a sentence. Under a label they are the whole of
+    // the line, and "this is already the newest release" read as a line that
+    // had lost its beginning.
+    expect(sentence("this is already the newest release")).toBe("This is already the newest release.");
+    expect(sentence("GitHub is rate limiting this device")).toBe("GitHub is rate limiting this device.");
+    // Already a sentence, and left alone; and nothing is invented out of
+    // nothing.
+    expect(sentence("Decky did not complete the install.")).toBe("Decky did not complete the install.");
+    expect(sentence("  ")).toBe("");
+    // A path or a name keeps the case it was written with.
+    expect(sentence("/home/deck/CE-Decky-update-v0.9.99.zip is kept")).toBe("/home/deck/CE-Decky-update-v0.9.99.zip is kept.");
   });
 
   it("separates never checked, switched off and up to date", () => {

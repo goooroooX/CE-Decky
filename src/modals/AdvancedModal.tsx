@@ -21,7 +21,7 @@ import { TableCodeModal } from "./TableCodeModal";
 import { openExternalWeb } from "../externalNavigation";
 import { logUiFailure } from "../supportLog";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
-import { absentLiveTarget, blockedKey, blockedRecordedOn, updateSummary, blockedRowDetail, blockedRowLabel, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
+import { absentLiveTarget, blockedKey, blockedRecordedOn, sentence, updateSummary, blockedRowDetail, blockedRowLabel, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
 import type { BlockedTable, CELaunchCapability, CEStatus, DiagnosticsSnapshot, ManagedDataDeletion, ManagedDataScope, PanelPreferences, PluginStatus, PluginUpdateState, ProviderSourceStatus, ProviderSourcesSnapshot, RemovalReadiness, RuntimeEnvelope, SelfTestResult, SupportBundleResult, TableInspection } from "../types";
 
 export interface AdvancedContextSnapshot {
@@ -1407,6 +1407,19 @@ export function AdvancedModal(props: Props) {
               </SmallButton>
             ) : undefined}
           />
+          {/* Its own row, because the line above is cut to one line until it is
+              opened and this is the part that explains why that line says what
+              it says. It scrolls on focus like every other row here that can
+              carry a whole sentence of somebody else's words. */}
+          {updateView?.last_error && (
+            <PanelRow
+              truncate
+              scroll
+              testId="update-check-failed"
+              label="The last check did not finish"
+              description={sentence(updateView.last_error)}
+            />
+          )}
           {/* The same press as the orange button on the panel, and the same
               confirmation behind it. It is here because this screen is where a
               user who has just switched checking back on already is. */}
@@ -1434,7 +1447,7 @@ export function AdvancedModal(props: Props) {
             <PanelSectionRow>
               <ToggleField
                 label="Check for updates automatically"
-                description="After you search for a table, and at most once every few hours. Switched off, no check happens on its own and the panel offers nothing; Check now above still asks once when you press it."
+                description="Only after you search for a table, and at most once every few hours. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed."
                 checked={Boolean(updateView?.auto_check)}
                 disabled={blocked}
                 onChange={traceUiAction("advanced_modal.update_auto_check", (enabled: boolean) => {
@@ -1455,8 +1468,8 @@ export function AdvancedModal(props: Props) {
               testId="update-manual-route"
               label="The last update did not install"
               description={updateView.last_result.archive_kept_at
-                ? `${updateView.last_result.error ?? "Decky did not complete the install."} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
-                : updateView.last_result.error ?? "Decky did not complete the install."}
+                ? `${sentence(updateView.last_result.error ?? "Decky did not complete the install.")} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
+                : sentence(updateView.last_result.error ?? "Decky did not complete the install.")}
               help={updateView.last_result.archive_kept_at
                 ? "That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. The release page has the same file if you would rather download it again."
                 : "Nothing was kept, because nothing was verified: the failure happened before or during the download. Open the release page and install from there, or try again."}
