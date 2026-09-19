@@ -89,8 +89,17 @@ interface Props {
   update?: PluginUpdateState | null;
   onSetUpdateAutoCheck?: (enabled: boolean) => Promise<PluginUpdateState>;
   onCheckForUpdate?: () => Promise<PluginUpdateState>;
-  /** Open the same confirmation the home panel's orange button opens. */
-  onStartUpdate?: () => void;
+  /**
+   * Open the same confirmation the home panel's orange button opens, for the
+   * version this screen is showing.
+   *
+   * It is passed rather than looked up again: this screen keeps its own
+   * snapshot and the panel behind it does not re-render it, so after a check
+   * run here the parent's copy can be older - which is how a press could open
+   * a confirmation for a version this screen had already replaced, or open
+   * nothing at all when the parent had never found one.
+   */
+  onStartUpdate?: (targetVersion: string) => void;
   onSetMascotVisible?: (visible: boolean) => Promise<PanelPreferences>;
   onRefreshAll: () => Promise<AdvancedContextSnapshot>;
   onClose: () => void;
@@ -1374,6 +1383,12 @@ export function AdvancedModal(props: Props) {
             the diagnostics to find out how. */}
         <PanelSection>
           <SectionHeading>Plugin updates</SectionHeading>
+          {/* Check now is deliberately not disabled while a check is running.
+              One started by the plugin itself can already be out when this
+              screen opens, and this screen's snapshot is never refreshed from
+              the panel, so disabling on it left the control dead for as long as
+              the screen stayed open. The press joins a check already running
+              and is answered with what that one found. */}
           <PanelRow
             truncate
             testId="update-state"
@@ -1382,7 +1397,7 @@ export function AdvancedModal(props: Props) {
             help="CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version."
             actions={onCheckForUpdate ? (
               <SmallButton
-                disabled={blocked || Boolean(updateView?.checking)}
+                disabled={blocked}
                 onClick={traceUiAction("advanced_modal.check_for_update", () => {
                   setUpdateError(null);
                   void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
@@ -1404,7 +1419,11 @@ export function AdvancedModal(props: Props) {
                 <SmallButton
                   grow
                   disabled={blocked}
-                  onClick={traceUiAction("advanced_modal.update", onStartUpdate, { to_version: updateView?.latest_version })}
+                  onClick={traceUiAction(
+                    "advanced_modal.update",
+                    () => onStartUpdate(String(updateView?.latest_version)),
+                    { to_version: updateView?.latest_version },
+                  )}
                 >
                   {`Update to v${updateView?.latest_version}`}
                 </SmallButton>

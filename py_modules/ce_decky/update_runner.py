@@ -169,6 +169,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     archive = Path(args.archive)
     keep = Path(args.keep_on_failure) if args.keep_on_failure else None
     result: dict[str, object] = {
+        # Who this is the outcome of. The backend that reads it may not be the
+        # one that started this install, and a result can outlive the attempt
+        # it belongs to, so it says which attempt it is rather than being taken
+        # for whichever one is pending when it is found.
+        "attempt": args.attempt,
         "version": args.version,
         "finished_at": None,
         "ok": False,
@@ -176,7 +181,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "restart_requested": False,
         "archive_kept_at": None,
     }
-    log("update_runner.started", version=args.version, archive=archive.name, pid=os.getpid())
+    log("update_runner.started", attempt=args.attempt, version=args.version, archive=archive.name, pid=os.getpid())
     verified = False
     # Whether Decky was asked to install. Past this point a failure here is not
     # the same as an install that did not happen, and the two must not be
@@ -272,6 +277,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--keep-on-failure")
     parser.add_argument("--decky-url", default=DEFAULT_DECKY_URL)
     parser.add_argument("--not-before", type=float, default=0.0)
+    parser.add_argument("--attempt", default=None)
     return parser.parse_args(argv)
 
 

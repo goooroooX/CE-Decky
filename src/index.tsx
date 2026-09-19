@@ -3646,7 +3646,7 @@ function Content() {
           await refreshStatus().catch(() => undefined);
           return next;
         })}
-        onStartUpdate={() => { close(); openUpdateModal(); }}
+        onStartUpdate={(target) => { close(); openUpdateModal(target); }}
         onSetMascotVisible={(visible) => runAction(async () => {
           const next = await setMascotVisible(visible);
           await refreshStatus().catch(() => undefined);
@@ -3678,15 +3678,20 @@ function Content() {
     if (status?.preferences) rememberMascotVisible(status.preferences.mascot_visible);
   }, [status?.preferences?.mascot_visible]);
 
-  const openUpdateModal = () => {
-    const target = offeredUpdateVersion;
+  const openUpdateModal = (requested?: string) => {
+    // What the control that was pressed was showing, and only then what this
+    // panel last read. Advanced keeps its own snapshot and is not re-rendered
+    // from here, so a check run there can find a version this closure has
+    // never seen: taking the parent's copy opened a confirmation for the older
+    // version, or opened nothing at all.
+    const target = requested ?? offeredUpdateVersion;
     if (!status || !target) return;
     showContextModal((close) => (
       <UpdateModal
         currentVersion={status.version}
         targetVersion={target}
         gameRunning={runningGamesRef.current.length > 0}
-        onStart={() => startPluginUpdate()}
+        onStart={(targetVersion) => startPluginUpdate(targetVersion)}
         onPoll={(operationId) => pollPluginUpdate(operationId)}
         onCancelUpdate={(operationId) => cancelPluginUpdate(operationId)}
         onClose={() => {
@@ -3802,7 +3807,7 @@ function Content() {
       <HomePanel
       pluginVersion={`v${status.version}`}
       updateVersion={panelUpdateVersion}
-      onUpdate={openUpdateModal}
+      onUpdate={() => openUpdateModal(panelUpdateVersion ?? undefined)}
       mascotVisible={mascotVisible}
       ceReady={status.ce.valid}
       ceStatusText={ceStatusText}

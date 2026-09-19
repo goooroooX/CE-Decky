@@ -2066,16 +2066,24 @@ class PluginService:
         """The Check now press: one request, whatever the arming says."""
         return await self.plugin_updates.check(forced=True)
 
-    async def start_plugin_update(self) -> dict[str, object]:
-        """Download the newest release, verify it, and hand it to Decky.
+    async def start_plugin_update(self, expected_version: object) -> dict[str, object]:
+        """Download the release the user confirmed, verify it, and hand it to Decky.
+
+        `expected_version` is the version named on the confirmation the user
+        pressed. It is carried all the way here because the press is consent
+        for that version and nothing else: this call reads the newest release
+        again, and a release that has moved on between the screen and the
+        request is one nobody has agreed to install.
 
         Refused while a managed Cheat Engine install is still writing into the
         managed tree, for the reason removal is refused there: that transaction
         owns files this one is about to have the plugin replaced underneath.
         """
+        if not isinstance(expected_version, str) or not expected_version:
+            raise ValueError("the version to update to is required")
         if self.managed_ce.has_active_operation():
             raise ValueError("a Cheat Engine setup is still running; wait for it to finish, then update")
-        return await self.plugin_updates.start()
+        return await self.plugin_updates.start(expected_version=expected_version)
 
     def poll_plugin_update(self, operation_id: str) -> dict[str, object]:
         if not isinstance(operation_id, str) or not operation_id:
@@ -2260,6 +2268,15 @@ class PluginService:
             blockers.append("a Cheat Engine process CE Decky owns is still running; stop it first")
         if session_errors or corrupt_entries:
             blockers.append("session state contains corrupt or ambiguous entries")
+        # What the deletion itself would refuse, said here rather than
+        # discovered by pressing: this report is what the screen labels the
+        # device safe to remove from by, and it named only durable faults while
+        # the call refused transient work as well.
+        try:
+            blockers.extend(self._transient_deletion_refusals())
+        except Exception as exc:  # noqa: BLE001 - a failed probe must fail closed
+            blockers.append("work in progress could not be checked; try again")
+            log_failure(self.logger, "removal.active_work_unreadable", exc, expected=True)
 
         return {
             "directories": self._managed_directory_inventory(),
@@ -2337,6 +2354,13 @@ class PluginService:
         # transaction, and the authoritative re-check under the lock catches any
         # that were already in flight when this began.
         self.acquisitions.suspend()
+        # And the updater, for the same reason and one of its own: neither
+        # starting an update nor the scheduler's own tick passes through the
+        # mutation boundary below, so without this a check could write the
+        # update record back into a state directory this has just cleared, and
+        # an update started immediately after the authoritative re-check could
+        # stage an archive into the temporary root it is removing.
+        self.plugin_updates.suspend()
         suspended_index = "cache" in keys
         # Entered before the first thing that can be awaited, and covering every
         # subsystem this may have suspended. Quiescing is two awaits of its own,
@@ -2345,6 +2369,10 @@ class PluginService:
         # deletion that never ran. The resume calls are flag clears and are
         # safe for a subsystem this never reached.
         try:
+            # The refusal above stops the next check; this waits out the one
+            # that may already be out, because what it does when it returns is
+            # write into the directory about to be cleared.
+            await self.plugin_updates.drain_check()
             if suspended_index:
                 # An interactive search writes the same files the background
                 # crawl does - the results cache, the provider diagnostics, its
@@ -2358,6 +2386,7 @@ class PluginService:
             deleted = await drained_to_thread(self._delete_managed_data_locked, keys)
         finally:
             self.acquisitions.resume()
+            self.plugin_updates.resume()
             if suspended_index:
                 self.provider_catalog.resume_index()
                 self.provider_catalog.resume_searches()
@@ -2411,6 +2440,19 @@ class PluginService:
         refusals: list[str] = []
         if self._live_owned_launch_for_deletion():
             refusals.append("a Cheat Engine process CE Decky owns is still running; stop it first")
+        refusals.extend(self._transient_deletion_refusals())
+        return refusals
+
+    def _transient_deletion_refusals(self) -> list[str]:
+        """The work in flight that deletion refuses, without probing processes.
+
+        Read by the readiness report as well as by the deletion itself, because
+        a screen that says the device is safe to remove from and a call that
+        then refuses are two answers to one question. The owned-process probe
+        stays out of it: readiness runs that probe itself and reports it in its
+        own terms.
+        """
+        refusals: list[str] = []
         if self.managed_ce.has_active_operation() or self._managed_ce_reservation is not None:
             # The reservation exists exactly for the gap before the manager can
             # publish an operation. Asking only the manager let deletion through

@@ -77,6 +77,9 @@ describe("Advanced, Plugin updates", () => {
     expect(press.closest(".ce-decky-update")).toBeTruthy();
     fireEvent.click(press);
     expect(view.onStartUpdate).toHaveBeenCalledTimes(1);
+    // With the version this screen is showing, because this screen keeps its
+    // own snapshot and the panel behind it is never re-rendered from it.
+    expect(view.onStartUpdate).toHaveBeenCalledWith("0.9.28");
 
     fireEvent.click(screen.getByText("Check now"));
     await waitFor(() => expect(view.onCheckForUpdate).toHaveBeenCalledTimes(1));
@@ -123,5 +126,40 @@ describe("Advanced, Plugin updates", () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(view.onSetMascotVisible).toHaveBeenCalledWith(false));
     await waitFor(() => expect((screen.getByLabelText("Show the mascot") as HTMLInputElement).checked).toBe(false));
+  });
+});
+
+describe("Advanced, a check run from this screen", () => {
+  it("offers the version it has just found rather than the one the panel knew", async () => {
+    // The panel had nothing to offer when this screen opened. Check now finds a
+    // release, and the press has to carry that version: taking the panel's copy
+    // opened a confirmation for an older version, or opened nothing at all.
+    const view = props({
+      update: updateState({ update_available: false, latest_version: "0.9.27" }),
+      onCheckForUpdate: vi.fn(async () => updateState({ latest_version: "0.9.29", update_available: true })),
+    });
+    render(<AdvancedModal {...view} />);
+    expect(screen.queryByText(/Update to v/)).toBeNull();
+
+    fireEvent.click(screen.getByText("Check now"));
+    await waitFor(() => expect(screen.getByText("Update to v0.9.29")).toBeTruthy());
+    fireEvent.click(screen.getByText("Update to v0.9.29"));
+    expect(view.onStartUpdate).toHaveBeenCalledWith("0.9.29");
+  });
+
+  it("can still be pressed while a check the plugin started is running", async () => {
+    // This screen opens with one copy of the state and is never re-rendered
+    // from the panel, so a snapshot saying a check is running was a control
+    // that stayed dead for as long as the screen was open. The press joins the
+    // check that is already out.
+    const view = props({
+      update: updateState({ checking: true, update_available: false, latest_version: null, checked_at: null }),
+      onCheckForUpdate: vi.fn(async () => updateState({ checking: false })),
+    });
+    render(<AdvancedModal {...view} />);
+    const press = screen.getByText("Check now") as HTMLButtonElement;
+    expect(press.disabled).toBe(false);
+    fireEvent.click(press);
+    await waitFor(() => expect(screen.getByText("v0.9.28 is available")).toBeTruthy());
   });
 });

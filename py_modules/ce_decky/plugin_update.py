@@ -290,8 +290,13 @@ def checked_now(offer: ReleaseOffer | None, latest: str, *, current_version: str
     is legitimately older than what is running; the offer is what this device
     could install, which is nothing in that case.
     """
+    now = time.time()
     return {
-        "checked_at": time.time(),
+        "checked_at": now,
+        # When GitHub was last asked, whatever it answered. The pacing reads
+        # this one, so that a device which cannot reach GitHub is not asking
+        # again at every tick of the scheduler.
+        "attempted_at": now,
         "current_version": current_version,
         "latest_version": latest,
         "archive_name": offer.archive_name if offer is not None else None,

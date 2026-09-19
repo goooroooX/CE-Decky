@@ -1664,3 +1664,57 @@ def test_a_switch_changed_since_the_move_is_not_overwritten_by_the_old_copy(tmp_
 
     assert service.preferences.load().mascot_visible is True
     assert "mascot_visible" not in json.loads(paths.config_path.read_text(encoding="utf-8"))
+
+
+def test_deleting_managed_data_holds_the_updater_down_for_the_whole_transaction(tmp_path: Path):
+    """The tree an update stages into and records into is the tree being cleared.
+
+    Neither starting an update nor the update scheduler's own tick passes
+    through the mutation boundary the deletion takes, so a single refusal check
+    could not hold: a check finishing afterwards writes the update record back
+    into a state directory that has just been emptied, and an update started
+    after the authoritative re-check stages an archive into the temporary root
+    being removed.
+    """
+    service, paths = _managed_data_service(tmp_path)
+    drained: list[bool] = []
+    original = service.plugin_updates.drain_check
+
+    async def watched() -> None:
+        drained.append(service.plugin_updates._suspended)
+        await original()
+
+    service.plugin_updates.drain_check = watched
+    asyncio.run(service.delete_managed_data("setup"))
+
+    # Held down before anything was removed, and let go afterwards.
+    assert drained == [True], "the check already out is waited for, under the refusal"
+    assert service.plugin_updates._suspended is False
+    # And nothing wrote the update record back into the cleared directory.
+    assert (paths.state_root / "plugin-update.json").exists() is False
+
+
+def test_removal_readiness_names_the_work_the_deletion_itself_would_refuse(tmp_path: Path):
+    """One question, one answer.
+
+    Advanced labels the device safe to remove from out of this report, and the
+    call it then makes refuses work in progress that this report never
+    mentioned - so the screen said one thing and the press said another.
+    """
+    # A plain service, because the managed-data fixture deliberately writes a
+    # corrupt profile store and that is a blocker of its own.
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("test"))
+    service.initialize()
+    assert service.get_removal_readiness()["can_delete_managed_data"] is True
+
+    service.plugin_updates._operation = {
+        "operation_id": "a" * 32, "state": "downloading", "version": "0.9.28",
+        "message": "Downloading", "error": None,
+    }
+    readiness = service.get_removal_readiness()
+    assert readiness["can_delete_managed_data"] is False
+    assert any("plugin update" in blocker for blocker in readiness["blockers"])
+    # And the deletion refuses for the same reason, in the same words.
+    with pytest.raises(ValueError, match="plugin update"):
+        asyncio.run(service.delete_managed_data("cache"))

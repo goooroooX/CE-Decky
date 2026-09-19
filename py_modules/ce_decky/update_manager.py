@@ -79,6 +79,11 @@ KEPT_ARCHIVE_PREFIX = "CE-Decky-update-"
 # a Python that can be given a module to run.
 SYSTEM_INTERPRETERS = ("/usr/bin/python3", "/usr/local/bin/python3")
 
+# How long a caller that arrived during a check waits for that check's answer
+# before being given the record as it stands. The request underneath has its own
+# timeout; this is only the guarantee that a screen is answered at all.
+CHECK_JOIN_TIMEOUT_SECONDS = 90.0
+
 # The states an update is over in. `installing` is deliberately not one of
 # them: the install is happening in another process and this plugin is being
 # replaced, so a second start would download again and spawn a second installer
@@ -133,14 +138,39 @@ class PluginUpdateManager:
         self._schedule_task: "asyncio.Task[None] | None" = None
         self._activity_task: "asyncio.Task[None] | None" = None
         self._checking = False
+        # Set while a check is out, so that a second caller joins that one
+        # rather than being handed a snapshot that says a check is running and
+        # never hearing how it ended.
+        self._check_finished: "asyncio.Event | None" = None
         self._last_forced_at = 0.0
         self._closing = False
+        # Refused while the tree this stages into is being deleted. Starting an
+        # update does not pass through the service mutation boundary, the same
+        # reason downloads have this.
+        self._suspended = False
+        # The installer this backend started, and the identity of that attempt.
+        # The handle is kept so that a runner which exits without replacing
+        # this plugin can be noticed by the process that started it, rather
+        # than leaving an operation installing until something reloads.
+        self._process: "subprocess.Popen | None" = None
+        self._attempt: str | None = None
 
     # ---------------------------------------------------------------- reading
 
-    def snapshot(self) -> dict[str, object]:
-        """What the panel needs, and nothing a screen cannot act on."""
+    def snapshot(self, fresh: dict[str, object] | None = None) -> dict[str, object]:
+        """What the panel needs, and nothing a screen cannot act on.
+
+        `fresh` is what a check has just established, laid over what is stored.
+        It exists for the one case where those differ: the record write failed,
+        deliberately without failing the check that reached GitHub, and the
+        caller of that check would otherwise be answered out of storage that
+        still holds the previous answer. A device that cannot write its own
+        state is not a reason to tell the user something that is no longer
+        true.
+        """
         record = self.state.load()
+        if fresh:
+            record = {**record, **fresh}
         latest = record.get("latest_version")
         available = False
         if isinstance(latest, str):
@@ -178,27 +208,58 @@ class PluginUpdateManager:
         """
         record = self.state.load()
         pending = record.get("install")
+        attempt = pending.get("attempt") if isinstance(pending, dict) else None
         result: dict[str, object] | None = None
         try:
             raw = json.loads(self.result_path.read_text(encoding="utf-8")) if self.result_path.is_file() else None
             if isinstance(raw, dict) and raw.get("schema") == 1:
-                result = {
-                    "version": raw.get("version"),
-                    "ok": bool(raw.get("ok")),
-                    "error": raw.get("error"),
-                    "archive_kept_at": raw.get("archive_kept_at"),
-                    "at": raw.get("finished_at"),
-                    "restart_requested": bool(raw.get("restart_requested")),
-                }
+                # Only the attempt this record is waiting on. A result file is
+                # written by a process that outlives the backend that started
+                # it, so one left by an attempt that was already settled - by
+                # the running version, by the pending limit, or by this backend
+                # reconciling a runner that exited - would otherwise be folded
+                # in as the outcome of whatever attempt is pending now, and a
+                # screen would be told about an install that is one attempt
+                # behind. An orphan is logged and removed rather than used.
+                if attempt is not None:
+                    claimed = raw.get("attempt") == attempt
+                elif isinstance(pending, dict):
+                    # A record written before attempts existed. The version is
+                    # the whole of what it can be matched on, and it is enough:
+                    # such a record can only be left by an install this device
+                    # started before it was updated to a build that stamps one.
+                    claimed = raw.get("version") == pending.get("version")
+                else:
+                    claimed = False
+                if not claimed:
+                    log_activity(
+                        self.logger, "info", "update.result_discarded",
+                        reported=raw.get("attempt"), pending=attempt, waiting=isinstance(pending, dict),
+                    )
+                    self.result_path.unlink(missing_ok=True)
+                else:
+                    result = {
+                        "attempt": attempt,
+                        "version": raw.get("version"),
+                        "ok": bool(raw.get("ok")),
+                        "error": raw.get("error"),
+                        "archive_kept_at": raw.get("archive_kept_at"),
+                        "at": raw.get("finished_at"),
+                        "restart_requested": bool(raw.get("restart_requested")),
+                    }
         except (OSError, ValueError) as exc:
             log_failure(self.logger, "update.result_unreadable", exc, expected=True)
         if result is None and isinstance(pending, dict):
             started = pending.get("started_at")
             target = pending.get("version")
             if target == self.current_version:
-                result = {"version": target, "ok": True, "error": None, "archive_kept_at": None, "at": time.time(), "restart_requested": True}
+                result = {
+                    "attempt": attempt, "version": target, "ok": True, "error": None,
+                    "archive_kept_at": None, "at": time.time(), "restart_requested": True,
+                }
             elif isinstance(started, (int, float)) and time.time() - float(started) > INSTALL_PENDING_LIMIT_SECONDS:
                 result = {
+                    "attempt": attempt,
                     "version": target, "ok": False, "archive_kept_at": pending.get("archive_kept_at"),
                     "error": "the update was started and never reported back", "at": time.time(),
                     "restart_requested": False,
@@ -226,7 +287,15 @@ class PluginUpdateManager:
         return time.time() - float(self._last_search_activity() or 0.0) <= ACTIVE_WINDOW_SECONDS
 
     def _is_due(self) -> bool:
-        checked = self.state.load().get("checked_at")
+        record = self.state.load()
+        # What paces this is the last time GitHub was asked, not the last time
+        # it answered. They are the same on a device that is working; on one
+        # that is offline, pacing on the answer would ask again at every tick
+        # of the scheduler, which is the anonymous budget spent on a question
+        # that cannot be answered. What a screen is told about is the last
+        # successful check, which is a different field for that reason.
+        attempted = record.get("attempted_at")
+        checked = attempted if isinstance(attempted, (int, float)) else record.get("checked_at")
         if not isinstance(checked, (int, float)):
             return True
         age = time.time() - float(checked)
@@ -242,6 +311,7 @@ class PluginUpdateManager:
     def should_check(self) -> bool:
         return (
             not self._closing
+            and not self._suspended
             and bool(self._auto_check())
             and not self._checking
             and self._is_armed()
@@ -255,17 +325,27 @@ class PluginUpdateManager:
         press. It keeps one floor, which is the anonymous request budget this
         shares with the table source that searches GitHub: a control can be
         pressed as fast as a finger moves.
+
+        One request at a time, and a caller who arrives during one waits for
+        it rather than being handed a snapshot of it. That snapshot says a
+        check is running, and the screen that took it is opened with a copy and
+        never re-rendered from the panel, so it said a check was running for as
+        long as it stayed open - after the check itself had finished and found
+        something.
         """
         if self._closing:
             raise RuntimeError("plugin is unloading")
+        if self._suspended:
+            raise ValueError("plugin data is being deleted; check again when it finishes")
         # The floor is about presses. Pacing a press against the background
         # timer as well would answer Check now from a record the user cannot
         # see the age of, on a device whose scheduler happened to tick first.
         if forced and self._last_forced_at and time.monotonic() - self._last_forced_at < FORCED_CHECK_FLOOR_SECONDS:
             return self.snapshot()
         if self._checking:
-            return self.snapshot()
+            return await self._join_check()
         self._checking = True
+        self._check_finished = asyncio.Event()
         if forced:
             self._last_forced_at = time.monotonic()
         try:
@@ -274,21 +354,53 @@ class PluginUpdateManager:
             # Cleared before the snapshot rather than in a `finally`, which runs
             # after the returned expression is evaluated: the screen would
             # otherwise be handed a failed check that says it is still running.
-            self._checking = False
-            self._record(checked_at=time.time(), last_error=_reason(exc))
+            self._finish_check()
+            # `attempted_at` is what paces the next one; `checked_at` stays at
+            # the last check that actually answered. Writing the moment of a
+            # failure there stamped whatever the record still held - an offer
+            # found days ago - with today's date, so a device that could not
+            # reach GitHub read as one that had just confirmed an update.
+            self._record(attempted_at=time.time(), last_error=_reason(exc))
             log_failure(
                 self.logger, "update.check_failed", exc,
                 expected=isinstance(exc, (UpdateError, NetworkError, ValueError, OSError)), forced=forced,
             )
             return self.snapshot()
         finally:
-            self._checking = False
+            self._finish_check()
         self._offer = offer
-        self._record(**checked_now(offer, latest, current_version=self.current_version))
+        answer = checked_now(offer, latest, current_version=self.current_version)
+        # Laid over the record for the answer this returns, so that a state
+        # write this deliberately does not fail the check over cannot make the
+        # check report the previous answer either.
+        written = self._record(**answer)
         log_activity(
             self.logger, "info", "update.checked",
-            forced=forced, current=self.current_version, latest=latest, available=offer is not None,
+            forced=forced, current=self.current_version, latest=latest,
+            available=offer is not None, recorded=written,
         )
+        return self.snapshot(None if written else answer)
+
+    def _finish_check(self) -> None:
+        """Let go of the single-flight gate, once, and wake anybody waiting."""
+        self._checking = False
+        waiter, self._check_finished = self._check_finished, None
+        if waiter is not None:
+            waiter.set()
+
+    async def _join_check(self) -> dict[str, object]:
+        """Wait out the check already running, and answer with what it found.
+
+        Bounded, because this is a screen waiting: the request underneath has
+        its own timeout, and a wait that outlives it answers with the record as
+        it stands rather than never returning.
+        """
+        waiter = self._check_finished
+        if waiter is not None:
+            try:
+                await asyncio.wait_for(waiter.wait(), timeout=CHECK_JOIN_TIMEOUT_SECONDS)
+            except (asyncio.TimeoutError, RuntimeError) as exc:
+                log_failure(self.logger, "update.check_join_timed_out", exc, expected=True)
         return self.snapshot()
 
     async def _read_latest_release(self) -> tuple[str, ReleaseOffer | None]:
@@ -397,24 +509,108 @@ class PluginUpdateManager:
     def status(self, operation_id: str) -> dict[str, object]:
         if self._operation is None or self._operation.get("operation_id") != operation_id:
             raise ValueError("plugin update operation is unknown")
+        # Asked here as well as where a second update would be refused: this is
+        # the call the window watching an install makes every second, and it is
+        # the one that has to stop saying `installing` when the installer is no
+        # longer there to finish.
+        self._reconcile_installing()
         return dict(self._operation)
 
     def has_active_operation(self) -> bool:
+        self._reconcile_installing()
         if self._task is not None and not self._task.done():
             return True
         operation = self._operation
         return operation is not None and str(operation.get("state")) not in _SETTLED_STATES
 
-    async def start(self) -> dict[str, object]:
+    def _reconcile_installing(self) -> None:
+        """Settle an install whose installer is gone while this plugin is not.
+
+        Handing the archive to the detached runner is the point where this
+        process stops being able to report anything, and that is true because
+        Decky is about to stop it. When it does not - the loader refuses the
+        install, the runner cannot start, Python falls over before it writes
+        anything - nothing replaces this backend, and the operation it left
+        behind said `installing` for as long as the plugin stayed loaded. Every
+        retry was then refused as an update already running, so one transient
+        failure cost the device its self-update until something reloaded it.
+
+        Two things can settle it here, and both are facts rather than timeouts:
+        the runner's own result for this exact attempt, and the exit of the
+        process this backend started. An exit with no result is its own
+        outcome, not a success and not silence.
+        """
+        operation = self._operation
+        if operation is None or operation.get("state") != "installing":
+            return
+        try:
+            self._settle_installing(operation)
+        except Exception as exc:  # noqa: BLE001 - reconciling never fails the call that asked
+            log_failure(self.logger, "update.install_not_reconciled", exc, expected=True)
+
+    def _settle_installing(self, operation: dict[str, object]) -> None:
+        operation_id = str(operation.get("operation_id"))
+        if self.result_path.is_file():
+            self.consume_runner_result()
+            result = self.state.load().get("last_result")
+            if isinstance(result, dict) and result.get("attempt") == self._attempt:
+                if result.get("ok"):
+                    # The install landed, so this plugin is being replaced and
+                    # there is nothing here to settle or retry: what says so is
+                    # the record, which the backend that loads next reads.
+                    return
+                self._set(
+                    operation_id, state="failed", message="The update could not be installed",
+                    error=str(result.get("error") or "the updater reported a failure"),
+                )
+                log_activity(
+                    self.logger, "info", "update.install_settled_by_result",
+                    attempt=self._attempt, version=result.get("version"),
+                )
+                return
+        process = self._process
+        if process is None or process.poll() is None:
+            return
+        # The runner writes its result before it exits, so a process that is
+        # gone without one did not get that far.
+        self._record(install=None, last_result={
+            "attempt": self._attempt,
+            "version": operation.get("version"),
+            "ok": False,
+            "error": "the updater stopped without reporting what happened",
+            "archive_kept_at": None,
+            "at": time.time(),
+            "restart_requested": False,
+        })
+        self._set(
+            operation_id, state="failed", message="The update could not be installed",
+            error="the updater stopped without reporting what happened",
+        )
+        self._process = None
+        log_activity(
+            self.logger, "warning", "update.installer_exited_without_result",
+            attempt=self._attempt, code=process.returncode,
+        )
+
+    async def start(self, *, expected_version: str | None = None) -> dict[str, object]:
         """Begin one update: read the release again, fetch it, verify it, install.
 
         The release is read again rather than taken from the last check,
         because what is installed must be what is published now and because the
         answer is one request. It is also the last moment anything here can
         refuse.
+
+        `expected_version` is what the user was shown when they pressed. The
+        press is consent for a named version, not for whatever `latest` says by
+        the time the request is served, so a release that has moved on between
+        the two stops this and asks again rather than installing something
+        nobody confirmed. `None` is for a caller with no screen - a test or a
+        probe - and states that there is no confirmation to honour.
         """
         if self._closing:
             raise RuntimeError("plugin is unloading")
+        if self._suspended:
+            raise ValueError("plugin data is being deleted; update again when it finishes")
         if self.has_active_operation():
             raise ValueError("a plugin update is already running")
         if self._interpreter is None:
@@ -423,14 +619,16 @@ class PluginUpdateManager:
                 "install the release manually from Decky instead"
             )
         operation_id = uuid.uuid4().hex
+        self._process = None
+        self._attempt = None
         self._operation = {
             "operation_id": operation_id,
             "state": "checking",
-            "version": None,
+            "version": expected_version,
             "message": "Reading the newest release",
             "error": None,
         }
-        self._task = asyncio.create_task(self._run(operation_id))
+        self._task = asyncio.create_task(self._run(operation_id, expected_version))
         return self.status(operation_id)
 
     async def cancel(self, operation_id: str) -> dict[str, object]:
@@ -448,7 +646,7 @@ class PluginUpdateManager:
             await asyncio.gather(self._task, return_exceptions=True)
         return self.status(operation_id)
 
-    async def _run(self, operation_id: str) -> None:
+    async def _run(self, operation_id: str, expected_version: str | None = None) -> None:
         archive: Path | None = None
         # This run's own offer. Reading `self._offer` here would name whatever
         # an earlier check happened to find, on exactly the path where this run
@@ -459,6 +657,15 @@ class PluginUpdateManager:
             self._record(**checked_now(offer, latest, current_version=self.current_version))
             if offer is None:
                 raise UpdateError("this is already the newest release")
+            # What the user confirmed, against what the project is publishing
+            # now. They are the same on every ordinary press; when they are not,
+            # the release moved between the screen and this request, and nobody
+            # has agreed to the one that is there now.
+            if expected_version is not None and offer.version != expected_version:
+                raise UpdateError(
+                    f"this release is now v{offer.version}, not the v{expected_version} you confirmed; "
+                    "check again and confirm the version you want"
+                )
             self._offer = offer
             self._set(operation_id, state="downloading", version=offer.version, message=f"Downloading {offer.archive_name}")
             archive, digest = await self._fetch_verified_archive(offer)
@@ -551,6 +758,7 @@ class PluginUpdateManager:
         record = self.state.load()
         replaced_at = record.get("webhelper_replaced_at")
         not_before = float(replaced_at) + WEBHELPER_SPACING_SECONDS if isinstance(replaced_at, (int, float)) else 0.0
+        attempt = uuid.uuid4().hex
         kept = self.paths.user_home / f"{KEPT_ARCHIVE_PREFIX}v{offer.version}.zip"
         environment = child_environment()
         environment["PYTHONPATH"] = str(self.paths.plugin_dir / "py_modules")
@@ -564,6 +772,11 @@ class PluginUpdateManager:
             "--log", str(self.paths.log_dir / RUNNER_LOG_FILENAME),
             "--keep-on-failure", str(kept),
             "--not-before", f"{not_before:.3f}",
+            # Carried through the whole attempt: the record this writes below,
+            # the installer's arguments, and the result it leaves behind. What
+            # it is for is that a result can outlive the attempt it belongs to,
+            # and one attempt must never settle another.
+            "--attempt", attempt,
         ]
         # Strict, unlike every other write to this record: it is written before
         # the installer is started and it is what the next backend reads to know
@@ -572,12 +785,14 @@ class PluginUpdateManager:
         # plugin on, so the failure is the operation's and no installer runs.
         self.state.update(
             install={
+                "attempt": attempt,
                 "version": offer.version,
                 "started_at": time.time(),
                 "archive_kept_at": str(kept),
             },
             webhelper_replaced_at=time.time(),
         )
+        self._attempt = attempt
         # Said before the act rather than after it, and this is the reason:
         # starting the installer is the one thing here that cannot be taken
         # back, and the caller treats anything raised out of this method as an
@@ -588,9 +803,14 @@ class PluginUpdateManager:
         # says what happened next; this one says what was asked for.
         log_activity(
             self.logger, "info", "update.installer_spawning",
-            version=offer.version, interpreter=interpreter, waits_s=round(max(not_before - time.time(), 0.0), 1),
+            attempt=attempt, version=offer.version, interpreter=interpreter,
+            waits_s=round(max(not_before - time.time(), 0.0), 1),
         )
-        subprocess.Popen(  # noqa: S603 - fixed argv, plugin-owned paths, no shell
+        # Detached and in its own session, and still held: the session is what
+        # keeps Decky stopping this plugin from stopping the install, and the
+        # handle is only how the process that is still here notices an
+        # installer that has gone without finishing.
+        self._process = subprocess.Popen(  # noqa: S603 - fixed argv, plugin-owned paths, no shell
             command,
             cwd=str(self.paths.state_root),
             env=environment,
@@ -618,6 +838,32 @@ class PluginUpdateManager:
     def _set(self, operation_id: str, **values: object) -> None:
         if self._operation is not None and self._operation.get("operation_id") == operation_id:
             self._operation.update(values)
+
+    # ------------------------------------------------------------- suspending
+
+    def suspend(self) -> None:
+        """Refuse checks and new updates until resumed.
+
+        For deletion, and for the same reason downloads have it: neither
+        starting an update nor a check on the scheduler's own tick passes
+        through the service mutation boundary, so a deletion that checked once
+        could have an archive staged under it, or its freshly cleared state
+        directory written back into, immediately afterwards.
+        """
+        self._suspended = True
+
+    def resume(self) -> None:
+        self._suspended = False
+
+    async def drain_check(self) -> None:
+        """Wait out a check that is already running. Never raises.
+
+        The refusal above stops the next one; this is for the one that is
+        already out, because what it does when it returns is write the record
+        into the directory a deletion is about to clear.
+        """
+        if self._checking:
+            await self._join_check()
 
     # ---------------------------------------------------------------- closing
 

@@ -156,6 +156,10 @@ describe("the update confirmation", () => {
     render(<UpdateModal {...props} />);
     await act(async () => { fireEvent.click(screen.getByText("Update")); });
     expect(props.onStart).toHaveBeenCalledTimes(1);
+    // With the version this window named, because that is the version the
+    // press agreed to: the backend reads the newest release again, and one
+    // published in between is not the one anybody confirmed.
+    expect(props.onStart).toHaveBeenCalledWith("0.9.28");
     expect(screen.getByText("Downloading CE-Decky-v0.9.28.zip")).toBeTruthy();
     // Not closed: the download is the only part of an update this can still
     // report or stop, so the window stays until Decky takes over.
@@ -181,6 +185,48 @@ describe("the update confirmation", () => {
       const polls = props.onPoll.mock.calls.length;
       await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
       expect(props.onPoll.mock.calls.length).toBe(polls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives the window a way out when the backend stops answering at all", async () => {
+    // The backend can be replaced between two polls, before it ever reported
+    // installing: the window then had no state to arm its own way out with and
+    // went on asking a plugin that no longer existed, with Back refused.
+    vi.useFakeTimers();
+    try {
+      const props = modal({ onPoll: vi.fn(async () => { throw new Error("the plugin backend is gone"); }) });
+      render(<UpdateModal {...props} />);
+      await act(async () => { fireEvent.click(screen.getByText("Update")); });
+      fireEvent.click(screen.getByText("controller-back"));
+      expect(props.onClose).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(46_000); });
+      expect(screen.getByTestId("update-handed-off")).toBeTruthy();
+      fireEvent.click(screen.getByText("Close"));
+      expect(props.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a real outcome arriving before the grace expires win", async () => {
+    vi.useFakeTimers();
+    try {
+      let answers = 0;
+      const props = modal({
+        onPoll: vi.fn(async () => {
+          answers += 1;
+          if (answers < 3) throw new Error("the plugin backend is busy");
+          return operation({ state: "failed", message: "The update could not be installed", error: "Decky refused it" });
+        }),
+      });
+      render(<UpdateModal {...props} />);
+      await act(async () => { fireEvent.click(screen.getByText("Update")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(3300); });
+      expect(screen.queryByTestId("update-handed-off")).toBeNull();
+      expect(screen.getByText("Try again")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

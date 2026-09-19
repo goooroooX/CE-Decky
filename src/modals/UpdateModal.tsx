@@ -33,7 +33,8 @@ interface Props {
   targetVersion: string;
   /** Whether a game is running right now, which the interface restart can displace. */
   gameRunning: boolean;
-  onStart: () => Promise<PluginUpdateOperation>;
+  /** Takes the version this window named, because that is what was confirmed. */
+  onStart: (targetVersion: string) => Promise<PluginUpdateOperation>;
   onPoll: (operationId: string) => Promise<PluginUpdateOperation>;
   onCancelUpdate: (operationId: string) => Promise<PluginUpdateOperation>;
   onClose: () => void;
@@ -64,6 +65,10 @@ export function UpdateModal(
   const busyRef = useRef(false);
   const operationRef = useRef<string | null>(null);
   const liveRef = useRef(true);
+  // Whether the backend stopped answering about an update it accepted. That is
+  // the ordinary end of an install - Decky replaces this plugin - but it is
+  // also what a failure looks like from here, and the two are the same silence.
+  const [unreachable, setUnreachable] = useState(false);
   // Whether the interface restart this window is waiting for has taken longer
   // than it ever takes when it works.
   const [restartOverdue, setRestartOverdue] = useState(false);
@@ -71,6 +76,7 @@ export function UpdateModal(
   useEffect(() => () => { liveRef.current = false; }, []);
 
   const follow = async (operationId: string) => {
+    let silent = 0;
     for (let attempt = 0; attempt < POLL_ATTEMPTS && liveRef.current; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
       if (!liveRef.current) return;
@@ -81,9 +87,19 @@ export function UpdateModal(
         // The backend going away during its own replacement is the install
         // working. Anything else is a read that failed and is asked again.
         logUiFailure("update_modal.poll_failed", cause, { operation_id: operationId });
+        silent += 1;
+        // Past the point where an interface restart would have taken this
+        // window away, silence is no longer something to wait out. The backend
+        // can disappear between two of these reads, before it ever reported
+        // `installing`, and the window then had no state to arm its own way out
+        // with: it went on asking a plugin that no longer existed, with Back
+        // refused, for as long as the user left it there.
+        if (silent * POLL_INTERVAL_MS >= RESTART_GRACE_MS && liveRef.current) setUnreachable(true);
         continue;
       }
       if (!liveRef.current) return;
+      silent = 0;
+      setUnreachable(false);
       setOperation(snapshot);
       if (snapshot.state === "installing") return;
       if (snapshot.state === "failed" || snapshot.state === "cancelled") {
@@ -102,7 +118,7 @@ export function UpdateModal(
     setError(null);
     const record = startUiOperation("update.start", { to_version: targetVersion });
     try {
-      const started = await onStart();
+      const started = await onStart(targetVersion);
       operationRef.current = started.operation_id;
       setOperation(started);
       record.completed();
@@ -143,9 +159,13 @@ export function UpdateModal(
   const installing = installingNow && !restartOverdue;
   const inFlight = state === "checking" || state === "downloading";
   const settled = state === "failed" || state === "cancelled";
+  // Handed over and out of view: the press was accepted, nothing here can be
+  // told how it ended, and the way out has to come back rather than the window
+  // waiting for an answer that has no one left to give it.
+  const stranded = unreachable && !settled && !installingNow;
 
   return (
-    <ModalRoot onCancel={traceUiAction("update_modal.cancel_back", () => { if (!busyRef.current && !installing) onClose(); })}>
+    <ModalRoot onCancel={traceUiAction("update_modal.cancel_back", () => { if (stranded || (!busyRef.current && !installing)) onClose(); })}>
       <Focusable style={{ minWidth: 420, maxWidth: 600 }}>
         <DensePanel>
           <PanelSection>
@@ -201,6 +221,16 @@ export function UpdateModal(
                 />
               </PanelSectionRow>
             )}
+            {stranded && (
+              <PanelSectionRow>
+                <PanelRow
+                  status
+                  testId="update-handed-off"
+                  label="CE Decky stopped answering"
+                  description="The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates."
+                />
+              </PanelSectionRow>
+            )}
             {installingNow && restartOverdue && (
               <PanelSectionRow>
                 <PanelRow
@@ -218,7 +248,7 @@ export function UpdateModal(
             )}
           </PanelSection>
         </DensePanel>
-        {installingNow && restartOverdue && (
+        {((installingNow && restartOverdue) || stranded) && (
           <ModalActions>
             <DialogButton
               style={modalActionStyle}
@@ -228,7 +258,7 @@ export function UpdateModal(
             </DialogButton>
           </ModalActions>
         )}
-        {!installingNow && (
+        {!installingNow && !stranded && (
           <ModalActions>
             <DialogButton
               style={modalActionStyle}

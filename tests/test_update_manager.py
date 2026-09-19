@@ -70,14 +70,29 @@ def _manager(tmp_path: Path, network, *, auto_check=True, searched_at=None, vers
     )
 
 
+class FakeProcess:
+    """The detached installer, as much of it as the manager ever touches.
+
+    It holds it only to notice one that has gone without finishing, so what a
+    test needs from it is an exit code that is not there yet and one that is.
+    """
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
 @pytest.fixture
 def spawned(monkeypatch):
     """Every detached installer this would have started, and how."""
     started: list[dict] = []
 
     def popen(command, **kwargs):
-        started.append({"command": command, **kwargs})
-        return object()
+        process = FakeProcess()
+        started.append({"command": command, "process": process, **kwargs})
+        return process
 
     monkeypatch.setattr(update_manager.subprocess, "Popen", popen)
     monkeypatch.setattr(update_manager, "system_interpreter", lambda: "/usr/bin/python3")
@@ -214,7 +229,12 @@ def test_a_failed_check_is_a_line_on_the_screen_rather_than_an_exception(tmp_pat
     snapshot = asyncio.run(manager.check(forced=True))
     assert snapshot["update_available"] is False
     assert "rate limiting" in snapshot["last_error"]
-    assert snapshot["checked_at"] is not None
+    # A check that could not be made is not a check: the date a screen shows is
+    # the last one that answered, and this one has never answered. What it does
+    # leave is the moment it asked, which is what paces the next attempt.
+    assert snapshot["checked_at"] is None
+    assert manager.state.load()["attempted_at"] is not None
+    assert manager.should_check() is False
 
 
 def test_an_update_downloads_verifies_and_hands_the_exact_file_to_the_installer(tmp_path: Path, spawned):
@@ -416,8 +436,11 @@ def test_the_scheduler_asks_on_its_own_and_is_paced_by_the_interval(tmp_path: Pa
             await asyncio.sleep(0.01)
         asked_once = len(network.calls)
         # The record is aged past the interval, which is the only thing that
-        # makes another pass due.
-        manager.state.update(checked_at=time.time() - update_manager.CHECK_INTERVAL_SECONDS - 1)
+        # makes another pass due. `attempted_at` is what the pacing reads: a
+        # check that failed still counts against the interval, while the date a
+        # screen shows is the last check that answered.
+        aged = time.time() - update_manager.CHECK_INTERVAL_SECONDS - 1
+        manager.state.update(checked_at=aged, attempted_at=aged)
         for _ in range(20):
             await asyncio.sleep(0.01)
         asked_again = len(network.calls)
@@ -602,3 +625,198 @@ def test_closing_from_another_loop_does_not_reach_for_the_one_that_is_gone(tmp_p
     asyncio.run(load())
     asyncio.run(manager.close())
     assert manager._closing is True
+
+
+def test_an_installer_that_exits_without_reporting_settles_the_operation(tmp_path: Path, spawned):
+    """The install is handed over, the plugin is not replaced, and it stops there.
+
+    Handing the archive over is the moment this process stops being able to
+    report anything, and the reason is that Decky is about to stop it. When it
+    does not - the loader refuses, the runner cannot start, Python falls over
+    before writing anything - this backend is still here, and the operation it
+    left behind said `installing` for as long as the plugin stayed loaded:
+    every retry was refused as an update already running, and one transient
+    failure cost the device its self-update until something reloaded it.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+
+    async def scenario():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        assert manager.status(started["operation_id"])["state"] == "installing"
+        assert manager.has_active_operation() is True
+        # The installer is gone and left nothing behind.
+        spawned[0]["process"].returncode = 1
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    assert "without reporting" in status["error"]
+    # And the device can try again, without a reload and without a pending
+    # install nobody will ever answer for.
+    assert manager.has_active_operation() is False
+    record = manager.state.load()
+    assert record.get("install") is None
+    assert record["last_result"]["ok"] is False
+
+
+def test_a_failed_result_settles_the_operation_that_started_it(tmp_path: Path, spawned):
+    """The runner reported, and the plugin is still here to read it."""
+    manager = _manager(tmp_path, FakeNetwork())
+
+    async def scenario():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        kept = str(tmp_path / "home" / "CE-Decky-update-v0.9.28.zip")
+        manager.result_path.write_text(json.dumps({
+            "schema": 1, "attempt": manager._attempt, "version": "0.9.28", "ok": False,
+            "error": "Decky refused the install", "archive_kept_at": kept,
+            "finished_at": time.time(), "restart_requested": False,
+        }), encoding="utf-8")
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    assert "refused" in status["error"]
+    assert manager.has_active_operation() is False
+    # And the manual route is where a screen reads it from.
+    assert manager.snapshot()["last_result"]["archive_kept_at"].endswith("CE-Decky-update-v0.9.28.zip")
+
+
+def test_a_result_from_another_attempt_never_settles_this_one(tmp_path: Path):
+    """One attempt's outcome is not the next attempt's outcome.
+
+    The result file is written by a process that outlives the backend that
+    started it, so one left by an attempt already settled - by the running
+    version, by the pending limit, by this backend noticing the installer had
+    gone - must not be folded in as what the attempt pending now did.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.state.update(install={
+        "attempt": "b" * 32, "version": "0.9.28", "started_at": time.time(), "archive_kept_at": None,
+    })
+    manager.result_path.write_text(json.dumps({
+        "schema": 1, "attempt": "a" * 32, "version": "0.9.28", "ok": False,
+        "error": "an older attempt failed", "finished_at": 1.0, "restart_requested": False,
+    }), encoding="utf-8")
+
+    manager.consume_runner_result()
+    record = manager.state.load()
+    assert record.get("last_result") is None, "a stale result settles nothing"
+    assert record["install"]["attempt"] == "b" * 32, "and leaves the attempt that is pending alone"
+    assert manager.result_path.exists() is False, "and is not left to be found again"
+
+
+def test_the_install_is_refused_when_the_release_is_not_the_one_that_was_confirmed(tmp_path: Path, spawned):
+    """The press is consent for a named version, not for whatever is newest.
+
+    The confirmation says which version replaces which, and this call reads the
+    newest release again before installing. A release published between the two
+    is one nobody has agreed to, so it stops rather than handing Decky an
+    archive the user never saw named.
+    """
+    manager = _manager(tmp_path, FakeNetwork(release=_release_payload("0.9.29")))
+
+    async def scenario():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    assert "0.9.29" in status["error"] and "0.9.28" in status["error"]
+    assert spawned == [], "nothing is downloaded and no installer is started"
+    # And what a screen is told to do about it is confirm the one that exists.
+    assert manager.snapshot()["latest_version"] == "0.9.29"
+
+
+def test_a_second_caller_joins_the_check_already_running(tmp_path: Path):
+    """A press during a check waits for that check rather than describing it.
+
+    Advanced opens with one copy of this snapshot and is never re-rendered from
+    the panel, so a snapshot saying a check is running is what that screen went
+    on saying after the check had finished and found something.
+    """
+    network = FakeNetwork()
+    released = asyncio.Event()
+    original = network.get
+
+    async def held(url, **kwargs):
+        if "api.github.com" in url:
+            await released.wait()
+        return await original(url, **kwargs)
+
+    network.get = held
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        first = asyncio.create_task(manager.check(forced=False))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        joined = asyncio.create_task(manager.check(forced=True))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not joined.done(), "the second caller waits rather than being handed a running check"
+        released.set()
+        return await first, await joined
+
+    started, joined = asyncio.run(scenario())
+    assert started["latest_version"] == "0.9.28"
+    assert joined["checking"] is False
+    assert joined["latest_version"] == "0.9.28"
+    assert len(network.calls) == 1, "one request answered both callers"
+
+
+def test_a_check_that_could_not_be_written_down_still_answers_with_what_it_found(tmp_path: Path, monkeypatch):
+    """A device that cannot save the answer is not told the previous one.
+
+    The record is a report and a failed write deliberately does not fail the
+    check. Rebuilding the reply out of storage afterwards, though, answered the
+    press with the state before it.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.state.update(checked_at=time.time() - 1, attempted_at=time.time() - 1, latest_version=None)
+
+    def refuse(**_fields):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(manager.state, "update", refuse)
+    snapshot = asyncio.run(manager.check(forced=True))
+    assert snapshot["latest_version"] == "0.9.28"
+    assert snapshot["update_available"] is True
+
+
+def test_a_failed_check_does_not_stamp_an_old_finding_with_todays_date(tmp_path: Path):
+    """Two questions: what the project has published, and when this last asked.
+
+    A check that failed used to write its moment into the field that says when
+    the last check succeeded, so a device that could not reach GitHub at all
+    read as one that had confirmed an offer today.
+    """
+    network = FakeNetwork()
+    manager = _manager(tmp_path, network)
+    found = asyncio.run(manager.check(forced=True))
+    assert found["update_available"] is True
+    succeeded_at = found["checked_at"]
+
+    network.failure = ProviderRateLimited("60", "GitHub is rate limiting this device")
+    manager._last_forced_at = 0.0
+    failed = asyncio.run(manager.check(forced=True))
+    assert failed["checked_at"] == succeeded_at, "the date shown is still the last check that answered"
+    assert "rate limiting" in failed["last_error"]
+    assert failed["latest_version"] == "0.9.28", "and what was found is still what was found"
+
+
+def test_a_suspended_updater_neither_checks_nor_starts(tmp_path: Path, spawned):
+    """Deletion clears the tree this stages into and records into."""
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.suspend()
+    assert manager.should_check() is False
+    with pytest.raises(ValueError, match="deleted"):
+        asyncio.run(manager.check(forced=True))
+    with pytest.raises(ValueError, match="deleted"):
+        asyncio.run(manager.start(expected_version="0.9.28"))
+    assert spawned == []
+
+    manager.resume()
+    assert asyncio.run(manager.check(forced=True))["latest_version"] == "0.9.28"
