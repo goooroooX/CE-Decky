@@ -190,6 +190,21 @@ describe("the update confirmation", () => {
     }
   });
 
+  it("adopts an update that was already running when it opened", async () => {
+    // Every modal closes the panel, so the window that started an update is
+    // destroyed as soon as the user looks at anything else while the update
+    // carries on. Reopening it must follow that operation rather than start a
+    // second download beside it.
+    const running = operation({ state: "downloading", message: "Downloading CE-Decky-v0.9.28.zip" });
+    const props = modal({ adopted: running, onPoll: vi.fn(async () => running) });
+    render(<UpdateModal {...props} />);
+    expect(props.onStart).not.toHaveBeenCalled();
+    // It is the same operation, and stopping it is still offered.
+    expect(screen.getByText("Stop")).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByText("Stop")); });
+    expect(props.onCancelUpdate).toHaveBeenCalledWith(running.operation_id);
+  });
+
   it("gives the window a way out when the backend stops answering at all", async () => {
     // The backend can be replaced between two polls, before it ever reported
     // installing: the window then had no state to arm its own way out with and
@@ -309,6 +324,20 @@ describe("what the update section says it is", () => {
     expect(sentence("  ")).toBe("");
     // A path or a name keeps the case it was written with.
     expect(sentence("/home/deck/CE-Decky-update-v0.9.99.zip is kept")).toBe("/home/deck/CE-Decky-update-v0.9.99.zip is kept.");
+  });
+
+  it("does not offer a press for a finding older than the last failed check", () => {
+    // The finding is still true and Advanced still shows it. What a press on a
+    // 300 pixel panel cannot carry is that it is older than what this device
+    // knows about it, so the panel withholds it until a check answers again.
+    const stale = state({ update_available: true, latest_version: "0.9.28", last_error: "GitHub is rate limiting this device" });
+    expect(panelUpdateOffer(stale)).toBeNull();
+    expect(panelUpdateOffer({ ...stale, last_error: null })).toBe("0.9.28");
+
+    const summary = updateSummary(stale, "0.9.27");
+    expect(summary.label).toContain("was found");
+    expect(summary.label).not.toContain("is available");
+    expect(summary.description).toContain("The latest check did not finish");
   });
 
   it("separates never checked, switched off and up to date", () => {

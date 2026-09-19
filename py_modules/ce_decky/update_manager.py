@@ -72,8 +72,15 @@ RUNNER_LOG_FILENAME = "plugin-update-runner.jsonl"
 # service after three inside a minute, and only root can start it again.
 WEBHELPER_SPACING_SECONDS = 65.0
 # Where a failed install leaves the verified archive, so the manual route in
-# Decky still has something to install. One file, replaced by the next attempt.
-KEPT_ARCHIVE_PREFIX = "CE-Decky-update-"
+# Decky still has something to install.
+#
+# One file with one name, rather than one per version. The name used to carry
+# the version it was an installer for, which made "one file, replaced by the
+# next attempt" false: a device that failed on two releases kept both, nothing
+# ever removed the older one, and the plugin's own deletion did not know either
+# of them existed. What the row on screen needs is the path, and it reads that
+# out of the record.
+KEPT_ARCHIVE_NAME = "CE-Decky-update.zip"
 # Interpreters this may run the detached installer with, in order. Decky's own
 # runtime is a PyInstaller bundle, so `sys.executable` is the loader rather than
 # a Python that can be given a module to run.
@@ -127,6 +134,10 @@ class PluginUpdateManager:
         self._last_search_activity = last_search_activity
         self.state = UpdateStateStore(paths.state_root / STATE_FILENAME)
         self.result_path = paths.state_root / RESULT_FILENAME
+        # Named once, because three things have to agree about it: what the
+        # installer is told to keep, what this removes after a success or a
+        # deletion, and what a screen offers as the manual route.
+        self.kept_archive_path = paths.user_home / KEPT_ARCHIVE_NAME
         self._offer: ReleaseOffer | None = None
         # Looked up once per plugin load. The status call asks whether an
         # install is possible at all, and that must not become a PATH scan per
@@ -138,6 +149,10 @@ class PluginUpdateManager:
         self._schedule_task: "asyncio.Task[None] | None" = None
         self._activity_task: "asyncio.Task[None] | None" = None
         self._checking = False
+        # What this knows and the disk does not, because a write failed. Read
+        # over the record by everything that reads it, and emptied field by
+        # field as writes succeed.
+        self._unwritten: dict[str, object] = {}
         # Set while a check is out, so that a second caller joins that one
         # rather than being handed a snapshot that says a check is running and
         # never hearing how it ended.
@@ -157,18 +172,34 @@ class PluginUpdateManager:
 
     # ---------------------------------------------------------------- reading
 
-    def snapshot(self, fresh: dict[str, object] | None = None) -> dict[str, object]:
-        """What the panel needs, and nothing a screen cannot act on.
+    def _stored(self) -> dict[str, object]:
+        """The durable record, with anything this process could not write over it.
 
-        `fresh` is what a check has just established, laid over what is stored.
-        It exists for the one case where those differ: the record write failed,
-        deliberately without failing the check that reached GitHub, and the
-        caller of that check would otherwise be answered out of storage that
-        still holds the previous answer. A device that cannot write its own
-        state is not a reason to tell the user something that is no longer
-        true.
+        The overlay exists for one case: a check reached GitHub, and the record
+        write failed - deliberately, because a report that cannot be saved is
+        not a check that did not happen. Everything after that used to read the
+        previous answer off the disk, so the one caller holding the result and
+        every later reader disagreed, an offer found a moment ago disappeared on
+        the next status read, and the pacing - which is also read from here -
+        let the next search ask GitHub all over again.
+
+        It is memory, so it lasts exactly as long as this backend does, and any
+        successful write replaces it.
         """
-        record = self.state.load()
+        return {**self.state.load(), **self._unwritten} if self._unwritten else self.state.load()
+
+    def snapshot(self, fresh: dict[str, object] | None = None) -> dict[str, object]:
+        """What the panel needs, and nothing a screen cannot act on."""
+        # An install is settled and adopted here as well as where a refusal
+        # asks, because this is the call a panel makes: on every mount and after
+        # every action, while the other calls happen only when something is
+        # about to be refused. Without it an installer that outlived its backend
+        # was invisible to the screen until a deletion was attempted, and one
+        # that had outlived any install went on saying it was installing.
+        self._reconcile_installing()
+        if self._operation is None:
+            self._adopt_pending_install(self._stored().get("install"))
+        record = self._stored()
         if fresh:
             record = {**record, **fresh}
         latest = record.get("latest_version")
@@ -257,14 +288,24 @@ class PluginUpdateManager:
                     "attempt": attempt, "version": target, "ok": True, "error": None,
                     "archive_kept_at": None, "at": time.time(), "restart_requested": True,
                 }
-            elif isinstance(started, (int, float)) and time.time() - float(started) > INSTALL_PENDING_LIMIT_SECONDS:
+            elif not isinstance(started, (int, float)) or _elapsed_since(float(started)) > INSTALL_PENDING_LIMIT_SECONDS:
+                # Or it says nothing about when it started, which is a record
+                # that can never be aged out and would otherwise refuse every
+                # update this device ever tries again.
                 result = {
                     "attempt": attempt,
-                    "version": target, "ok": False, "archive_kept_at": pending.get("archive_kept_at"),
+                    "version": target, "ok": False, "archive_kept_at": self._recovered_archive(),
                     "error": "the update was started and never reported back", "at": time.time(),
                     "restart_requested": False,
                 }
         if result is None:
+            # Nothing settled it, and the record still says an installer is out
+            # there. It is: this backend is new, the process is not its child,
+            # and the only thing that knows about it is this record. Adopting it
+            # as the operation this backend owns is what makes a reload stop
+            # being a way to start a second privileged install beside the first,
+            # or to delete the tree underneath it.
+            self._adopt_pending_install(pending)
             return
         fields: dict[str, object] = {"last_result": result, "install": None}
         if result["ok"]:
@@ -285,36 +326,132 @@ class PluginUpdateManager:
             ok=result["ok"], version=result.get("version"), error=result.get("error"),
         )
 
-    def _discard_kept_archive(self, previous: object) -> None:
-        """Remove the archive a failed install left, once nobody needs it.
+    def _settled_by_record(self, operation_id: str) -> bool:
+        """Move the operation to what the record now says this attempt did.
 
-        Deliberately narrow about what it will delete: a path under the name
-        this writes, a regular file, never a symlink. It is removing something
-        from the user's own home directory, and the only thing it is entitled
-        to remove there is the copy it put there itself.
+        A successful install is deliberately left where it is: the plugin is
+        being replaced, so there is nothing here to settle or to retry, and
+        what says it worked is the record the next backend reads.
         """
+        result = self._stored().get("last_result")
+        if not isinstance(result, dict) or result.get("attempt") != self._attempt:
+            return False
+        if result.get("ok"):
+            return True
+        self._set(
+            operation_id, state="failed", message="The update could not be installed",
+            error=str(result.get("error") or "the updater reported a failure"),
+        )
+        log_activity(
+            self.logger, "info", "update.install_settled_by_record",
+            attempt=self._attempt, version=result.get("version"),
+        )
+        return True
+
+    def _adopt_pending_install(self, pending: object) -> None:
+        """Own an install this backend did not start but the record is waiting on.
+
+        The operation it rebuilds is deliberately not cancellable and carries
+        the attempt it belongs to, so a result written later still settles it
+        and the process this one cannot see is never raced by a second one. It
+        cannot be polled by a screen - the window that started it died with the
+        backend that did - and it does not need to be: what a screen reads is
+        the record.
+        """
+        if not isinstance(pending, dict):
+            return
+        started = pending.get("started_at")
+        # Only an install that could still be running. An older one is settled
+        # by the record itself, and adopting it would block every later update
+        # behind an installer that stopped existing long ago.
+        if not isinstance(started, (int, float)) or _elapsed_since(float(started)) > INSTALL_PENDING_LIMIT_SECONDS:
+            return
+        attempt = pending.get("attempt")
+        owned = self._operation
+        if (
+            owned is not None
+            and owned.get("state") == "installing"
+            and self._attempt == attempt
+        ):
+            # Already ours. This is reached from the status call, which a screen
+            # makes every second, so saying so again would be a line a second in
+            # the journal and a new identity for one install.
+            return
+        self._attempt = attempt if isinstance(attempt, str) else None
+        version = pending.get("version")
+        self._operation = {
+            "operation_id": str(pending.get("operation_id") or uuid.uuid4().hex),
+            "state": "installing",
+            "version": version if isinstance(version, str) else None,
+            "message": "Installing through Decky; Steam's interface will restart",
+            "error": None,
+            # Says where it came from, because nothing this backend holds can
+            # stop it and a screen asking to must be told why rather than
+            # silently ignored.
+            "adopted": True,
+        }
+        log_activity(
+            self.logger, "info", "update.pending_install_adopted",
+            attempt=self._attempt, version=version, started_at=pending.get("started_at"),
+        )
+
+    def _recovered_archive(self) -> str | None:
+        """The recovery archive on this device, named only if it is really there.
+
+        A path is only worth putting on a screen when it leads somewhere: the
+        row it appears in tells the user to install that file by hand, and a
+        row naming a file that does not exist is worse than the row not being
+        there at all.
+        """
+        path = self.kept_archive_path
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
+                return None
+        except OSError:
+            return None
+        return str(path)
+
+    def discard_kept_archive(self) -> bool:
+        """Remove the recovery archive this device is holding, if it is holding one.
+
+        Called by a successful install, which makes it an installer for the
+        past, and by deleting the plugin's data, which is a user saying to
+        leave nothing behind. Returns whether a file was removed.
+        """
+        return self._remove_kept_archive(self.kept_archive_path)
+
+    def _discard_kept_archive(self, previous: object) -> None:
+        """Remove the archive a failed install left, once nobody needs it."""
         if not isinstance(previous, dict):
             return
         kept = previous.get("archive_kept_at")
         if not isinstance(kept, str) or not kept:
             return
-        path = Path(kept)
+        self._remove_kept_archive(Path(kept))
+
+    def _remove_kept_archive(self, path: Path) -> bool:
+        """Delete one recovery archive, and nothing that is not one.
+
+        Deliberately narrow: the name this writes, in the one directory it ever
+        writes it to, a regular file, never a symlink. It is removing something
+        from the user's own home directory, and the only thing it is entitled
+        to remove there is the copy it put there itself.
+        """
         # Its own name, in the one directory this ever writes it to. The record
         # is a file on disk and the path in it is what this is about to delete,
         # so what makes the claim above true is that both halves are checked
         # rather than either one.
-        if path.parent != self.paths.user_home:
-            return
-        if not path.name.startswith(KEPT_ARCHIVE_PREFIX) or path.suffix != ".zip":
-            return
+        if path.parent != self.paths.user_home or path.name != KEPT_ARCHIVE_NAME:
+            return False
         try:
             if path.is_symlink() or not path.is_file():
-                return
+                return False
             path.unlink()
         except OSError as exc:
             log_failure(self.logger, "update.kept_archive_not_removed", exc, expected=True)
-            return
+            return False
         log_activity(self.logger, "info", "update.kept_archive_removed", path=str(path))
+        return True
 
     def _settled_result_fields(self) -> dict[str, object]:
         """Whether what the last install did is still worth a row on a screen.
@@ -330,7 +467,7 @@ class PluginUpdateManager:
         gone, or when this device is already on that version and the file is
         an installer for the past.
         """
-        result = self.state.load().get("last_result")
+        result = self._stored().get("last_result")
         if not isinstance(result, dict):
             return {}
         kept = result.get("archive_kept_at")
@@ -356,7 +493,7 @@ class PluginUpdateManager:
         return time.time() - float(self._last_search_activity() or 0.0) <= ACTIVE_WINDOW_SECONDS
 
     def _is_due(self) -> bool:
-        record = self.state.load()
+        record = self._stored()
         # What paces this is the last time GitHub was asked, not the last time
         # it answered. They are the same on a device that is working; on one
         # that is offline, pacing on the answer would ask again at every tick
@@ -406,13 +543,20 @@ class PluginUpdateManager:
             raise RuntimeError("plugin is unloading")
         if self._suspended:
             raise ValueError("plugin data is being deleted; check again when it finishes")
-        # The floor is about presses. Pacing a press against the background
+        # Joining comes first, and before the floor. Whether a caller may start
+        # a request and whether it may hear how the running one ended are two
+        # questions, and answering the second with the floor is how a second
+        # Check now - a slow one, a panel closed and opened over it - was handed
+        # a snapshot that said a check was running and never heard the end of
+        # it. That is the state the join exists to remove.
+        if self._checking:
+            return await self._join_check()
+        # The floor is about presses, and about the anonymous GitHub budget this
+        # shares with the table source. Pacing a press against the background
         # timer as well would answer Check now from a record the user cannot
         # see the age of, on a device whose scheduler happened to tick first.
         if forced and self._last_forced_at and time.monotonic() - self._last_forced_at < FORCED_CHECK_FLOOR_SECONDS:
             return self.snapshot()
-        if self._checking:
-            return await self._join_check()
         self._checking = True
         self._check_finished = asyncio.Event()
         if forced:
@@ -444,13 +588,13 @@ class PluginUpdateManager:
         # check report the previous answer either.
         # A check that answered is also the moment to let go of an outcome
         # nobody can act on any more.
-        written = self._record(**answer, **self._settled_result_fields())
+        self._record(**answer, **self._settled_result_fields())
         log_activity(
             self.logger, "info", "update.checked",
             forced=forced, current=self.current_version, latest=latest,
-            available=offer is not None, recorded=written,
+            available=offer is not None, unwritten=sorted(self._unwritten),
         )
-        return self.snapshot(None if written else answer)
+        return self.snapshot()
 
     def _finish_check(self) -> None:
         """Let go of the single-flight gate, once, and wake anybody waiting."""
@@ -588,9 +732,19 @@ class PluginUpdateManager:
         return dict(self._operation)
 
     def has_active_operation(self) -> bool:
+        """Whether an update is happening, including one this backend did not start.
+
+        The record is asked as well as this process, because the installer is a
+        detached process that outlives the backend: after a reload the only
+        thing that knows an install is still out there is what it wrote down.
+        Everything that has to hold that boundary asks through here - a second
+        update, and deleting the tree the first one is installing from.
+        """
         self._reconcile_installing()
         if self._task is not None and not self._task.done():
             return True
+        if self._operation is None:
+            self._adopt_pending_install(self._stored().get("install"))
         operation = self._operation
         return operation is not None and str(operation.get("state")) not in _SETTLED_STATES
 
@@ -623,33 +777,35 @@ class PluginUpdateManager:
         operation_id = str(operation.get("operation_id"))
         if self.result_path.is_file():
             self.consume_runner_result()
-            result = self.state.load().get("last_result")
-            if isinstance(result, dict) and result.get("attempt") == self._attempt:
-                if result.get("ok"):
-                    # The install landed, so this plugin is being replaced and
-                    # there is nothing here to settle or retry: what says so is
-                    # the record, which the backend that loads next reads.
-                    return
-                self._set(
-                    operation_id, state="failed", message="The update could not be installed",
-                    error=str(result.get("error") or "the updater reported a failure"),
-                )
-                log_activity(
-                    self.logger, "info", "update.install_settled_by_result",
-                    attempt=self._attempt, version=result.get("version"),
-                )
+            if self._settled_by_record(operation_id):
                 return
         process = self._process
-        if process is None or process.poll() is None:
+        if process is None:
+            # An install this backend adopted from the record rather than
+            # started: the process is not its child and cannot be asked
+            # anything. What settles it is the record - a result arriving late,
+            # or the attempt outliving any install - and nothing else can, so
+            # asking the record is the whole of what there is to do.
+            if operation.get("adopted"):
+                self.consume_runner_result()
+                self._settled_by_record(operation_id)
+            return
+        if process.poll() is None:
             return
         # The runner writes its result before it exits, so a process that is
         # gone without one did not get that far.
+        # What it left behind, if it got that far. The installer verifies the
+        # archive and moves it to this exact path before it writes anything
+        # else, and the two failures are correlated: a disk that cannot take the
+        # result file is a disk that has just been written to. Discarding the
+        # path here threw away the one thing the manual route is for, in exactly
+        # the case it exists for.
         self._record(install=None, last_result={
             "attempt": self._attempt,
             "version": operation.get("version"),
             "ok": False,
             "error": "the updater stopped without reporting what happened",
-            "archive_kept_at": None,
+            "archive_kept_at": self._recovered_archive(),
             "at": time.time(),
             "restart_requested": False,
         })
@@ -741,7 +897,7 @@ class PluginUpdateManager:
             self._set(operation_id, state="downloading", version=offer.version, message=f"Downloading {offer.archive_name}")
             archive, digest = await self._fetch_verified_archive(offer)
             self._set(operation_id, state="installing", message="Installing through Decky; Steam's interface will restart")
-            self._spawn_runner(offer, archive, digest)
+            self._spawn_runner(offer, archive, digest, operation_id)
         except asyncio.CancelledError:
             _discard(archive)
             self._set(operation_id, state="cancelled", message="The update was cancelled", error=None)
@@ -814,7 +970,7 @@ class PluginUpdateManager:
         )
         return destination, digest
 
-    def _spawn_runner(self, offer: ReleaseOffer, archive: Path, digest: str) -> None:
+    def _spawn_runner(self, offer: ReleaseOffer, archive: Path, digest: str, operation_id: str) -> None:
         """Hand the install to a process Decky stopping this one cannot take.
 
         Detached into its own session on purpose: the install replaces this
@@ -830,7 +986,7 @@ class PluginUpdateManager:
         replaced_at = record.get("webhelper_replaced_at")
         not_before = float(replaced_at) + WEBHELPER_SPACING_SECONDS if isinstance(replaced_at, (int, float)) else 0.0
         attempt = uuid.uuid4().hex
-        kept = self.paths.user_home / f"{KEPT_ARCHIVE_PREFIX}v{offer.version}.zip"
+        kept = self.kept_archive_path
         environment = child_environment()
         environment["PYTHONPATH"] = str(self.paths.plugin_dir / "py_modules")
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -857,6 +1013,10 @@ class PluginUpdateManager:
         self.state.update(
             install={
                 "attempt": attempt,
+                # Carried so that a backend loading after this one adopts the
+                # same operation rather than inventing a second identity for an
+                # install that is already happening.
+                "operation_id": operation_id,
                 "version": offer.version,
                 "started_at": time.time(),
                 "archive_kept_at": str(kept),
@@ -898,13 +1058,25 @@ class PluginUpdateManager:
         succeeded whether or not a full disk let the answer be written down, and
         reporting it as a failed check would be a statement about the wrong
         thing. The same rule the search marker follows.
+
+        What it does not do any more is let the answer be lost with the write.
+        A write that failed leaves its fields in memory, where every reader of
+        this record looks first, so that this backend goes on knowing what it
+        just learned - including the pacing, which would otherwise ask GitHub
+        again at the next search, every search, for as long as the disk stayed
+        unwritable.
         """
         try:
             self.state.update(**fields)
-            return True
         except Exception as exc:  # noqa: BLE001 - a record write never fails the work
+            self._unwritten.update(fields)
             log_failure(self.logger, "update.record_not_written", exc, expected=True)
             return False
+        # Written, so the copy in memory is no longer what this knows and the
+        # file is: anything it still held about these fields is now stale.
+        for field in fields:
+            self._unwritten.pop(field, None)
+        return True
 
     def _set(self, operation_id: str, **values: object) -> None:
         if self._operation is not None and self._operation.get("operation_id") == operation_id:
@@ -957,6 +1129,20 @@ class PluginUpdateManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _elapsed_since(moment: float) -> float:
+    """How long ago a wall-clock moment was, with a clock that may have moved.
+
+    A handheld whose battery ran flat boots behind everything written on it, so
+    a moment recorded before that boot is in the future afterwards. Reading the
+    difference as negative makes an install that started before it pending for
+    ever - it is never older than the limit - which is the one outcome nothing
+    here can recover from. Anything in this clock's future is treated as having
+    happened now, so the limit runs from the moment the clock was noticed.
+    """
+    elapsed = time.time() - moment
+    return 0.0 if elapsed < 0 else elapsed
 
 
 def _file_digest(path: Path) -> str:

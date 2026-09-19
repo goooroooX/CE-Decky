@@ -302,6 +302,11 @@ class PluginService:
         # that entire lifecycle so blocking RPCs cannot materialize or replace
         # CE identity while the managed tree is being promoted underneath them.
         self._managed_ce_reservation: str | None = None
+        # The same sentinel for the other transaction that replaces this
+        # plugin's own tree. Both are decided under one lock, because each
+        # manager's start has an async gap before it can publish an operation
+        # and two independent checks can both pass inside it.
+        self._plugin_update_reservation: str | None = None
         # Decky may briefly run overlapping frontend observers for one completed
         # setup operation. Keep one in-memory, exact-ID completion receipt until
         # the next setup begins so a losing observer can reconcile without
@@ -1725,6 +1730,10 @@ class PluginService:
             raise ValueError("managed CE reinstall flag must be a boolean")
         with self._mutation_lock:
             self._assert_no_managed_ce_transition()
+            # An update replaces this plugin while this extraction is writing
+            # into the managed tree, so the two refuse each other, and both
+            # decide it here.
+            self._assert_no_plugin_update()
             for profile in self.profile_store.list_profiles():
                 self._assert_no_live_owned_launch(profile.app_id)
             # Reserve before releasing the shared mutation boundary.  The
@@ -2081,19 +2090,44 @@ class PluginService:
         """
         if not isinstance(expected_version, str) or not expected_version:
             raise ValueError("the version to update to is required")
-        if self.managed_ce.has_active_operation():
-            raise ValueError("a Cheat Engine setup is still running; wait for it to finish, then update")
-        return await self.plugin_updates.start(expected_version=expected_version)
+        with self._mutation_lock:
+            if self.managed_ce.has_active_operation() or self._managed_ce_reservation is not None:
+                raise ValueError("a Cheat Engine setup is still running; wait for it to finish, then update")
+            self._assert_no_plugin_update()
+            # Reserved before the lock is released, for the same reason the
+            # setup above reserves: the manager's start is async and cannot
+            # publish an operation until it has one.
+            self._plugin_update_reservation = "starting"
+        try:
+            operation = await self.plugin_updates.start(expected_version=expected_version)
+        except BaseException:
+            with self._mutation_lock:
+                if self._plugin_update_reservation == "starting":
+                    self._plugin_update_reservation = None
+            raise
+        with self._mutation_lock:
+            if self._plugin_update_reservation != "starting":
+                raise RuntimeError("plugin update reservation was lost")
+            operation_id = operation.get("operation_id")
+            self._plugin_update_reservation = operation_id if isinstance(operation_id, str) else "starting"
+            self._reconcile_plugin_update_reservation(operation)
+        return operation
 
     def poll_plugin_update(self, operation_id: str) -> dict[str, object]:
         if not isinstance(operation_id, str) or not operation_id:
             raise ValueError("plugin update operation id is required")
-        return self.plugin_updates.status(operation_id)
+        operation = self.plugin_updates.status(operation_id)
+        with self._mutation_lock:
+            self._reconcile_plugin_update_reservation(operation)
+        return operation
 
     async def cancel_plugin_update(self, operation_id: str) -> dict[str, object]:
         if not isinstance(operation_id, str) or not operation_id:
             raise ValueError("plugin update operation id is required")
-        return await self.plugin_updates.cancel(operation_id)
+        operation = await self.plugin_updates.cancel(operation_id)
+        with self._mutation_lock:
+            self._reconcile_plugin_update_reservation(operation)
+        return operation
 
     def record_panel_log(
         self,
@@ -2460,10 +2494,12 @@ class PluginService:
             refusals.append("a Cheat Engine installation is still in progress; cancel it first")
         if self.acquisitions.has_active():
             refusals.append("a table download is still in progress; cancel it first")
-        if self.plugin_updates.has_active_operation():
+        if self.plugin_updates.has_active_operation() or self._plugin_update_reservation is not None:
             # The same case as a table download: an update owns a staged archive
             # under the temporary root this deletes, and once it has been handed
-            # to Decky the plugin is being replaced as well.
+            # to Decky the plugin is being replaced as well. The reservation is
+            # the gap before the manager has an operation to show, exactly as
+            # for the Cheat Engine setup above.
             refusals.append("a plugin update is still in progress; wait for it to finish")
         return refusals
 
@@ -2496,6 +2532,16 @@ class PluginService:
         if "cache" in keys:
             self.provider_catalog.artifacts.clear()
             self.provider_catalog.forget_searches()
+        if "settings" in keys:
+            # The widest scope, which is a user saying to leave nothing behind.
+            # The recovery archive an update failure keeps is the one thing this
+            # plugin writes outside the directories above, so it is the one
+            # thing the directory sweep cannot reach.
+            try:
+                if self.plugin_updates.discard_kept_archive():
+                    log_activity(self.logger, "info", "managed_data.update_archive_removed")
+            except Exception as exc:  # noqa: BLE001 - a deletion that happened is not failed by this
+                log_failure(self.logger, "managed_data.update_archive_not_removed", exc, expected=True)
 
     def _managed_directories(self) -> list[tuple[str, str, Path, str]]:
         """Every location CE Decky owns, in the order the panel lists them.
@@ -3805,6 +3851,25 @@ class PluginService:
     def _assert_no_managed_ce_transition(self) -> None:
         if self._managed_ce_reservation is not None:
             raise ValueError("managed Cheat Engine setup is in progress; resume or cancel it before changing runtime identity")
+
+    def _assert_no_plugin_update(self) -> None:
+        """Refuse work that an update would interrupt by replacing the plugin.
+
+        Held with the same lock as the reservation above, because an update and
+        a Cheat Engine setup each have a moment between deciding to start and
+        having an operation to show for it, and two checks that each look at the
+        other manager both pass inside it.
+        """
+        if self._plugin_update_reservation is not None or self.plugin_updates.has_active_operation():
+            raise ValueError("a plugin update is in progress; wait for it to finish, then try again")
+
+    def _reconcile_plugin_update_reservation(self, operation: dict[str, object]) -> None:
+        operation_id = operation.get("operation_id")
+        state = operation.get("state")
+        if not isinstance(operation_id, str) or not isinstance(state, str):
+            return
+        if self._plugin_update_reservation in {"starting", operation_id} and state in {"failed", "cancelled"}:
+            self._plugin_update_reservation = None
 
     def _reconcile_managed_ce_reservation(self, operation: dict[str, object]) -> None:
         operation_id = operation.get("operation_id")

@@ -24,6 +24,16 @@ interface Props {
   onUpdate: () => void;
   /** Whether the mascot is drawn. The user's own durable choice, on by default. */
   mascotVisible: boolean;
+  /**
+   * Whether an update this panel did not start is running right now.
+   *
+   * The backend outlives this panel and an update outlives it twice over: the
+   * window that started one dies with the panel when a modal opens, and the
+   * install carries on. Everything this panel offers that would be interrupted
+   * by the plugin being replaced is therefore held down while one is in flight,
+   * the same as while a Cheat Engine setup is running.
+   */
+  updateRunning: boolean;
   ceReady: boolean;
   ceStatusText: string;
   installAvailable: boolean;
@@ -198,6 +208,7 @@ export function HomePanel(props: Props) {
     updateVersion,
     onUpdate,
     mascotVisible,
+    updateRunning,
     ceReady,
     ceStatusText,
     installAvailable,
@@ -260,7 +271,7 @@ export function HomePanel(props: Props) {
     busy,
     error,
   } = props;
-  const workflowBlocked = busy || setupPending;
+  const workflowBlocked = busy || setupPending || updateRunning;
   const searchDisabled = workflowBlocked || !game;
   // See `preferSearchFocus`: the mount decides, and nothing after it does.
   //
@@ -382,7 +393,7 @@ export function HomePanel(props: Props) {
           nothing else: `CONTENTS_ONLY` keeps it out of the layout, so what
           Steam lays out and walks is its own row holding its own button,
           exactly as for every other press on this panel. */}
-      {updateVersion && (
+      {(updateVersion || updateRunning) && (
         <PanelSection>
           <PanelSectionRow>
             <div data-testid="panel-update" className={UPDATE_ACTION_CLASS} style={CONTENTS_ONLY}>
@@ -391,7 +402,7 @@ export function HomePanel(props: Props) {
                 disabled={busy}
                 onClick={traceUiAction("home_panel.update", onUpdate, { version: updateVersion })}
               >
-                {`Update to v${updateVersion}`}
+                {updateRunning ? "Updating CE Decky…" : `Update to v${updateVersion ?? ""}`}
               </ButtonItem>
             </div>
           </PanelSectionRow>

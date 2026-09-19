@@ -104,10 +104,11 @@ describe("Advanced, Plugin updates", () => {
     render(<AdvancedModal {...props({
       update: updateState({ checked_at: 1_760_000_000, last_error: "GitHub is rate limiting this device" }),
     })} />);
-    expect(screen.getByText("v0.9.28 is available")).toBeTruthy();
-    // The date beside the finding is the check that answered, not the attempt
-    // that did not.
-    expect(screen.getByText(/This device is on v0\.9\.27\./).textContent).toContain("Checked 2025-10-09.");
+    // Named as something found then, not as the state of the project now: the
+    // newest thing this device knows is that the latest check did not finish.
+    expect(screen.getByText("v0.9.28 was found on 2025-10-09")).toBeTruthy();
+    expect(screen.getByText(/This device is on v0\.9\.27\./).textContent)
+      .toContain("The latest check did not finish");
     // And the attempt that did not is a row of its own: appended to the line
     // above it would sit past the end of a line that is cut to one.
     const failure = screen.getByTestId("update-check-failed");
@@ -124,7 +125,7 @@ describe("Advanced, Plugin updates", () => {
   });
 
   it("names the kept file and the release page after a failed install", () => {
-    const kept = "/home/u/CE-Decky-update-v0.9.28.zip";
+    const kept = "/home/u/CE-Decky-update.zip";
     render(<AdvancedModal {...props({
       update: updateState({
         update_available: false, latest_version: "0.9.27",

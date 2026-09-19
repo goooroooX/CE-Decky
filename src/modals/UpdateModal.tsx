@@ -33,6 +33,18 @@ interface Props {
   targetVersion: string;
   /** Whether a game is running right now, which the interface restart can displace. */
   gameRunning: boolean;
+  /**
+   * An update already running, which this window is opening to report rather
+   * than to start.
+   *
+   * Opening any modal closes the quick access panel, so the window that started
+   * an update is destroyed as soon as the user looks at anything else, while
+   * the update carries on in the backend. What is left is the operation in the
+   * status the panel reads, and this is how the user gets back to it: no
+   * confirmation, because they have already given it, and the same Stop for as
+   * long as stopping is still possible.
+   */
+  adopted?: PluginUpdateOperation | null;
   /** Takes the version this window named, because that is what was confirmed. */
   onStart: (targetVersion: string) => Promise<PluginUpdateOperation>;
   onPoll: (operationId: string) => Promise<PluginUpdateOperation>;
@@ -55,11 +67,11 @@ interface Props {
  * question is being stopped and this panel is about to be replaced with it.
  */
 export function UpdateModal(
-  { currentVersion, targetVersion, gameRunning, onStart, onPoll, onCancelUpdate, onClose }: Props,
+  { currentVersion, targetVersion, gameRunning, adopted = null, onStart, onPoll, onCancelUpdate, onClose }: Props,
 ) {
   useUiSurface("UpdateModal");
-  const [operation, setOperation] = useState<PluginUpdateOperation | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<PluginUpdateOperation | null>(adopted);
+  const [busy, setBusy] = useState(Boolean(adopted));
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
@@ -74,6 +86,19 @@ export function UpdateModal(
   const [restartOverdue, setRestartOverdue] = useState(false);
 
   useEffect(() => () => { liveRef.current = false; }, []);
+
+  // An update that was already running when this window opened is followed from
+  // here, exactly as if this window had started it. Nothing is started: the
+  // press that did has already happened, and asking again would be a second
+  // download and a second installer beside the first.
+  useEffect(() => {
+    if (!adopted) return;
+    busyRef.current = true;
+    operationRef.current = adopted.operation_id;
+    void follow(adopted.operation_id);
+    // Once, for the operation this window opened on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const follow = async (operationId: string) => {
     let silent = 0;

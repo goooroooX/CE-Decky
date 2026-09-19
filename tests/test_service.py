@@ -1718,3 +1718,56 @@ def test_removal_readiness_names_the_work_the_deletion_itself_would_refuse(tmp_p
     # And the deletion refuses for the same reason, in the same words.
     with pytest.raises(ValueError, match="plugin update"):
         asyncio.run(service.delete_managed_data("cache"))
+
+
+def test_a_plugin_update_and_a_cheat_engine_setup_refuse_each_other(tmp_path: Path):
+    """Two transactions that each replace what the other is writing into.
+
+    Each manager has a moment between deciding to start and having an operation
+    to show for it, so two checks that each ask the other manager can both pass
+    inside it. One reservation, taken under the mutation boundary, is what makes
+    the answer one answer.
+    """
+    service, _paths = _managed_data_service(tmp_path)
+
+    # An update holding the reservation refuses a setup, including in the gap
+    # before the update manager has anything to show.
+    service._plugin_update_reservation = "starting"
+    with pytest.raises(ValueError, match="plugin update"):
+        asyncio.run(service.start_managed_ce_install())
+    service._plugin_update_reservation = None
+
+    # And the other way round, in the same gap.
+    service._managed_ce_reservation = "starting"
+    with pytest.raises(ValueError, match="Cheat Engine setup"):
+        asyncio.run(service.start_plugin_update("0.9.28"))
+    service._managed_ce_reservation = None
+
+    # A settled update gives the reservation back.
+    service._plugin_update_reservation = "abc"
+    service._reconcile_plugin_update_reservation({"operation_id": "abc", "state": "failed"})
+    assert service._plugin_update_reservation is None
+
+
+def test_deleting_managed_data_refuses_an_update_that_has_only_been_reserved(tmp_path: Path):
+    service, _paths = _managed_data_service(tmp_path)
+    service._plugin_update_reservation = "starting"
+    readiness = service.get_removal_readiness()
+    assert readiness["can_delete_managed_data"] is False
+    assert any("plugin update" in blocker for blocker in readiness["blockers"])
+    with pytest.raises(ValueError, match="plugin update"):
+        asyncio.run(service.delete_managed_data("cache"))
+
+
+def test_deleting_everything_takes_the_recovery_archive_with_it(tmp_path: Path):
+    """The one file this plugin writes outside the directories it sweeps."""
+    service, paths = _managed_data_service(tmp_path)
+    kept = service.plugin_updates.kept_archive_path
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes(b"a verified release nobody installed")
+
+    asyncio.run(service.delete_managed_data("setup"))
+    assert kept.exists() is True, "a narrower scope leaves the user's own file alone"
+
+    asyncio.run(service.delete_managed_data("all"))
+    assert kept.exists() is False

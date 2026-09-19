@@ -5091,6 +5091,18 @@ function updateSummary(state, currentVersion) {
     // so a sentence added to the end of this one is a sentence nobody reads.
     // What this line owes the reader is the date, which is the last check that
     // answered rather than the last one attempted.
+    // The newest thing this device knows wins the line, and the newest thing is
+    // the attempt that failed. A finding from before it is still true and still
+    // worth naming, but as something found then rather than as the state of the
+    // project now: with the failure said only in the row below, a device that had
+    // not reached GitHub for a week read exactly like one that had just confirmed
+    // the offer.
+    if (state.last_error && state.update_available && state.latest_version) {
+        return {
+            label: `v${state.latest_version} was found${checked ? ` on ${checked}` : ""}`,
+            description: `This device is on v${state.current_version}. The latest check did not finish, so this may no longer be the newest release.`,
+        };
+    }
     if (state.update_available && state.latest_version) {
         return {
             label: `v${state.latest_version} is available`,
@@ -5157,6 +5169,13 @@ function panelUpdateOffer(update) {
     if (!update || !update.update_available || !update.latest_version)
         return null;
     if (!update.auto_check || !update.install_supported)
+        return null;
+    // And not while the newest thing this device tried was a check that failed.
+    // The finding behind the press would then be older than what is known about
+    // it, and a press on a 300 pixel panel carries none of that: it says a
+    // version and offers to install it. Advanced still shows the finding, says
+    // the latest check did not finish, and can still start the update from there.
+    if (update.last_error)
         return null;
     return update.latest_version;
 }
@@ -8224,8 +8243,8 @@ const HEXPAW_DATA_URI = "data:image/png;base64,"
  * must be reachable without scrolling the quick-access column.
  */
 function HomePanel(props) {
-    const { pluginVersion, updateVersion, onUpdate, mascotVisible, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
-    const workflowBlocked = busy || setupPending;
+    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
+    const workflowBlocked = busy || setupPending || updateRunning;
     const searchDisabled = workflowBlocked || !game;
     // See `preferSearchFocus`: the mount decides, and nothing after it does.
     //
@@ -8292,7 +8311,7 @@ function HomePanel(props) {
         : runningDetectionAvailable
             ? runningGameCount > 1 ? `${runningGameCount} games running; choose one` : "Start a game or choose one"
             : "Automatic detection is unavailable; choose one";
-    return (SP_JSX.jsxs(DensePanel, { children: [mascotVisible && (SP_JSX.jsx("div", { style: { display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }, children: SP_JSX.jsx("img", { src: HEXPAW_DATA_URI, alt: "HexPaw, the CE Decky mascot", width: 112, style: { width: 112, height: "auto", display: "block" } }) })), updateVersion && (SP_JSX.jsx(DFL.PanelSection, { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { "data-testid": "panel-update", className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: traceUiAction("home_panel.update", onUpdate, { version: updateVersion }), children: `Update to v${updateVersion}` }) }) }) })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Setup" }), ceReady ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", truncate: true, label: ceStatusText, description: ceDetail || "Ready", actions: setupPending ? undefined : (SP_JSX.jsx(SmallButton, { disabled: busy || ceRunning || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.reinstall", onReinstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: reinstallLabel.startsWith("Reinstall") ? "Reinstall" : "Install" })) }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", label: "Cheat Engine is not installed", description: ceStatusText }) }), !setupPending && !setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.download_and_install_ce", () => onInstall(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Download and install CE" }) }))] })), ceIdentityBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-owned-elsewhere", truncate: true, label: "Cheat Engine setup is busy", description: ceIdentityBlockedReason }) })), setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-status-error", truncate: true, label: "Setup status unavailable", description: setupStatusError, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.retry", onRetrySetupStatus, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Retry" }) }) })), installOperation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-progress", truncate: true, label: installOperation.state.replace(/_/g, " "), description: `${installOperation.message}${installOperation.error ? ` · ${installOperation.error}` : ""}`, actions: installBusy ? SP_JSX.jsx(SmallButton, { disabled: managedCancelling, onClick: traceUiAction("home_panel.cancel", onCancelInstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: managedCancelling ? "Cancelling…" : "Cancel" }) : undefined }) })), installBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: 24 }, children: SP_JSX.jsx(DFL.Spinner, { "aria-label": "CE setup in progress", style: { width: 18, height: 18, flexShrink: 0 } }) }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "game-row", truncate: true, scroll: true, label: game ? appDetails?.displayName || game.name : "No game selected", description: gameDetail, actions: SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || gameChangeBlocked, onClick: traceUiAction("home_panel.choose_game", onChooseGame, { app_id: game?.appId, table_sha: table?.sha256 }), children: game ? "Change" : "Choose" }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "table-row", truncate: true, scroll: true, label: table ? table.filename : selectedTableMissing ? "Selected table is missing" : "No table selected", description: table
+    return (SP_JSX.jsxs(DensePanel, { children: [mascotVisible && (SP_JSX.jsx("div", { style: { display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }, children: SP_JSX.jsx("img", { src: HEXPAW_DATA_URI, alt: "HexPaw, the CE Decky mascot", width: 112, style: { width: 112, height: "auto", display: "block" } }) })), (updateVersion || updateRunning) && (SP_JSX.jsx(DFL.PanelSection, { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { "data-testid": "panel-update", className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: traceUiAction("home_panel.update", onUpdate, { version: updateVersion }), children: updateRunning ? "Updating CE Decky…" : `Update to v${updateVersion ?? ""}` }) }) }) })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Setup" }), ceReady ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", truncate: true, label: ceStatusText, description: ceDetail || "Ready", actions: setupPending ? undefined : (SP_JSX.jsx(SmallButton, { disabled: busy || ceRunning || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.reinstall", onReinstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: reinstallLabel.startsWith("Reinstall") ? "Reinstall" : "Install" })) }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", label: "Cheat Engine is not installed", description: ceStatusText }) }), !setupPending && !setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.download_and_install_ce", () => onInstall(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Download and install CE" }) }))] })), ceIdentityBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-owned-elsewhere", truncate: true, label: "Cheat Engine setup is busy", description: ceIdentityBlockedReason }) })), setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-status-error", truncate: true, label: "Setup status unavailable", description: setupStatusError, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.retry", onRetrySetupStatus, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Retry" }) }) })), installOperation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-progress", truncate: true, label: installOperation.state.replace(/_/g, " "), description: `${installOperation.message}${installOperation.error ? ` · ${installOperation.error}` : ""}`, actions: installBusy ? SP_JSX.jsx(SmallButton, { disabled: managedCancelling, onClick: traceUiAction("home_panel.cancel", onCancelInstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: managedCancelling ? "Cancelling…" : "Cancel" }) : undefined }) })), installBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: 24 }, children: SP_JSX.jsx(DFL.Spinner, { "aria-label": "CE setup in progress", style: { width: 18, height: 18, flexShrink: 0 } }) }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "game-row", truncate: true, scroll: true, label: game ? appDetails?.displayName || game.name : "No game selected", description: gameDetail, actions: SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || gameChangeBlocked, onClick: traceUiAction("home_panel.choose_game", onChooseGame, { app_id: game?.appId, table_sha: table?.sha256 }), children: game ? "Change" : "Choose" }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "table-row", truncate: true, scroll: true, label: table ? table.filename : selectedTableMissing ? "Selected table is missing" : "No table selected", description: table
                                 ? `${tableSource} · ${table.sha256.slice(0, 8)}${tableMarkedNotWorking ? " · marked as not working" : ""}`
                                 : selectedTableMissing ?? "Search online, or open one this device already has", leadingMark: table ? SP_JSX.jsx(CompatibilityMark, { evidence: tableEvidence, blocked: tableBlocked }) : undefined, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: searchButtonRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: openOnSearch, disabled: searchDisabled, onClick: traceUiAction("home_panel.search", onSearchTable, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Search" }) }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.manage", onOpenImportedTables, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Manage" })] })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "runtime-row", truncate: true, tone: "header", status: runtimeRowStatus, label: launchPending ? "Starting Cheat Engine" : tableLoadFailed ? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected", description: launchPending
                                 ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
@@ -9973,10 +9992,10 @@ const RESTART_GRACE_MS = 45000;
  * Decky is replacing this plugin, so the backend that would answer the next
  * question is being stopped and this panel is about to be replaced with it.
  */
-function UpdateModal({ currentVersion, targetVersion, gameRunning, onStart, onPoll, onCancelUpdate, onClose }) {
+function UpdateModal({ currentVersion, targetVersion, gameRunning, adopted = null, onStart, onPoll, onCancelUpdate, onClose }) {
     useUiSurface("UpdateModal");
-    const [operation, setOperation] = SP_REACT.useState(null);
-    const [busy, setBusy] = SP_REACT.useState(false);
+    const [operation, setOperation] = SP_REACT.useState(adopted);
+    const [busy, setBusy] = SP_REACT.useState(Boolean(adopted));
     const [cancelling, setCancelling] = SP_REACT.useState(false);
     const [error, setError] = SP_REACT.useState(null);
     const busyRef = SP_REACT.useRef(false);
@@ -9990,6 +10009,19 @@ function UpdateModal({ currentVersion, targetVersion, gameRunning, onStart, onPo
     // than it ever takes when it works.
     const [restartOverdue, setRestartOverdue] = SP_REACT.useState(false);
     SP_REACT.useEffect(() => () => { liveRef.current = false; }, []);
+    // An update that was already running when this window opened is followed from
+    // here, exactly as if this window had started it. Nothing is started: the
+    // press that did has already happened, and asking again would be a second
+    // download and a second installer beside the first.
+    SP_REACT.useEffect(() => {
+        if (!adopted)
+            return;
+        busyRef.current = true;
+        operationRef.current = adopted.operation_id;
+        void follow(adopted.operation_id);
+        // Once, for the operation this window opened on.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     const follow = async (operationId) => {
         let silent = 0;
         for (let attempt = 0; attempt < POLL_ATTEMPTS && liveRef.current; attempt += 1) {
@@ -15743,6 +15775,13 @@ function Content() {
     const updateState = status?.update ?? null;
     const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
     const panelUpdateVersion = panelUpdateOffer(updateState);
+    // An update this panel did not start, and cannot have: every modal closes the
+    // panel, so the window that started one is gone by the time it matters, and
+    // the backend goes on with it. The panel adopts it from the status it already
+    // reads - holding down everything the plugin being replaced would interrupt,
+    // and offering the way back into the window that reports it.
+    const runningUpdate = updateState?.operation ?? null;
+    const updateRunning = Boolean(runningUpdate && !["failed", "cancelled"].includes(runningUpdate.state));
     // The backend is the authority and this is the frame before it answers: a
     // panel is rebuilt every time a modal opens, and guessing "on" showed the
     // image to the user who had just switched it off, once per rebuild.
@@ -15751,16 +15790,16 @@ function Content() {
         if (status?.preferences)
             rememberMascotVisible(status.preferences.mascot_visible);
     }, [status?.preferences?.mascot_visible]);
-    const openUpdateModal = (requested) => {
+    const openUpdateModal = (requested, adopt) => {
         // What the control that was pressed was showing, and only then what this
         // panel last read. Advanced keeps its own snapshot and is not re-rendered
         // from here, so a check run there can find a version this closure has
         // never seen: taking the parent's copy opened a confirmation for the older
         // version, or opened nothing at all.
-        const target = requested ?? offeredUpdateVersion;
+        const target = requested ?? adopt?.version ?? offeredUpdateVersion;
         if (!status || !target)
             return;
-        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, gameRunning: runningGamesRef.current.length > 0, onStart: (targetVersion) => startPluginUpdate(targetVersion), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
+        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, gameRunning: runningGamesRef.current.length > 0, adopted: adopt ?? null, onStart: (targetVersion) => startPluginUpdate(targetVersion), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
                 close();
                 // What the press changed about this device is in the status the panel
                 // reads: a cancelled update, a failed one, and the record of what the
@@ -15796,9 +15835,9 @@ function Content() {
         // control that has to be pressable: nothing else in this branch does
         // anything, so without it the panel could only recover by being remounted.
         const bootstrapFailed = error !== null;
-        return SP_JSX.jsx(HomePanel, { pluginVersion: null, updateVersion: null, onUpdate: () => undefined, mascotVisible: mascotVisible, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
+        return SP_JSX.jsx(HomePanel, { pluginVersion: null, updateVersion: null, onUpdate: () => undefined, mascotVisible: mascotVisible, updateRunning: false, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
     }
-    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, updateVersion: panelUpdateVersion, onUpdate: () => openUpdateModal(panelUpdateVersion ?? undefined), mascotVisible: mascotVisible, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, updateVersion: panelUpdateVersion, updateRunning: updateRunning, onUpdate: () => openUpdateModal(panelUpdateVersion ?? undefined, runningUpdate), mascotVisible: mascotVisible, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
                 void runAction(async () => {
                     // Before the library is even read, because the answer decides whether
                     // there is anything to open. The row's disabled state is up to three

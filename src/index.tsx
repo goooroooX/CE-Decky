@@ -106,6 +106,7 @@ import type {
   ManagedCECapability,
   ManagedCEInstallStatus,
   PluginStatus,
+  PluginUpdateOperation,
   RuntimeEnvelope,
   RuntimeResult,
   SelfTestResult,
@@ -3670,6 +3671,13 @@ function Content() {
   const updateState = status?.update ?? null;
   const offeredUpdateVersion = updateState?.update_available ? updateState.latest_version : null;
   const panelUpdateVersion = panelUpdateOffer(updateState);
+  // An update this panel did not start, and cannot have: every modal closes the
+  // panel, so the window that started one is gone by the time it matters, and
+  // the backend goes on with it. The panel adopts it from the status it already
+  // reads - holding down everything the plugin being replaced would interrupt,
+  // and offering the way back into the window that reports it.
+  const runningUpdate = updateState?.operation ?? null;
+  const updateRunning = Boolean(runningUpdate && !["failed", "cancelled"].includes(runningUpdate.state));
   // The backend is the authority and this is the frame before it answers: a
   // panel is rebuilt every time a modal opens, and guessing "on" showed the
   // image to the user who had just switched it off, once per rebuild.
@@ -3678,19 +3686,20 @@ function Content() {
     if (status?.preferences) rememberMascotVisible(status.preferences.mascot_visible);
   }, [status?.preferences?.mascot_visible]);
 
-  const openUpdateModal = (requested?: string) => {
+  const openUpdateModal = (requested?: string, adopt?: PluginUpdateOperation | null) => {
     // What the control that was pressed was showing, and only then what this
     // panel last read. Advanced keeps its own snapshot and is not re-rendered
     // from here, so a check run there can find a version this closure has
     // never seen: taking the parent's copy opened a confirmation for the older
     // version, or opened nothing at all.
-    const target = requested ?? offeredUpdateVersion;
+    const target = requested ?? adopt?.version ?? offeredUpdateVersion;
     if (!status || !target) return;
     showContextModal((close) => (
       <UpdateModal
         currentVersion={status.version}
         targetVersion={target}
         gameRunning={runningGamesRef.current.length > 0}
+        adopted={adopt ?? null}
         onStart={(targetVersion) => startPluginUpdate(targetVersion)}
         onPoll={(operationId) => pollPluginUpdate(operationId)}
         onCancelUpdate={(operationId) => cancelPluginUpdate(operationId)}
@@ -3746,6 +3755,7 @@ function Content() {
       updateVersion={null}
       onUpdate={() => undefined}
       mascotVisible={mascotVisible}
+      updateRunning={false}
       ceReady={false}
       ceStatusText="Loading plugin status…"
       installAvailable={false}
@@ -3807,7 +3817,8 @@ function Content() {
       <HomePanel
       pluginVersion={`v${status.version}`}
       updateVersion={panelUpdateVersion}
-      onUpdate={() => openUpdateModal(panelUpdateVersion ?? undefined)}
+      updateRunning={updateRunning}
+      onUpdate={() => openUpdateModal(panelUpdateVersion ?? undefined, runningUpdate)}
       mascotVisible={mascotVisible}
       ceReady={status.ce.valid}
       ceStatusText={ceStatusText}

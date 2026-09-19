@@ -2323,6 +2323,18 @@ export function updateSummary(
   // so a sentence added to the end of this one is a sentence nobody reads.
   // What this line owes the reader is the date, which is the last check that
   // answered rather than the last one attempted.
+  // The newest thing this device knows wins the line, and the newest thing is
+  // the attempt that failed. A finding from before it is still true and still
+  // worth naming, but as something found then rather than as the state of the
+  // project now: with the failure said only in the row below, a device that had
+  // not reached GitHub for a week read exactly like one that had just confirmed
+  // the offer.
+  if (state.last_error && state.update_available && state.latest_version) {
+    return {
+      label: `v${state.latest_version} was found${checked ? ` on ${checked}` : ""}`,
+      description: `This device is on v${state.current_version}. The latest check did not finish, so this may no longer be the newest release.`,
+    };
+  }
   if (state.update_available && state.latest_version) {
     return {
       label: `v${state.latest_version} is available`,
@@ -2389,5 +2401,11 @@ export function updateCheckedOn(seconds: number | null): string | null {
 export function panelUpdateOffer(update: PluginUpdateState | null): string | null {
   if (!update || !update.update_available || !update.latest_version) return null;
   if (!update.auto_check || !update.install_supported) return null;
+  // And not while the newest thing this device tried was a check that failed.
+  // The finding behind the press would then be older than what is known about
+  // it, and a press on a 300 pixel panel carries none of that: it says a
+  // version and offers to install it. Advanced still shows the finding, says
+  // the latest check did not finish, and can still start the update from there.
+  if (update.last_error) return null;
   return update.latest_version;
 }

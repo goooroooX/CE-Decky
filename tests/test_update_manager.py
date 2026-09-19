@@ -9,7 +9,7 @@ import pytest
 
 from ce_decky.network import NetworkResponse, ProviderRateLimited
 from ce_decky.paths import PluginPaths
-from ce_decky.plugin_update import ARCHIVE_PREFIX, UpdateStateStore
+from ce_decky.plugin_update import ARCHIVE_PREFIX, CHECK_INTERVAL_SECONDS, INSTALL_PENDING_LIMIT_SECONDS, UpdateStateStore
 from ce_decky import update_manager
 from ce_decky.update_manager import PluginUpdateManager
 
@@ -255,7 +255,7 @@ def test_an_update_downloads_verifies_and_hands_the_exact_file_to_the_installer(
     assert options["--digest"] == ARCHIVE_DIGEST
     assert options["--version"] == "0.9.28"
     assert Path(options["--archive"]).read_bytes() == ARCHIVE_BYTES
-    assert options["--keep-on-failure"].endswith("CE-Decky-update-v0.9.28.zip")
+    assert options["--keep-on-failure"].endswith("CE-Decky-update.zip")
     assert spawned[0]["start_new_session"] is True
     # The record says an install is in flight, for the backend that loads next.
     assert manager.state.load()["install"]["version"] == "0.9.28"
@@ -355,7 +355,7 @@ def test_the_runners_result_is_folded_into_the_record_and_consumed(tmp_path: Pat
 
 def test_a_failed_install_reports_where_the_archive_was_left(tmp_path: Path):
     manager = _manager(tmp_path, FakeNetwork())
-    kept = str(tmp_path / "home" / "CE-Decky-update-v0.9.28.zip")
+    kept = str(tmp_path / "home" / "CE-Decky-update.zip")
     manager.state.update(install={"version": "0.9.28", "started_at": time.time(), "archive_kept_at": kept})
     manager.result_path.write_text(json.dumps({
         "schema": 1, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
@@ -667,7 +667,7 @@ def test_a_failed_result_settles_the_operation_that_started_it(tmp_path: Path, s
     async def scenario():
         started = await manager.start(expected_version="0.9.28")
         await asyncio.gather(manager._task, return_exceptions=True)
-        kept = str(tmp_path / "home" / "CE-Decky-update-v0.9.28.zip")
+        kept = str(tmp_path / "home" / "CE-Decky-update.zip")
         manager.result_path.write_text(json.dumps({
             "schema": 1, "attempt": manager._attempt, "version": "0.9.28", "ok": False,
             "error": "Decky refused the install", "archive_kept_at": kept,
@@ -680,7 +680,7 @@ def test_a_failed_result_settles_the_operation_that_started_it(tmp_path: Path, s
     assert "refused" in status["error"]
     assert manager.has_active_operation() is False
     # And the manual route is where a screen reads it from.
-    assert manager.snapshot()["last_result"]["archive_kept_at"].endswith("CE-Decky-update-v0.9.28.zip")
+    assert manager.snapshot()["last_result"]["archive_kept_at"].endswith("CE-Decky-update.zip")
 
 
 def test_a_result_from_another_attempt_never_settles_this_one(tmp_path: Path):
@@ -855,7 +855,7 @@ def test_a_failed_install_that_kept_the_release_keeps_its_row(tmp_path: Path):
     installed it yet.
     """
     manager = _manager(tmp_path, FakeNetwork(), version="0.9.27")
-    kept = tmp_path / "home" / "CE-Decky-update-v0.9.28.zip"
+    kept = tmp_path / "home" / "CE-Decky-update.zip"
     kept.parent.mkdir(parents=True, exist_ok=True)
     kept.write_bytes(b"a verified release")
     failed = {
@@ -886,7 +886,7 @@ def test_a_successful_install_removes_the_file_an_earlier_failure_left(tmp_path:
     it was a fallback for had succeeded.
     """
     manager = _manager(tmp_path, FakeNetwork(), version="0.9.28")
-    kept = tmp_path / "home" / "CE-Decky-update-v0.9.28.zip"
+    kept = tmp_path / "home" / "CE-Decky-update.zip"
     kept.parent.mkdir(parents=True, exist_ok=True)
     kept.write_bytes(b"a verified release")
     stranger = tmp_path / "home" / "holiday-photos.zip"
@@ -936,7 +936,7 @@ def test_the_file_removed_by_a_success_is_the_one_this_wrote(tmp_path: Path):
     manager = _manager(tmp_path, FakeNetwork(), version="0.9.28")
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir(parents=True, exist_ok=True)
-    impostor = elsewhere / "CE-Decky-update-v0.9.28.zip"
+    impostor = elsewhere / "CE-Decky-update.zip"
     impostor.write_bytes(b"not the copy this put anywhere")
     manager.state.update(
         last_result={
@@ -947,3 +947,170 @@ def test_the_file_removed_by_a_success_is_the_one_this_wrote(tmp_path: Path):
     )
     manager.consume_runner_result()
     assert impostor.exists() is True
+
+
+def _pending(tmp_path: Path, **fields) -> PluginUpdateManager:
+    """A backend loading with an installer already out there, as the record says."""
+    manager = _manager(tmp_path, FakeNetwork(), version=fields.pop("version", "0.9.27"))
+    manager.state.update(install={
+        "attempt": "k" * 32, "operation_id": "o" * 32, "version": "0.9.28",
+        "started_at": time.time(), "archive_kept_at": str(manager.kept_archive_path),
+        **fields,
+    })
+    return manager
+
+
+def test_an_install_that_outlived_its_backend_is_still_running(tmp_path: Path, spawned):
+    """The installer is detached on purpose, so a reload does not end it.
+
+    Nothing in the new process is its parent and nothing holds its operation, so
+    without the record it read as a device with no update in flight: a second
+    privileged install could start beside the first, and deleting plugin data
+    was allowed underneath it.
+    """
+    manager = _pending(tmp_path)
+    manager.consume_runner_result()
+
+    assert manager.has_active_operation() is True
+    with pytest.raises(ValueError, match="already running"):
+        asyncio.run(manager.start(expected_version="0.9.28"))
+    assert spawned == [], "and nothing is downloaded or started beside it"
+    # It is the same install, by the identity the record carries.
+    assert manager._operation["operation_id"] == "o" * 32
+    assert manager._attempt == "k" * 32
+
+
+def test_an_adopted_install_is_settled_by_the_result_that_arrives_later(tmp_path: Path):
+    manager = _pending(tmp_path)
+    manager.consume_runner_result()
+    assert manager.has_active_operation() is True
+
+    manager.result_path.write_text(json.dumps({
+        "schema": 1, "attempt": "k" * 32, "version": "0.9.28", "ok": False,
+        "error": "Decky refused the install", "archive_kept_at": None,
+        "finished_at": time.time(), "restart_requested": False,
+    }), encoding="utf-8")
+    assert manager.has_active_operation() is False
+    assert manager.state.load()["last_result"]["error"] == "Decky refused the install"
+
+
+def test_an_install_older_than_any_install_stops_being_authoritative(tmp_path: Path):
+    """Including one whose record says nothing about when it started."""
+    stale = _pending(tmp_path / "stale", started_at=time.time() - INSTALL_PENDING_LIMIT_SECONDS - 60)
+    stale.consume_runner_result()
+    assert stale.has_active_operation() is False
+    assert "never reported back" in stale.state.load()["last_result"]["error"]
+
+    nameless = _pending(tmp_path / "nameless", started_at="whenever")
+    nameless.consume_runner_result()
+    assert nameless.has_active_operation() is False
+
+
+def test_an_install_recorded_in_this_clocks_future_still_ages_out(tmp_path: Path):
+    """A handheld that boots behind its own state must not be stuck for ever.
+
+    Read as a negative age, the attempt is never older than the limit, so the
+    record would refuse every update this device tried from then on.
+    """
+    manager = _pending(tmp_path, started_at=time.time() + 30 * 24 * 3600)
+    manager.consume_runner_result()
+    # It is adopted while it is young, which is what the clock now says it is.
+    assert manager.has_active_operation() is True
+    # And the age it is measured by runs from now rather than from the future,
+    # so the limit can expire at all.
+    assert update_manager._elapsed_since(time.time() + 3600) == 0.0
+
+
+def test_a_check_that_cannot_be_written_down_is_still_what_this_backend_knows(tmp_path: Path, monkeypatch):
+    """A read-only disk does not make a backend forget what it just read.
+
+    The one caller holding the answer used to be the only one who had it: every
+    later status read went back to the file, the pacing went back to the file,
+    and the next search asked GitHub all over again.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.state.update(checked_at=time.time() - CHECK_INTERVAL_SECONDS - 1, attempted_at=time.time() - CHECK_INTERVAL_SECONDS - 1)
+
+    def refuse(**_fields):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(manager.state, "update", refuse)
+    answered = asyncio.run(manager.check(forced=True))
+    assert answered["latest_version"] == "0.9.28"
+    # Every later reader agrees with the caller that asked.
+    assert manager.snapshot()["latest_version"] == "0.9.28"
+    assert manager.snapshot()["update_available"] is True
+    # And the pacing counts it, so a search does not spend the budget again.
+    assert manager.should_check() is False
+
+
+def test_a_failure_that_cannot_be_written_down_is_not_forgotten_either(tmp_path: Path, monkeypatch):
+    network = FakeNetwork()
+    network.failure = ProviderRateLimited("60", "GitHub is rate limiting this device")
+    manager = _manager(tmp_path, network)
+
+    def refuse(**_fields):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(manager.state, "update", refuse)
+    asyncio.run(manager.check(forced=True))
+    assert "rate limiting" in manager.snapshot()["last_error"]
+    assert manager.should_check() is False, "the attempt still paces the next one"
+
+
+def test_a_second_press_joins_the_press_already_running(tmp_path: Path):
+    """The floor stops a second request, not a second caller hearing the answer.
+
+    The floor was read first, so a second Check now inside a minute - a slow
+    one, a panel closed and opened over it - was handed the snapshot of a check
+    still running and never heard how it ended, which is the state the join
+    exists to remove.
+    """
+    network = FakeNetwork()
+    released = asyncio.Event()
+    original = network.get
+
+    async def held(url, **kwargs):
+        if "api.github.com" in url:
+            await released.wait()
+        return await original(url, **kwargs)
+
+    network.get = held
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        first = asyncio.create_task(manager.check(forced=True))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        second = asyncio.create_task(manager.check(forced=True))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not second.done(), "a press during a press waits for it"
+        released.set()
+        return await first, await second
+
+    one, two = asyncio.run(scenario())
+    assert one["checking"] is False and two["checking"] is False
+    assert one["latest_version"] == two["latest_version"] == "0.9.28"
+    assert len(network.calls) == 1, "and the floor still allowed only one request"
+
+
+def test_the_status_call_settles_an_adopted_install_that_has_run_out_of_time(tmp_path: Path):
+    """The call a panel makes is the call that has to stop saying `installing`.
+
+    Adoption made a reload honest about an installer still being out there; what
+    it must not do is leave a panel reporting one for ever, because the calls
+    that reconcile were the ones made only when something was about to refuse.
+    """
+    manager = _pending(tmp_path)
+    manager.consume_runner_result()
+    assert manager.snapshot()["operation"]["state"] == "installing"
+
+    record = manager.state.load()
+    manager.state.update(install={
+        **record["install"], "started_at": time.time() - INSTALL_PENDING_LIMIT_SECONDS - 60,
+    })
+    snapshot = manager.snapshot()
+    assert snapshot["operation"]["state"] == "failed"
+    assert "never reported back" in snapshot["last_result"]["error"]
+    assert manager.has_active_operation() is False
