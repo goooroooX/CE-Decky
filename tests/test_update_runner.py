@@ -188,3 +188,36 @@ def test_the_token_is_never_asked_for_anywhere_but_loopback():
             decky_control.DeckyWebSocket.connect(url, "token", 1.0)
     assert decky_control.require_loopback("http://localhost:1337") == ("localhost", 1337)
     assert decky_control.require_loopback(decky_control.DEFAULT_DECKY_URL) == ("127.0.0.1", 1337)
+
+
+def test_a_failure_after_the_install_was_asked_for_checks_what_landed(tmp_path: Path, loader, monkeypatch):
+    """Falling over reading the answer is not the same as installing nothing.
+
+    Decky can accept the request and this process can still fail on the reply.
+    Reporting that as a failed update sends the user to install by hand a
+    version their device is already running.
+    """
+    archive, digest = _archive(tmp_path)
+
+    def accepted_then_broken(_ws, _url, version, _digest, _replace):
+        loader["version"] = version
+        loader["installed"].append(("accepted", version))
+        raise RuntimeError("the reply could not be read")
+
+    monkeypatch.setattr(update_runner, "install_and_confirm", accepted_then_broken)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is True
+    assert result["error"] is None
+    # Nothing is kept for a manual install of a version that is now installed.
+    assert result["archive_kept_at"] is None
+    assert not archive.exists()
+    assert not (tmp_path / "home" / "CE-Decky-v0.9.28.zip").exists()
+
+
+def test_a_failure_before_the_install_was_asked_for_stays_a_failure(tmp_path: Path, loader, monkeypatch):
+    archive, digest = _archive(tmp_path)
+    monkeypatch.setattr(update_runner, "auth_token", lambda *_a, **_k: (_ for _ in ()).throw(OSError("Decky is not answering")))
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is False
+    assert "not answering" in str(result["error"])
+    assert result["archive_kept_at"] == str(tmp_path / "home" / "CE-Decky-v0.9.28.zip")

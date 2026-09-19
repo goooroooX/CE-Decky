@@ -175,6 +175,30 @@ describe("the update confirmation", () => {
     }
   });
 
+  it("gives the window a way out if the interface restart never happens", async () => {
+    // Installing refuses Back because the restart is what closes this window.
+    // When the restart is the thing that failed, refusing for ever leaves a
+    // window with no exit at all, on a panel whose backend is already replaced.
+    vi.useFakeTimers();
+    try {
+      const props = modal({ onPoll: vi.fn(async () => operation({ state: "installing", message: "Installing through Decky" })) });
+      render(<UpdateModal {...props} />);
+      await act(async () => { fireEvent.click(screen.getByText("Update")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+      expect(screen.getByText("Steam's interface is restarting")).toBeTruthy();
+      fireEvent.click(screen.getByText("controller-back"));
+      expect(props.onClose).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+      expect(screen.getByText("Steam's interface has not restarted")).toBeTruthy();
+      expect(screen.getByText(/does not stop it/)).toBeTruthy();
+      fireEvent.click(screen.getByText("Close"));
+      expect(props.onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops a download on request and offers the press again", async () => {
     const props = modal();
     render(<UpdateModal {...props} />);

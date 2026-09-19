@@ -460,3 +460,19 @@ def test_closing_stops_the_scheduler_rather_than_leaving_it_running(tmp_path: Pa
 
     task = asyncio.run(scenario())
     assert task is not None and task.done()
+
+
+def test_a_check_that_reached_github_is_not_failed_by_its_own_record(tmp_path: Path, monkeypatch):
+    """The record is a report, and a report that cannot be written is not the
+    answer being wrong. The search marker follows the same rule."""
+    manager = _manager(tmp_path, FakeNetwork())
+
+    def refuse(**_fields):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(manager.state, "update", refuse)
+    snapshot = asyncio.run(manager.check(forced=True))
+    # Nothing was written, so there is nothing to report from the record; the
+    # call still succeeded and said so rather than raising at the panel.
+    assert snapshot["current_version"] == "0.9.27"
+    assert snapshot["checking"] is False

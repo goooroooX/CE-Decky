@@ -16,6 +16,17 @@ const POLL_INTERVAL_MS = 1000;
  * the window stops reporting, and the durable record is what says how it ended.
  */
 const POLL_ATTEMPTS = 180;
+/**
+ * How long this waits for Steam's interface to take the window away.
+ *
+ * Installing normally ends with the webhelper being replaced, which destroys
+ * this window a few seconds later, so there is nothing to press and Back is
+ * refused. If that restart never happens - the runner reports it as a request
+ * that failed - refusing Back for ever would leave a window with no way out of
+ * it at all, on a panel whose backend has already been replaced. After this the
+ * way out comes back, and it says what it is and is not doing.
+ */
+const RESTART_GRACE_MS = 45_000;
 
 interface Props {
   currentVersion: string;
@@ -53,6 +64,9 @@ export function UpdateModal(
   const busyRef = useRef(false);
   const operationRef = useRef<string | null>(null);
   const liveRef = useRef(true);
+  // Whether the interface restart this window is waiting for has taken longer
+  // than it ever takes when it works.
+  const [restartOverdue, setRestartOverdue] = useState(false);
 
   useEffect(() => () => { liveRef.current = false; }, []);
 
@@ -117,10 +131,16 @@ export function UpdateModal(
   };
 
   const state = operation?.state ?? null;
+  const installingNow = state === "installing";
+  useEffect(() => {
+    if (!installingNow) return;
+    const timer = window.setTimeout(() => setRestartOverdue(true), RESTART_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [installingNow]);
   // Installing is the point of no return, and Back has to respect it as much as
   // the buttons do: there is nothing left here to abandon, and a window that
   // closes on its own reads as an update that stopped.
-  const installing = state === "installing";
+  const installing = installingNow && !restartOverdue;
   const inFlight = state === "checking" || state === "downloading";
   const settled = state === "failed" || state === "cancelled";
 
@@ -181,6 +201,16 @@ export function UpdateModal(
                 />
               </PanelSectionRow>
             )}
+            {installingNow && restartOverdue && (
+              <PanelSectionRow>
+                <PanelRow
+                  status
+                  testId="update-restart-overdue"
+                  label="Steam's interface has not restarted"
+                  description="The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates."
+                />
+              </PanelSectionRow>
+            )}
             {error && (
               <PanelSectionRow>
                 <PanelRow testId="update-modal-error" label="The update could not be started" description={error} />
@@ -188,27 +218,35 @@ export function UpdateModal(
             )}
           </PanelSection>
         </DensePanel>
-        {!installing && (
+        {installingNow && restartOverdue && (
           <ModalActions>
-            <>
-              <DialogButton
-                style={modalActionStyle}
-                disabled={cancelling}
-                onClick={traceUiAction("update_modal.not_now", () => {
-                  if (inFlight) { void abandon(); return; }
-                  if (!busyRef.current) onClose();
-                })}
-              >
-                {inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now"}
-              </DialogButton>
-              <DialogButton
-                style={modalActionStyle}
-                disabled={busy && !settled}
-                onClick={traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion })}
-              >
-                {settled ? "Try again" : busy ? "Starting…" : "Update"}
-              </DialogButton>
-            </>
+            <DialogButton
+              style={modalActionStyle}
+              onClick={traceUiAction("update_modal.close_overdue", () => onClose())}
+            >
+              Close
+            </DialogButton>
+          </ModalActions>
+        )}
+        {!installingNow && (
+          <ModalActions>
+            <DialogButton
+              style={modalActionStyle}
+              disabled={cancelling}
+              onClick={traceUiAction("update_modal.not_now", () => {
+                if (inFlight) { void abandon(); return; }
+                if (!busyRef.current) onClose();
+              })}
+            >
+              {inFlight ? (cancelling ? "Stopping…" : "Stop") : "Not now"}
+            </DialogButton>
+            <DialogButton
+              style={modalActionStyle}
+              disabled={busy && !settled}
+              onClick={traceUiAction("update_modal.update", () => { void confirm(); }, { to_version: targetVersion })}
+            >
+              {settled ? "Try again" : busy ? "Starting…" : "Update"}
+            </DialogButton>
           </ModalActions>
         )}
       </Focusable>

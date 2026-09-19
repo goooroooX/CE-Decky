@@ -265,7 +265,7 @@ class PluginUpdateManager:
             # after the returned expression is evaluated: the screen would
             # otherwise be handed a failed check that says it is still running.
             self._checking = False
-            self.state.update(checked_at=time.time(), last_error=_reason(exc))
+            self._record(checked_at=time.time(), last_error=_reason(exc))
             log_failure(
                 self.logger, "update.check_failed", exc,
                 expected=isinstance(exc, (UpdateError, NetworkError, ValueError, OSError)), forced=forced,
@@ -274,7 +274,7 @@ class PluginUpdateManager:
         finally:
             self._checking = False
         self._offer = offer
-        self.state.update(**checked_now(offer, latest, current_version=self.current_version))
+        self._record(**checked_now(offer, latest, current_version=self.current_version))
         log_activity(
             self.logger, "info", "update.checked",
             forced=forced, current=self.current_version, latest=latest, available=offer is not None,
@@ -412,7 +412,7 @@ class PluginUpdateManager:
         offer: ReleaseOffer | None = None
         try:
             latest, offer = await self._read_latest_release()
-            self.state.update(**checked_now(offer, latest, current_version=self.current_version))
+            self._record(**checked_now(offer, latest, current_version=self.current_version))
             if offer is None:
                 raise UpdateError("this is already the newest release")
             self._offer = offer
@@ -435,7 +435,7 @@ class PluginUpdateManager:
             # check that did not finish, on a device whose check had in fact
             # just succeeded. Nothing is kept here for a manual install, because
             # nothing got as far as being verified.
-            self.state.update(last_result={
+            self._record(last_result={
                 "version": offer.version if offer is not None else None,
                 "ok": False,
                 "error": reason,
@@ -516,6 +516,11 @@ class PluginUpdateManager:
             "--keep-on-failure", str(kept),
             "--not-before", f"{not_before:.3f}",
         ]
+        # Strict, unlike every other write to this record: it is written before
+        # the installer is started and it is what the next backend reads to know
+        # an install was in flight at all. A device that cannot write a few dozen
+        # bytes into its own state directory is not one to start replacing a
+        # plugin on, so the failure is the operation's and no installer runs.
         self.state.update(
             install={
                 "version": offer.version,
@@ -537,6 +542,21 @@ class PluginUpdateManager:
             self.logger, "info", "update.installer_spawned",
             version=offer.version, interpreter=interpreter, waits_s=round(max(not_before - time.time(), 0.0), 1),
         )
+
+    def _record(self, **fields: object) -> bool:
+        """Write the durable record without letting it fail what it describes.
+
+        The record is a report. A check that reached GitHub and got an answer
+        succeeded whether or not a full disk let the answer be written down, and
+        reporting it as a failed check would be a statement about the wrong
+        thing. The same rule the search marker follows.
+        """
+        try:
+            self.state.update(**fields)
+            return True
+        except Exception as exc:  # noqa: BLE001 - a record write never fails the work
+            log_failure(self.logger, "update.record_not_written", exc, expected=True)
+            return False
 
     def _set(self, operation_id: str, **values: object) -> None:
         if self._operation is not None and self._operation.get("operation_id") == operation_id:

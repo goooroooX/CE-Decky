@@ -95,11 +95,18 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _await_installed_version(decky_url: str, version: str, log: _Log) -> bool:
-    """Whether Decky's own inventory settles on this version. Never raises."""
+def _await_installed_version(decky_url: str, version: str, log: _Log, *, attempts: int = 0) -> bool:
+    """Whether Decky's own inventory settles on this version. Never raises.
+
+    `attempts` bounds the ask by tries rather than by the wait above, for the
+    one caller that is already on its way out: a failure being double checked
+    against what actually got installed should cost a moment, not a minute.
+    """
     deadline = time.monotonic() + READBACK_TIMEOUT_SECONDS
+    tried = 0
     last: str | None = None
-    while time.monotonic() < deadline:
+    while time.monotonic() < deadline and (attempts <= 0 or tried < attempts):
+        tried += 1
         try:
             token = auth_token(decky_url, CONNECT_TIMEOUT_SECONDS)
             with DeckyWebSocket.connect(decky_url, token, CONNECT_TIMEOUT_SECONDS) as ws:
@@ -171,6 +178,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     }
     log("update_runner.started", version=args.version, archive=archive.name, pid=os.getpid())
     verified = False
+    # Whether Decky was asked to install. Past this point a failure here is not
+    # the same as an install that did not happen, and the two must not be
+    # reported as one thing.
+    requested = False
     try:
         if not archive.is_file() or archive.is_symlink():
             raise RuntimeError("the staged update archive is missing")
@@ -188,6 +199,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         _wait_out_spacing(args.not_before, log)
         token = auth_token(args.decky_url, CONNECT_TIMEOUT_SECONDS)
         started = time.monotonic()
+        requested = True
         try:
             with DeckyWebSocket.connect(args.decky_url, token, INSTALL_TIMEOUT_SECONDS) as ws:
                 install_and_confirm(ws, archive.as_uri(), args.version, args.digest, True)
@@ -214,8 +226,19 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             log("update_runner.restart_failed", detail=str(exc)[:200])
         archive.unlink(missing_ok=True)
     except Exception as exc:  # noqa: BLE001 - every outcome is reported, never raised at a dead parent
-        result["error"] = str(exc)[:400]
-        result["archive_kept_at"] = _preserve_for_manual_install(archive, keep, log, verified=verified)
+        # A failure after Decky was asked is not proof that nothing was
+        # installed: the request can be accepted and this process can still
+        # fall over reading the answer. Ask the inventory once more before
+        # reporting a failure, because reporting one for an install that landed
+        # sends the user to install by hand what they already have.
+        if requested and _await_installed_version(args.decky_url, args.version, log, attempts=4):
+            log("update_runner.failure_overtaken_by_install", detail=str(exc)[:200])
+            result["ok"] = True
+            result["error"] = None
+            archive.unlink(missing_ok=True)
+        else:
+            result["error"] = str(exc)[:400]
+            result["archive_kept_at"] = _preserve_for_manual_install(archive, keep, log, verified=verified)
     result["finished_at"] = time.time()
     log("update_runner.finished", ok=result["ok"], error=result["error"], restart=result["restart_requested"])
     _write_result(Path(args.result), result, log)

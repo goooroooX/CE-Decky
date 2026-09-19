@@ -216,5 +216,6 @@ Each identifier below names one owned callback location, even when several rows 
 | `table_search_modal.cancel` | `src/modals/TableSearchModal.tsx` | `cancel` |
 | `table_search_modal.close` | `src/modals/TableSearchModal.tsx` | `cancel` |
 | `update_modal.cancel_back` | `src/modals/UpdateModal.tsx` | `() => { if (!busyRef.current && !installing) onClose(); }` |
+| `update_modal.close_overdue` | `src/modals/UpdateModal.tsx` | `() => onClose()` |
 | `update_modal.not_now` | `src/modals/UpdateModal.tsx` | `() => { if (inFlight) { void abandon(); return; } if (!busyRef.current) onClose(); }` |
 | `update_modal.update` | `src/modals/UpdateModal.tsx` | `() => { void confirm(); }` |
