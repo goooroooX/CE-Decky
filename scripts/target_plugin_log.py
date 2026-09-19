@@ -55,6 +55,10 @@ DEFAULT_LINES = 80
 # Per line, because one activity record carries an address list and a status
 # payload and can be several kilobytes on its own.
 MAX_LINE_CHARS = 4096
+# The detached updater's own record, written beside Decky's per-load logs by a
+# process that outlives the plugin. Its name is fixed by
+# `ce_decky.update_manager.RUNNER_LOG_FILENAME`.
+UPDATER_LOG_NAME = "plugin-update-runner.jsonl"
 # How far back the newest-first search will look. Decky keeps five.
 MAX_FILES = 16
 
@@ -231,6 +235,35 @@ def frontend_report(state_root: Path, lines: int, pattern: re.Pattern[str] | Non
     }
 
 
+def updater_report(directory: Path, lines: int, pattern: re.Pattern[str] | None) -> dict[str, object]:
+    """What the detached updater did, from the record only it writes.
+
+    An update replaces this plugin, so Decky stops the backend whose log the
+    files above are: everything that happens from the install onwards happens in
+    a process that outlives it and writes here instead. Without this the
+    interesting half of a failed self-update is in no log anybody reads.
+
+    The file is appended to and never rotated, and it is small by construction:
+    the runner bounds what it writes.
+    """
+    path = directory / UPDATER_LOG_NAME
+    if path.is_symlink() or not path.is_file():
+        return {
+            "schema": 1, "source": "updater", "path": str(path),
+            "reason": "no update has been installed from this device yet",
+            "lines": [],
+        }
+    kept = [
+        text[:MAX_LINE_CHARS]
+        for text in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if text.strip() and (pattern is None or pattern.search(text))
+    ]
+    return {
+        "schema": 1, "source": "updater", "path": str(path), "reason": None,
+        "lines": kept[-max(1, lines):],
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--plugin-root", type=Path, help="exact Decky plugin directory; `target_plugin_install.py authority` reports it as plugin_root")
@@ -248,6 +281,10 @@ def _parser() -> argparse.ArgumentParser:
         help="how far back --journal reads, in journalctl's own syntax; pass it as"
              " --since=-2h, because a value starting with - is otherwise read as an"
              " option rather than as this one's value (default %(default)s)",
+    )
+    parser.add_argument(
+        "--updater", action="store_true",
+        help="read what the detached plugin updater did, which no backend log holds",
     )
     parser.add_argument(
         "--frontend", action="store_true",
@@ -276,8 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     except re.error as exc:
         print(f"target plugin log: --grep is not a valid regular expression: {exc}", file=sys.stderr)
         return 2
-    if args.journal and args.frontend:
-        print("target plugin log: pass one of --journal and --frontend, not both", file=sys.stderr)
+    if sum((bool(args.journal), bool(args.frontend), bool(args.updater))) > 1:
+        print("target plugin log: pass one of --journal, --frontend and --updater", file=sys.stderr)
         return 2
     # Both alternative sources answer for themselves and need no plugin root:
     # the journal is the system's, and the panel's journal is under the managed
@@ -301,7 +338,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         directory = log_directory(args.plugin_root, args.log_dir)
-        result = report(directory, args.files, args.lines, pattern)
+        result = updater_report(directory, args.lines, pattern) if args.updater else report(
+            directory, args.files, args.lines, pattern,
+        )
     except (OSError, ValueError) as exc:
         print(f"target plugin log: {exc}", file=sys.stderr)
         return 2
@@ -314,8 +353,14 @@ def main(argv: list[str] | None = None) -> int:
         # the report and zero on purpose: an empty directory is an observation a
         # capture should keep, which is the same rule the state probe follows
         # for state it cannot read.
-        print(f"target plugin log: {result['reason']} in {result['log_dir']}", file=sys.stderr)
+        where = result.get("log_dir") or result.get("path")
+        print(f"target plugin log: {result['reason']} in {where}", file=sys.stderr)
         return 2
+    if args.updater:
+        print(f"# {result['path']}")
+        for line in result["lines"]:  # type: ignore[union-attr]
+            print(line)
+        return 0
     for entry in result["files"]:  # type: ignore[union-attr]
         print(f"# {entry['file']}")
         for line in entry["lines"]:

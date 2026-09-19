@@ -200,9 +200,11 @@ class PluginUpdateManager:
             return
         fields: dict[str, object] = {"last_result": result, "install": None}
         if result["ok"]:
-            # A completed update makes every earlier finding stale: this
-            # process is the new version, and the next check answers from here.
-            fields.update({"latest_version": self.current_version, "last_error": None})
+            # A completed update makes every earlier finding stale, and what
+            # replaces it is nothing rather than this version: the record
+            # answers what the newest release is, and after an install nobody
+            # has asked that question yet. The next check answers it.
+            fields.update({"latest_version": None, "checked_at": None, "last_error": None, "archive_name": None})
         self.state.update(**fields)
         self.result_path.unlink(missing_ok=True)
         log_activity(

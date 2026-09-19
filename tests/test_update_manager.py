@@ -241,7 +241,12 @@ def test_the_runners_result_is_folded_into_the_record_and_consumed(tmp_path: Pat
     assert record["last_result"]["ok"] is True
     assert record["install"] is None
     assert not manager.result_path.exists()
-    assert manager.snapshot()["update_available"] is False
+    snapshot = manager.snapshot()
+    assert snapshot["update_available"] is False
+    # What the newest release is has not been asked since the install, and the
+    # record says that rather than answering with the version now running.
+    assert snapshot["latest_version"] is None
+    assert snapshot["checked_at"] is None
 
 
 def test_a_failed_install_reports_where_the_archive_was_left(tmp_path: Path):
