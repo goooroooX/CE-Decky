@@ -1917,3 +1917,66 @@ def test_deleting_saved_setup_forgets_the_same_memory_and_keeps_the_recovery(tmp
     assert service.get_status()["update"]["latest_version"] is None, "the volatile half is forgotten"
     assert updates.kept_archive_path.is_file(), "and the file this scope keeps is still there"
     assert service.get_status()["update"]["recovery"]["version"] == "9.9.9"
+
+
+def test_reading_removal_readiness_changes_nothing_about_an_update(tmp_path: Path):
+    """Check says "nothing is deleted by looking", and the panel reader is
+    allowed to press it for exactly that reason.
+
+    It reached the updater's own reconciling, which folds in a runner's result
+    and deletes it, writes a normalised start time, and removes a recovery
+    archive this plugin has outgrown. Asking what a deletion would refuse is not
+    a deletion.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("test"))
+    service.initialize()
+    updates = service.plugin_updates
+
+    body = b"a verified release this device already runs"
+    updates.kept_archive_path.parent.mkdir(parents=True, exist_ok=True)
+    updates.kept_archive_path.write_bytes(body)
+    updates.state.update(
+        install={
+            "attempt": "a" * 32, "operation_id": "o" * 32, "version": "9.9.9",
+            "started_at": time.time() + 30 * 24 * 3600, "digest": "b" * 64,
+        },
+        recovery={
+            "attempt": "c" * 32, "version": "0.0.1", "sha256": sha256(body).hexdigest(),
+            "path": str(updates.kept_archive_path),
+        },
+    )
+    updates.result_path.write_text(json.dumps({
+        "schema": 1, "attempt": "a" * 32, "version": "9.9.9", "ok": False,
+        "error": "Decky refused the install", "archive_kept_at": None,
+        "finished_at": time.time(), "restart_requested": False,
+    }), encoding="utf-8")
+    before = {
+        path: path.read_bytes()
+        for path in (updates.state.path, updates.result_path, updates.kept_archive_path)
+    }
+
+    readiness = service.get_removal_readiness()
+    assert isinstance(readiness["blockers"], list)
+    for path, content in before.items():
+        assert path.is_file(), f"{path.name} was removed by reading readiness"
+        assert path.read_bytes() == content, f"{path.name} was rewritten by reading readiness"
+
+    # And the deletion itself, which is a mutation boundary, does settle it.
+    asyncio.run(service.delete_managed_data("cache"))
+    assert updates.result_path.exists() is False
+    assert updates.state.load()["last_result"]["ok"] is False
+
+
+def test_readiness_still_reports_an_installer_that_is_out_there(tmp_path: Path):
+    """Looking without touching must not turn into looking without seeing."""
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("test"))
+    service.initialize()
+    service.plugin_updates.state.update(install={
+        "attempt": "a" * 32, "operation_id": "o" * 32, "version": "9.9.9",
+        "started_at": time.time(), "digest": "b" * 64,
+    })
+    readiness = service.get_removal_readiness()
+    assert readiness["can_delete_managed_data"] is False
+    assert any("plugin update" in blocker for blocker in readiness["blockers"])

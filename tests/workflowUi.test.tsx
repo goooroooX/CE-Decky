@@ -541,9 +541,12 @@ describe("Home panel and managed setup", () => {
     // the backend checked before touching anything and said so, and forgetting
     // the game the user chose for a deletion that did not happen is a
     // disagreement this side invents by itself.
-    api.deleteManagedData.mockRejectedValue(
-      new Error("nothing was deleted; a Cheat Engine process CE Decky owns is still running; stop it first"),
-    );
+    // As Decky Loader 3.2.6 delivers it: an empty message, with the Python text
+    // only in the traceback. That loader is why `src/errors.ts` exists.
+    api.deleteManagedData.mockRejectedValue(Object.assign(new Error(""), {
+      name: "Python ValueError",
+      pythonTraceback: "Traceback (most recent call last):\nValueError: nothing was deleted; a Cheat Engine process CE Decky owns is still running; stop it first",
+    }));
     renderContent();
     await screen.findByText("Game.CT");
     const advanced = await openAdvanced();
@@ -552,7 +555,7 @@ describe("Home panel and managed setup", () => {
     window.localStorage.setItem("ce-decky.selected-game.v1", JSON.stringify({ appId: 99, isShortcut: false, at: Date.now() }));
 
     await act(async () => {
-      await expect(advanced.props.onDeleteManagedData("all")).rejects.toThrow("still running");
+      await expect(advanced.props.onDeleteManagedData("all")).rejects.toThrow();
     });
     expect(window.localStorage.getItem("ce-decky.selected-game.v1")).not.toBeNull();
     // And the panel still describes what is still there.

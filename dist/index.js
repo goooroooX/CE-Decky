@@ -12491,8 +12491,17 @@ function readMascotVisible() {
  */
 const DELETION_REFUSED_PREFIX = "nothing was deleted; ";
 function refusedBeforeDeleting(cause) {
-    const message = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "";
-    return message.includes(DELETION_REFUSED_PREFIX);
+    // Read through `describeError`, because on Decky Loader 3.2.6 a backend
+    // exception arrives with an empty `PyError.message` and the Python text only
+    // inside `pythonTraceback`. Matching the message alone made every refusal on
+    // that loader look like an outcome nobody could be sure of, which is the
+    // reconciliation this exists to prevent - and 3.2.6 is a loader this project
+    // has met, not a hypothesis: `src/errors.ts` was written for it.
+    //
+    // The prefix stays the discriminator rather than "a Python error arrived":
+    // a deletion can also fail after it has begun, and that is an outcome this
+    // side does have to reconcile.
+    return describeError(cause, "").includes(DELETION_REFUSED_PREFIX);
 }
 
 // Bounded Auto-load backoff. A game settles in seconds, not minutes: the target

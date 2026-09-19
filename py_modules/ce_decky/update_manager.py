@@ -943,6 +943,31 @@ class PluginUpdateManager:
             self._adopt_pending_install(self._stored().get("install"), persist=True)
         self._retire_superseded_recovery()
 
+    def peek_active_operation(self) -> bool:
+        """Whether an update is happening, without changing anything to find out.
+
+        For the readiness report, which is a screen saying what a deletion would
+        refuse and promising that nothing is deleted by looking - and for the
+        panel reader that is allowed to press **Check** for exactly that reason.
+        The answer is this process plus the durable pending record, read the way
+        the status call reads it: adoption in memory, nothing written, nothing
+        removed.
+
+        It errs towards busy. A result file the boundary has not folded in yet
+        says the installer has reported, so an attempt with one is not treated
+        as running; anything else that looks like an install in flight is
+        reported as one, because a report that says the device is free when it
+        is not is the failure that matters here.
+        """
+        if self._task is not None and not self._task.done():
+            return True
+        if self._operation is None:
+            self._adopt_pending_install(self._stored().get("install"), persist=False)
+            if self._operation is not None and self.result_path.is_file():
+                return False
+        operation = self._operation
+        return operation is not None and str(operation.get("state")) not in _SETTLED_STATES
+
     def has_active_operation(self) -> bool:
         """Whether an update is happening, including one this backend did not start.
 

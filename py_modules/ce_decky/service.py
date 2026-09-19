@@ -2329,7 +2329,7 @@ class PluginService:
         # device safe to remove from by, and it named only durable faults while
         # the call refused transient work as well.
         try:
-            blockers.extend(self._transient_deletion_refusals())
+            blockers.extend(self._transient_deletion_refusals(reconcile=False))
         except Exception as exc:  # noqa: BLE001 - a failed probe must fail closed
             blockers.append("work in progress could not be checked; try again")
             log_failure(self.logger, "removal.active_work_unreadable", exc, expected=True)
@@ -2507,7 +2507,7 @@ class PluginService:
         refusals.extend(self._transient_deletion_refusals())
         return refusals
 
-    def _transient_deletion_refusals(self) -> list[str]:
+    def _transient_deletion_refusals(self, *, reconcile: bool = True) -> list[str]:
         """The work in flight that deletion refuses, without probing processes.
 
         Read by the readiness report as well as by the deletion itself, because
@@ -2515,6 +2515,11 @@ class PluginService:
         then refuses are two answers to one question. The owned-process probe
         stays out of it: readiness runs that probe itself and reports it in its
         own terms.
+
+        `reconcile` is which of those two callers this is. Deleting is a
+        mutation boundary and settles what it finds; the readiness report says
+        "nothing is deleted by looking" on the screen and is reached by a helper
+        allowed to press it for that reason, so it only looks.
         """
         refusals: list[str] = []
         if self.managed_ce.has_active_operation() or self._managed_ce_reservation is not None:
@@ -2524,7 +2529,11 @@ class PluginService:
             refusals.append("a Cheat Engine installation is still in progress; cancel it first")
         if self.acquisitions.has_active():
             refusals.append("a table download is still in progress; cancel it first")
-        if self.plugin_updates.has_active_operation() or self._plugin_update_reservation is not None:
+        updating = (
+            self.plugin_updates.has_active_operation() if reconcile
+            else self.plugin_updates.peek_active_operation()
+        )
+        if updating or self._plugin_update_reservation is not None:
             # The same case as a table download: an update owns a staged archive
             # under the temporary root this deletes, and once it has been handed
             # to Decky the plugin is being replaced as well. The reservation is
