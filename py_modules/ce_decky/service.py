@@ -57,6 +57,8 @@ from .artifact_resolutions import ArtifactResolutions
 from .table_compatibility import TableCompatibility, compatibility_state, steam_build_id
 from .acquisition import AcquisitionManager
 from .paths import PluginPaths
+from .plugin_update import RELEASES_PAGE_URL
+from .update_manager import PluginUpdateManager
 from .profiles import ConfiguredValue, ProfileStore, StartupPreference, is_configurable_value, _optional_process
 from .providers import (
     DEFAULT_PROVIDER_DEFINITIONS,
@@ -265,6 +267,18 @@ class PluginService:
             self.provider_catalog.network, logger,
         )
         self.ce_launch = CELaunchSupervisor(paths.user_home, paths.ce_root, paths.state_root, logger)
+        # Updating this plugin shares the transport the providers use and
+        # nothing else with them: its own record, its own host policy, and a
+        # check armed by the same search activity the provider index is armed
+        # by. `auto_check` is read through the config store on every ask rather
+        # than captured, because the switch is in Advanced and this object
+        # outlives the press.
+        self.plugin_updates = PluginUpdateManager(
+            paths, self.provider_catalog.network, logger,
+            current_version=__version__,
+            auto_check=self._update_auto_check_enabled,
+            last_search_activity=self.provider_catalog.last_search_activity,
+        )
         self.bridge_source = Path(__file__).with_name("ce_decky_bridge.lua")
         # The panel polls runtime status and re-inspects the active table
         # continuously. Both are the evidence a bug report needs and neither can
@@ -292,9 +306,14 @@ class PluginService:
         self.paths.ensure()
         with self._mutation_lock:
             self.table_store.reconcile_orphan_blobs(self.logger)
-        if not self.paths.config_path.exists():
-            self.config_store.save(self.config_store.load())
+        self._migrate_config()
         self._label_legacy_ce_registration()
+        # What the detached installer did while this process did not exist. Read
+        # once, at load, because that is when its result file is there to read.
+        try:
+            self.plugin_updates.consume_runner_result()
+        except Exception as exc:  # noqa: BLE001 - a report must never block backend load
+            log_failure(self.logger, "update.result_not_consumed", exc, expected=True)
 
     def start_background_work(self) -> None:
         """Start what the plugin does for itself while nobody is using it.
@@ -305,6 +324,31 @@ class PluginService:
         listing current instead of only refreshing it while somebody searches.
         """
         self.provider_catalog.start_background_index()
+        self.plugin_updates.start_background_checks()
+
+    def _migrate_config(self) -> None:
+        """Bring the stored configuration up to the shape this version writes.
+
+        It covers the first run, where there is no file at all, and the update,
+        where the file is an older build's and lacks every key added since.
+        Under the mutation lock because it writes the same file every identity
+        mutation writes, and at load because that is an explicit boundary: the
+        status call is a read and several read-only helpers depend on it
+        staying one.
+
+        A configuration this version cannot parse is left exactly as it is. The
+        status call already reports that as `config_state_reason` and Advanced
+        offers to repair it, which is a better answer than a backend that
+        refuses to load; a write here could only replace what the user has with
+        a default. A storage failure is the same: the preferences read as their
+        defaults and the next load offers the write again.
+        """
+        try:
+            with self._mutation_lock:
+                if self.config_store.migrate():
+                    log_activity(self.logger, "info", "config.migrated", path=self.paths.config_path.name)
+        except Exception as exc:  # noqa: BLE001 - a rewrite must never block backend load
+            log_failure(self.logger, "config.migration_failed", exc, expected=True)
 
     def _label_legacy_ce_registration(self) -> None:
         """Give a registration written before versions were read its label, once.
@@ -457,6 +501,11 @@ class PluginService:
             "table_state_reason": table_state_reason,
             "table_catalog_errors": table_catalog_errors,
             "profile_state_reason": profile_state_reason,
+            # Both of these ride on the call the panel already makes when it
+            # mounts and after every action, so an update offer and a hidden
+            # mascot cost no poll of their own.
+            "update": self._update_snapshot(),
+            "preferences": {"mascot_visible": config.mascot_visible},
             "features": {
                 "local_ce_import": True,
                 "local_ct_import": True,
@@ -1521,9 +1570,15 @@ class PluginService:
         # It used to be the whole index cache, a third of a megabyte behind a
         # lock a native writer holds across its own `fsync`, so it had to be
         # bounded, and a bounded write is one that can decline to happen.
+        # The update manager is last and costs nothing: its prologue only
+        # refuses new work. A detached installer it has already spawned is
+        # deliberately not touched, because that process is the update and it is
+        # in its own session precisely so that this plugin stopping cannot end
+        # it.
         for owner, begin in (
             ("ce_launch", self.ce_launch.begin_close),
             ("provider_catalog", self.provider_catalog.begin_close),
+            ("plugin_updates", self.plugin_updates.begin_close),
         ):
             try:
                 begin()
@@ -1562,6 +1617,7 @@ class PluginService:
             # stop and drain its bounded cache writes before shared HTTP closes.
             ("provider_catalog", self.provider_catalog.close),
             ("acquisitions", self.acquisitions.close),
+            ("plugin_updates", self.plugin_updates.close),
         ):
             started = time.monotonic()
             log_activity(self.logger, "info", "backend.owner_close_started", owner=owner)
@@ -1927,6 +1983,93 @@ class PluginService:
             snapshot = self.get_provider_sources()
         log_activity(self.logger, "info", "provider_sources.reset", restored=removed)
         return snapshot
+
+    # ------------------------------------------------------------ plugin update
+
+    def _update_auto_check_enabled(self) -> bool:
+        """Whether the user leaves automatic update checking on.
+
+        Read through the store rather than cached, so the switch in Advanced
+        takes effect on the next tick rather than on the next plugin load. A
+        configuration this build cannot read is treated as the default, which
+        is the same answer every other reader of a broken config gets and is
+        the one that keeps a device able to hear about a fix.
+        """
+        try:
+            return self.config_store.load().update_auto_check
+        except (OSError, ValueError):
+            return True
+
+    def _update_snapshot(self) -> dict[str, object]:
+        """What the panel is told about updates. Never fails a status read."""
+        try:
+            return self.plugin_updates.snapshot()
+        except Exception as exc:  # noqa: BLE001 - status is read constantly
+            log_failure(self.logger, "update.snapshot_failed", exc, expected=True)
+            return {
+                "current_version": __version__, "auto_check": False, "latest_version": None,
+                "update_available": False, "checked_at": None, "last_error": str(exc)[:400],
+                "page_url": RELEASES_PAGE_URL, "last_result": None, "install_supported": False,
+                "checking": False, "operation": None,
+            }
+
+    def set_update_auto_check(self, enabled: object) -> dict[str, object]:
+        """Switch automatic update checking on or off, durably.
+
+        Switching it off stops the scheduler starting a check and stops the
+        panel offering an update; it deliberately does not erase what an
+        earlier check found, because that is a fact about the project rather
+        than a thing the switch is about, and Advanced still shows it.
+        """
+        if not isinstance(enabled, bool):
+            raise ValueError("update auto-check must be boolean")
+        with self._mutation_lock:
+            config = self.config_store.load()
+            config.update_auto_check = enabled
+            self.config_store.save(config)
+        log_activity(self.logger, "info", "update.auto_check_set", enabled=enabled)
+        return self._update_snapshot()
+
+    def set_mascot_visible(self, visible: object) -> dict[str, object]:
+        """Show or hide the panel mascot, durably.
+
+        Kept beside the Cheat Engine registration rather than in the frontend,
+        because the panel is rebuilt from nothing every time Steam mounts it
+        and the choice has to survive a reinstall.
+        """
+        if not isinstance(visible, bool):
+            raise ValueError("mascot visibility must be boolean")
+        with self._mutation_lock:
+            config = self.config_store.load()
+            config.mascot_visible = visible
+            self.config_store.save(config)
+        log_activity(self.logger, "info", "update.mascot_visible_set", visible=visible)
+        return {"mascot_visible": visible}
+
+    async def check_for_update(self) -> dict[str, object]:
+        """The Check now press: one request, whatever the arming says."""
+        return await self.plugin_updates.check(forced=True)
+
+    async def start_plugin_update(self) -> dict[str, object]:
+        """Download the newest release, verify it, and hand it to Decky.
+
+        Refused while a managed Cheat Engine install is still writing into the
+        managed tree, for the reason removal is refused there: that transaction
+        owns files this one is about to have the plugin replaced underneath.
+        """
+        if self.managed_ce.has_active_operation():
+            raise ValueError("a Cheat Engine setup is still running; wait for it to finish, then update")
+        return await self.plugin_updates.start()
+
+    def poll_plugin_update(self, operation_id: str) -> dict[str, object]:
+        if not isinstance(operation_id, str) or not operation_id:
+            raise ValueError("plugin update operation id is required")
+        return self.plugin_updates.status(operation_id)
+
+    async def cancel_plugin_update(self, operation_id: str) -> dict[str, object]:
+        if not isinstance(operation_id, str) or not operation_id:
+            raise ValueError("plugin update operation id is required")
+        return await self.plugin_updates.cancel(operation_id)
 
     def record_panel_log(
         self,
