@@ -3,7 +3,7 @@ import { ButtonItem, NavEntryPositionPreferences, PanelSection, PanelSectionRow,
 import { useRef } from "react";
 import { CheatRow } from "./CheatRow";
 import { CompatibilityMark } from "./CompatibilityMark";
-import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton } from "./PanelDensity";
+import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, UPDATE_ACTION_CLASS } from "./PanelDensity";
 import { HEXPAW_DATA_URI } from "../assets/hexpaw";
 import type { BlockedMark, PinnedCheatRow } from "../uiModel";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
@@ -371,21 +371,28 @@ export function HomePanel(props: Props) {
           Deliberately not asking for the initial focus. Two controls asking is
           not a preference Steam can settle, and what a panel opens on is
           already decided between Search and Advanced. */}
+      {/* A section of its own, with Steam's own section row inside it, because
+          that is what the quick access menu walks when the controller moves:
+          the same control in a bare box between the mascot and the first
+          section was drawn hard against the left edge and could not be reached
+          at all. It is the full-width press every other action on this panel
+          is, and it is named like every other row here, because what is on
+          screen is read by test id by the component tests and by the device's
+          own panel reader alike. */}
       {updateVersion && (
-        // Named like every other row on this panel, because what is on screen
-        // is read by test id here: the component tests and the device's own
-        // panel reader both find a control that way, and a press nobody can
-        // name is a press nobody checks.
-        <div data-testid="panel-update" style={{ padding: "0 16px", margin: "0 0 6px" }}>
-          <SmallButton
-            grow
-            tone="update"
-            disabled={busy}
-            onClick={traceUiAction("home_panel.update", onUpdate, { version: updateVersion })}
-          >
-            {`Update to v${updateVersion}`}
-          </SmallButton>
-        </div>
+        <PanelSection>
+          <PanelSectionRow>
+            <div data-testid="panel-update" className={UPDATE_ACTION_CLASS}>
+              <ButtonItem
+                layout="below"
+                disabled={busy}
+                onClick={traceUiAction("home_panel.update", onUpdate, { version: updateVersion })}
+              >
+                {`Update to v${updateVersion}`}
+              </ButtonItem>
+            </div>
+          </PanelSectionRow>
+        </PanelSection>
       )}
       <PanelSection>
         <SectionHeading>Setup</SectionHeading>

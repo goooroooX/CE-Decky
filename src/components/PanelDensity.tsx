@@ -119,6 +119,20 @@ const TIGHT_ROWS_CLASS = "ce-decky-tightrows";
 /** The detail block a row reveals under itself. */
 export const REVEAL_CLASS = "ce-decky-reveal";
 const NOTE_CLASS = "ce-decky-note";
+/**
+ * The one press drawn in the mascot's orange, and how it keeps Steam's focus.
+ *
+ * It was an inline background on the button, which outranks the class Steam
+ * paints a focused button with: the control stayed orange under the ring, so
+ * on a handheld there was no way to see where the ring was. The colour is a
+ * rule that stops applying while anything inside is focused, which hands the
+ * focused appearance back to Steam without knowing any of its class names.
+ *
+ * The class goes on the control itself where the caller renders one, and on a
+ * box around it where the caller renders Steam's own `ButtonItem`, which owns
+ * the button inside it; the rule covers both.
+ */
+export const UPDATE_ACTION_CLASS = "ce-decky-update";
 /** Marks a row that is currently showing its revealed block. */
 export const OPEN_ROW_CLASS = "ce-decky-open";
 
@@ -389,6 +403,9 @@ function densityCss(): string | null {
     // label and a control's worth of height. It is inset like the fields around
     // it and set at description weight.
     `${scope} .${NOTE_CLASS} { padding: 2px 20px 5px; font-size: 11px; line-height: 15px; color: hsla(0, 0%, 100%, 0.62); }`,
+    `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button,`
+      + ` ${scope} button.${UPDATE_ACTION_CLASS}:not(:focus-within)`
+      + ` { background: var(--ce-update-accent); color: var(--ce-update-accent-text); }`,
     `${sectionSelector} { margin-bottom: 6px; }`,
     // Steam renders a section heading at 16px/22px with 8px beneath it; five
     // headings on one diagnostics screen cost more than the rows they label.
@@ -1523,14 +1540,11 @@ export function SmallButton({ children, onClick, disabled, preferredFocus, grow,
    */
   tone?: "update";
 }) {
-  const base = size === "medium" ? mediumActionStyle : smallActionStyle;
-  const style = tone === "update"
-    ? { ...base, background: "var(--ce-update-accent)", color: "var(--ce-update-accent-text)" }
-    : base;
+  const style = size === "medium" ? mediumActionStyle : smallActionStyle;
   // Never hand Steam's controller click event to a workflow callback: several
   // of them forward their argument, and an event reaching Steam's game list is
   // exactly the leak the panel tests guard against.
   return (
-    <DialogButton style={grow ? { ...style, flex: "1 1 auto" } : style} disabled={disabled} preferredFocus={preferredFocus} onClick={() => onClick()}>{children}</DialogButton>
+    <DialogButton className={tone === "update" ? UPDATE_ACTION_CLASS : undefined} style={grow ? { ...style, flex: "1 1 auto" } : style} disabled={disabled} preferredFocus={preferredFocus} onClick={() => onClick()}>{children}</DialogButton>
   );
 }

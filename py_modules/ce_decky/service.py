@@ -1657,7 +1657,16 @@ class PluginService:
             raise ValueError("game identity display_name must be a string")
         if executable is not None and not isinstance(executable, str):
             raise ValueError("game identity shortcut_executable must be a string or null")
-        return await self.provider_catalog.search(display_name, executable, _search_token(progress_token))
+        try:
+            return await self.provider_catalog.search(display_name, executable, _search_token(progress_token))
+        finally:
+            # A search is the whole of what arms the update check, and waiting
+            # for the next tick to notice it meant a user who searched and then
+            # looked at the panel saw nothing for up to five minutes. The check
+            # is owed now; the pacing, the switch and the interval still decide
+            # whether one actually happens, and the search's own answer is never
+            # held up for it.
+            self.plugin_updates.note_user_activity()
 
     def poll_table_search(self, progress_token: str) -> dict[str, object] | None:
         """What this caller's own search is doing, for the screen waiting on it."""

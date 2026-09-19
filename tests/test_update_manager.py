@@ -476,3 +476,55 @@ def test_a_check_that_reached_github_is_not_failed_by_its_own_record(tmp_path: P
     # call still succeeded and said so rather than raising at the panel.
     assert snapshot["current_version"] == "0.9.27"
     assert snapshot["checking"] is False
+
+
+def test_a_search_asks_now_rather_than_at_the_next_tick(tmp_path: Path):
+    """What arms the check is a user being here, so the answer is owed now.
+
+    Observed on a Steam Deck: the tick landed twenty-four seconds before the
+    search, so the device that had just been searched on waited the whole of the
+    next interval before asking, and the panel said nothing about an update that
+    was one request away.
+    """
+    network = FakeNetwork()
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        manager.note_user_activity()
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if network.calls:
+                break
+        await manager.close()
+
+    asyncio.run(scenario())
+    assert len(network.calls) == 1
+    assert manager.snapshot()["update_available"] is True
+
+
+def test_a_search_asks_for_nothing_the_rules_already_refuse(tmp_path: Path):
+    network = FakeNetwork()
+    off = _manager(tmp_path / "off", network, auto_check=False)
+
+    async def scenario(manager):
+        manager.note_user_activity()
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+        await manager.close()
+
+    asyncio.run(scenario(off))
+    assert network.calls == []
+
+    # And a device that checked minutes ago waits out its interval, however
+    # often it is searched on.
+    paced = _manager(tmp_path / "paced", network)
+    asyncio.run(paced.check(forced=False))
+    assert len(network.calls) == 1
+    asyncio.run(scenario(paced))
+    assert len(network.calls) == 1
+
+
+def test_a_search_outside_a_loop_is_not_an_error(tmp_path: Path):
+    """Probes and tests call the service without one; the offer just declines."""
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.note_user_activity()

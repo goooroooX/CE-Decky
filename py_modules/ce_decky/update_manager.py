@@ -130,6 +130,7 @@ class PluginUpdateManager:
         self._operation: dict[str, object] | None = None
         self._task: "asyncio.Task[None] | None" = None
         self._schedule_task: "asyncio.Task[None] | None" = None
+        self._activity_task: "asyncio.Task[None] | None" = None
         self._checking = False
         self._last_forced_at = 0.0
         self._closing = False
@@ -306,6 +307,40 @@ class PluginUpdateManager:
         except ValueError as exc:
             raise UpdateError("the release answer is not readable JSON") from exc
         return str(release_version(payload)), parse_release(payload, current_version=self.current_version)
+
+    def note_user_activity(self) -> None:
+        """Somebody just used the plugin, so ask now rather than at the next tick.
+
+        The timer exists for the device nobody is touching. When a search has
+        just happened the user is here, and holding the answer for up to one
+        whole interval is what made a panel say nothing about an update that was
+        one request away. Everything that decides whether a check happens at all
+        is unchanged: the switch, the interval since the last check, and a check
+        already running.
+
+        It never raises and never waits: the caller is a search returning its
+        own answer, and this is not part of that answer.
+        """
+        try:
+            if not self.should_check():
+                return
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        except Exception as exc:  # noqa: BLE001 - a check offer never fails a search
+            log_failure(self.logger, "update.activity_check_not_started", exc, expected=True)
+            return
+        if self._activity_task is not None and not self._activity_task.done():
+            return
+        self._activity_task = loop.create_task(self._checked_after_activity())
+
+    async def _checked_after_activity(self) -> None:
+        try:
+            await self.check(forced=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the check records its own failures
+            log_failure(self.logger, "update.activity_check_failed", exc, expected=True)
 
     def start_background_checks(self) -> None:
         """Look, on a timer, at whether a check is owed. Started once per load."""
@@ -569,10 +604,10 @@ class PluginUpdateManager:
 
     async def close(self) -> None:
         self._closing = True
-        for task in (self._schedule_task, self._task):
+        for task in (self._schedule_task, self._activity_task, self._task):
             if task is not None and not task.done():
                 task.cancel()
-        tasks = [task for task in (self._schedule_task, self._task) if task is not None]
+        tasks = [task for task in (self._schedule_task, self._activity_task, self._task) if task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

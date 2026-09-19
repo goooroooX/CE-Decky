@@ -75,16 +75,23 @@ describe("the update offer on the home panel", () => {
     expect(labels.some((label) => label?.includes("Update"))).toBe(false);
   });
 
-  it("offers the exact version, in the mascot's orange, and opens the confirmation", () => {
+  it("offers the exact version as a full-width press inside a section", () => {
     const onUpdate = vi.fn();
-    render(<HomePanel {...props({ updateVersion: "0.9.28", onUpdate })} />);
+    const view = render(<HomePanel {...props({ updateVersion: "0.9.28", onUpdate })} />);
     const button = screen.getByText("Update to v0.9.28");
-    expect(button.getAttribute("data-background")).toBe("var(--ce-update-accent)");
-    // Named, so the component tests and the device's own panel reader can both
-    // find it by the same id every other row here carries.
-    expect(screen.getByTestId("panel-update")).toBeTruthy();
+    // Inside Steam's own section row, which is what the quick access menu walks
+    // when the controller moves: in a bare box between the mascot and the first
+    // section this was drawn against the left edge and could not be reached.
+    const box = screen.getByTestId("panel-update");
+    expect(box.contains(button)).toBe(true);
+    expect(box.closest("section")).toBeTruthy();
+    // The orange is a class rather than an inline background, so Steam's own
+    // focused appearance still wins while the ring is on it.
+    expect(box.className).toContain("ce-decky-update");
+    expect(button.getAttribute("data-background")).toBeNull();
     fireEvent.click(button);
     expect(onUpdate).toHaveBeenCalledTimes(1);
+    view.unmount();
   });
 
   it("is withheld while the panel is busy rather than acting on a stale offer", () => {
