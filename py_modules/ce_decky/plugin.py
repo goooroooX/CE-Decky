@@ -293,6 +293,26 @@ class Plugin:
     async def reset_provider_sources(self):
         return await self.operations.run_blocking(self._svc().reset_provider_sources)
 
+    async def set_update_auto_check(self, enabled: bool):
+        return await self.operations.run_blocking(self._svc().set_update_auto_check, enabled)
+
+    async def set_mascot_visible(self, visible: bool):
+        return await self.operations.run_blocking(self._svc().set_mascot_visible, visible)
+
+    async def check_for_update(self):
+        return await self.operations.create(self._svc().check_for_update(), label="check_for_update")
+
+    async def start_plugin_update(self):
+        return await self.operations.create(self._svc().start_plugin_update(), label="start_plugin_update")
+
+    async def poll_plugin_update(self, operation_id: str):
+        return await self.operations.run_blocking(self._svc().poll_plugin_update, operation_id)
+
+    async def cancel_plugin_update(self, operation_id: str):
+        return await self.operations.create(
+            self._svc().cancel_plugin_update(operation_id), label="cancel_plugin_update",
+        )
+
     async def get_session_inventory(self):
         return await self.operations.run_blocking(self._svc().get_session_inventory)
 

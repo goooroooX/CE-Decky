@@ -2857,6 +2857,16 @@ class CatalogService:
         """
         self._persist_search_marker()
 
+    def last_search_activity(self) -> float:
+        """When a table search last happened, as a wall clock moment.
+
+        Read-only, and it is the whole of what anything outside this service
+        needs in order to be armed the same way the listing index is. The value
+        is the durable marker the search itself writes, so it survives a plugin
+        reload and is not a count of this process's own uptime.
+        """
+        return self._searched_at
+
     def _index_is_armed(self) -> bool:
         """Whether Search has been used recently enough to owe a background pass.
 

@@ -724,6 +724,13 @@ def _build_support_bundle(
         # file, and a report with no answer to it is read as a crawl that was
         # broken rather than one that was never owed a pass.
         ("state/fearless-search.json", paths.cache_root / "fearless-search.json"),
+        # What the last update check found, and what the last update did. The
+        # install happens while this plugin is being replaced, so the backend
+        # that could describe it no longer exists by the time it finishes:
+        # these two files are the whole of what a report about a failed or
+        # half-finished self-update can be written from.
+        ("state/plugin-update.json", paths.state_root / "plugin-update.json"),
+        ("state/plugin-update-result.json", paths.state_root / "plugin-update-result.json"),
     ):
         collector.add_file(name, path, max_bytes=MAX_STATE_BYTES, tail=False)
 
@@ -766,6 +773,17 @@ def _build_support_bundle(
         collector.note("logs/plugin/", "no plugin log files were found", kind="absent", path=str(paths.log_dir))
     for path in plugin_logs:
         collector.add_file(f"logs/plugin/{path.name}", path, max_bytes=MAX_LOG_TAIL_BYTES, tail=True)
+
+    # The detached updater's own record. It is written by a process that
+    # outlives the plugin, so none of it is in the logs above; without it, an
+    # update that failed between Decky's install and the interface restart has
+    # no account of itself anywhere.
+    collector.add_file(
+        "logs/plugin-update-runner.jsonl",
+        paths.log_dir / "plugin-update-runner.jsonl",
+        max_bytes=MAX_LOG_TAIL_BYTES,
+        tail=True,
+    )
 
     # The same backend records out of the journal, which keeps them across the
     # plugin reload, the webhelper restart and the reboot. The files above are

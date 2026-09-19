@@ -561,3 +561,27 @@ def test_startup_orphan_recovery_reaches_catalogue_and_support_log(tmp_path):
     finally:
         logger.removeHandler(handler)
         handler.close()
+
+
+def test_bundle_carries_what_an_update_did_while_the_plugin_was_being_replaced(tmp_path: Path):
+    """A self-update finishes in a process the plugin logs know nothing about.
+
+    Decky stops this backend to replace it, so the installer runs detached and
+    the only account of what it did is its own record plus the durable update
+    file. A report about an update that failed halfway is written from these
+    two or from nothing.
+    """
+    service, paths = _service(tmp_path)
+    service.plugin_updates.state.update(
+        checked_at=1.0, latest_version="0.9.28", last_error=None,
+        install={"version": "0.9.28", "started_at": 2.0},
+    )
+    (paths.log_dir / "plugin-update-runner.jsonl").write_text(
+        '{"at":3.0,"event":"update_runner.started","version":"0.9.28"}\n', encoding="utf-8",
+    )
+    with _archive(service.create_support_bundle([], 0)) as archive:
+        state = json.loads(archive.read("state/plugin-update.json"))
+        runner = archive.read("logs/plugin-update-runner.jsonl").decode("utf-8")
+    assert state["latest_version"] == "0.9.28"
+    assert state["install"]["version"] == "0.9.28"
+    assert "update_runner.started" in runner

@@ -420,11 +420,12 @@ def test_service_close_drains_every_owner_after_one_close_fails():
     service.managed_ce = Owner("managed-ce")  # type: ignore[assignment]
     service.provider_catalog = Owner("provider-catalog")  # type: ignore[assignment]
     service.acquisitions = Owner("acquisitions")  # type: ignore[assignment]
+    service.plugin_updates = Owner("plugin-updates")  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="ce-launch failed"):
         asyncio.run(service.close())
 
-    assert events == ["ce-launch", "managed-ce", "provider-catalog", "acquisitions"]
+    assert events == ["ce-launch", "managed-ce", "provider-catalog", "acquisitions", "plugin-updates"]
 
 
 def test_service_close_drains_every_owner_after_one_close_is_cancelled():
@@ -446,13 +447,14 @@ def test_service_close_drains_every_owner_after_one_close_is_cancelled():
     service.managed_ce = Owner("managed-ce")  # type: ignore[assignment]
     service.provider_catalog = Owner("provider-catalog")  # type: ignore[assignment]
     service.acquisitions = Owner("acquisitions")  # type: ignore[assignment]
+    service.plugin_updates = Owner("plugin-updates")  # type: ignore[assignment]
 
     # An owner that drained through cancellation re-raises it; the owners after
     # it still have their own processes, cache writes and sockets to release.
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(service.close())
 
-    assert events == ["ce-launch", "managed-ce", "provider-catalog", "acquisitions"]
+    assert events == ["ce-launch", "managed-ce", "provider-catalog", "acquisitions", "plugin-updates"]
 
 
 def test_service_close_says_which_owner_it_is_on_before_it_gets_there(caplog):
@@ -482,6 +484,7 @@ def test_service_close_says_which_owner_it_is_on_before_it_gets_there(caplog):
     service.managed_ce = Owner("managed-ce", fail=True)  # type: ignore[assignment]
     service.provider_catalog = Owner("provider-catalog")  # type: ignore[assignment]
     service.acquisitions = Owner("acquisitions")  # type: ignore[assignment]
+    service.plugin_updates = Owner("plugin-updates")  # type: ignore[assignment]
 
     with caplog.at_level(logging.INFO, logger="test-service-close-records"):
         with pytest.raises(RuntimeError, match="managed-ce failed"):
@@ -492,15 +495,15 @@ def test_service_close_says_which_owner_it_is_on_before_it_gets_there(caplog):
     # it names the owner that never came back.
     started = [message for message in messages if "event=backend.owner_close_started" in message]
     ended = [message for message in messages if "event=backend.owner_close_ended" in message]
-    assert len(started) == 4
-    assert len(ended) == 4
-    for owner in ("ce_launch", "managed_ce", "provider_catalog", "acquisitions"):
+    assert len(started) == 5
+    assert len(ended) == 5
+    for owner in ("ce_launch", "managed_ce", "provider_catalog", "acquisitions", "plugin_updates"):
         assert any(f"owner={owner}" in message for message in started), owner
     # The failure is recorded as the outcome of that owner rather than left to
     # be inferred from a separate failure record.
     assert any("owner=managed_ce" in message and "outcome=failed" in message for message in ended)
     assert any("owner=ce_launch" in message and "outcome=completed" in message for message in ended)
-    assert entered == ["ce-launch", "managed-ce", "provider-catalog", "acquisitions"]
+    assert entered == ["ce-launch", "managed-ce", "provider-catalog", "acquisitions", "plugin-updates"]
 
 
 def test_cancelled_thread_mutation_is_drained_before_cancellation_returns():
@@ -1506,10 +1509,15 @@ def test_a_slow_cache_write_never_delays_stopping_an_owned_cheat_engine(monkeypa
         def begin_close(self) -> None:
             order.append("ce_launch")
 
+    class Updates:
+        def begin_close(self) -> None:
+            order.append("plugin_updates")
+
     service = object.__new__(PluginService)
     service.logger = logging.getLogger("test-begin-close-order")
     service.ce_launch = Launch()  # type: ignore[assignment]
     service.provider_catalog = Catalog()  # type: ignore[assignment]
+    service.plugin_updates = Updates()  # type: ignore[assignment]
 
     worker = threading.Thread(target=service.begin_close)
     worker.start()
