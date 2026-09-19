@@ -2,7 +2,7 @@
 
 The compact entry point for coding agents. Everything else this project holds is in `docs/`, and **Authority and reading routes** below says which document owns what and which one wins.
 
-Current development version: **0.9.27 — 2026-09-14**
+Current development version: **0.9.28 — 2026-09-19**
 
 ## Start here
 
@@ -172,6 +172,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Routed repository QA, and pinned browser UI QA | `scripts/qa.py`, `scripts/browser_harness.py` |
 | What are the providers actually serving, and what is in real tables | `scripts/provider_probe.py`, `scripts/provider_search_survey.py`, `scripts/provider_corpus_survey.py` |
 | Add a changelog entry to the current version without anchoring an edit on text that changes every round | `python scripts/changelog.py add` |
+| Prove the plugin's own update path end to end, which needs a build that is older than the published release | `python scripts/build_downgrade_package.py`; it packages this tree with the version strings stamped below the release and restores them afterwards |
 | The runtime dependency lock moved, so what ships has to move with it | `python scripts/update_runtime_vendor.py`; `py_modules/vendor` is committed because the Store builder installs nothing, and the gate refuses a tree that does not match its recorded digest |
 | Where the pinned Cheat Engine installer's URL went after it rotated, and whether the artifact it now serves carries the reviewed publisher key | `tools/inno_setup_reader.py urls` reads the stub's own Inno Setup metadata without executing it; `tools/authenticode_verify.py verify` checks the signature against the pinned key; `tools/ce77_extract.py` extracts the reviewed installer's payload. These are maintainer steps feeding a reviewed manifest change, never an automatic source for one |
 | Any other reusable development or target helper under `scripts/` or `tools/` | read its `--help` and module docstring, and use it only for the behavior they name. `docs/DEVELOPMENT.md` carries a row for the helpers that need a standing procedure of their own. `scripts/` is where a helper for this repository or this device goes; `tools/` holds the few that read a third-party artifact and are run by hand rather than by a gate. Enforcement and release scripts such as `verify_repo.py` and `check_release.py` are reached through a QA profile or through the release procedure that documents them, so they have no row here |

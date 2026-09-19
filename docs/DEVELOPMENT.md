@@ -280,6 +280,36 @@ The deterministic ZIP is written to `artifacts/CE-Decky-v<version>.zip`. Determi
 
 `artifacts/` and staging directories are ignored. Never commit generated archives.
 
+### A build that is older than the release, for testing the updater
+
+The plugin installs its own newer release, and the only way to exercise that
+whole path is from a device holding a build the release is newer than. Checking
+out an older commit would test the old code, and a debug override that makes
+this build claim an older version would put a branch in production that exists
+only for a test. So the current tree is packaged with the version strings
+stamped below the published release:
+
+```bash
+python scripts/build_downgrade_package.py --version 0.9.27
+```
+
+It refuses a dirty tree, because it rewrites two tracked files and restores them
+afterwards and cannot tell its own edit from yours; `--allow-dirty` overrides
+that and still restores them. The artifact is named
+`artifacts/CE-Decky-downgrade-v<version>.zip` so it is never mistaken for a
+release, and the SHA-256 it prints is what the install command takes:
+
+```bash
+python scripts/target_plugin_install.py install --package artifacts/CE-Decky-downgrade-v0.9.27.zip --sha256 <printed digest> --replace
+```
+
+From there the run is the real one: open the panel, press **Check now**, take the
+orange button, and confirm. What proves it afterwards is the panel reporting the
+new version, `target_plugin_install.py authority` agreeing, and the update row in
+Advanced. To exercise the manual fallback instead, make the install fail (an
+archive whose digest no longer matches is the cheap way) and confirm the panel
+names the kept file and offers the release page.
+
 ### The artifact the Store builds
 
 This project's release ZIP and the Store's are different build paths, and a
