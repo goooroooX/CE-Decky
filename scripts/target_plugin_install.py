@@ -3,24 +3,18 @@
 from __future__ import annotations
 
 import argparse
-import base64
 from datetime import datetime, timezone
-from hashlib import sha1, sha256
+from hashlib import sha256
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import secrets
 import shlex
 import shutil
-import socket
-import struct
 import subprocess
 import sys
 import time
 from typing import Any
-from urllib.parse import quote, urlsplit
-from urllib.request import ProxyHandler, build_opener
 import zipfile
 
 if __package__:
@@ -38,8 +32,25 @@ if str(MODULE_ROOT) not in sys.path:
 
 from ce_decky import frontend_journal  # noqa: E402
 from ce_decky.ce_launch import observe_running_app_ids  # noqa: E402
+# The loopback control socket and the two loader routes an install uses belong
+# to the plugin now, because the plugin updates itself through the same two.
+# This helper drives them for a development install and imports rather than
+# repeats them; the names it re-exports are the ones its own regressions call.
+from ce_decky.decky_control import (  # noqa: E402
+    DEFAULT_DECKY_URL,
+    MAX_WS_MESSAGE_BYTES,
+    PLUGIN_NAME,
+    DeckyWebSocket,
+    DeckyWebSocketClosed,
+    auth_token as _auth_token,
+    await_reply as _await_reply,
+    install_and_confirm,
+    loader_plugin_matches as _loader_plugin_matches,
+    receive_exact as _receive_exact,
+    request_frontend_reload as _request_frontend_reload,
+    rpc_error as _rpc_error,
+)
 
-DEFAULT_DECKY_URL = "http://127.0.0.1:1337"
 # Where a mirror of this checkout sits on a device reached across the network.
 # `docs/REMOTE_TARGET.md` describes the arrangement and leaves the path to the
 # caller; this is the name it uses, so `--remote` takes one argument in the
@@ -50,13 +61,6 @@ DEFAULT_REMOTE_ROOT = "ce-decky-mirror"
 # The install's own bound is the caller's `--timeout`, which applies at the far
 # end where the install happens.
 REMOTE_STEP_TIMEOUT_SECONDS = 120
-PLUGIN_NAME = "CE Decky"
-MAX_WS_MESSAGE_BYTES = 8 * 1024 * 1024
-_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-# The websocket message types Decky has used for a server-pushed event. The
-# loader supplies exactly one of them per release, and the install prompt is
-# pushed rather than returned, so both have to be recognised.
-_INSTALL_PROMPT_TYPES = (3, 5)
 MAX_AUTHORITY_REPORTS = 256
 # Install authority has to survive an ordinary repository clean. It is developer
 # state, not plugin state and not a build artifact, so keep it in the user's XDG
@@ -179,10 +183,6 @@ MAX_PANEL_JOURNAL_BYTES = 256 * 1024
 MAX_AUTHORITY_REPORT_BYTES = 256 * 1024
 MAX_PLUGIN_METADATA_BYTES = 256 * 1024
 MAX_INSTALLED_BUNDLE_BYTES = 32 * 1024 * 1024
-
-
-class DeckyWebSocketClosed(RuntimeError):
-    """The Decky websocket closed before returning the requested RPC reply."""
 
 
 class LiveAuthorityUnavailable(RuntimeError):
@@ -715,234 +715,6 @@ def _is_installed_plugin_root(plugin_root: Path) -> bool:
     )
 
 
-def _receive_exact(sock: socket.socket, size: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = size
-    while remaining:
-        chunk = sock.recv(remaining)
-        if not chunk:
-            raise DeckyWebSocketClosed("Decky websocket closed before the response completed")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-class DeckyWebSocket:
-    """Small RFC 6455 client for Decky's loopback-only JSON RPC socket."""
-
-    def __init__(self, sock: socket.socket) -> None:
-        self._sock = sock
-
-    @classmethod
-    def connect(cls, decky_url: str, token: str, timeout: float) -> "DeckyWebSocket":
-        parsed = urlsplit(decky_url)
-        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
-            raise ValueError("Decky URL must be loopback HTTP")
-        port = parsed.port or 80
-        sock = socket.create_connection((parsed.hostname, port), timeout=timeout)
-        sock.settimeout(timeout)
-        key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-        path = f"/ws?auth={quote(token, safe='')}"
-        request = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {parsed.hostname}:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n"
-            f"Origin: {decky_url}\r\n\r\n"
-        ).encode("ascii")
-        sock.sendall(request)
-        response = bytearray()
-        while b"\r\n\r\n" not in response:
-            if len(response) > 64 * 1024:
-                sock.close()
-                raise RuntimeError("Decky websocket handshake headers are too large")
-            response.extend(_receive_exact(sock, 1))
-        head = bytes(response).split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
-        lines = head.split("\r\n")
-        headers = {
-            key.strip().casefold(): value.strip()
-            for line in lines[1:]
-            if ":" in line
-            for key, value in [line.split(":", 1)]
-        }
-        expected = base64.b64encode(sha1((key + _WS_GUID).encode("ascii")).digest()).decode("ascii")
-        if not lines or " 101 " not in f" {lines[0]} " or headers.get("sec-websocket-accept") != expected:
-            sock.close()
-            raise RuntimeError("Decky rejected the websocket handshake")
-        return cls(sock)
-
-    def close(self) -> None:
-        try:
-            self._send_frame(0x8, b"")
-        except OSError:
-            pass
-        self._sock.close()
-
-    def __enter__(self) -> "DeckyWebSocket":
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def _send_frame(self, opcode: int, payload: bytes) -> None:
-        first = 0x80 | opcode
-        size = len(payload)
-        if size < 126:
-            header = struct.pack("!BB", first, 0x80 | size)
-        elif size <= 0xFFFF:
-            header = struct.pack("!BBH", first, 0x80 | 126, size)
-        else:
-            header = struct.pack("!BBQ", first, 0x80 | 127, size)
-        mask = secrets.token_bytes(4)
-        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-        self._sock.sendall(header + mask + masked)
-
-    def send_json(self, value: dict[str, object]) -> None:
-        self._send_frame(0x1, json.dumps(value, separators=(",", ":")).encode("utf-8"))
-
-    def receive_json(self) -> dict[str, Any]:
-        fragments = bytearray()
-        text_started = False
-        while True:
-            first, second = struct.unpack("!BB", _receive_exact(self._sock, 2))
-            final = bool(first & 0x80)
-            opcode = first & 0x0F
-            if first & 0x70 or second & 0x80:
-                raise RuntimeError("Decky sent an invalid websocket frame")
-            length = second & 0x7F
-            if length == 126:
-                length = struct.unpack("!H", _receive_exact(self._sock, 2))[0]
-            elif length == 127:
-                length = struct.unpack("!Q", _receive_exact(self._sock, 8))[0]
-            if length > MAX_WS_MESSAGE_BYTES or len(fragments) + length > MAX_WS_MESSAGE_BYTES:
-                raise RuntimeError("Decky websocket response exceeds the bounded message limit")
-            payload = _receive_exact(self._sock, length)
-            if opcode == 0x8:
-                raise DeckyWebSocketClosed("Decky websocket closed before the RPC completed")
-            if opcode == 0x9:
-                self._send_frame(0xA, payload)
-                continue
-            if opcode == 0xA:
-                continue
-            if opcode == 0x1:
-                if text_started:
-                    raise RuntimeError("Decky started a second fragmented websocket message")
-                text_started = True
-                fragments.extend(payload)
-            elif opcode == 0x0 and text_started:
-                fragments.extend(payload)
-            else:
-                raise RuntimeError("Decky sent an unsupported websocket frame")
-            if final:
-                try:
-                    value = json.loads(fragments.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise RuntimeError("Decky websocket response is not valid JSON") from exc
-                if not isinstance(value, dict):
-                    raise RuntimeError("Decky websocket response must be a JSON object")
-                return value
-
-
-def _rpc_error(message: dict[str, Any]) -> RuntimeError:
-    error = message.get("error")
-    if isinstance(error, dict):
-        detail = error.get("message") or error.get("error") or error.get("name")
-    else:
-        detail = None
-    return RuntimeError(f"Decky RPC failed: {detail or 'unknown error'}")
-
-
-def _await_reply(ws: Any, request_id: int) -> Any:
-    while True:
-        message = ws.receive_json()
-        if message.get("id") != request_id:
-            continue
-        if message.get("type") == -1:
-            raise _rpc_error(message)
-        if message.get("type") == 1:
-            return message.get("result")
-
-
-def _loader_plugin_matches(ws: Any, request_id: int) -> list[dict[str, Any]]:
-    ws.send_json({"type": 0, "route": "loader/get_plugins", "args": [], "id": request_id})
-    plugins = _await_reply(ws, request_id)
-    if not isinstance(plugins, list):
-        raise RuntimeError("Decky loader plugin inventory is not a list")
-    return [item for item in plugins if isinstance(item, dict) and item.get("name") == PLUGIN_NAME]
-
-
-def _request_frontend_reload(ws: Any) -> bool:
-    """Request the self-terminating webhelper reload.
-
-    Decky normally closes the calling websocket while executing this RPC. The
-    caller must still prove the webhelper process set changed before accepting
-    that ambiguous transport outcome.
-    """
-    ws.send_json({"type": 0, "route": "utilities/restart_webhelper", "args": [], "id": 5})
-    try:
-        _await_reply(ws, 5)
-    except DeckyWebSocketClosed:
-        return False
-    return True
-
-
-def install_and_confirm(ws: Any, artifact_url: str, version: str, package_sha: str, replace: bool) -> None:
-    install_type = 4 if replace else 0
-    ws.send_json({
-        "type": 0,
-        "route": "utilities/install_plugin",
-        "args": [artifact_url, PLUGIN_NAME, version, package_sha, install_type],
-        "id": 1,
-    })
-    confirmation_sent = False
-    while True:
-        message = ws.receive_json()
-        # Decky changed the envelope its events arrive in: v3.2.6 sent this one
-        # as type 3 and v3.2.8-pre1 sends the identical payload as type 5. The
-        # prompt is the only thing that carries the confirmation id, so a loader
-        # whose number is not recognised here does not fail loudly - it waits
-        # for a message that already went past, and the install never happens.
-        # Both numbers name one event; everything about it is still validated.
-        if message.get("type") in _INSTALL_PROMPT_TYPES and message.get("event") == "loader/add_plugin_install_prompt":
-            args = message.get("args")
-            if (
-                not isinstance(args, list)
-                or len(args) < 5
-                or args[0] != PLUGIN_NAME
-                or args[1] != version
-                or args[3] != package_sha
-                or args[4] != install_type
-                or not isinstance(args[2], str)
-                or not args[2]
-            ):
-                raise RuntimeError("Decky requested confirmation for an unexpected plugin")
-            if confirmation_sent:
-                raise RuntimeError("Decky requested duplicate confirmation for one install")
-            ws.send_json({
-                "type": 0,
-                "route": "utilities/confirm_plugin_install",
-                "args": [args[2]],
-                "id": 2,
-            })
-            confirmation_sent = True
-            continue
-        if message.get("id") == 1:
-            if message.get("type") == -1:
-                raise _rpc_error(message)
-            # install_plugin returns after creating the confirmation request.
-            # It is not installation completion and must never terminate this loop.
-            continue
-        if message.get("id") == 2:
-            if message.get("type") == -1:
-                raise _rpc_error(message)
-            if message.get("type") == 1:
-                if not confirmation_sent:
-                    raise RuntimeError("Decky completed an install that was not explicitly confirmed")
-                return
-
-
 def verify_installed_tree(artifact: Path, plugin_root: Path) -> dict[str, object]:
     if plugin_root.is_symlink() or not plugin_root.is_dir():
         raise RuntimeError("Decky did not create the expected regular plugin directory")
@@ -1450,15 +1222,6 @@ def _describe_running_apps(report: dict[str, object]) -> str:
         is_gone = "is" if len(stopped) == 1 else "are"
         return f"{running} {was} running; {gone} {is_gone} no longer running after the frontend reload"
     return f"{running} {was} running and still is"
-
-
-def _auth_token(decky_url: str, timeout: float) -> str:
-    opener = build_opener(ProxyHandler({}))
-    with opener.open(f"{decky_url}/auth/token", timeout=timeout) as response:
-        token = response.read(4096).decode("utf-8").strip()
-    if not token:
-        raise RuntimeError("Decky returned an empty auth token")
-    return token
 
 
 def install_package(
