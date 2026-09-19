@@ -1632,6 +1632,16 @@ def test_the_options_this_accepts_reach_the_helper_that_does_the_work(monkeypatc
     assert "install record not written" in capsys.readouterr().err
 
 
+def test_the_version_a_package_should_carry_reaches_the_far_end(monkeypatch, tmp_path: Path):
+    # The one build that is deliberately older than the checkout is also the one
+    # somebody drives from another machine, to test updating on a device they
+    # are not sitting at. Dropped on the way, the far end compares the package
+    # against its own version and refuses it.
+    ssh = _FakeSSH(_helper_digest())
+    _remote_install(monkeypatch, tmp_path, ssh, expect_version="0.9.26")
+    assert "--expect-version 0.9.26" in ssh.commands[-1]
+
+
 def test_a_summary_run_still_carries_what_the_far_end_warned_about(monkeypatch, tmp_path: Path):
     ssh = _FakeSSH(_helper_digest(), stdout="installed 0.9.26\n", stderr="install record not written")
     answer = _remote_install(monkeypatch, tmp_path, ssh)

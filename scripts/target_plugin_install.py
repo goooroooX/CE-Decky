@@ -1513,7 +1513,7 @@ _REMOTE_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,120}$")
 def install_through_mirror(
     package: Path, sha256_hex: str, *, remote: str, root: str, replace: bool,
     timeout: float, plugin_root: str | None = None, decky_url: str | None = None,
-    as_json: bool = False,
+    as_json: bool = False, expect_version: str | None = None,
 ) -> str:
     """Install this exact artifact on a device across the network, and say so.
 
@@ -1577,10 +1577,15 @@ def install_through_mirror(
     # another machine; and `--decky-url` and `--json`, which used to be accepted
     # here and dropped on the way, so a custom endpoint was silently ignored and
     # `--remote --json` answered a caller parsing JSON with a summary line.
+    # `--expect-version` joined them for the same reason: without it the far end
+    # compares the package against its own checkout and refuses the one build
+    # that is deliberately older, which is the build somebody drives from another
+    # machine in order to test updating.
     forwarded = [
         "install", f"artifacts/{name}", "--sha256", sha256_hex, "--timeout", str(timeout),
         *(["--plugin-root", plugin_root] if plugin_root else []),
         *(["--decky-url", decky_url] if decky_url else []),
+        *(["--expect-version", expect_version] if expect_version else []),
         *(["--replace"] if replace else []),
         *(["--json"] if as_json else []),
     ]
@@ -1654,6 +1659,7 @@ def main(argv: list[str] | None = None) -> int:
                 remote=args.remote, root=args.remote_root, replace=args.replace,
                 timeout=args.timeout, plugin_root=args.plugin_root,
                 decky_url=args.decky_url.rstrip("/"), as_json=args.json,
+                expect_version=args.expect_version,
             ))
             return 0
         plugin_root = Path(args.plugin_root).expanduser() if args.plugin_root else Path(str(
