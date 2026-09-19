@@ -7,6 +7,7 @@ import unicodedata
 from typing import Any
 
 from .atomic import atomic_write_json, load_json
+from .preferences import LEGACY_CONFIG_KEYS
 from .text import utf8_len
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -18,9 +19,12 @@ _ALLOWED_KEYS = {
     "imported_ce_root",
     "imported_ce_version",
     "acknowledged_security_notice",
-    "update_auto_check",
-    "mascot_visible",
 }
+# Two keys 0.9.28 briefly stored here before they moved to their own file. They
+# are read and dropped rather than refused, because this file is parsed strictly
+# and a refusal is the loss of a registered Cheat Engine; `preferences.py`
+# carries what that cost on a device. Nothing writes them again.
+_MIGRATED_KEYS = frozenset(LEGACY_CONFIG_KEYS)
 
 
 @dataclass
@@ -31,17 +35,10 @@ class Config:
     imported_ce_root: str | None = None
     imported_ce_version: str | None = None
     acknowledged_security_notice: bool = False
-    # Both default to on, and both are absent from every file written before
-    # 0.9.28. An absent key is therefore the default rather than an error, which
-    # is what lets a device that has been running this plugin for months read
-    # its own configuration after an update; `ConfigStore.migrate` is what then
-    # writes the defaults down so the file says what this version would write.
-    update_auto_check: bool = True
-    mascot_visible: bool = True
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> "Config":
-        if not isinstance(raw, dict) or set(raw) - _ALLOWED_KEYS:
+        if not isinstance(raw, dict) or set(raw) - _ALLOWED_KEYS - _MIGRATED_KEYS:
             raise ValueError("config contains unknown fields")
         schema = raw.get("schema", 1)
         if isinstance(schema, bool) or not isinstance(schema, int):
@@ -56,8 +53,6 @@ class Config:
         # identity: it is absent for an executable that declares none, and it
         # can never be the reason a registered Cheat Engine stops validating.
         version = _optional_version(raw.get("imported_ce_version"))
-        auto_check = _preference(raw, "update_auto_check")
-        mascot_visible = _preference(raw, "mascot_visible")
         configured = (executable is not None, digest is not None, root is not None)
         if (any(configured) and not all(configured)) or (version is not None and not all(configured)):
             raise ValueError("imported Cheat Engine identity must contain executable, root, and SHA-256 together")
@@ -68,24 +63,7 @@ class Config:
             imported_ce_root=root,
             imported_ce_version=version,
             acknowledged_security_notice=acknowledged,
-            update_auto_check=auto_check,
-            mascot_visible=mascot_visible,
         )
-
-
-def _preference(raw: dict[str, Any], field: str) -> bool:
-    """One on/off preference, defaulting to on where the file predates it.
-
-    Absent is deliberately not an error: every configuration written before
-    these preferences existed lacks them, and refusing such a file would leave
-    an updated device unable to read its own registered Cheat Engine. A value
-    that is present must still be a boolean, because a file that carries this
-    key carries a decision the user made.
-    """
-    value = raw.get(field, True)
-    if not isinstance(value, bool):
-        raise ValueError(f"{field} must be boolean")
-    return value
 
 
 def _optional_version(value: Any) -> str | None:
@@ -117,35 +95,29 @@ class ConfigStore:
             raise ValueError(f"unsupported config schema: {config.schema}")
         return config
 
-    def migrate(self) -> bool:
-        """Write the file this version would write, once. Returns whether it did.
+    def take_legacy_preferences(self) -> dict[str, bool]:
+        """Lift the preferences 0.9.28 briefly stored here, and rewrite without them.
 
-        A configuration written by an earlier build carries only the keys that
-        build had, and every key this one added reads as its default. That is
-        enough to run on, and it is not enough to leave: the file on a device
-        that has been updated should say what this version holds, so that a
-        preference the user never touched is visible where they would look for
-        it and so the next build that adds a key finds one shape rather than a
-        history of them.
+        They belong in their own file, for the reason `preferences.py` gives:
+        this one is parsed strictly, so a key an older build does not know costs
+        that build the whole file and with it the registered Cheat Engine. A
+        device that ran one of those builds already has them here, and they are
+        the user's own choices, so they are moved rather than dropped.
 
-        Every existing value is preserved exactly, because the rewrite is the
-        validated load of what is already there. An absent file is the same
-        case with nothing to preserve, which is what the first run writes.
-
-        The caller is an explicit mutation boundary at load. It is deliberately
-        not a read path: read-only helpers call `get_status()` and promise to
-        write nothing.
+        Returns what was found, so the caller can seed the store that owns them
+        now. An empty answer is every ordinary device, and nothing is written.
         """
         raw = load_json(self.path, {}, max_bytes=256 * 1024)
         if not isinstance(raw, dict):
             raise ValueError("config root must be a JSON object")
-        config = Config.from_mapping(raw)
-        if config.schema != 1:
-            raise ValueError(f"unsupported config schema: {config.schema}")
-        if _ALLOWED_KEYS <= set(raw):
-            return False
-        self.save(config)
-        return True
+        found = {
+            key: raw[key] for key in LEGACY_CONFIG_KEYS
+            if key in raw and isinstance(raw[key], bool)
+        }
+        if not set(raw) & _MIGRATED_KEYS:
+            return found
+        self.save(Config.from_mapping(raw))
+        return found
 
     def save(self, config: Config) -> None:
         # Re-validate our own serialized state before persistence so callers cannot

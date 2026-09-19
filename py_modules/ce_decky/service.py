@@ -57,6 +57,7 @@ from .artifact_resolutions import ArtifactResolutions
 from .table_compatibility import TableCompatibility, compatibility_state, steam_build_id
 from .acquisition import AcquisitionManager
 from .paths import PluginPaths
+from .preferences import PreferenceStore
 from .plugin_update import RELEASES_PAGE_URL
 from .update_manager import PluginUpdateManager
 from .profiles import ConfiguredValue, ProfileStore, StartupPreference, is_configurable_value, _optional_process
@@ -223,6 +224,11 @@ class PluginService:
         self.paths = paths
         self.logger = logger
         self.config_store = ConfigStore(paths.config_path)
+        # The user's own on/off choices, deliberately not in the file above: that
+        # one carries identity and is parsed strictly, so a key an older build
+        # does not know costs it the whole file and the registered Cheat Engine
+        # with it. `preferences.py` carries what that cost on a device.
+        self.preferences = PreferenceStore(paths.settings_dir / "preferences.json")
         self.artifact_resolutions = ArtifactResolutions(paths.state_root / "artifact_resolutions.json")
         self.table_blocklist = TableBlocklist(paths.state_root / "blocked_tables.json")
         self.table_store = TableStore(
@@ -306,7 +312,9 @@ class PluginService:
         self.paths.ensure()
         with self._mutation_lock:
             self.table_store.reconcile_orphan_blobs(self.logger)
-        self._migrate_config()
+        if not self.paths.config_path.exists():
+            self.config_store.save(self.config_store.load())
+        self._adopt_legacy_preferences()
         self._label_legacy_ce_registration()
         # What the detached installer did while this process did not exist. Read
         # once, at load, because that is when its result file is there to read.
@@ -326,29 +334,29 @@ class PluginService:
         self.provider_catalog.start_background_index()
         self.plugin_updates.start_background_checks()
 
-    def _migrate_config(self) -> None:
-        """Bring the stored configuration up to the shape this version writes.
+    def _adopt_legacy_preferences(self) -> None:
+        """Move the two preferences 0.9.28 briefly kept in the configuration.
 
-        It covers the first run, where there is no file at all, and the update,
-        where the file is an older build's and lacks every key added since.
-        Under the mutation lock because it writes the same file every identity
-        mutation writes, and at load because that is an explicit boundary: the
-        status call is a read and several read-only helpers depend on it
-        staying one.
+        A device that ran one of those builds has them in `config.json`, where
+        they are the user's own choices and where an older build refuses the
+        whole file over them. They are lifted into the store that owns them and
+        written out of the configuration, once, at load - an explicit mutation
+        boundary rather than a read path, because the status call is a read and
+        several read-only helpers depend on it staying one.
 
-        A configuration this version cannot parse is left exactly as it is. The
-        status call already reports that as `config_state_reason` and Advanced
-        offers to repair it, which is a better answer than a backend that
-        refuses to load; a write here could only replace what the user has with
-        a default. A storage failure is the same: the preferences read as their
-        defaults and the next load offers the write again.
+        A configuration this version cannot parse is left exactly as it is: the
+        status call reports that and Advanced offers to repair it, which beats a
+        backend that refuses to load. A storage failure is the same, and the
+        next load offers the move again.
         """
         try:
             with self._mutation_lock:
-                if self.config_store.migrate():
-                    log_activity(self.logger, "info", "config.migrated", path=self.paths.config_path.name)
-        except Exception as exc:  # noqa: BLE001 - a rewrite must never block backend load
-            log_failure(self.logger, "config.migration_failed", exc, expected=True)
+                found = self.config_store.take_legacy_preferences()
+                if found:
+                    self.preferences.set(**found)
+                    log_activity(self.logger, "info", "preferences.adopted", moved=sorted(found))
+        except Exception as exc:  # noqa: BLE001 - a move must never block backend load
+            log_failure(self.logger, "preferences.adoption_failed", exc, expected=True)
 
     def _label_legacy_ce_registration(self) -> None:
         """Give a registration written before versions were read its label, once.
@@ -505,7 +513,7 @@ class PluginService:
             # mounts and after every action, so an update offer and a hidden
             # mascot cost no poll of their own.
             "update": self._update_snapshot(),
-            "preferences": {"mascot_visible": config.mascot_visible},
+            "preferences": {"mascot_visible": self.preferences.load().mascot_visible},
             "features": {
                 "local_ce_import": True,
                 "local_ct_import": True,
@@ -1999,15 +2007,11 @@ class PluginService:
         """Whether the user leaves automatic update checking on.
 
         Read through the store rather than cached, so the switch in Advanced
-        takes effect on the next tick rather than on the next plugin load. A
-        configuration this build cannot read is treated as the default, which
-        is the same answer every other reader of a broken config gets and is
-        the one that keeps a device able to hear about a fix.
+        takes effect on the next tick rather than on the next plugin load. The
+        store answers with the default where it cannot be read, which is the one
+        answer that keeps a device able to hear about a fix.
         """
-        try:
-            return self.config_store.load().update_auto_check
-        except (OSError, ValueError):
-            return True
+        return self.preferences.load().update_auto_check
 
     def _update_snapshot(self) -> dict[str, object]:
         """What the panel is told about updates. Never fails a status read."""
@@ -2033,25 +2037,21 @@ class PluginService:
         if not isinstance(enabled, bool):
             raise ValueError("update auto-check must be boolean")
         with self._mutation_lock:
-            config = self.config_store.load()
-            config.update_auto_check = enabled
-            self.config_store.save(config)
+            self.preferences.set(update_auto_check=enabled)
         log_activity(self.logger, "info", "update.auto_check_set", enabled=enabled)
         return self._update_snapshot()
 
     def set_mascot_visible(self, visible: object) -> dict[str, object]:
         """Show or hide the panel mascot, durably.
 
-        Kept beside the Cheat Engine registration rather than in the frontend,
-        because the panel is rebuilt from nothing every time Steam mounts it
-        and the choice has to survive a reinstall.
+        Kept in the plugin's own settings rather than in the frontend, because
+        the panel is rebuilt from nothing every time Steam mounts it and the
+        choice has to survive a reinstall.
         """
         if not isinstance(visible, bool):
             raise ValueError("mascot visibility must be boolean")
         with self._mutation_lock:
-            config = self.config_store.load()
-            config.mascot_visible = visible
-            self.config_store.save(config)
+            self.preferences.set(mascot_visible=visible)
         log_activity(self.logger, "info", "update.mascot_visible_set", visible=visible)
         return {"mascot_visible": visible}
 

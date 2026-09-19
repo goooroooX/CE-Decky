@@ -710,6 +710,9 @@ def _build_support_bundle(
     # the only evidence that cannot be reconstructed from anywhere else.
     for name, path in (
         ("state/config.json", paths.config_path),
+        # The user's own on/off choices. Their own file, so that this one being
+        # unreadable is never what a registered Cheat Engine is lost to.
+        ("state/preferences.json", paths.settings_dir / "preferences.json"),
         ("state/profiles.json", paths.state_root / "profiles.json"),
         ("state/artifact_resolutions.json", paths.state_root / "artifact_resolutions.json"),
         ("state/table_compatibility.json", paths.state_root / "table_compatibility.json"),

@@ -1591,3 +1591,57 @@ def test_a_panel_record_left_readable_is_a_self_test_failure(tmp_path, monkeypat
 
     assert named["panel_journal"]["ok"] is False
     assert "0600" in str(named["panel_journal"]["detail"])
+
+
+def test_preferences_move_out_of_the_configuration_at_load(tmp_path: Path):
+    """What an 0.9.28 build wrote into the identity file is lifted out of it.
+
+    Observed on a Steam Deck: this version put two preferences in `config.json`,
+    the published release before it parses that file strictly, and the device
+    came back from an update saying Cheat Engine was not installed while the
+    installation and its registration sat untouched on disk. The choices are the
+    user's, so they are moved rather than dropped, and the file goes back to the
+    shape every build reads.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    paths.ensure()
+    paths.config_path.write_text(json.dumps({
+        "schema": 1,
+        "imported_ce_executable": "/home/u/CE/ce.exe",
+        "imported_ce_sha256": "c" * 64,
+        "imported_ce_root": "/home/u/CE",
+        "acknowledged_security_notice": True,
+        "update_auto_check": False,
+        "mascot_visible": False,
+    }), encoding="utf-8")
+
+    service = PluginService(paths, logging.getLogger("test-preferences"))
+    service.initialize()
+
+    written = json.loads(paths.config_path.read_text(encoding="utf-8"))
+    assert "update_auto_check" not in written and "mascot_visible" not in written
+    # The registration survives the move untouched, which is the whole point.
+    assert written["imported_ce_sha256"] == "c" * 64
+    assert written["acknowledged_security_notice"] is True
+    # And the user's own choices are where they belong now.
+    stored = service.preferences.load()
+    assert (stored.update_auto_check, stored.mascot_visible) == (False, False)
+    assert service.get_status()["preferences"] == {"mascot_visible": False}
+    assert service.get_status()["config_state_reason"] is None
+
+
+def test_a_switch_is_stored_where_an_older_build_will_not_trip_over_it(tmp_path: Path):
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("test-preferences-write"))
+    service.initialize()
+    service.set_mascot_visible(False)
+    service.set_update_auto_check(False)
+
+    # Nothing about the identity file changed, so every build still reads it.
+    written = json.loads(paths.config_path.read_text(encoding="utf-8"))
+    assert set(written) == {
+        "schema", "imported_ce_executable", "imported_ce_sha256",
+        "imported_ce_root", "imported_ce_version", "acknowledged_security_notice",
+    }
+    stored = json.loads((paths.settings_dir / "preferences.json").read_text(encoding="utf-8"))
+    assert stored == {"schema": 1, "update_auto_check": False, "mascot_visible": False}

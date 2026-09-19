@@ -572,6 +572,7 @@ def test_bundle_carries_what_an_update_did_while_the_plugin_was_being_replaced(t
     two or from nothing.
     """
     service, paths = _service(tmp_path)
+    service.preferences.set(mascot_visible=False)
     service.plugin_updates.state.update(
         checked_at=1.0, latest_version="0.9.28", last_error=None,
         install={"version": "0.9.28", "started_at": 2.0},
@@ -581,7 +582,9 @@ def test_bundle_carries_what_an_update_did_while_the_plugin_was_being_replaced(t
     )
     with _archive(service.create_support_bundle([], 0)) as archive:
         state = json.loads(archive.read("state/plugin-update.json"))
+        preferences = json.loads(archive.read("state/preferences.json"))
         runner = archive.read("logs/plugin-update-runner.jsonl").decode("utf-8")
     assert state["latest_version"] == "0.9.28"
     assert state["install"]["version"] == "0.9.28"
     assert "update_runner.started" in runner
+    assert preferences["mascot_visible"] is False
