@@ -174,6 +174,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         # it belongs to, so it says which attempt it is rather than being taken
         # for whichever one is pending when it is found.
         "attempt": args.attempt,
+        # What the archive it was given is. The backend proves the file it finds
+        # afterwards against this, because one file is reused by every attempt.
+        "digest": args.digest,
         "version": args.version,
         "finished_at": None,
         "ok": False,

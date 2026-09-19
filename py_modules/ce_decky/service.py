@@ -2030,9 +2030,28 @@ class PluginService:
         return self.preferences.load().update_auto_check
 
     def _update_snapshot(self) -> dict[str, object]:
-        """What the panel is told about updates. Never fails a status read."""
+        """What the panel is told about updates. Never fails a status read.
+
+        It is also where the reservation is given back. The manager settles an
+        operation during an ordinary snapshot - a runner that exited, a result
+        that arrived - and the panel's status call is the one that reaches it
+        after the window that started the update has closed. Leaving the
+        reservation to the update window's own poll meant a settled update could
+        go on refusing the next update, a Cheat Engine setup and deleting plugin
+        data until something reloaded the backend.
+        """
         try:
-            return self.plugin_updates.snapshot()
+            snapshot = self.plugin_updates.snapshot()
+            operation = snapshot.get("operation")
+            if isinstance(operation, dict):
+                with self._mutation_lock:
+                    self._reconcile_plugin_update_reservation(operation)
+            elif self._plugin_update_reservation is not None and not self.plugin_updates.has_active_operation():
+                # Nothing is running and nothing names it any more: a
+                # reservation taken for a start that never became an operation.
+                with self._mutation_lock:
+                    self._plugin_update_reservation = None
+            return snapshot
         except Exception as exc:  # noqa: BLE001 - status is read constantly
             log_failure(self.logger, "update.snapshot_failed", exc, expected=True)
             return {

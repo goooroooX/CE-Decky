@@ -38,6 +38,14 @@ name, so this cannot press **Use this table**, **Delete** or **Apply**. And a
 control that is disabled is reported as disabled rather than activated, because
 a press that Steam would have refused is not evidence about anything.
 
+A name is matched against every surface this plugin is drawing, so a name that
+means one thing here and another there is not in that list either: **Search**
+opens the search screen from the panel and spends a provider request inside it,
+**Cancel** leaves a dialog and stops a running Cheat Engine installation on the
+panel. Those are in `SCOPED_PRESSES` instead, written `<data-testid>:<name>`,
+which is the same name looked for only inside the one row the reader prints
+that id for - identity by where the control is, rather than by what it says.
+
 None of this fabricates controller input, and none of it reaches Steam's own
 interface: it is this plugin's own buttons, the ones its component tests press
 by the same names. So reaching one of this plugin's screens is a thing to do
@@ -273,8 +281,6 @@ _OPEN = """
 # reach those is one press away from doing it to a real device by accident.
 NAVIGATION_PRESSES = (
     "Manage",
-    "Search",
-    "Search again",
     "Configure cheats",
     "Advanced\u2026",
     "Look inside",
@@ -290,9 +296,23 @@ NAVIGATION_PRESSES = (
     "Back",
     "Back to the list",
     "Close",
-    "Cancel",
     "\u2039 Previous",
     "Next \u203a",
+)
+
+# The presses whose name is not enough, and what makes them one press.
+#
+# A name is matched against every surface this plugin is drawing, so a label
+# that means one thing on one screen and another elsewhere is not a name at all:
+# **Search** opens the search screen on the panel and spends a provider request
+# inside it, **Cancel** leaves a dialog and stops a Cheat Engine installation in
+# progress on the panel. Those are named by the row they are in - the same
+# `data-testid` the reader prints - so the control is identified by where it is
+# rather than by what it happens to say.
+SCOPED_PRESSES = (
+    # The panel's own way into the search screen, which is the row the table
+    # lives in rather than the button inside the screen it opens.
+    "table-row:Search",
 )
 
 # Activates one of this plugin's own controls, found by the name on it. The
@@ -301,8 +321,11 @@ NAVIGATION_PRESSES = (
 _PRESS = r"""
 (() => {
   const wanted = %(label)s;
+  const scope = %(scope)s;
   for (const panel of Array.from(document.querySelectorAll(".ce-decky-dense"))) {
-    for (const button of Array.from(panel.querySelectorAll("button"))) {
+    const within = scope === null ? panel : panel.querySelector('[data-testid="' + scope + '"]');
+    if (within === null) continue;
+    for (const button of Array.from(within.querySelectorAll("button"))) {
       const label = (button.textContent || "").replace(/\s+/g, " ").trim();
       if (label !== wanted) continue;
       if (button.disabled) return JSON.stringify({ pressed: false, reason: "that control is disabled right now" });
@@ -316,8 +339,14 @@ _PRESS = r"""
 
 
 def press(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, Any]:
-    """Activate one of this plugin's own navigation controls by name."""
-    expression = _PRESS % {"label": json.dumps(label)}
+    """Activate one of this plugin's own navigation controls.
+
+    `label` is either a name from `NAVIGATION_PRESSES` or one of the
+    `SCOPED_PRESSES`, written `<data-testid>:<name>`, which is the same name
+    looked for only inside that one row.
+    """
+    scope, _, name = label.rpartition(":") if label in SCOPED_PRESSES else ("", "", label)
+    expression = _PRESS % {"label": json.dumps(name), "scope": json.dumps(scope or None)}
     last: dict[str, Any] = {"pressed": False, "reason": "no page answered"}
     for page in pages:
         url = str(page.get("webSocketDebuggerUrl", ""))
@@ -589,8 +618,8 @@ def main() -> int:
             return 1
 
     for label in args.press:
-        if label not in NAVIGATION_PRESSES:
-            allowed = ", ".join(NAVIGATION_PRESSES)
+        if label not in NAVIGATION_PRESSES and label not in SCOPED_PRESSES:
+            allowed = ", ".join(NAVIGATION_PRESSES + SCOPED_PRESSES)
             print(
                 f"panel read: {label!r} is not one of the presses this may make. It opens screens "
                 f"and nothing else: {allowed}",

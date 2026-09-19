@@ -1458,21 +1458,15 @@ export function AdvancedModal(props: Props) {
               />
             </PanelSectionRow>
           )}
-          {/* The automatic route has failed and the file it verified is still
-              on the device, so the manual one is a path and two sentences
-              rather than a download to repeat. */}
+          {/* What the last update did, which is news and says itself once. */}
           {updateView?.last_result && !updateView.last_result.ok && (
             <PanelRow
               truncate
               scroll
               testId="update-manual-route"
               label="The last update did not install"
-              description={updateView.last_result.archive_kept_at
-                ? `${sentence(updateView.last_result.error ?? "Decky did not complete the install.")} The checked release is saved at ${updateView.last_result.archive_kept_at}.`
-                : sentence(updateView.last_result.error ?? "Decky did not complete the install.")}
-              help={updateView.last_result.archive_kept_at
-                ? "That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. The release page has the same file if you would rather download it again."
-                : "Nothing was kept, because nothing was verified: the failure happened before or during the download. Open the release page and install from there, or try again."}
+              description={sentence(updateView.last_result.error ?? "Decky did not complete the install.")}
+              help="Try again when the release page and this device can both be reached. If a verified release was kept on this device, the row below names it and how to install it by hand."
               actions={updateView.page_url ? (
                 <SmallButton
                   disabled={blocked}
@@ -1481,6 +1475,21 @@ export function AdvancedModal(props: Props) {
                   Release page
                 </SmallButton>
               ) : undefined}
+            />
+          )}
+          {/* And the file itself, which is not news: it is a release sitting on
+              this device that can still be installed by hand, it names the
+              version it actually is rather than the version of whatever failed
+              last, and it is here only while the bytes at that path are still
+              provably that release. */}
+          {updateView?.recovery && (
+            <PanelRow
+              truncate
+              scroll
+              testId="update-recovery"
+              label={`v${updateView.recovery.version ?? "?"} is saved for a manual install`}
+              description={updateView.recovery.path}
+              help="That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. It is removed once an update succeeds, or if you delete all of this plugin's data."
             />
           )}
           {updateView?.last_result?.ok && (

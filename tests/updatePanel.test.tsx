@@ -53,7 +53,7 @@ function props(overrides: Record<string, unknown> = {}) {
 const state = (overrides: Partial<PluginUpdateState> = {}): PluginUpdateState => ({
   current_version: "0.9.27", auto_check: true, latest_version: "0.9.28", update_available: true,
   checked_at: 1_760_000_000, last_error: null, page_url: "https://github.com/x/y/releases",
-  last_result: null, install_supported: true, checking: false, operation: null, ...overrides,
+  last_result: null, recovery: null, install_supported: true, checking: false, operation: null, ...overrides,
 });
 
 const operation = (overrides: Partial<PluginUpdateOperation> = {}): PluginUpdateOperation => ({

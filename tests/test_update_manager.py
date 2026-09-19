@@ -353,19 +353,35 @@ def test_the_runners_result_is_folded_into_the_record_and_consumed(tmp_path: Pat
     assert snapshot["checked_at"] is None
 
 
+def _kept(manager: PluginUpdateManager, body: bytes = b"a verified release") -> str:
+    """Put a recovery archive on this device and return its digest."""
+    path = manager.kept_archive_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return sha256(body).hexdigest()
+
+
 def test_a_failed_install_reports_where_the_archive_was_left(tmp_path: Path):
     manager = _manager(tmp_path, FakeNetwork())
-    kept = str(tmp_path / "home" / "CE-Decky-update.zip")
-    manager.state.update(install={"version": "0.9.28", "started_at": time.time(), "archive_kept_at": kept})
+    digest = _kept(manager)
+    manager.state.update(install={
+        "attempt": "a" * 32, "version": "0.9.28", "digest": digest,
+        "started_at": time.time(), "archive_kept_at": str(manager.kept_archive_path),
+    })
     manager.result_path.write_text(json.dumps({
-        "schema": 1, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
-        "archive_kept_at": kept, "finished_at": 2.0, "restart_requested": False,
+        "schema": 1, "attempt": "a" * 32, "version": "0.9.28", "ok": False,
+        "error": "Decky refused the install", "archive_kept_at": str(manager.kept_archive_path),
+        "finished_at": 2.0, "restart_requested": False,
     }), encoding="utf-8")
     manager.consume_runner_result()
-    result = manager.snapshot()["last_result"]
-    assert result["ok"] is False
-    assert result["archive_kept_at"] == kept
-    assert "refused" in result["error"]
+    snapshot = manager.snapshot()
+    assert snapshot["last_result"]["ok"] is False
+    assert "refused" in snapshot["last_result"]["error"]
+    # The file is offered as its own fact, and only because it is provably the
+    # archive this attempt verified.
+    assert snapshot["recovery"]["path"] == str(manager.kept_archive_path)
+    assert snapshot["recovery"]["version"] == "0.9.28"
+    assert snapshot["recovery"]["sha256"] == digest
 
 
 def test_an_install_that_never_reported_back_is_settled_by_the_running_version(tmp_path: Path):
@@ -679,8 +695,8 @@ def test_a_failed_result_settles_the_operation_that_started_it(tmp_path: Path, s
     assert status["state"] == "failed"
     assert "refused" in status["error"]
     assert manager.has_active_operation() is False
-    # And the manual route is where a screen reads it from.
-    assert manager.snapshot()["last_result"]["archive_kept_at"].endswith("CE-Decky-update.zip")
+    # Nothing was preserved, so nothing is offered as a manual route.
+    assert manager.snapshot()["recovery"] is None
 
 
 def test_a_result_from_another_attempt_never_settles_this_one(tmp_path: Path):
@@ -847,35 +863,93 @@ def test_an_outcome_nobody_can_act_on_is_said_once_and_then_let_go(tmp_path: Pat
     assert asyncio.run(manager.check(forced=True))["last_result"] is None
 
 
-def test_a_failed_install_that_kept_the_release_keeps_its_row(tmp_path: Path):
-    """That row names a path, and it goes when the path does.
+def test_a_recovery_survives_a_later_attempt_that_verified_nothing(tmp_path: Path):
+    """Two facts with two lifetimes, and the shorter one must not take the other.
 
-    The manual route is the only thing a failed install leaves a user, and a
-    check succeeding a minute later says nothing about whether they have
-    installed it yet.
+    A failed install leaves a verified release on the device. A retry that fails
+    before it downloads anything - the release moved, the network went - is the
+    newer news and replaces what the last update did; the file from before it is
+    still there and is still the only thing a user can install by hand.
+    """
+    manager = _manager(tmp_path, FakeNetwork(release=_release_payload("0.9.27")), version="0.9.27")
+    digest = _kept(manager)
+    manager.state.update(recovery={
+        "attempt": "a" * 32, "version": "0.9.28", "sha256": digest, "path": str(manager.kept_archive_path),
+    })
+
+    async def scenario():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    snapshot = manager.snapshot()
+    assert snapshot["last_result"]["ok"] is False, "the newer failure is what the last update did"
+    assert snapshot["recovery"]["version"] == "0.9.28", "and the older file is still offered"
+
+
+def test_a_recovery_is_never_attributed_to_an_attempt_that_did_not_write_it(tmp_path: Path, spawned):
+    """One file, successive attempts, so being there says nothing about whose it is.
+
+    An installer for B that exits before preserving anything leaves A's archive
+    exactly where it was. Reporting it as B's sends the user into Decky's manual
+    installer with bytes that are a real release and not the one the screen
+    names.
     """
     manager = _manager(tmp_path, FakeNetwork(), version="0.9.27")
-    kept = tmp_path / "home" / "CE-Decky-update.zip"
-    kept.parent.mkdir(parents=True, exist_ok=True)
-    kept.write_bytes(b"a verified release")
-    failed = {
-        "attempt": "c" * 32, "version": "0.9.28", "ok": False, "error": "Decky refused the install",
-        "archive_kept_at": str(kept), "at": time.time(), "restart_requested": False,
-    }
-    manager.state.update(last_result=failed)
-    assert asyncio.run(manager.check(forced=True))["last_result"]["archive_kept_at"] == str(kept)
+    _kept(manager, b"the release an earlier attempt verified")
 
-    # Installed by hand, or deleted: the row has nothing left to name.
-    kept.unlink()
-    manager._last_forced_at = 0.0
-    assert asyncio.run(manager.check(forced=True))["last_result"] is None
+    async def scenario():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        spawned[0]["process"].returncode = 1
+        return manager.status(started["operation_id"])
 
-    # And the same file, against a device that is already on that version, is
-    # an installer for the past.
-    kept.write_bytes(b"a verified release")
-    arrived = _manager(tmp_path / "arrived", FakeNetwork(), version="0.9.28")
-    arrived.state.update(last_result=failed)
-    assert asyncio.run(arrived.check(forced=True))["last_result"] is None
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    snapshot = manager.snapshot()
+    assert snapshot["recovery"] is None, "a file this attempt cannot prove is not this attempt's"
+    assert snapshot["last_result"]["archive_kept_at"] is None
+
+
+def test_a_recovery_this_attempt_did_write_is_offered_when_the_result_never_arrives(tmp_path: Path, spawned):
+    """The case the manual route exists for, and the one it used to lose.
+
+    The installer verifies the archive and moves it before it writes anything
+    else, and the two failures are correlated: a disk that cannot take the
+    result file is one that has just been written to.
+    """
+    manager = _manager(tmp_path, FakeNetwork(), version="0.9.27")
+
+    async def scenario():
+        started = await manager.start(expected_version="0.9.28")
+        await asyncio.gather(manager._task, return_exceptions=True)
+        # What the runner would have left: the exact archive it verified.
+        _kept(manager, ARCHIVE_BYTES)
+        spawned[0]["process"].returncode = 1
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    recovery = manager.snapshot()["recovery"]
+    assert recovery["sha256"] == ARCHIVE_DIGEST
+    assert recovery["version"] == "0.9.28"
+
+
+def test_a_recovery_that_has_been_replaced_is_no_longer_the_verified_release(tmp_path: Path):
+    """What makes it the release is the digest, and it is re-read to say so."""
+    manager = _manager(tmp_path, FakeNetwork(), version="0.9.27")
+    digest = _kept(manager)
+    manager.state.update(recovery={
+        "attempt": "a" * 32, "version": "0.9.28", "sha256": digest, "path": str(manager.kept_archive_path),
+    })
+    assert manager.snapshot()["recovery"] is not None
+
+    manager.kept_archive_path.write_bytes(b"something else entirely")
+    assert manager.snapshot()["recovery"] is None
+    manager.kept_archive_path.unlink()
+    assert manager.snapshot()["recovery"] is None
 
 
 def test_a_successful_install_removes_the_file_an_earlier_failure_left(tmp_path: Path):
@@ -899,9 +973,14 @@ def test_a_successful_install_removes_the_file_an_earlier_failure_left(tmp_path:
         install={"attempt": "e" * 32, "version": "0.9.28", "started_at": time.time()},
     )
 
+    manager.state.update(recovery={
+        "attempt": "d" * 32, "version": "0.9.28", "sha256": sha256(b"a verified release").hexdigest(),
+        "path": str(kept),
+    })
     manager.consume_runner_result()
     assert manager.state.load()["last_result"]["ok"] is True
     assert kept.exists() is False
+    assert manager.state.load()["recovery"] is None, "the record goes with the file"
 
     # And it removes what it put there, not whatever a path happens to name.
     manager.state.update(last_result={
@@ -1009,16 +1088,49 @@ def test_an_install_older_than_any_install_stops_being_authoritative(tmp_path: P
 def test_an_install_recorded_in_this_clocks_future_still_ages_out(tmp_path: Path):
     """A handheld that boots behind its own state must not be stuck for ever.
 
-    Read as a negative age, the attempt is never older than the limit, so the
-    record would refuse every update this device tried from then on.
+    Measuring a negative age as zero on every read looks like an answer and is
+    not one: nothing accumulates, so the attempt stays young for as many days as
+    the clock is behind and the device refuses every update and every deletion
+    for all of them. The first read that sees a moment in the future writes down
+    when it saw it, and the limit runs from there.
+    """
+    future = time.time() + 30 * 24 * 3600
+    manager = _pending(tmp_path, started_at=future)
+    manager.consume_runner_result()
+    # Adopted, because as far as this clock can tell it has just begun.
+    assert manager.has_active_operation() is True
+    observed = manager.state.load()["install"]["started_at"]
+    assert observed < future, "the moment it was noticed replaces the one it could not measure"
+
+    # Reading it again does not move that origin.
+    manager.snapshot()
+    assert manager.state.load()["install"]["started_at"] == observed
+
+    # And the limit runs from it, so the attempt does expire.
+    manager.state.update(install={**manager.state.load()["install"], "started_at": observed - INSTALL_PENDING_LIMIT_SECONDS - 60})
+    manager._operation = None
+    manager.consume_runner_result()
+    assert manager.has_active_operation() is False
+    assert "never reported back" in manager.state.load()["last_result"]["error"]
+
+
+def test_a_future_start_this_device_cannot_write_down_is_still_aged(tmp_path: Path, monkeypatch):
+    """A read-only disk does not give the device its clock back.
+
+    The origin is written so that the next backend measures from the same place;
+    when it cannot be written, this backend still has to be able to age the
+    attempt, which is what its own memory of the record is for.
     """
     manager = _pending(tmp_path, started_at=time.time() + 30 * 24 * 3600)
+
+    def refuse(**_fields):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(manager.state, "update", refuse)
     manager.consume_runner_result()
-    # It is adopted while it is young, which is what the clock now says it is.
     assert manager.has_active_operation() is True
-    # And the age it is measured by runs from now rather than from the future,
-    # so the limit can expire at all.
-    assert update_manager._elapsed_since(time.time() + 3600) == 0.0
+    observed = manager._stored()["install"]["started_at"]
+    assert observed <= time.time()
 
 
 def test_a_check_that_cannot_be_written_down_is_still_what_this_backend_knows(tmp_path: Path, monkeypatch):

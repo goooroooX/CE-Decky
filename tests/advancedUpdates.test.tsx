@@ -28,7 +28,7 @@ const SHA = "1".repeat(64);
 const updateState = (overrides: Partial<PluginUpdateState> = {}): PluginUpdateState => ({
   current_version: "0.9.27", auto_check: true, latest_version: "0.9.28", update_available: true,
   checked_at: 1_760_000_000, last_error: null, page_url: "https://github.com/x/y/releases/tag/v0.9.28",
-  last_result: null, install_supported: true, checking: false, operation: null, ...overrides,
+  last_result: null, recovery: null, install_supported: true, checking: false, operation: null, ...overrides,
 });
 
 function status(preferences: { mascot_visible: boolean } = { mascot_visible: true }) {
@@ -129,17 +129,33 @@ describe("Advanced, Plugin updates", () => {
     render(<AdvancedModal {...props({
       update: updateState({
         update_available: false, latest_version: "0.9.27",
-        last_result: { version: "0.9.28", ok: false, error: "Decky refused the install", archive_kept_at: kept, at: 2, restart_requested: false },
+        last_result: { attempt: "a", version: "0.9.28", ok: false, error: "Decky refused the install", archive_kept_at: kept, at: 2, restart_requested: false },
+        recovery: { attempt: "a", version: "0.9.28", sha256: "b".repeat(64), path: kept },
       }),
     })} />);
-    expect(screen.getByText("The last update did not install")).toBeTruthy();
-    expect(screen.getByText(new RegExp(kept.replace(/[/.]/g, "\\$&")))).toBeTruthy();
-    // Two sentences, not one run together: what goes first is somebody else's
-    // message and it ends where it ends.
+    // What failed, said once and in whole sentences.
     expect(screen.getByTestId("update-manual-route").textContent)
-      .toContain("Decky refused the install. The checked release is saved at");
+      .toContain("Decky refused the install.");
+    // And the file, as its own fact: it names the release it actually is, not
+    // the version of whatever failed most recently.
+    const recovery = screen.getByTestId("update-recovery");
+    expect(recovery.textContent).toContain("v0.9.28 is saved for a manual install");
+    expect(recovery.textContent).toContain(kept);
     fireEvent.click(screen.getByText("Release page"));
     expect(openExternalWeb).toHaveBeenCalledWith("https://github.com/x/y/releases/tag/v0.9.28");
+  });
+
+  it("keeps offering a saved release when a later attempt failed before it verified anything", () => {
+    // Two facts with two lifetimes. The newer failure is what the last update
+    // did; the file from before it is still the only thing to install by hand.
+    render(<AdvancedModal {...props({
+      update: updateState({
+        last_result: { attempt: "b", version: null, ok: false, error: "this is already the newest release", archive_kept_at: null, at: 3, restart_requested: false },
+        recovery: { attempt: "a", version: "0.9.28", sha256: "c".repeat(64), path: "/home/u/CE-Decky-update.zip" },
+      }),
+    })} />);
+    expect(screen.getByTestId("update-manual-route").textContent).toContain("This is already the newest release.");
+    expect(screen.getByTestId("update-recovery").textContent).toContain("v0.9.28 is saved for a manual install");
   });
 
   it("carries the mascot switch and reports what the press stored", async () => {

@@ -402,6 +402,22 @@ export interface PluginUpdateResult {
   restart_requested: boolean;
 }
 
+/**
+ * A verified release this device is holding for a manual install.
+ *
+ * Its own fact rather than part of the last outcome: an attempt that fails
+ * before it downloads anything is newer news and replaces that outcome, while
+ * this file is still on the device and still the only thing a user can install
+ * by hand. It is named only while the bytes at that path are provably the
+ * release it says.
+ */
+export interface PluginUpdateRecovery {
+  attempt: string | null;
+  version: string | null;
+  sha256: string;
+  path: string;
+}
+
 export interface PluginUpdateState {
   current_version: string;
   auto_check: boolean;
@@ -411,6 +427,7 @@ export interface PluginUpdateState {
   last_error: string | null;
   page_url: string;
   last_result: PluginUpdateResult | null;
+  recovery: PluginUpdateRecovery | null;
   /** Whether this device has an interpreter the detached installer can run. */
   install_supported: boolean;
   checking: boolean;

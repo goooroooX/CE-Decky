@@ -30,6 +30,7 @@ import json
 import os
 import shutil
 import subprocess
+import re
 import time
 import uuid
 
@@ -97,6 +98,8 @@ CHECK_JOIN_TIMEOUT_SECONDS = 90.0
 # into the middle of that. What reports the outcome is the record the next
 # backend reads, and a retry after a failure goes through it.
 _SETTLED_STATES = frozenset({"failed", "cancelled"})
+
+_SHA_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def system_interpreter() -> str | None:
@@ -169,6 +172,11 @@ class PluginUpdateManager:
         # than leaving an operation installing until something reloads.
         self._process: "subprocess.Popen | None" = None
         self._attempt: str | None = None
+        # What the recovery file was last proved to be, against the size and
+        # modification time it had when that was proved. A status read happens
+        # every second and re-reading a megabyte for each of them answers a
+        # question that has not changed.
+        self._archive_identity: tuple[str, int, int] | None = None
 
     # ---------------------------------------------------------------- reading
 
@@ -218,6 +226,11 @@ class PluginUpdateManager:
             "last_error": record.get("last_error"),
             "page_url": record.get("page_url") or RELEASES_PAGE_URL,
             "last_result": record.get("last_result"),
+            # Its own field, with its own life: an attempt that fails before it
+            # has downloaded anything replaces what the last update did and
+            # leaves this alone, because this is a file on the device that can
+            # still be installed by hand.
+            "recovery": self._recovery_still_there(),
             "install_supported": self._interpreter is not None,
             "checking": self._checking,
             "operation": dict(self._operation) if self._operation is not None else None,
@@ -281,20 +294,20 @@ class PluginUpdateManager:
         except (OSError, ValueError) as exc:
             log_failure(self.logger, "update.result_unreadable", exc, expected=True)
         if result is None and isinstance(pending, dict):
-            started = pending.get("started_at")
+            started = self._observed_start(pending)
             target = pending.get("version")
             if target == self.current_version:
                 result = {
                     "attempt": attempt, "version": target, "ok": True, "error": None,
                     "archive_kept_at": None, "at": time.time(), "restart_requested": True,
                 }
-            elif not isinstance(started, (int, float)) or _elapsed_since(float(started)) > INSTALL_PENDING_LIMIT_SECONDS:
+            elif started is None or time.time() - started > INSTALL_PENDING_LIMIT_SECONDS:
                 # Or it says nothing about when it started, which is a record
                 # that can never be aged out and would otherwise refuse every
                 # update this device ever tries again.
                 result = {
                     "attempt": attempt,
-                    "version": target, "ok": False, "archive_kept_at": self._recovered_archive(),
+                    "version": target, "ok": False, "archive_kept_at": None,
                     "error": "the update was started and never reported back", "at": time.time(),
                     "restart_requested": False,
                 }
@@ -318,7 +331,23 @@ class PluginUpdateManager:
             # longer a route to anywhere: this device is now on the version it
             # holds. One file, replaced by the next attempt and removed by a
             # success, which is what the storage contract says it is.
-            self._discard_kept_archive(record.get("last_result"))
+            self.discard_kept_archive()
+            fields["recovery"] = None
+        else:
+            # What this attempt left behind, and only if the file on this device
+            # is provably that attempt's archive. There is one such file and
+            # successive attempts write to it, so a file being there says
+            # nothing about whose it is: without the digest, the archive an
+            # earlier failure left was offered as the release this one failed to
+            # install. A failure that proves nothing leaves the recovery this
+            # device is already holding exactly where it is.
+            proven = self._recovery_record(
+                result.get("attempt"), result.get("version"),
+                pending.get("digest") if isinstance(pending, dict) else None,
+            )
+            if proven is not None:
+                fields["recovery"] = proven
+            result["archive_kept_at"] = proven["path"] if proven is not None else None
         self.state.update(**fields)
         self.result_path.unlink(missing_ok=True)
         log_activity(
@@ -348,6 +377,35 @@ class PluginUpdateManager:
         )
         return True
 
+    def _observed_start(self, pending: dict[str, object]) -> float | None:
+        """When this install started, on a clock that can be measured against.
+
+        A handheld whose battery ran flat boots behind everything written on
+        it, so a moment recorded before that boot is in this clock's future
+        afterwards. Treating the difference as zero each time it is read looks
+        like an answer and is not one: nothing ever accumulates, so the attempt
+        is young at every read for as many days as the clock is behind, and the
+        device goes on refusing every update and every deletion for all of them.
+
+        What it needs is an origin, so the first read that sees a moment in the
+        future writes this one down instead. The limit then runs from when the
+        clock was noticed, every later read and the next backend measure from
+        the same place, and a write that fails still leaves it in memory, where
+        this backend reads its own record from.
+        """
+        started = pending.get("started_at")
+        if not isinstance(started, (int, float)):
+            return None
+        now = time.time()
+        if float(started) <= now:
+            return float(started)
+        self._record(install={**pending, "started_at": now})
+        log_activity(
+            self.logger, "info", "update.pending_start_normalised",
+            attempt=pending.get("attempt"), recorded=started, observed=now,
+        )
+        return now
+
     def _adopt_pending_install(self, pending: object) -> None:
         """Own an install this backend did not start but the record is waiting on.
 
@@ -360,11 +418,11 @@ class PluginUpdateManager:
         """
         if not isinstance(pending, dict):
             return
-        started = pending.get("started_at")
         # Only an install that could still be running. An older one is settled
         # by the record itself, and adopting it would block every later update
         # behind an installer that stopped existing long ago.
-        if not isinstance(started, (int, float)) or _elapsed_since(float(started)) > INSTALL_PENDING_LIMIT_SECONDS:
+        started = self._observed_start(pending)
+        if started is None or time.time() - started > INSTALL_PENDING_LIMIT_SECONDS:
             return
         attempt = pending.get("attempt")
         owned = self._operation
@@ -395,39 +453,77 @@ class PluginUpdateManager:
             attempt=self._attempt, version=version, started_at=pending.get("started_at"),
         )
 
-    def _recovered_archive(self) -> str | None:
-        """The recovery archive on this device, named only if it is really there.
+    def _archive_matches(self, digest: object) -> bool:
+        """Whether the recovery file on this device is the archive that digest names.
 
-        A path is only worth putting on a screen when it leads somewhere: the
-        row it appears in tells the user to install that file by hand, and a
-        row naming a file that does not exist is worse than the row not being
-        there at all.
+        There is one such file and successive attempts write to it, so its
+        existence says nothing about which attempt it belongs to. A verified
+        release is exactly its digest, and re-reading it is the only thing that
+        can tell one from another - so the answer is cached against the file's
+        size and modification time, and recomputed the moment either moves.
         """
+        if not isinstance(digest, str) or not _SHA_RE.fullmatch(digest):
+            return False
         path = self.kept_archive_path
         try:
-            if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
-                return None
+            if path.is_symlink() or not path.is_file():
+                return False
+            info = path.stat()
+            if info.st_size <= 0:
+                return False
         except OSError:
+            return False
+        identity = (digest, info.st_size, info.st_mtime_ns)
+        if self._archive_identity == identity:
+            return True
+        try:
+            observed = _file_digest(path)
+        except OSError as exc:
+            log_failure(self.logger, "update.kept_archive_unreadable", exc, expected=True)
+            return False
+        if observed != digest:
+            return False
+        self._archive_identity = identity
+        return True
+
+    def _recovery_record(self, attempt: object, version: object, digest: object) -> dict[str, object] | None:
+        """What a preserved archive is, once it is proven to be that archive.
+
+        This is deliberately not part of what the last update did. Those are two
+        facts with two lifetimes: an attempt that failed before it downloaded
+        anything replaces the first and must not erase the second, which is
+        still a file on this device that the user can install by hand.
+        """
+        if not self._archive_matches(digest):
             return None
-        return str(path)
+        return {
+            "attempt": attempt if isinstance(attempt, str) else None,
+            "version": version if isinstance(version, str) else None,
+            "sha256": digest,
+            "path": str(self.kept_archive_path),
+        }
+
+    def _recovery_still_there(self) -> dict[str, object] | None:
+        """The recovery this device is holding, re-proved before it is offered."""
+        recovery = self._stored().get("recovery")
+        if not isinstance(recovery, dict):
+            return None
+        if not self._archive_matches(recovery.get("sha256")):
+            return None
+        return recovery
 
     def discard_kept_archive(self) -> bool:
-        """Remove the recovery archive this device is holding, if it is holding one.
+        """Remove the recovery archive this device is holding, and forget it.
 
         Called by a successful install, which makes it an installer for the
         past, and by deleting the plugin's data, which is a user saying to
         leave nothing behind. Returns whether a file was removed.
         """
-        return self._remove_kept_archive(self.kept_archive_path)
-
-    def _discard_kept_archive(self, previous: object) -> None:
-        """Remove the archive a failed install left, once nobody needs it."""
-        if not isinstance(previous, dict):
-            return
-        kept = previous.get("archive_kept_at")
-        if not isinstance(kept, str) or not kept:
-            return
-        self._remove_kept_archive(Path(kept))
+        removed = self._remove_kept_archive(self.kept_archive_path)
+        self._archive_identity = None
+        if self._stored().get("recovery") is not None:
+            self._record(recovery=None)
+        return removed
 
     def _remove_kept_archive(self, path: Path) -> bool:
         """Delete one recovery archive, and nothing that is not one.
@@ -467,24 +563,7 @@ class PluginUpdateManager:
         gone, or when this device is already on that version and the file is
         an installer for the past.
         """
-        result = self._stored().get("last_result")
-        if not isinstance(result, dict):
-            return {}
-        kept = result.get("archive_kept_at")
-        if result.get("ok") or not isinstance(kept, str) or not kept:
-            return {"last_result": None}
-        try:
-            superseded = parse_version(str(result.get("version"))) <= parse_version(self.current_version)
-        except UpdateError:
-            superseded = True
-        try:
-            path = Path(kept)
-            # A symlink where this left a file is not the file it left, and the
-            # row would be offering a manual install of whatever it points at.
-            missing = path.is_symlink() or not path.is_file()
-        except OSError:  # pragma: no cover - a home directory that cannot be read
-            missing = False
-        return {"last_result": None} if superseded or missing else {}
+        return {} if self._stored().get("last_result") is None else {"last_result": None}
 
     # --------------------------------------------------------------- checking
 
@@ -797,18 +876,27 @@ class PluginUpdateManager:
         # What it left behind, if it got that far. The installer verifies the
         # archive and moves it to this exact path before it writes anything
         # else, and the two failures are correlated: a disk that cannot take the
-        # result file is a disk that has just been written to. Discarding the
-        # path here threw away the one thing the manual route is for, in exactly
-        # the case it exists for.
-        self._record(install=None, last_result={
+        # result file is a disk that has just been written to. Discarding it
+        # here threw away the one thing the manual route is for, in exactly the
+        # case it exists for - and taking it on trust would have offered an
+        # earlier attempt's archive as this one's, so it is proved first.
+        pending = self._stored().get("install")
+        proven = self._recovery_record(
+            self._attempt, operation.get("version"),
+            pending.get("digest") if isinstance(pending, dict) else None,
+        )
+        fields: dict[str, object] = {"install": None, "last_result": {
             "attempt": self._attempt,
             "version": operation.get("version"),
             "ok": False,
             "error": "the updater stopped without reporting what happened",
-            "archive_kept_at": self._recovered_archive(),
+            "archive_kept_at": proven["path"] if proven is not None else None,
             "at": time.time(),
             "restart_requested": False,
-        })
+        }}
+        if proven is not None:
+            fields["recovery"] = proven
+        self._record(**fields)
         self._set(
             operation_id, state="failed", message="The update could not be installed",
             error="the updater stopped without reporting what happened",
@@ -1013,6 +1101,11 @@ class PluginUpdateManager:
         self.state.update(
             install={
                 "attempt": attempt,
+                # What the archive for this attempt is. A recovery file found
+                # afterwards is only this attempt's if it carries this digest;
+                # without it, the file an earlier failure left was reported as
+                # the release this one had failed to install.
+                "digest": digest,
                 # Carried so that a backend loading after this one adopts the
                 # same operation rather than inventing a second identity for an
                 # install that is already happening.
@@ -1129,20 +1222,6 @@ class PluginUpdateManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
-
-def _elapsed_since(moment: float) -> float:
-    """How long ago a wall-clock moment was, with a clock that may have moved.
-
-    A handheld whose battery ran flat boots behind everything written on it, so
-    a moment recorded before that boot is in the future afterwards. Reading the
-    difference as negative makes an install that started before it pending for
-    ever - it is never older than the limit - which is the one outcome nothing
-    here can recover from. Anything in this clock's future is treated as having
-    happened now, so the limit runs from the moment the clock was noticed.
-    """
-    elapsed = time.time() - moment
-    return 0.0 if elapsed < 0 else elapsed
 
 
 def _file_digest(path: Path) -> str:
