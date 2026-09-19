@@ -100,6 +100,20 @@ describe("the update offer on the home panel", () => {
     expect(shown.container.querySelectorAll("img").length).toBe(0);
     expect(screen.getAllByRole("region").length).toBe(sections);
   });
+
+  it("keeps the two things above the sections independent of each other", () => {
+    // The mascot is a preference and the offer is a finding: either can be on
+    // the panel without the other, and switching the image off must not take
+    // the press with it.
+    const view = render(<HomePanel {...props({ mascotVisible: false, updateVersion: "0.9.28" })} />);
+    expect(view.container.querySelectorAll("img").length).toBe(0);
+    expect(screen.getByTestId("panel-update")).toBeTruthy();
+    expect(screen.getByText("Update to v0.9.28")).toBeTruthy();
+
+    view.rerender(<HomePanel {...props({ mascotVisible: true, updateVersion: null })} />);
+    expect(view.container.querySelectorAll("img").length).toBe(1);
+    expect(screen.queryByTestId("panel-update")).toBeNull();
+  });
 });
 
 describe("the update confirmation", () => {
