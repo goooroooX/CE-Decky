@@ -38,6 +38,11 @@ import shutil
 import subprocess
 import sys
 
+if __package__:
+    from .frontend_source_digest import STAMP as FRONTEND_STAMP, stamp as stamp_frontend_digest
+else:
+    from frontend_source_digest import STAMP as FRONTEND_STAMP, stamp as stamp_frontend_digest
+
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
 # What the packager would have called it, renamed so that an artifact claiming
@@ -105,7 +110,16 @@ def main() -> None:
         raise SystemExit("the working tree has uncommitted changes; commit them or pass --allow-dirty")
 
     originals = _rewrite(current, target)
+    # `package.json` is one of the files the frontend bundle is stamped against,
+    # so stamping the version invalidates a bundle that is in fact exactly right:
+    # the version reaches the panel from the backend at run time and is not in
+    # the bundle at all. The stamp is re-taken for the rewritten tree and put
+    # back with everything else, so this never leaves a bundle vouched for by a
+    # digest of sources it was not built from. A stale bundle is still refused,
+    # because the packager checks the stamp it is given here.
+    stamp_before = FRONTEND_STAMP.read_text(encoding="ascii") if FRONTEND_STAMP.is_file() else None
     try:
+        stamp_frontend_digest()
         subprocess.run([sys.executable, str(ROOT / "scripts" / "package_plugin.py")], cwd=ROOT, check=True)
         built = ARTIFACTS / f"CE-Decky-v{target}.zip"
         if not built.is_file():
@@ -115,6 +129,10 @@ def main() -> None:
     finally:
         for path, text in originals.items():
             path.write_text(text, encoding="utf-8")
+        if stamp_before is None:
+            FRONTEND_STAMP.unlink(missing_ok=True)
+        else:
+            FRONTEND_STAMP.write_text(stamp_before, encoding="ascii", newline="\n")
 
     digest = sha256()
     with artifact.open("rb") as handle:
