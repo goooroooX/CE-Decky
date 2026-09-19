@@ -577,6 +577,31 @@ class PluginUpdateManager:
             version=recovery.get("version"), running=self.current_version,
         )
 
+    def reset_after_state_deletion(self) -> None:
+        """Forget what the deleted state file was backing, without writing.
+
+        Everything this holds in memory is a copy of, or an answer about, that
+        file: what a failed write kept so this backend could go on knowing it,
+        when a start time in this clock's future was first seen, the release a
+        check found, the operation adopted from a pending install, and what the
+        recovery archive was last proved to be. A deletion that removes the file
+        and leaves those makes this backend the only thing on the device still
+        asserting them - which is most likely exactly when it happens, because
+        storage that cannot be written is why a user reaches for Delete
+        everything in the first place.
+
+        Deliberately not written down. Writing anything here would recreate the
+        file in the directory the user has just had emptied.
+        """
+        self._unwritten.clear()
+        self._observed_starts.clear()
+        self._archive_identity = None
+        self._offer = None
+        self._attempt = None
+        self._process = None
+        self._operation = None
+        log_activity(self.logger, "info", "update.state_forgotten")
+
     def preserved_recovery(self) -> dict[str, object] | None:
         """What proves the recovery archive, for carrying across a deletion.
 

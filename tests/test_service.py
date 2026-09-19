@@ -1850,3 +1850,70 @@ def test_deleting_saved_setup_keeps_the_recovery_archive_and_what_proves_it(tmp_
     asyncio.run(service.delete_managed_data("all"))
     assert updates.kept_archive_path.exists() is False
     assert updates.state.load().get("recovery") is None
+
+
+def test_a_refused_deletion_says_so_before_it_says_why(tmp_path: Path):
+    """The panel reconciles after a deletion it cannot confirm, and not after one
+    that never happened, so the refusal has to be recognisable as one.
+
+    `src/managedDeletion.ts` matches this prefix; the two halves are here so a
+    change to either is a failing test rather than a panel that quietly forgets
+    the user's own choices for a deletion the backend refused.
+    """
+    from ce_decky.service import DELETION_REFUSED_PREFIX
+
+    service, _paths = _managed_data_service(tmp_path)
+    service._plugin_update_reservation = "starting"
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(service.delete_managed_data("all"))
+    assert str(refused.value).startswith(DELETION_REFUSED_PREFIX)
+    assert "plugin update" in str(refused.value)
+    assert DELETION_REFUSED_PREFIX == "nothing was deleted; "
+
+
+def test_deleting_the_state_forgets_what_could_not_be_written_to_it(tmp_path: Path):
+    """Storage that will not take writes is why somebody reaches for this.
+
+    The updater keeps what it could not write in memory on purpose, so that a
+    device in that state still knows what it learned. Once the file is gone this
+    backend would be the only thing left asserting any of it, and a first run
+    would differ before and after a plugin reload.
+    """
+    service, paths = _managed_data_service(tmp_path)
+    updates = service.plugin_updates
+    updates._unwritten.update({
+        "latest_version": "9.9.9", "checked_at": time.time(), "attempted_at": time.time(),
+        "last_result": {"attempt": "a" * 32, "version": "9.9.9", "ok": False, "error": "x",
+                        "archive_kept_at": None, "at": time.time(), "restart_requested": False},
+    })
+    assert service.get_status()["update"]["latest_version"] == "9.9.9"
+
+    asyncio.run(service.delete_managed_data("all"))
+
+    update = service.get_status()["update"]
+    assert update["latest_version"] is None
+    assert update["last_result"] is None
+    assert update["checked_at"] is None
+    assert updates.should_check() is False or updates._stored().get("attempted_at") is None
+    # And nothing put the file back into the directory that was just emptied.
+    assert (paths.state_root / "plugin-update.json").exists() is False
+
+
+def test_deleting_saved_setup_forgets_the_same_memory_and_keeps_the_recovery(tmp_path: Path):
+    service, _paths = _managed_data_service(tmp_path)
+    updates = service.plugin_updates
+    body = b"a verified release nobody installed"
+    updates.kept_archive_path.parent.mkdir(parents=True, exist_ok=True)
+    updates.kept_archive_path.write_bytes(body)
+    recovery = {
+        "attempt": "a" * 32, "version": "9.9.9", "sha256": sha256(body).hexdigest(),
+        "path": str(updates.kept_archive_path),
+    }
+    updates.state.update(recovery=recovery)
+    updates._unwritten["latest_version"] = "9.9.9"
+
+    asyncio.run(service.delete_managed_data("setup"))
+
+    assert service.get_status()["update"]["latest_version"] is None, "the volatile half is forgotten"
+    assert updates.kept_archive_path.is_file(), "and the file this scope keeps is still there"
+    assert service.get_status()["update"]["recovery"]["version"] == "9.9.9"

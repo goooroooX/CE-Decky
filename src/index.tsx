@@ -122,6 +122,7 @@ import { nextPanelInstance, panelRenderer, startSupportLogFlush } from "./suppor
 import { elapsedSince, monotonicNow, rendererStartedAt } from "./elapsed";
 import { PriorDurableCommitError, commitDesiredState, configuredValuesMatch, describeCommitFailure, rememberedMatches } from "./durableWrite";
 import { forgetSelectedGame, readMascotVisible, readSelectedGame, rememberMascotVisible, rememberSelectedGame } from "./selectionMemory";
+import { refusedBeforeDeleting } from "./managedDeletion";
 
 // Bounded Auto-load backoff. A game settles in seconds, not minutes: the target
 // executable can appear after its launcher, and the first bridge heartbeat and
@@ -3603,8 +3604,18 @@ function Content() {
         ))}
           onCheckRemoval={() => runAction(getRemovalReadiness)}
         onDeleteManagedData={(scope) => runAction(async () => {
+          // A refusal is not an uncertain outcome. The backend checks before it
+          // touches anything and says so in the first words of the message, so
+          // there is nothing on this side to reconcile and every durable choice
+          // of the user's stays where it is: forgetting the game they chose for
+          // a deletion that explicitly did not happen is a disagreement this
+          // side invents by itself.
+          let refused = false;
           try {
             return await deleteManagedData(scope);
+          } catch (cause) {
+            refused = refusedBeforeDeleting(cause);
+            throw cause;
           } finally {
             // Everything the deleted files were backing on this side goes with
             // them: cached search outcomes name sources whose choice may have
@@ -3615,37 +3626,40 @@ function Content() {
             // a reply lost after that point leaves the files gone and this
             // side describing them, and reconciling only on the success path is
             // exactly how it kept describing them.
-            forgetSearchOutcomes();
-            if (scope === "all") {
-              // "Everything" promises a first-run CE Decky, and this side keeps
-              // durable choices of its own that the file sweep cannot reach:
-              // the game the user picked by hand, which a panel mounting with
-              // no game running restores by itself, and the remembered answer
-              // for whether the mascot is drawn before the backend has said. A
-              // deletion that leaves either of them is a first run that opens
-              // on the state it was supposed to have forgotten.
-              forgetSelectedGame();
-              setSelectedGame(null);
-              selectedGameRef.current = null;
-              rememberMascotVisible(true);
-            }
-            if (scope !== "cache") {
-              forgetAllRejectedArtifacts();
-              // Invalidate before reconciliation, including an uncertain reply.
-              // Reads started before deletion cannot publish the old authority.
-              statusGenerationRef.current += 1;
-              runtimeGenerationRef.current += 1;
-              blockedGenerationRef.current += 1;
-              statusRef.current = null;
-              setStatus(null);
-              setRuntime(null);
-              dropLiveSnapshot();
-              blockedTablesRef.current = { tables: [], reason: null };
-              setBlockedTables([]);
-              await refreshStatus().catch((cause) => {
-                logUiFailure("panel.status_after_bulk_delete_failed", cause, { scope });
-              });
-              await refreshBlockedTables().catch(() => undefined);
+            if (!refused) {
+              forgetSearchOutcomes();
+              if (scope === "all") {
+                // "Everything" promises a first-run CE Decky, and this side
+                // keeps durable choices of its own that the file sweep cannot
+                // reach: the game the user picked by hand, which a panel
+                // mounting with no game running restores by itself, and the
+                // remembered answer for whether the mascot is drawn before the
+                // backend has said. A deletion that leaves either of them is a
+                // first run that opens on the state it was told to forget.
+                forgetSelectedGame();
+                setSelectedGame(null);
+                selectedGameRef.current = null;
+                rememberMascotVisible(true);
+              }
+              if (scope !== "cache") {
+                forgetAllRejectedArtifacts();
+                // Invalidate before reconciliation, including an uncertain
+                // reply. Reads started before deletion cannot publish the old
+                // authority.
+                statusGenerationRef.current += 1;
+                runtimeGenerationRef.current += 1;
+                blockedGenerationRef.current += 1;
+                statusRef.current = null;
+                setStatus(null);
+                setRuntime(null);
+                dropLiveSnapshot();
+                blockedTablesRef.current = { tables: [], reason: null };
+                setBlockedTables([]);
+                await refreshStatus().catch((cause) => {
+                  logUiFailure("panel.status_after_bulk_delete_failed", cause, { scope });
+                });
+                await refreshBlockedTables().catch(() => undefined);
+              }
             }
           }
         })}

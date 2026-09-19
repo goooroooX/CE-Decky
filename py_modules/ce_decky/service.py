@@ -2403,7 +2403,7 @@ class PluginService:
         # way to being refused: suspending first cancelled a background index
         # pass for an operation that then did nothing at all.
         for refusal in await drained_to_thread(self._deletion_refusals):
-            raise ValueError(refusal)
+            raise ValueError(_refused_before_deleting(refusal))
         # Starting a download does not pass through the mutation boundary, so a
         # single check cannot hold: one begun immediately after it would create
         # staging under the deletion. New ones are refused for the whole
@@ -2473,7 +2473,7 @@ class PluginService:
     def _delete_managed_data_locked(self, keys: tuple[str, ...]) -> list[dict[str, object]]:
         with self._mutation_lock:
             for refusal in self._deletion_refusals():
-                raise ValueError(refusal)
+                raise ValueError(_refused_before_deleting(refusal))
             # What proves the recovery archive lives in the state directory, and
             # the archive itself lives in the user's home, which this scope
             # deliberately leaves alone. Clearing one and not the other left a
@@ -2562,6 +2562,13 @@ class PluginService:
         if "cache" in keys:
             self.provider_catalog.artifacts.clear()
             self.provider_catalog.forget_searches()
+        if "state" in keys:
+            # The updater keeps in memory what it could not write to that file,
+            # so that a device whose storage has stopped taking writes still
+            # knows what it learned. With the file gone this backend would be
+            # the only thing on the device still asserting any of it - and a
+            # full disk is exactly why somebody reaches for this.
+            self.plugin_updates.reset_after_state_deletion()
         if "settings" in keys:
             # The widest scope, which is a user saying to leave nothing behind.
             # The recovery archive an update failure keeps is the one thing this
@@ -4236,6 +4243,21 @@ MANAGED_DATA_SCOPES: dict[str, tuple[str, ...]] = {
     "setup": ("cache", "tmp", "logs", "state"),
     "all": ("cache", "tmp", "logs", "settings", "state", "tables", "ce"),
 }
+
+
+# What a refusal says before it says why, and what the panel reads it by.
+#
+# The panel reconciles itself after a deletion even when the reply is lost,
+# because a deletion commits before the call returns and a lost answer is not a
+# deletion that did not happen. A refusal is the opposite: nothing was touched,
+# and the panel forgetting the game the user chose - or anything else of theirs -
+# for a deletion that explicitly did not happen is a disagreement it invents by
+# itself. `src/managedDeletion.ts` matches this exact prefix.
+DELETION_REFUSED_PREFIX = "nothing was deleted; "
+
+
+def _refused_before_deleting(reason: str) -> str:
+    return f"{DELETION_REFUSED_PREFIX}{reason}"
 
 
 def _clear_managed_directory(key: str, label: str, path: Path) -> dict[str, object]:

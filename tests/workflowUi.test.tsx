@@ -535,17 +535,41 @@ describe("Home panel and managed setup", () => {
     expect(screen.queryByText("Game.CT")).toBeNull();
   });
 
+  it("keeps this side exactly as it was when the deletion was refused", async () => {
+    // The panel reconciles after a deletion whose reply it never got, because a
+    // deletion commits before the call returns. A refusal is the opposite case:
+    // the backend checked before touching anything and said so, and forgetting
+    // the game the user chose for a deletion that did not happen is a
+    // disagreement this side invents by itself.
+    api.deleteManagedData.mockRejectedValue(
+      new Error("nothing was deleted; a Cheat Engine process CE Decky owns is still running; stop it first"),
+    );
+    renderContent();
+    await screen.findByText("Game.CT");
+    const advanced = await openAdvanced();
+    // Set after the panel has settled, because mounting with a live game list
+    // is itself allowed to forget a remembered choice.
+    window.localStorage.setItem("ce-decky.selected-game.v1", JSON.stringify({ appId: 99, isShortcut: false, at: Date.now() }));
+
+    await act(async () => {
+      await expect(advanced.props.onDeleteManagedData("all")).rejects.toThrow("still running");
+    });
+    expect(window.localStorage.getItem("ce-decky.selected-game.v1")).not.toBeNull();
+    // And the panel still describes what is still there.
+    expect(screen.getByText("Game.CT")).toBeTruthy();
+  });
+
   it("returns this side to first run when everything is deleted", async () => {
     // "Everything" promises a first-run CE Decky, and this side keeps durable
     // choices the file sweep cannot reach: the game the user picked by hand,
     // which a panel mounting with no game running restores by itself. A
     // deletion that leaves it is a first run that opens on the state it was
     // supposed to have forgotten.
-    window.localStorage.setItem("ce-decky.selected-game.v1", JSON.stringify({ appId: 99, isShortcut: false, at: Date.now() }));
     api.deleteManagedData.mockResolvedValue({ scope: "all", deleted: [], failed: [], readiness: null });
     renderContent();
     await screen.findByText("Game.CT");
     const advanced = await openAdvanced();
+    window.localStorage.setItem("ce-decky.selected-game.v1", JSON.stringify({ appId: 99, isShortcut: false, at: Date.now() }));
 
     await act(async () => { await advanced.props.onDeleteManagedData("all"); });
     expect(window.localStorage.getItem("ce-decky.selected-game.v1")).toBeNull();
