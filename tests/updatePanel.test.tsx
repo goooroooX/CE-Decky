@@ -89,6 +89,10 @@ describe("the update offer on the home panel", () => {
     // focused appearance still wins while the ring is on it.
     expect(box.className).toContain("ce-decky-update");
     expect(button.getAttribute("data-background")).toBeNull();
+    // And the box is only a box for the colour: it generates nothing of its
+    // own, so what Steam lays out and walks is its row holding its button,
+    // exactly as for every other press on this panel.
+    expect(box.style.display).toBe("contents");
     fireEvent.click(button);
     expect(onUpdate).toHaveBeenCalledTimes(1);
     view.unmount();

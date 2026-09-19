@@ -58,7 +58,7 @@ class PreferenceStore:
         """The stored choices. Never raises: absent and unreadable are defaults."""
         try:
             raw = load_json(self.path, {}, max_bytes=MAX_PREFERENCES_BYTES)
-        except ValueError:
+        except (ValueError, OSError):
             return Preferences()
         if not isinstance(raw, dict):
             return Preferences()

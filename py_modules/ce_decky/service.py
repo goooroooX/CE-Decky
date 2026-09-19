@@ -2059,7 +2059,7 @@ class PluginService:
             raise ValueError("mascot visibility must be boolean")
         with self._mutation_lock:
             self.preferences.set(mascot_visible=visible)
-        log_activity(self.logger, "info", "update.mascot_visible_set", visible=visible)
+        log_activity(self.logger, "info", "preferences.mascot_visible_set", visible=visible)
         return {"mascot_visible": visible}
 
     async def check_for_update(self) -> dict[str, object]:

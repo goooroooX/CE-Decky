@@ -378,11 +378,14 @@ export function HomePanel(props: Props) {
           at all. It is the full-width press every other action on this panel
           is, and it is named like every other row here, because what is on
           screen is read by test id by the component tests and by the device's
-          own panel reader alike. */}
+          own panel reader alike. The box around it carries the colour and
+          nothing else: `CONTENTS_ONLY` keeps it out of the layout, so what
+          Steam lays out and walks is its own row holding its own button,
+          exactly as for every other press on this panel. */}
       {updateVersion && (
         <PanelSection>
           <PanelSectionRow>
-            <div data-testid="panel-update" className={UPDATE_ACTION_CLASS}>
+            <div data-testid="panel-update" className={UPDATE_ACTION_CLASS} style={CONTENTS_ONLY}>
               <ButtonItem
                 layout="below"
                 disabled={busy}

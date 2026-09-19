@@ -228,7 +228,15 @@ class PluginUpdateManager:
         checked = self.state.load().get("checked_at")
         if not isinstance(checked, (int, float)):
             return True
-        return time.time() - float(checked) >= CHECK_INTERVAL_SECONDS
+        age = time.time() - float(checked)
+        # A recorded moment in this clock's future has no age, and a device this
+        # happens to is not one that should stop asking until wall time catches
+        # up with it. It happens: a handheld whose battery ran flat boots with
+        # the clock behind everything written on it, and the interval below
+        # would then be measured against a check that has not happened yet.
+        if age < 0:
+            return True
+        return age >= CHECK_INTERVAL_SECONDS
 
     def should_check(self) -> bool:
         return (
@@ -470,7 +478,12 @@ class PluginUpdateManager:
             # check that did not finish, on a device whose check had in fact
             # just succeeded. Nothing is kept here for a manual install, because
             # nothing got as far as being verified.
-            self._record(last_result={
+            # `install` is cleared with it. Everything that can fail here fails
+            # before the installer is started - the spawn is the last statement
+            # of the last call in the block - so a pending install left in the
+            # record on this path is one that never began, and the next backend
+            # would read it as an update that started and never reported back.
+            self._record(install=None, last_result={
                 "version": offer.version if offer is not None else None,
                 "ok": False,
                 "error": reason,
@@ -564,6 +577,18 @@ class PluginUpdateManager:
             },
             webhelper_replaced_at=time.time(),
         )
+        # Said before the act rather than after it, and this is the reason:
+        # starting the installer is the one thing here that cannot be taken
+        # back, and the caller treats anything raised out of this method as an
+        # install that did not happen - it deletes the archive and records a
+        # failure. A line written afterwards would be a statement that can
+        # throw, standing between a running installer and the process that
+        # would then delete the file out from under it. The runner's own log
+        # says what happened next; this one says what was asked for.
+        log_activity(
+            self.logger, "info", "update.installer_spawning",
+            version=offer.version, interpreter=interpreter, waits_s=round(max(not_before - time.time(), 0.0), 1),
+        )
         subprocess.Popen(  # noqa: S603 - fixed argv, plugin-owned paths, no shell
             command,
             cwd=str(self.paths.state_root),
@@ -572,10 +597,6 @@ class PluginUpdateManager:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-        )
-        log_activity(
-            self.logger, "info", "update.installer_spawned",
-            version=offer.version, interpreter=interpreter, waits_s=round(max(not_before - time.time(), 0.0), 1),
         )
 
     def _record(self, **fields: object) -> bool:

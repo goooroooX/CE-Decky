@@ -263,7 +263,12 @@ class UpdateStateStore:
     def load(self) -> dict[str, Any]:
         try:
             raw = load_json(self.path, {}, max_bytes=MAX_UPDATE_STATE_BYTES)
-        except ValueError:
+        except (ValueError, OSError):
+            # A failed read of the medium is the same answer as a file that
+            # says nothing: never checked. `load_json` turns most of those into
+            # `ValueError` itself, and the one it does not - a read that fails
+            # part way through - would otherwise reach a caller this promises
+            # never to raise at.
             return {}
         if not isinstance(raw, dict) or raw.get("schema") != self.SCHEMA:
             return {}

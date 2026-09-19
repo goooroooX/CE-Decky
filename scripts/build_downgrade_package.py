@@ -16,15 +16,17 @@ the number it compares against GitHub.
 
 The artifact is named so it cannot be mistaken for a release, and the version
 files are restored from what was read before the build, whatever happens. The
-tree must be clean first: a helper that rewrites four tracked files and then
-restores them has no way to tell its own edit from yours.
+tree must be clean first: a helper that rewrites the two files carrying the
+version, and the digest the frontend bundle is vouched for by, and then puts all
+three back has no way to tell its own edit from yours.
 
     python scripts/build_downgrade_package.py --version 0.9.27
 
-Then install it the ordinary way, with the SHA-256 this prints:
+Then install it the ordinary way, with the command this prints, which carries
+the digest it just measured and the version the installer is to expect:
 
-    python scripts/target_plugin_install.py install --package <artifact> \\
-        --sha256 <printed digest> --replace
+    python scripts/target_plugin_install.py install <artifact> \\
+        --sha256 <printed digest> --expect-version <version> --replace
 """
 
 from __future__ import annotations

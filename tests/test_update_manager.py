@@ -528,3 +528,56 @@ def test_a_search_outside_a_loop_is_not_an_error(tmp_path: Path):
     """Probes and tests call the service without one; the offer just declines."""
     manager = _manager(tmp_path, FakeNetwork())
     manager.note_user_activity()
+
+
+def test_an_installer_that_could_not_start_leaves_no_install_pending(tmp_path: Path, monkeypatch):
+    """A spawn that failed is not an install that is still happening.
+
+    The record is written before the installer is started, because it is what
+    the next backend reads to know one was in flight at all. When the start
+    itself fails there is no such process, and leaving the entry behind had the
+    backend that loads next report an install that started and never reported
+    back - on a device where nothing was ever installed.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+    monkeypatch.setattr(update_manager, "system_interpreter", lambda: "/usr/bin/python3")
+    manager._interpreter = "/usr/bin/python3"
+
+    def refuse(command, **kwargs):
+        raise OSError("no such interpreter")
+
+    monkeypatch.setattr(update_manager.subprocess, "Popen", refuse)
+
+    async def scenario():
+        started = await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    record = manager.state.load()
+    assert record.get("install") is None
+    assert record["last_result"]["ok"] is False
+
+    # And the backend that loads next reads it as nothing rather than as an
+    # install that stalled, however long the device sits there.
+    later = _manager(tmp_path, FakeNetwork())
+    later.consume_runner_result()
+    assert later.state.load()["last_result"]["ok"] is False
+    assert "never reported back" not in str(later.state.load()["last_result"]["error"])
+
+
+def test_a_check_recorded_in_this_clocks_future_is_owed_rather_than_skipped(tmp_path: Path):
+    """A handheld whose battery ran flat boots behind everything written on it.
+
+    The interval is an age, and a moment in the future has none. Measuring one
+    anyway leaves the device refusing to check until wall time catches up with
+    a check that has not happened.
+    """
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.state.update(checked_at=time.time() + 30 * 24 * 60 * 60)
+    assert manager.should_check() is True
+
+    # An ordinary recent check is still paced, which is what this must not cost.
+    manager.state.update(checked_at=time.time())
+    assert manager.should_check() is False
