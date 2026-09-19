@@ -192,6 +192,14 @@ _READ = """
       scroll,
       page_height: usable,
       headings: Array.from(panel.querySelectorAll(".ce-decky-heading")).map((el) => text(el)).slice(0, 12),
+      // What the panel draws that is not a row. The mascot is a switch the user
+      // owns, so whether it is on the screen is a question about this panel
+      // that rows alone cannot answer.
+      images: Array.from(panel.querySelectorAll("img")).map((el) => ({
+        alt: el.getAttribute("alt") || "",
+        width: Math.round(el.getBoundingClientRect().width),
+        height: Math.round(el.getBoundingClientRect().height),
+      })),
     });
   }
   return JSON.stringify({
@@ -435,6 +443,16 @@ def _print(answer: dict[str, Any], testid: str | None, metrics: bool) -> None:
         headings = surface.get("headings") or []
         if headings:
             print(f"  headings: {' / '.join(headings)}")
+        images = surface.get("images") or []
+        # Said either way, because "no image" is an answer somebody is asking
+        # for once the mascot can be switched off.
+        if images:
+            drawn = ", ".join(
+                f"{image.get('alt') or 'image'} {image.get('width')}x{image.get('height')}" for image in images
+            )
+            print(f"  images: {drawn}")
+        else:
+            print("  images: none")
         for row in surface.get("rows", []):
             if testid and row.get("testid") != testid:
                 continue
