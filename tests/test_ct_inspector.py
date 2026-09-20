@@ -447,3 +447,61 @@ def test_an_empty_signature_element_carries_no_parts(tmp_path):
     # loader is concerned; what it holds is reported separately and honestly.
     assert inspection.has_signature is True
     assert inspection.has_signed_hash is False and inspection.has_public_key is False
+
+
+SIGNED_TABLE = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Health"</Description>'
+    '<VariableType>4 Bytes</VariableType><Address>game.exe+10</Address></CheatEntry></CheatEntries>\n'
+    '  <UserdefinedSymbols><SymbolEntry><Name>base</Name><Address>game.exe+8</Address></SymbolEntry></UserdefinedSymbols>\n'
+    '  <LuaScript>print("hello")</LuaScript>\n'
+    '  <Signature><SignedHash>' + "h" * 165 + '</SignedHash><PublicKey>' + "k" * 128 + '</PublicKey></Signature>\n'
+    '</CheatTable>\n'
+).encode("utf-8")
+
+
+def test_removing_a_signature_leaves_the_rest_of_the_file_exactly_as_it_was(tmp_path):
+    """CE Decky produces executable content here, so the result is proven.
+
+    Proven against the source rather than trusted from the edit that made it:
+    every subtree Cheat Engine executes or resolves compares equal, the root
+    keeps every other child, and the only element gone is the signature.
+    """
+    from hashlib import sha256
+
+    from ce_decky.ct_inspector import assert_only_signature_removed, strip_signature
+
+    derived = strip_signature(SIGNED_TABLE)
+    assert b"<Signature>" not in derived
+    assert b"<LuaScript>print(\"hello\")</LuaScript>" in derived
+    assert len(derived) < len(SIGNED_TABLE)
+    assert_only_signature_removed(SIGNED_TABLE, derived)
+    # The same table, a different identity: it is not the bytes anybody served.
+    assert sha256(derived).hexdigest() != sha256(SIGNED_TABLE).hexdigest()
+    inspection = _inspect(derived, tmp_path / "derived")
+    assert inspection.has_signature is False and inspection.total_entries == 1
+
+
+def test_a_table_with_no_signature_derives_nothing(tmp_path):
+    from ce_decky.ct_inspector import TableTransformError, strip_signature
+
+    plain = SIGNED_TABLE.replace(b"<Signature>", b"<NotASignature>").replace(b"</Signature>", b"</NotASignature>")
+    with pytest.raises(TableTransformError, match="no signature"):
+        strip_signature(plain)
+
+
+def test_a_tampered_derivation_is_refused_rather_than_produced(tmp_path):
+    """Every way the result could differ, and each one refused by name."""
+    from ce_decky.ct_inspector import TableTransformError, assert_only_signature_removed, strip_signature
+
+    honest = strip_signature(SIGNED_TABLE)
+    for broken, reason in (
+        (honest.replace(b'print("hello")', b'print("goodbye")'), "changed LuaScript"),
+        (honest.replace(b"game.exe+10", b"game.exe+20"), "changed CheatEntries"),
+        (honest.replace(b"<Address>game.exe+8</Address>", b"<Address>game.exe+9</Address>"), "changed UserdefinedSymbols"),
+        (honest.replace(b'CheatEngineTableVersion="45"', b'CheatEngineTableVersion="46"'), "own attributes"),
+        (honest.replace(b"</CheatTable>", b"<Forms/></CheatTable>"), "other than the signature"),
+        (SIGNED_TABLE, "still carries a signature"),
+    ):
+        with pytest.raises(TableTransformError, match=reason):
+            assert_only_signature_removed(SIGNED_TABLE, broken)

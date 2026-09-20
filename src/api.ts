@@ -54,6 +54,15 @@ export const clearCEImport = callable<[], { ok: boolean }>("clear_ce_import");
 export const inspectTableSource = callable<[selection: string], TableSourceInspection>("inspect_table_source");
 export const importTable = callable<[selection: string, memberPath?: string | null, password?: string | null, appId?: number | null], TableStatus>("import_table");
 export const inspectTableSha = callable<[digest: string, appId?: number | null], TableInspection>("inspect_table_sha");
+/**
+ * The same table without its signature, stored as a table of its own.
+ *
+ * The one call that makes CE Decky produce executable content rather than carry
+ * it: the result is proven against the source in the backend before anything is
+ * stored, and what comes back is an ordinary new table with its own digest, its
+ * own inspection and its own consent still to give.
+ */
+export const deriveUnsignedTable = callable<[sha256: string], TableStatus>("derive_unsigned_table");
 // A table's own executable content, read and never run. Two calls because one
 // table on this device carries half a megabyte of scripts: the index says what
 // is in it, and a section is fetched when the user opens it.

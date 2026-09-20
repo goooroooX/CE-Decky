@@ -1980,3 +1980,69 @@ def test_readiness_still_reports_an_installer_that_is_out_there(tmp_path: Path):
     readiness = service.get_removal_readiness()
     assert readiness["can_delete_managed_data"] is False
     assert any("plugin update" in blocker for blocker in readiness["blockers"])
+
+
+SIGNED_FIXTURE = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Health"</Description>'
+    '<VariableType>4 Bytes</VariableType><Address>game.exe+10</Address></CheatEntry></CheatEntries>\n'
+    '  <LuaScript>print("hello")</LuaScript>\n'
+    '  <Signature><SignedHash>' + "h" * 165 + '</SignedHash><PublicKey>' + "k" * 128 + '</PublicKey></Signature>\n'
+    '</CheatTable>\n'
+)
+
+
+def test_a_signed_table_can_be_stored_again_without_its_signature(tmp_path: Path):
+    """The one place CE Decky makes executable content rather than carrying it.
+
+    What comes out is an ordinary table: its own digest, its own inspection and
+    its own consent still to give. What it deliberately does not get is an
+    origin, because no provider served these bytes and none of them vouched for
+    what CE Decky produced.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("derive"))
+    service.initialize()
+    source = tmp_path / "signed.CT"
+    source.write_text(SIGNED_FIXTURE, encoding="utf-8")
+    original = service.import_table(str(source))
+
+    derived = service.derive_unsigned_table(str(original["sha256"]))
+
+    assert derived["sha256"] != original["sha256"]
+    assert derived["derived_from"] == {"sha256": original["sha256"], "transform": "remove-signature"}
+    # Nothing a provider said about the source follows the bytes CE Decky made.
+    assert list(derived["origins"]) == []
+    assert derived["filename"].endswith("(unsigned).CT")
+    # The same table: every cheat is still there, and the signature is not.
+    inspection = service.inspect_table_sha(str(derived["sha256"]))
+    assert inspection["has_signature"] is False
+    assert inspection["total_entries"] == original["entry_count"]
+    # The source is untouched and still listed as what it was.
+    assert service.inspect_table_sha(str(original["sha256"]))["has_signature"] is True
+
+
+def test_deriving_from_a_table_with_no_signature_is_refused(tmp_path: Path):
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("derive-plain"))
+    service.initialize()
+    source = tmp_path / "plain.CT"
+    source.write_text(SIGNED_FIXTURE.replace("Signature>", "NotASignature>"), encoding="utf-8")
+    table = service.import_table(str(source))
+
+    with pytest.raises(ValueError, match="no signature"):
+        service.derive_unsigned_table(str(table["sha256"]))
+
+
+def test_deriving_the_same_table_twice_stores_it_once(tmp_path: Path):
+    """The transform is deterministic, so the second derivation is the first."""
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("derive-twice"))
+    service.initialize()
+    source = tmp_path / "signed.CT"
+    source.write_text(SIGNED_FIXTURE, encoding="utf-8")
+    original = service.import_table(str(source))
+
+    first = service.derive_unsigned_table(str(original["sha256"]))
+    second = service.derive_unsigned_table(str(original["sha256"]))
+    assert first["sha256"] == second["sha256"]
+    assert second["derived_from"] == first["derived_from"]
+    stored = [table for table in service.get_status()["tables"] if table["sha256"] == first["sha256"]]
+    assert len(stored) == 1

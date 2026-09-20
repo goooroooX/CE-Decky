@@ -68,7 +68,7 @@ class ArchiveWithoutTable(TableContentError):
 # field, and stamped it as the schema that does not have one. The reader happens
 # to tolerate that, which is exactly what makes it a trap: nothing is visibly
 # wrong until something migrates on the marker.
-TABLE_METADATA_SCHEMA = 3
+TABLE_METADATA_SCHEMA = 4
 
 
 @dataclass(frozen=True)
@@ -103,6 +103,16 @@ class TableArtifact:
     # metadata written before this was recognised, which reads as false there;
     # the bytes are re-inspected whenever they are imported again.
     has_forms: bool = False
+    # Where these bytes came from when CE Decky made them rather than carried
+    # them: the exact table they were derived from and the one transform that
+    # was applied, as `{"sha256": ..., "transform": ...}`.
+    #
+    # A derived table is an ordinary table in every other way - its own digest,
+    # its own inspection, its own consent - and it deliberately carries no
+    # origin, because no provider served these bytes and none of them vouched
+    # for what CE Decky produced. Absent from metadata written before this
+    # existed, which reads as None: a table nobody derived.
+    derived_from: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -411,6 +421,42 @@ class TableStore:
             if staged is not None:
                 staged.unlink(missing_ok=True)
 
+    def import_derived(
+        self, blob: bytes, *, filename: str, derived_from: dict[str, object],
+    ) -> TableArtifact:
+        """Store bytes CE Decky produced itself, as an ordinary table.
+
+        Ordinary in every way that matters: its own digest, the same structural
+        validation any imported file gets, its own inspection and its own
+        consent. What it deliberately does not get is an origin. No provider
+        served these bytes and none of them vouched for what CE Decky made, so
+        the source's advertised digest does not follow the result, and search
+        must never present it as the thing a provider offered.
+        """
+        if not isinstance(blob, bytes) or not blob:
+            raise ValueError("derived table is empty")
+        if len(blob) > MAX_CT_BYTES:
+            raise ValueError(f"derived table exceeds {MAX_CT_BYTES} bytes")
+        derivation = _normalize_derivation(derived_from)
+        if derivation is None:
+            raise ValueError("a derived table records the exact table it came from and one known transform")
+        self._ensure_roots(self.staging_root)
+        fd, temp_name = tempfile.mkstemp(prefix=".derived.", suffix=".part", dir=self.staging_root)
+        staged: Path | None = Path(temp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(blob)
+                handle.flush()
+                os.fsync(handle.fileno())
+            artifact = self._validate_and_promote(
+                Path(temp_name), _display_filename(filename), (), None, derivation,
+            )
+            staged = None
+            return artifact
+        finally:
+            if staged is not None:
+                staged.unlink(missing_ok=True)
+
     def note_unusable_bytes(
         self, digest: str, reason: str, filename: str, origins: tuple[str, ...] = (),
         app_id: int | None = None, cause: str = CAUSE_UNUSABLE,
@@ -433,7 +479,7 @@ class TableStore:
 
     def _validate_and_promote(
         self, staged: Path, filename: str, origins: tuple[str, ...] = (),
-        app_id: int | None = None,
+        app_id: int | None = None, derived_from: dict[str, object] | None = None,
     ) -> TableArtifact:
         filename = _display_filename(filename)
         if not staged.is_file():
@@ -488,12 +534,15 @@ class TableStore:
         # When these bytes first arrived here, kept across every later import of
         # the same file: a second copy of one table is not a second arrival.
         imported_at: str | None = None
+        previous_derived: dict[str, object] | None = None
         if metadata_path.is_file() and not metadata_path.is_symlink():
             try:
                 previous = _normalize_table_metadata(load_json(metadata_path, None, max_bytes=256 * 1024), digest)
                 origins = tuple(previous.get("origins", []))
                 kept = previous.get("imported_at")
                 imported_at = kept if isinstance(kept, str) else None
+                kept_derived = previous.get("derived_from")
+                previous_derived = kept_derived if isinstance(kept_derived, dict) else None
             except (OSError, ValueError, TypeError):
                 origins = ()
         if imported_at is None:
@@ -512,6 +561,9 @@ class TableStore:
             blob_path=str(blob_path),
             origins=origins,
             imported_at=imported_at,
+            # Kept from the record already here, because these exact bytes were
+            # derived once however many times they are imported again.
+            derived_from=derived_from or previous_derived,
         )
         atomic_write_json(metadata_path, artifact.as_dict())
         # Publish the recoverable catalogue entry before any blob mutation.
@@ -710,14 +762,14 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
         "schema_version", "sha256", "filename", "size", "table_version",
         "has_lua", "has_auto_assembler", "has_embedded_files", "has_forms",
         "executable_content", "entry_count", "blob_path", "origins",
-        "imported_at",
+        "imported_at", "derived_from",
     }
     if set(raw) - allowed:
         raise ValueError("table metadata contains unknown fields")
     if raw.get("sha256") != digest:
         raise ValueError("table metadata identity mismatch")
     schema = raw.get("schema_version", 1)
-    if isinstance(schema, bool) or not isinstance(schema, int) or schema not in {1, 2, TABLE_METADATA_SCHEMA}:
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema not in {1, 2, 3, TABLE_METADATA_SCHEMA}:
         raise ValueError("unsupported table metadata schema")
     filename = _display_filename(raw.get("filename"))
     size = raw.get("size")
@@ -758,6 +810,7 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
         # An unreadable date is dropped rather than refusing the record: it is a
         # thing a row says, never a thing a table's identity rests on.
         imported_at = None
+    derived_from = _normalize_derivation(raw.get("derived_from"))
     return {
         "schema_version": TABLE_METADATA_SCHEMA,
         "sha256": digest,
@@ -769,7 +822,36 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
         "entry_count": entry_count,
         "origins": origins,
         "imported_at": imported_at,
+        "derived_from": derived_from,
     }
+
+
+# What CE Decky may say it did to a table's bytes. One name per transform, so a
+# record cannot describe a derivation this build does not know how to make.
+KNOWN_TRANSFORMS = frozenset({"remove-signature"})
+
+
+def _normalize_derivation(raw: object) -> dict[str, object] | None:
+    """Where a derived table came from, or `None` for one nobody derived.
+
+    Dropped rather than refused when it cannot be read, like every other thing a
+    row says about a table: the bytes are verified on their own, and a table the
+    user is holding must not become unusable because a note about its history
+    does not parse.
+    """
+    if not isinstance(raw, dict) or set(raw) != {"sha256", "transform"}:
+        return None
+    source = raw.get("sha256")
+    transform = raw.get("transform")
+    if not isinstance(source, str):
+        return None
+    try:
+        source = _normalize_digest(source)
+    except ValueError:
+        return None
+    if transform not in KNOWN_TRANSFORMS:
+        return None
+    return {"sha256": source, "transform": transform}
 
 
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")

@@ -272,11 +272,13 @@ def test_legacy_metadata_is_normalized_without_execution_assumptions(tmp_path: P
         "entry_count": 1,
     }))
     item = store.list_tables()[0]
-    assert item["schema_version"] == 3
+    assert item["schema_version"] == TABLE_METADATA_SCHEMA
     assert item["origins"] == []
     # A record written before arrival was tracked has no date and is not given
     # one: when the bytes were written is not when the user chose them.
     assert item["imported_at"] is None
+    # And one written before CE Decky could derive a table was not derived.
+    assert item["derived_from"] is None
     assert item["has_lua"] is False
     assert item["has_auto_assembler"] is False
     assert item["has_embedded_files"] is False

@@ -14,7 +14,7 @@ import time
 import unicodedata
 import uuid
 
-from .atomic import DurabilityUnknownError, durable_unlink, fsync_directory
+from .atomic import DurabilityUnknownError, durable_unlink, fsync_directory, read_regular_bytes
 from . import __version__
 from . import poll_counters
 from .activity_log import StateTransitionLog, log_activity, log_failure
@@ -43,7 +43,14 @@ from .ce_runtime import (
     validate_runtime_identity_manifest,
 )
 from .config import Config, ConfigStore
-from .ct_inspector import TableBlobUnavailable, TableControl, inspect_table
+from .ct_inspector import (
+    TableBlobUnavailable,
+    TableControl,
+    TableTransformError,
+    assert_only_signature_removed,
+    inspect_table,
+    strip_signature,
+)
 from .table_code import list_table_code as read_code_index, read_table_code as read_code_section
 from .game_files import game_executables
 from .steam_library import local_library
@@ -73,7 +80,7 @@ from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore,
 from .table_blocklist import CAUSE_REFUSED, CAUSE_UNUSABLE, MAX_REASON_BYTES as MAX_BLOCKED_REASON_BYTES, BlockedTableError, TableBlocklist, is_compatibility_failure
 from . import frontend_journal, journal_records
 from .support_bundle import create_support_bundle as write_support_bundle, normalize_frontend_log
-from .table_store import TableStore
+from .table_store import MAX_CT_BYTES, TableStore
 from .text import utf8_len
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -217,6 +224,17 @@ def _disconnected_bridge_reason(runtime: dict[str, object]) -> str:
             "it stops writing one while Cheat Engine runs the table's own script"
         )
     return "resident bridge is not connected with a fresh heartbeat"
+
+
+def _derived_filename(source: object) -> str:
+    """What a derived table is called in the list, from what it came from.
+
+    The user has to tell two rows apart at a glance, and the only thing that
+    differs is what CE Decky did to one of them.
+    """
+    name = source if isinstance(source, str) and source.strip() else "table.CT"
+    stem = name[:-3] if name.lower().endswith(".ct") else name
+    return f"{stem} (unsigned).CT"
 
 
 class PluginService:
@@ -1585,6 +1603,47 @@ class PluginService:
                 self.logger, "info", "table_inspect.unrecognised_pair",
                 table_sha=digest[:12], off=first, on=second,
             )
+
+    def derive_unsigned_table(self, digest: str) -> dict[str, object]:
+        """The same table without its signature, stored as a table of its own.
+
+        Cheat Engine refuses a signed table and says nothing about why, and the
+        bytes it refuses are the user's to use: this produces the copy that
+        loads. It is the one place CE Decky makes executable content rather than
+        carrying it, so the result is proven against the source before anything
+        is stored, and what comes out is an ordinary new table with its own
+        digest, its own inspection and its own consent to give.
+        """
+        digest = self._sha(digest)
+        source = self.table_store.verified_blob(digest)
+        blob = read_regular_bytes(source, max_bytes=MAX_CT_BYTES)
+        if not blob:
+            raise ValueError("the table to derive from is missing")
+        log_activity(self.logger, "info", "table.derive_started", source_sha=digest[:12], transform="remove-signature")
+        try:
+            derived = strip_signature(blob)
+            assert_only_signature_removed(blob, derived)
+        except TableTransformError as exc:
+            # Which proof failed, not that one did: `the repair was refused` on
+            # its own is the same non-information an honest refusal replaces.
+            log_activity(
+                self.logger, "warning", "table.derive_refused",
+                source_sha=digest[:12], transform="remove-signature", proof=str(exc),
+            )
+            raise ValueError(str(exc)) from exc
+        filename = _derived_filename(self.table_store.get_table(digest).get("filename"))
+        with self._mutation_lock:
+            artifact = self.table_store.import_derived(
+                derived,
+                filename=filename,
+                derived_from={"sha256": digest, "transform": "remove-signature"},
+            )
+        log_activity(
+            self.logger, "info", "table.derive_completed",
+            source_sha=digest[:12], result_sha=artifact.sha256[:12],
+            transforms="remove-signature", bytes_removed=len(blob) - len(derived),
+        )
+        return artifact.as_dict()
 
     def list_table_code(self, digest: str) -> dict[str, object]:
         """What one exact table carries that Cheat Engine can execute.

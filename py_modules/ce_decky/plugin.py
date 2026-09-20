@@ -196,6 +196,9 @@ class Plugin:
     async def inspect_table_sha(self, digest: str, app_id: int | None = None):
         return await self.operations.run_blocking(self._svc().inspect_table_sha, digest, app_id)
 
+    async def derive_unsigned_table(self, sha256: str):
+        return await self.operations.run_blocking(self._svc().derive_unsigned_table, sha256)
+
     async def list_blocked_tables(self):
         return await self.operations.run_blocking(self._svc().list_blocked_tables)
 

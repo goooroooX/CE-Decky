@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from hashlib import sha256 as _sha256
@@ -218,6 +219,9 @@ class TableInspection:
             "has_lua": self.has_lua,
             "has_auto_assembler": self.has_auto_assembler,
             "has_forms": self.has_forms,
+            # The parts the signature carried stay out of this: they are for the
+            # diagnostics log, and the panel decides nothing with them.
+            "has_signature": self.has_signature,
             "sanitized_labels": self.sanitized_labels,
             "dropped_values": self.dropped_values,
             "dropped_value_lists": self.dropped_value_lists,
@@ -239,6 +243,105 @@ class TableBlobUnavailable(ValueError):
     apart, or a table nobody has a copy of any more is written down as one that
     does not work.
     """
+
+
+# The one element this may remove, and the whole of the transform. Matched with
+# its own line where it has one, so the result is the file it was minus that
+# element rather than the file with a hole punched in it.
+_SIGNATURE_BYTES_RE = re.compile(
+    rb"[ \t]*<Signature\b[^>]*>.*?</Signature>[ \t]*\r?\n?"
+    rb"|[ \t]*<Signature\b[^>]*/>[ \t]*\r?\n?",
+    re.DOTALL,
+)
+# The subtrees a derived table has to carry unchanged. Everything Cheat Engine
+# executes or resolves is in one of them, so comparing these is what says the
+# transform removed a signature rather than editing a table.
+SIGNIFICANT_SUBTREES = ("CheatEntries", "LuaScript", "UserdefinedSymbols", "Forms", "Structures", "Comments")
+
+
+class TableTransformError(ValueError):
+    """A derivation this refused to produce, with the proof that failed."""
+
+
+def strip_signature(blob: bytes) -> bytes:
+    """The same table without its `<Signature>` element, and nothing else.
+
+    A byte-level removal rather than a reserialisation: rewriting the XML would
+    produce a file that differs from the author's everywhere the two writers
+    disagree, and the user would be agreeing to bytes nobody has seen. One
+    element goes, the rest of the file is the bytes it already was.
+
+    Matching bytes rather than elements is what makes that possible, and it is
+    only safe because of what follows it: a table whose Lua happens to contain
+    the text of a signature element would be cut in the wrong place here, and
+    `assert_only_signature_removed` is what refuses that result rather than
+    storing it. Nothing produced by this is stored without that proof.
+    """
+    matches = list(_SIGNATURE_BYTES_RE.finditer(blob))
+    if not matches:
+        raise TableTransformError("this table carries no signature to remove")
+    if len(matches) > 1:
+        raise TableTransformError("this table carries more than one signature element")
+    match = matches[0]
+    return blob[:match.start()] + blob[match.end():]
+
+
+def assert_only_signature_removed(original: bytes, derived: bytes) -> None:
+    """Prove the derived bytes are the original table minus its signature.
+
+    CE Decky is producing executable content here rather than only carrying it,
+    so the result is checked against the source rather than trusted from the
+    edit that made it: every subtree Cheat Engine executes or resolves has to be
+    byte-identical after parsing, the root has to keep every other child it had,
+    and the only element that may have gone is the signature. Anything else and
+    nothing is produced at all.
+    """
+    for data, side in ((original, "source"), (derived, "result")):
+        _reject_dtd_and_entities_bytes(data)
+        _preflight_xml_structure(data)
+        if len(data) > MAX_CT_BYTES:
+            raise TableTransformError(f"the {side} table is larger than this store accepts")
+    try:
+        before = ET.fromstring(original)
+        after = ET.fromstring(derived)
+    except ET.ParseError as exc:
+        raise TableTransformError(f"the result is not valid XML ({exc})") from exc
+    if local_tag(before.tag) != "CheatTable" or local_tag(after.tag) != "CheatTable":
+        raise TableTransformError("the result is not a Cheat Engine table")
+    if before.attrib != after.attrib:
+        raise TableTransformError("the result changed the table's own attributes")
+    if _first_child(after, "Signature") is not None:
+        raise TableTransformError("the result still carries a signature")
+    removed = _child_tags(before) - _child_tags(after)
+    if removed != {"Signature"} or _child_tags(after) - _child_tags(before):
+        raise TableTransformError("the result removed or added something other than the signature")
+    for name in SIGNIFICANT_SUBTREES:
+        source_subtree = _first_child(before, name)
+        result_subtree = _first_child(after, name)
+        if (source_subtree is None) != (result_subtree is None):
+            raise TableTransformError(f"the result does not carry the same {name}")
+        if source_subtree is None:
+            continue
+        if _subtree_bytes(source_subtree) != _subtree_bytes(result_subtree):
+            raise TableTransformError(f"the result changed {name}")
+
+
+def _child_tags(root: ET.Element) -> set[str]:
+    return {local_tag(child.tag) for child in root}
+
+
+def _subtree_bytes(element: ET.Element) -> bytes:
+    """One subtree, without the whitespace that follows it.
+
+    An element's serialisation carries its tail, which is the text between it
+    and whatever comes next, and removing the signature necessarily changes the
+    tail of the element in front of it. Comparing that would refuse every
+    derivation this exists to allow, which is what it did on the first real
+    table it was run against.
+    """
+    clone = deepcopy(element)
+    clone.tail = None
+    return ET.tostring(clone)
 
 
 def read_table_root(path: Path, sha256: str) -> tuple[ET.Element, bytes]:
