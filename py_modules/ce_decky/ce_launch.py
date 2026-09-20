@@ -1910,6 +1910,7 @@ class CELaunchSupervisor:
         logger,
         *,
         display_resolver=resolve_game_mode_display,
+        quiesce=None,
     ) -> None:
         self.user_home = user_home
         self.ce_root = ce_root
@@ -1918,6 +1919,13 @@ class CELaunchSupervisor:
         self.launch_record_root = state_root / "ce-launch"
         self.logger = logger
         self._display_resolver = display_resolver
+        # Asked to put the session's own records down before this stops Cheat
+        # Engine. Owned by the service, because the session's control and status
+        # files are the session store's rather than this launcher's, and called
+        # through here so every route to a stop gets it rather than the one that
+        # happened to remember. Absent in a launcher built without one, and the
+        # stop is then exactly the stop it always was.
+        self._quiesce = quiesce
         self._operations: dict[str, dict[str, object]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
@@ -2488,19 +2496,50 @@ class CELaunchSupervisor:
         if current is not None:
             if expected_session_id is not None and current["session_id"] != expected_session_id:
                 raise ValueError("owned session changed; refresh before revoking it")
+            quiesced = await self._put_records_down(app_id)
             result = await self.stop(str(current["operation_id"]))
-            return {"stopped": True, "operation": result, "recovered": False}
+            return {"stopped": True, "operation": result, "recovered": False, "quiesce": quiesced}
         recovered = self.recover_owned_launch(app_id)
         if recovered is None:
-            return {"stopped": False, "operation": None, "recovered": False}
+            return {"stopped": False, "operation": None, "recovered": False, "quiesce": None}
         if expected_session_id is not None and recovered["session_id"] != expected_session_id:
             raise ValueError("owned session changed; refresh before revoking it")
+        quiesced = await self._put_records_down(app_id)
         stopped = await drained_to_thread(self._terminate_recovered, recovered)
         if stopped:
             with self._state_lock:
                 self._exits[(app_id, str(recovered["session_id"]))] = time.time()
             self._clear_record(app_id, str(recovered["session_id"]))
-        return {"stopped": stopped, "operation": None, "recovered": True}
+        return {"stopped": stopped, "operation": None, "recovered": True, "quiesce": quiesced}
+
+    async def _put_records_down(self, app_id: int) -> dict[str, object] | None:
+        """Ask the session to switch its own cheats off, and stop either way.
+
+        This is the one thing the stop cannot do for itself: killing the owned
+        process group means the table's `[DISABLE]` never runs, so the session's
+        patches and its allocation stay in a game that keeps running, and no
+        later session can undo them - that block's restore reads symbols
+        belonging to a Cheat Engine that no longer exists.
+
+        Every failure here is the stop's business to ignore. A bridge that is
+        not answering has nothing to ask, a game that has already exited has
+        nothing to put down, and a record that will not settle is reported and
+        left. The stop must never become less reliable than the stop that does
+        none of this, which is why this returns what happened instead of
+        raising it.
+
+        The unload path does not come through here, and must not: `begin_close`
+        signals its own process group in its own thread because Decky starves
+        this process's event loop and kills it five seconds later. Waiting for a
+        bridge to answer is exactly the thing that cannot be done there.
+        """
+        if self._quiesce is None:
+            return None
+        try:
+            return await drained_to_thread(self._quiesce, app_id)
+        except Exception as exc:  # noqa: BLE001 - a stop is never blocked by this
+            log_failure(self.logger, "runtime.quiesce_failed", exc, expected=True, app_id=app_id)
+            return {"asked": False, "reason": str(exc)[:256]}
 
     def _terminate_recovered(self, record: dict[str, object]) -> bool:
         """Stop an owned Cheat Engine and prove by descriptor that it is gone.

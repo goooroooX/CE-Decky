@@ -3441,6 +3441,34 @@ describe("Home panel and managed setup", () => {
     expect(within(block).queryByRole("button", { name: "Prepare a copy that works here" })).toBeNull();
   });
 
+  it("says a stop switches the table's cheats off, and names what it could not", async () => {
+    // Switching a cheat off runs the script's own `[DISABLE]`, which is what
+    // puts the game's bytes back, so the stop says it is about to. And a cheat
+    // that would not come down is the one outcome worth interrupting somebody
+    // for: nothing later can undo it, because the restore reads symbols
+    // belonging to a Cheat Engine that no longer exists.
+    api.stopCEForGame.mockResolvedValue({
+      stopped: true, operation: null, recovered: false,
+      quiesce: { asked: true, reason: "records did not settle", records_put_down: 2, records_unsettled: ["6"], elapsed_ms: 900 },
+    });
+    api.getStatus.mockResolvedValue(status(true));
+    renderContent();
+    await screen.findByText("Game.CT");
+    fireEvent.click(screen.getByRole("button", { name: "Manage", exact: true }));
+    const manage = await waitFor(() => {
+      const node = modalState.nodes.find((item: any) => item.props.onRefreshHolders);
+      expect(node).toBeTruthy();
+      return node;
+    });
+    decky.toast.mockClear();
+    await act(async () => { await manage.props.onRevoke(SHA, [10]); });
+
+    const said = decky.toast.mock.calls.map((call: any[]) => String(call[0]?.body ?? ""));
+    expect(said.some((line: string) => line.includes("Any cheats still on are switched off first"))).toBe(true);
+    expect(said.some((line: string) => line.includes("One cheat could not be switched off"))).toBe(true);
+    expect(said.some((line: string) => line.includes("Restart the game"))).toBe(true);
+  });
+
   it("names the byte pattern this copy of the game does not hold", async () => {
     // A script finds the game's code by scanning for one. Absent, every cheat
     // that script owns is dead at once and Cheat Engine says nothing, so the

@@ -79,6 +79,38 @@ export interface TableStatus {
 }
 
 /**
+ * What stopping the Cheat Engine this plugin owns did.
+ *
+ * `quiesce` is what the session was asked to do to itself first, and it is a
+ * record rather than a decision: the stop proceeds whatever it says. Absent
+ * where there was no session to ask, and `asked: false` where there was one and
+ * it could not be reached.
+ */
+export interface StopResult {
+  stopped: boolean;
+  operation: CELaunchStatus | null;
+  recovered: boolean;
+  quiesce?: StopQuiesce | null;
+}
+
+/** What the running session managed to switch off before it was stopped. */
+export interface StopQuiesce {
+  asked: boolean;
+  reason?: string | null;
+  /** How many records the bridge put down. Null where it never answered. */
+  records_put_down?: number | null;
+  /**
+   * The records it could not, by MemoryRecord ID.
+   *
+   * These are the cheats left switched on in a game that is about to lose the
+   * Cheat Engine that could have switched them off, which is the one outcome
+   * worth telling the user about: only restarting the game clears them.
+   */
+  records_unsettled?: string[];
+  elapsed_ms?: number;
+}
+
+/**
  * Whether a game's own program holds the byte patterns one table scans for.
  *
  * Three answers rather than two. `missing` is a pattern that was looked for and

@@ -32,6 +32,7 @@ import type {
   TableCodeIndex,
   TableInspection,
   TableSourceInspection,
+  StopResult,
   TableScanCheck,
   TableStatus,
   StartupPreference,
@@ -226,6 +227,6 @@ export const startCESelfTest = callable<[protonToolId: string], CELaunchStatus>(
 export const pollCELaunch = callable<[operationId: string], CELaunchStatus>("poll_ce_launch");
 export const stopCELaunch = callable<[operationId: string], CELaunchStatus>("stop_ce_launch");
 export const launchCEForGame = callable<[appId: number, protonToolId?: string | null], CELaunchStatus>("launch_ce_for_game");
-export const stopCEForGame = callable<[appId: number, tableSha256?: string], { stopped: boolean; operation: CELaunchStatus | null; recovered: boolean }>("stop_ce_for_game");
+export const stopCEForGame = callable<[appId: number, tableSha256?: string], StopResult>("stop_ce_for_game");
 
 export const confirmTableWorking = callable<[appId: number, digest: string, sessionId: string, recordId: number], boolean>("confirm_table_working");

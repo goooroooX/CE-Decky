@@ -227,6 +227,34 @@ def _disconnected_bridge_reason(runtime: dict[str, object]) -> str:
     return "resident bridge is not connected with a fresh heartbeat"
 
 
+# How long the stop waits for the bridge to say what it managed to switch off.
+# The bridge bounds itself per record and over its whole walk; this is the bound
+# on waiting for its answer, and it is deliberately far shorter than a user's
+# patience with a stop that appears to have hung.
+QUIESCE_WAIT_SECONDS = 15.0
+QUIESCE_POLL_SECONDS = 0.25
+
+
+def _quiesce_counts(value: object) -> tuple[int | None, list[str]]:
+    """What the bridge reported about one quiesce, out of its one result line.
+
+    `put_down=2;unsettled=6,9`. Read leniently: this is a record of what the
+    game was left in, and a line this cannot parse must not be what stops a
+    stop from happening.
+    """
+    if not isinstance(value, str):
+        return None, []
+    put_down: int | None = None
+    unsettled: list[str] = []
+    for field in value.split(";"):
+        name, _, rest = field.partition("=")
+        if name == "put_down" and rest.isdigit():
+            put_down = int(rest)
+        elif name == "unsettled" and rest:
+            unsettled = [item for item in rest.split(",") if item][:64]
+    return put_down, unsettled
+
+
 def _derived_filename(source: object) -> str:
     """What a derived table is called in the list, from what it came from.
 
@@ -291,7 +319,14 @@ class PluginService:
             paths.user_home, paths.ce_root, paths.temp_root,
             self.provider_catalog.network, logger,
         )
-        self.ce_launch = CELaunchSupervisor(paths.user_home, paths.ce_root, paths.state_root, logger)
+        self.ce_launch = CELaunchSupervisor(
+            paths.user_home, paths.ce_root, paths.state_root, logger,
+            # The stop asks the session to switch its own cheats off first, and
+            # the session's control and status files are this store's rather
+            # than the launcher's. Handed over here so every route to a stop
+            # gets it, rather than the one route that remembered to.
+            quiesce=self._quiesce_session,
+        )
         # Updating this plugin shares the transport the providers use and
         # nothing else with them: its own record, its own host policy, and a
         # check armed by the same search activity the provider index is armed
@@ -4102,6 +4137,73 @@ class PluginService:
             )
         finally:
             await drained_to_thread(self._release_launch_reservation, app_id)
+
+    def _quiesce_session(self, app_id: int) -> dict[str, object]:
+        """Ask the running bridge to switch this session's own cheats off.
+
+        Called by the stop and never by a screen. What it answers is a record of
+        what the game was left in, not a decision anybody acts on: the stop
+        proceeds whatever this says, because a stop that became less reliable
+        than the one before it would be a worse product than the leak it exists
+        to close.
+
+        Bounded here as well as in the bridge. The bridge waits per record and
+        over its whole walk; this waits for the answer, and gives up long before
+        a user would decide the stop had hung.
+        """
+        started = time.monotonic()
+        try:
+            prepared = self.session_store.load_current(app_id)
+            if prepared is None:
+                return {"asked": False, "reason": "no prepared session"}
+            status = self.session_store.read_status(prepared)
+            if status is None or status.attached is not True:
+                # Nothing to ask: a bridge that is not answering, and a game
+                # that has already exited, are both this.
+                return {"asked": False, "reason": "the resident bridge is not attached"}
+            # The write only: a panel command landing between the read of the
+            # next generation and the write would make this refuse a quiesce
+            # the stop can perfectly well perform. The wait afterwards is
+            # deliberately outside the lock, because holding it for as long as
+            # a table's own `[DISABLE]` takes would freeze the panel.
+            with self._mutation_lock:
+                generation = self.session_store.write_commands(prepared, [RuntimeCommand(
+                    generation=self.session_store.next_generation(prepared), kind="quiesce",
+                )])
+        except (OSError, ValueError, DurabilityUnknownError) as exc:
+            return {"asked": False, "reason": str(exc)[:256]}
+        answer = self._await_quiesce(prepared, generation)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        log_activity(
+            self.logger, "info", "runtime.quiesce",
+            app_id=app_id, session=prepared.session_id[:12],
+            records_put_down=answer.get("records_put_down"),
+            records_unsettled=",".join(answer.get("records_unsettled") or ()) or None,
+            elapsed_ms=elapsed_ms, reason=answer.get("reason"),
+        )
+        return {**answer, "asked": True, "elapsed_ms": elapsed_ms}
+
+    def _await_quiesce(self, prepared, generation: int) -> dict[str, object]:
+        """Wait for the bridge's own answer to one quiesce, or say it did not come."""
+        deadline = time.monotonic() + QUIESCE_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                status = self.session_store.read_status(prepared)
+            except (OSError, ValueError):
+                status = None
+            if status is not None:
+                for item in status.results:
+                    if item.generation != generation:
+                        continue
+                    put_down, unsettled = _quiesce_counts(item.value)
+                    return {
+                        "records_put_down": put_down, "records_unsettled": unsettled,
+                        "reason": None if item.ok else (item.error or "records did not settle"),
+                    }
+                if status.attached is not True:
+                    return {"records_put_down": None, "records_unsettled": [], "reason": "the game exited while its cheats were being switched off"}
+            time.sleep(QUIESCE_POLL_SECONDS)
+        return {"records_put_down": None, "records_unsettled": [], "reason": "the bridge did not answer before the stop had to proceed"}
 
     async def stop_ce_for_game(self, app_id: int, table_sha256: str | None = None) -> dict[str, object]:
         """A Revoke stop carries exact table and captured owned session authority."""

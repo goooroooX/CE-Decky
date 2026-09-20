@@ -14678,8 +14678,36 @@ function Content() {
         }
     };
     const requestOwnedCEStop = async (appId, tableSha256) => {
+        // Said before it happens, because it is more of the table's own code than
+        // CE Decky runs at any other moment: switching a cheat off runs the
+        // script's `[DISABLE]`, which is what puts the game's bytes back. The user
+        // consented to this exact table executing, so it is inside the boundary,
+        // and they are told rather than surprised.
+        //
+        // Worded as what the stop does rather than as what is happening now. The
+        // panel cannot know yet whether there is anything on to switch off, and a
+        // stop with a disconnected bridge would otherwise announce work that never
+        // took place.
+        toaster.toast({ title: "CE Decky", body: "Stopping Cheat Engine. Any cheats still on are switched off first." });
         const result = await (tableSha256 ? stopCEForGame(appId, tableSha256) : stopCEForGame(appId));
-        logUi("panel.stop_requested", { app_id: appId, stopped: result.stopped, recovered: result.recovered });
+        const quiesce = result.quiesce ?? null;
+        logUi("panel.stop_requested", {
+            app_id: appId, stopped: result.stopped, recovered: result.recovered,
+            quiesce_asked: quiesce?.asked ?? null, quiesce_reason: quiesce?.reason ?? null,
+            put_down: quiesce?.records_put_down ?? null,
+            unsettled: (quiesce?.records_unsettled ?? []).join(",") || null,
+        });
+        // The one outcome worth interrupting somebody for: a cheat that is still on
+        // in a game that has just lost the Cheat Engine which could have switched
+        // it off. Nothing later can undo it - the restore reads symbols belonging
+        // to a process that is gone - so restarting the game is the whole answer.
+        const left = quiesce?.records_unsettled ?? [];
+        if (left.length > 0) {
+            toaster.toast({
+                title: "CE Decky",
+                body: `${left.length === 1 ? "One cheat" : `${left.length} cheats`} could not be switched off before Cheat Engine stopped. Restart the game to clear what they changed.`,
+            });
+        }
         if (result.recovered && !result.stopped) {
             throw new Error("CE Decky could not prove that the owned Cheat Engine process stopped; the session was left unchanged.");
         }

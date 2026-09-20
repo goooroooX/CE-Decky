@@ -1129,7 +1129,9 @@ def test_a_malformed_or_foreign_launch_record_blocks_new_process_ownership(tmp_p
 def test_stopping_a_game_without_any_owned_launch_is_a_benign_no_op(tmp_path: Path):
     supervisor, _ = _supervisor(tmp_path)
     result = asyncio.run(supervisor.stop_for_app(220))
-    assert result == {"stopped": False, "operation": None, "recovered": False}
+    # A stop asks the session to switch its own cheats off first; with no owned
+    # launch there is no session to ask, and the answer says so.
+    assert result == {"stopped": False, "operation": None, "recovered": False, "quiesce": None}
 
 
 def test_failed_recovered_process_stop_retains_ownership_and_does_not_confirm_exit(tmp_path: Path, monkeypatch):
@@ -1140,7 +1142,7 @@ def test_failed_recovered_process_stop_retains_ownership_and_does_not_confirm_ex
 
     result = asyncio.run(supervisor.stop_for_app(220))
 
-    assert result == {"stopped": False, "operation": None, "recovered": True}
+    assert result == {"stopped": False, "operation": None, "recovered": True, "quiesce": None}
     assert (supervisor.launch_record_root / "220.json").is_file()
     assert supervisor.confirmed_exit_epoch(220, "123e4567-e89b-42d3-a456-426614174000") is None
 
@@ -3565,3 +3567,40 @@ def test_a_group_that_survives_even_the_kill_is_reported_rather_than_claimed(tmp
     monkeypatch.setattr(ce_launch_module, "_process_group_exists", lambda pgid: True)
 
     assert supervisor._stop_group_now("self-test", 4242) == "still_running"
+
+
+def test_a_stop_proceeds_when_the_quiesce_cannot_be_asked_or_answered(tmp_path: Path):
+    """The stop must never become less reliable than the stop that does none of this.
+
+    Putting the session's records down first is what keeps a game from being
+    left patched, but a bridge that is not answering, a game that has exited
+    and a quiesce that raises are all the stop's business to ignore: it goes
+    ahead and reports what the attempt said.
+    """
+    supervisor, _ = _supervisor(tmp_path)
+    asked: list[int] = []
+
+    def refuses(app_id: int) -> dict[str, object]:
+        asked.append(app_id)
+        raise ValueError("the resident bridge is not attached")
+
+    supervisor._quiesce = refuses
+    result = asyncio.run(supervisor.stop_for_app(220))
+
+    assert asked == []  # nothing owned, so there was nothing to ask about
+    assert result["stopped"] is False
+
+    # And with something to stop, a refusal is recorded rather than raised.
+    supervisor._quiesce = refuses
+    record = {
+        "session_id": "11111111-2222-4333-8444-555555555555",
+        "pgid": 999999, "descriptor_windows_path": "Z:\\descriptor.txt",
+        "descriptor_sha256": "c" * 64,
+    }
+    supervisor.recover_owned_launch = lambda app_id: record
+    supervisor._terminate_recovered = lambda held: True
+    result = asyncio.run(supervisor.stop_for_app(220))
+
+    assert asked == [220]
+    assert result["stopped"] is True
+    assert result["quiesce"] == {"asked": False, "reason": "the resident bridge is not attached"}
