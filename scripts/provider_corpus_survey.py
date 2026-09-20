@@ -262,6 +262,7 @@ class Survey:
             source_page=page,
             score=1.0,
             rank=100,
+            hosts=PROVIDER_HOSTS["fearless"],
         ))
 
     async def fetch_table(self, record, sample: Sampled) -> dict[str, object]:
