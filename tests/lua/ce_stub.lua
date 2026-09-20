@@ -73,10 +73,21 @@ local function record_proxy(definition)
     Active = definition.active and true or false,
     AsyncProcessing = false,
     Value = tostring(definition.value or "0"),
+    -- What Cheat Engine's own documentation says a record carries: the script
+    -- of an Auto Assembler record, and the tree it sits in. A quiesce has to
+    -- put a script's children down before the script frees what it allocated,
+    -- so the tree is the thing being modelled here rather than a detail.
+    Script = definition.script,
+    Count = definition.children and #definition.children or 0,
   }
   local function settle_active(value)
     backing.Active = value and true or false
     backing.AsyncProcessing = false
+    -- The order records come down in is the whole of what a quiesce has to get
+    -- right: a script frees what its children live inside, so it goes last.
+    if not value then
+      state.deactivations[#state.deactivations + 1] = definition.id
+    end
     if definition.focus_on_settle then
       state.foreground_window = 1024
       state.foreground_window_pid = state.scenario.ce_process_id or 4242
@@ -94,6 +105,21 @@ local function record_proxy(definition)
   return setmetatable({}, {
     __index = function(_, key)
       if definition.read_error then error("record read failed", 0) end
+      -- `Child[index]`, zero based, the way Cheat Engine indexes it.
+      if key == "Child" then
+        return setmetatable({}, {__index = function(_, index)
+          local child = (definition.children or {})[index + 1]
+          return child and state.records[child] or nil
+        end})
+      end
+      if key == "Type" then
+        return definition.script and _G.vtAutoAssembler or 2
+      end
+      -- Cheat Engine's address list is flat and a record knows its own parent,
+      -- which is how the tree is recovered without walking it twice.
+      if key == "Parent" then
+        return definition.parent and state.records[definition.parent] or nil
+      end
       return backing[key]
     end,
     __newindex = function(object, key, value)
@@ -193,6 +219,7 @@ function stub.install(scenario)
   state.write_failures = scenario.write_failures or {}
   state.rename_failures = scenario.rename_failures or {}
   state.records = {}
+  state.deactivations = {}
   state.pending_records = {}
   state.async_records = {}
   for id, definition in pairs(scenario.records or {}) do
@@ -279,13 +306,28 @@ function stub.install(scenario)
     return processes
   end
 
+  -- The constant Cheat Engine's Lua environment defines for an Auto Assembler
+  -- record's type. Its number is not in the shipped documentation, so the
+  -- bridge compares against the global rather than against a literal.
+  _G.vtAutoAssembler = 11
+
   _G.AddressList = {
     getMemoryRecordByID = function(id)
       if scenario.address_list_error then error("AddressList unavailable", 0) end
       return state.records[id]
     end,
+    -- The top level of the list, in the order the scenario names it. Children
+    -- are reached through their parent, exactly as Cheat Engine does it.
+    -- Flat, in the order the scenario lists it, exactly as Cheat Engine's own
+    -- `Count` and `Index` describe: every record in the table, nested included.
+    getMemoryRecord = function(index)
+      if scenario.address_list_error then error("AddressList unavailable", 0) end
+      local id = (scenario.record_order or {})[index + 1]
+      return id and state.records[id] or nil
+    end,
     getCount = function()
       if scenario.address_list_error then error("AddressList unavailable", 0) end
+      if scenario.record_order then return #scenario.record_order end
       local count = 0
       for _ in pairs(state.records) do count = count + 1 end
       return count
@@ -923,6 +965,9 @@ function stub.report()
     -- Whether a heartbeat was already published when the table was opened.
     "#LOADORDER#\t" .. tostring(state.status_before_load),
   }
+  for _, id in ipairs(state.deactivations or {}) do
+    lines[#lines + 1] = "deactivated " .. tostring(id)
+  end
   for _, message in ipairs(state.sent_messages) do
     lines[#lines + 1] = "#MESSAGE#\t" .. tostring(message.handle) .. "\t" ..
       tostring(message.message) .. "\t" .. tostring(message.wparam) .. "\t" ..

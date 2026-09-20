@@ -35,6 +35,18 @@ local MAX_STARTUP_ACTIONS = 2048
 -- build a script's children, short enough that a record which is simply absent
 -- reports its exact ID instead of retrying for the whole session.
 local MAX_STARTUP_WAIT_TICKS = 40
+-- What one quiesce may walk and put down. A real table's address list is tens
+-- of records and a few levels deep; these are bounds on a list built to be one,
+-- and a walk that meets either stops rather than running the timer out.
+local MAX_QUIESCE_RECORDS = 4096
+local MAX_QUIESCE_DEPTH = 32
+-- What the whole walk may spend, as against what one record may. Per record the
+-- bound is the same one every activation here uses; without one over the walk,
+-- a table whose records all refuse to come down would hold the timer for that
+-- bound times the number of them. The stop this belongs to has a bound of its
+-- own and proceeds regardless, so this is about the bridge staying answerable
+-- rather than about the stop.
+local MAX_QUIESCE_TOTAL_TICKS = 600
 -- Auto Assembler records may explicitly run asynchronously. Active is not a
 -- completed mutation while AsyncProcessing is true, so keep the command
 -- pending and poll from the timer instead of rejecting the first false read.
@@ -412,7 +424,7 @@ local function parseControl(data)
     previous = generation
     local kind = parts[3]
     if kind ~= "query" and kind ~= "set_active" and kind ~= "set_value" and
-       kind ~= "retry_attach" and kind ~= "list_processes" then return nil, "unsupported command" end
+       kind ~= "retry_attach" and kind ~= "list_processes" and kind ~= "quiesce" then return nil, "unsupported command" end
     local rid = nil
     if parts[4] ~= "-" then
       rid = canonicalInteger(parts[4], true, MAX_RECORD_ID)
@@ -432,10 +444,10 @@ local function parseControl(data)
       if not targetPid then return nil, "invalid target PID" end
     end
     if (kind == "query" or kind == "set_active" or kind == "set_value") and rid == nil then return nil, "record command missing ID" end
-    if (kind == "retry_attach" or kind == "list_processes") and rid ~= nil then return nil, "non-record command contains ID" end
+    if (kind == "retry_attach" or kind == "list_processes" or kind == "quiesce") and rid ~= nil then return nil, "non-record command contains ID" end
     if kind == "set_active" and value ~= "0" and value ~= "1" then return nil, "invalid active value" end
     if kind == "set_value" and value == nil then return nil, "set_value requires a value" end
-    if (kind == "query" or kind == "list_processes") and value ~= nil then return nil, "command does not accept a value" end
+    if (kind == "query" or kind == "list_processes" or kind == "quiesce") and value ~= nil then return nil, "command does not accept a value" end
     if kind == "retry_attach" and value ~= nil and value ~= "" and not isProcessBasename(value) then return nil, "invalid retry target" end
     if kind == "retry_attach" and targetPid ~= nil and value == nil then return nil, "exact retry target missing basename" end
     if kind ~= "retry_attach" and targetPid ~= nil then return nil, "target PID only applies to retry attach" end
@@ -559,6 +571,11 @@ local state = {
   startup_resolved = {},
   startup_snapshots = {},
   pending_command = nil,
+  -- A quiesce in flight: the records still to put down, the one being waited
+  -- on, and what the walk found. It progresses one record per timer tick the
+  -- way startup does, because deactivating a script runs the table's own
+  -- `[DISABLE]` and Cheat Engine reports that asynchronously.
+  quiesce = nil,
   -- How many times a Cheat Engine window had to be hidden again after the
   -- initial suppression. Anything above zero is CE mapping a window over the
   -- running game, which is the thing that takes its audio and controller input.
@@ -734,6 +751,15 @@ local function tryAttach(expectedPid)
     state.pending_activations = {}
   end
   return state.attached
+end
+
+local function addressListCount()
+  local countOk, currentCount = pcall(function() return AddressList.getCount() end)
+  if countOk and type(currentCount) == "number" and currentCount >= 0
+      and currentCount <= MAX_APP_ID and currentCount == math.floor(currentCount) then
+    return currentCount
+  end
+  return nil
 end
 
 local function memoryRecord(recordId)
@@ -1006,6 +1032,164 @@ local function snapshotProcesses()
   while #state.processes > MAX_PROCESS_ROWS do table.remove(state.processes) end
 end
 
+local function isScriptRecord(record)
+  -- An Auto Assembler record, which is the one whose deactivation runs a
+  -- `[DISABLE]` and frees what its `[ENABLE]` allocated. Cheat Engine's own
+  -- documentation says `Script` holds the script when the type is
+  -- `vtAutoAssembler`, and that constant is a global of its Lua environment, so
+  -- both are asked for and either answering is enough. Neither answering means
+  -- this is treated as an ordinary record, which only costs it its place in the
+  -- order.
+  local typeOk, recordType = pcall(function() return record.Type end)
+  if typeOk and type(vtAutoAssembler) == "number" and recordType == vtAutoAssembler then return true end
+  local scriptOk, script = pcall(function() return record.Script end)
+  return scriptOk and type(script) == "string" and script ~= ""
+end
+
+-- Which records are switched on right now, deepest first and scripts last.
+--
+-- The address list is flat: Cheat Engine's `Count` is every record in the
+-- table, nested ones included, and this device reported all 52 of a real
+-- table's entries from it. So the list is read once, straight through, and the
+-- tree is recovered from each record's own `Parent` rather than by walking
+-- `Child` on top of it, which would visit every nested record twice.
+--
+-- Order is the whole of the care here. A child's bytes live inside the
+-- allocation its enclosing script made, so the script goes last: freeing that
+-- allocation first would leave every record inside it pointing at memory that
+-- is no longer there. Deepest first gives that, and among records at one depth
+-- the scripts still go last, because a plain record's address can be a symbol
+-- a sibling script registered.
+local function recordDepth(record)
+  local depth = 0
+  local at = record
+  while depth <= MAX_QUIESCE_DEPTH do
+    local ok, parent = pcall(function() return at.Parent end)
+    if not ok or parent == nil then return depth end
+    at = parent
+    depth = depth + 1
+  end
+  return depth
+end
+
+local function activeRecordsToQuiesce()
+  local count = addressListCount()
+  if not count then return nil end
+  local found = {}
+  local limit = math.min(count, MAX_QUIESCE_RECORDS)
+  for index = 0, limit - 1 do
+    local ok, record = pcall(function() return AddressList.getMemoryRecord(index) end)
+    if ok and record ~= nil then
+      local activeOk, active = pcall(function() return record.Active end)
+      if activeOk and active == true then
+        local idOk, id = pcall(function() return record.ID end)
+        found[#found + 1] = {
+          record = record, id = idOk and tonumber(id) or nil,
+          depth = recordDepth(record), script = isScriptRecord(record),
+        }
+      end
+    end
+  end
+  table.sort(found, function(a, b)
+    if a.depth ~= b.depth then return a.depth > b.depth end
+    if a.script ~= b.script then return b.script end
+    return (a.id or 0) < (b.id or 0)
+  end)
+  return found
+end
+
+-- Report what one quiesce managed, once, and let the stop proceed.
+local function finishQuiesce()
+  local run = state.quiesce
+  if not run then return end
+  local unsettled = {}
+  for _, entry in ipairs(run.unsettled) do
+    unsettled[#unsettled + 1] = tostring(entry)
+  end
+  -- Explicit branches: `x and nil or y` is always `y` in Lua, so a conditional
+  -- written that way would report every quiesce as a failure.
+  local value = "put_down=" .. tostring(run.put_down) .. ";unsettled=" .. table.concat(unsettled, ",")
+  if #unsettled == 0 then
+    result(run.generation, nil, true, nil, value, nil, nil)
+  else
+    result(run.generation, nil, false, nil, value, "records did not settle", "quiesce_unsettled")
+  end
+  state.quiesce = nil
+end
+
+-- Switch one record off, and say whether Cheat Engine is still thinking about
+-- it. `true` means the walk stops here and the timer comes back for it.
+local function putOneDown(run, entry)
+  local readOk, stillOn = pcall(function() return entry.record.Active end)
+  -- Already off, because a script going down took its children with it.
+  if not readOk or stillOn ~= true then return false end
+  local ok = pcall(function() entry.record.Active = false end)
+  if not ok then
+    run.unsettled[#run.unsettled + 1] = entry.id or "?"
+    return false
+  end
+  local processing, asyncErr = recordAsyncProcessing(entry.record)
+  if not asyncErr and processing then
+    run.pending = { record = entry.record, id = entry.id, waits = 0 }
+    return true
+  end
+  local activeOk, active = pcall(function() return entry.record.Active end)
+  if activeOk and active == false then run.put_down = run.put_down + 1
+  else run.unsettled[#run.unsettled + 1] = entry.id or "?" end
+  return false
+end
+
+-- Put one record down per tick, waiting for Cheat Engine the way every other
+-- activation here waits. A record that will not settle inside the same bound
+-- the rest of this file uses is reported and the walk moves on: the stop it
+-- belongs to must never become less reliable than the stop that does none of
+-- this.
+local function advanceQuiesce()
+  local run = state.quiesce
+  if not run then return end
+  if not state.attached then
+    run.unsettled[#run.unsettled + 1] = "detached"
+    finishQuiesce()
+    return
+  end
+  run.ticks = (run.ticks or 0) + 1
+  if run.ticks > MAX_QUIESCE_TOTAL_TICKS then
+    -- Everything not reached is named rather than counted, because what the
+    -- reader of this needs is which cheats were left on in a game that is
+    -- about to lose the Cheat Engine that could have switched them off.
+    if run.pending then run.unsettled[#run.unsettled + 1] = run.pending.id or "?" end
+    while run.index < #run.records do
+      run.index = run.index + 1
+      run.unsettled[#run.unsettled + 1] = run.records[run.index].id or "?"
+    end
+    finishQuiesce()
+    return
+  end
+  if run.pending then
+    local pending = run.pending
+    local processing, asyncErr = recordAsyncProcessing(pending.record)
+    if asyncErr then
+      run.unsettled[#run.unsettled + 1] = pending.id or "?"
+      run.pending = nil
+    elseif processing then
+      pending.waits = pending.waits + 1
+      if pending.waits <= MAX_ACTIVATION_WAIT_TICKS then return end
+      run.unsettled[#run.unsettled + 1] = pending.id or "?"
+      run.pending = nil
+    else
+      local activeOk, active = pcall(function() return pending.record.Active end)
+      if activeOk and active == false then run.put_down = run.put_down + 1
+      else run.unsettled[#run.unsettled + 1] = pending.id or "?" end
+      run.pending = nil
+    end
+  end
+  while run.index < #run.records do
+    run.index = run.index + 1
+    if putOneDown(run, run.records[run.index]) then return end
+  end
+  finishQuiesce()
+end
+
 local function executeCommand(command)
   if command.generation <= state.last_generation then return end
   state.last_generation = command.generation
@@ -1035,6 +1219,28 @@ local function executeCommand(command)
   if command.kind == "list_processes" then
     snapshotProcesses()
     result(command.generation, nil, true, nil, nil, nil)
+    return
+  end
+  if command.kind == "quiesce" then
+    -- Nothing to put down when there is nothing attached, and saying so is the
+    -- answer: the stop that asked for this proceeds either way.
+    if not state.attached then
+      result(command.generation, nil, false, nil, "put_down=0;unsettled=", "target process is not attached", "target_detached")
+      return
+    end
+    -- One at a time. A second while one is in flight would replace it, and the
+    -- first would then never be answered at all.
+    if state.quiesce then
+      result(command.generation, nil, false, nil, "put_down=0;unsettled=", "a quiesce is already running", "quiesce_unsettled")
+      return
+    end
+    local records = activeRecordsToQuiesce()
+    if not records then
+      result(command.generation, nil, false, nil, "put_down=0;unsettled=", "AddressList unavailable", "address_list_unavailable")
+      return
+    end
+    state.quiesce = { generation = command.generation, records = records, index = 0, put_down = 0, unsettled = {}, pending = nil, ticks = 0 }
+    advanceQuiesce()
     return
   end
   if not state.attached then
@@ -2252,15 +2458,6 @@ local function enforceWindowState()
   recoverGameFocus()
 end
 
-local function addressListCount()
-  local countOk, currentCount = pcall(function() return AddressList.getCount() end)
-  if countOk and type(currentCount) == "number" and currentCount >= 0
-      and currentCount <= MAX_APP_ID and currentCount == math.floor(currentCount) then
-    return currentCount
-  end
-  return nil
-end
-
 -- Load the session's exact table through Cheat Engine's own API.
 --
 -- CE opens a table named on its command line only once its main window is
@@ -2585,6 +2782,9 @@ timer.OnTimer = function()
   -- nothing to advance it until the process was re-attached.
   if state.attached then applyStartup() end
   settlePendingCommand()
+  -- A quiesce puts one record down per tick and waits for Cheat Engine between
+  -- them, exactly as startup does, so the timer is what advances it.
+  advanceQuiesce()
   pollControl()
   if now - state.last_status_tick >= HEARTBEAT_MS then
     state.last_status_tick = now

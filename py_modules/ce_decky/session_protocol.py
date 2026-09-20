@@ -28,6 +28,19 @@ MAX_STATUS_PROCESSES = 1024
 MAX_STATUS_TEXT_BYTES = 4096
 MAX_STATUS_PROCESS_NAME_BYTES = 1024
 MAX_RUNTIME_COMMAND_VALUE_BYTES = 4096
+
+# What one runtime command may ask the bridge to do.
+#
+# `quiesce` is the one that is about the session rather than about a record:
+# stopping Cheat Engine kills the process group, so a table's `[DISABLE]` never
+# runs and the patches and allocations of that session outlive it inside the
+# running game - a later session's restore then reads symbols belonging to a
+# dead Cheat Engine and cannot undo them either. Asking the bridge to put its
+# own records down first is what leaves the game as it was found.
+RUNTIME_COMMAND_KINDS = frozenset({"query", "set_active", "set_value", "retry_attach", "list_processes", "quiesce"})
+# The ones that act on the session rather than on one record, and therefore
+# carry no MemoryRecord ID.
+WHOLE_SESSION_COMMAND_KINDS = frozenset({"retry_attach", "list_processes", "quiesce"})
 # Superseded sessions are evidence, not an archive: keep a short history so a
 # failure can still be inspected, and collect the rest.
 RETAINED_SESSION_HISTORY = 3
@@ -878,13 +891,13 @@ def render_control(commands: Iterable[RuntimeCommand]) -> bytes:
         value = "-" if command.value is None else percent_encode(command.value)
         if command.kind in {"query", "set_active", "set_value"} and command.record_id is None:
             raise ValueError("record command requires MemoryRecord ID")
-        if command.kind in {"retry_attach", "list_processes"} and command.record_id is not None:
+        if command.kind in WHOLE_SESSION_COMMAND_KINDS and command.record_id is not None:
             raise ValueError(f"{command.kind} does not accept a MemoryRecord ID")
         if command.kind == "set_active" and command.value not in {"0", "1"}:
             raise ValueError("set_active value must be '0' or '1'")
         if command.kind == "set_value" and command.value is None:
             raise ValueError("set_value requires a value")
-        if command.kind in {"query", "list_processes"} and command.value is not None:
+        if command.kind in {"query", "list_processes", "quiesce"} and command.value is not None:
             raise ValueError(f"{command.kind} does not accept a value")
         if command.kind == "retry_attach" and command.value is not None:
             _process_name(command.value, "retry_attach target")
@@ -906,20 +919,20 @@ def parse_control(data: bytes) -> tuple[RuntimeCommand, ...]:
             raise ValueError("runtime command generations must be strictly increasing")
         previous = generation
         kind = parts[2]
-        if kind not in {"query", "set_active", "set_value", "retry_attach", "list_processes"}:
+        if kind not in RUNTIME_COMMAND_KINDS:
             raise ValueError("unsupported runtime command")
         rid = None if parts[3] == "-" else _parse_int(parts[3], "MemoryRecord ID", allow_zero=True, max_value=0x7FFFFFFF)
         value = None if parts[4] == "-" else percent_decode(parts[4])
         target_pid = None if parts[5] == "-" else _parse_int(parts[5], "target PID", allow_zero=False, max_value=0xFFFFFFFF)
         if kind in {"query", "set_active", "set_value"} and rid is None:
             raise ValueError("record command requires MemoryRecord ID")
-        if kind in {"retry_attach", "list_processes"} and rid is not None:
+        if kind in WHOLE_SESSION_COMMAND_KINDS and rid is not None:
             raise ValueError(f"{kind} does not accept a MemoryRecord ID")
         if kind == "set_active" and value not in {"0", "1"}:
             raise ValueError("set_active value must be '0' or '1'")
         if kind == "set_value" and value is None:
             raise ValueError("set_value requires a value")
-        if kind in {"query", "list_processes"} and value is not None:
+        if kind in {"query", "list_processes", "quiesce"} and value is not None:
             raise ValueError(f"{kind} does not accept a value")
         if kind == "retry_attach" and value is not None:
             _process_name(value, "retry_attach target")
@@ -1162,6 +1175,11 @@ def _runtime_error_code(value: str) -> str:
         # not in the requested state. Distinguished from the undifferentiated
         # failure because it is the one a user can act on.
         "activation_rejected",
+        # A quiesce that could not put every record down. Its own code because
+        # what follows from it is not a failure of the stop: the stop proceeds
+        # either way, and this is the record of what was left switched on in a
+        # game that is about to lose the Cheat Engine that could have undone it.
+        "quiesce_unsettled",
     }
     if value not in allowed:
         raise ValueError("runtime result error code is invalid")
@@ -1278,7 +1296,7 @@ def render_status(status: RuntimeStatus) -> bytes:
 
 
 def _validate_runtime_command(kind: str, record_id: int | None, value: str | None, target_pid: int | None = None) -> None:
-    if kind not in {"query", "set_active", "set_value", "retry_attach", "list_processes"}:
+    if kind not in RUNTIME_COMMAND_KINDS:
         raise ValueError("unsupported runtime command")
     if record_id is not None:
         _record_id(record_id)
@@ -1294,10 +1312,10 @@ def _validate_runtime_command(kind: str, record_id: int | None, value: str | Non
         raise ValueError("set_active value must be '0' or '1'")
     if kind == "set_value" and value is None:
         raise ValueError("set_value requires an explicit string value")
-    if kind in {"retry_attach", "list_processes"} and record_id is not None:
+    if kind in WHOLE_SESSION_COMMAND_KINDS and record_id is not None:
         raise ValueError(f"{kind} does not accept a MemoryRecord ID")
-    if kind == "list_processes" and value is not None:
-        raise ValueError("list_processes does not accept a value")
+    if kind in {"list_processes", "quiesce"} and value is not None:
+        raise ValueError(f"{kind} does not accept a value")
     if kind == "retry_attach" and value is not None:
         _process_name(value, "retry_attach target")
     if target_pid is not None:

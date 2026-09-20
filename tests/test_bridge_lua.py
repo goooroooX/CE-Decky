@@ -3197,3 +3197,125 @@ def test_startup_proof_requires_observed_off_to_on_transition(tmp_path, initial_
     })
     assert run.status().startup_state == "applied"
     assert run.status().startup_active_ids == (() if initial_active else (1,))
+
+
+# -- quiesce ---------------------------------------------------------------
+
+
+def test_a_quiesce_puts_down_every_record_that_is_switched_on(tmp_path: Path):
+    """The stop kills the process group, so `[DISABLE]` never runs on its own.
+
+    What that leaves in the running game is the session's `jmp` patches and its
+    allocation, which no later session can undo either: that block's restore
+    reads symbols belonging to a Cheat Engine that no longer exists. Putting the
+    records down first is what leaves the game as it was found.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True, "script": "[ENABLE]\nregistersymbol(x)\n"},
+                6: {"active": True},
+            },
+            "steps": [{"ticks": 6}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    status = run.status()
+    answered = [item for item in status.results if item.generation == 1]
+    assert answered and answered[-1].ok is True
+    assert "put_down=2" in (answered[-1].value or "")
+    assert "unsettled=" in (answered[-1].value or "")
+
+
+def test_a_quiesce_puts_the_records_inside_a_script_down_before_the_script(tmp_path: Path):
+    """A child's bytes live inside the allocation its script made.
+
+    Freeing that allocation first leaves every record inside it pointing at
+    memory that is no longer there, so the enclosing Auto Assembler script is
+    always last.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            # Flat, the way Cheat Engine lists it, with the script first and the
+            # records it owns after it: what decides the order is the tree each
+            # record names through its own parent, not the order they are in.
+            "record_order": [5, 6, 7],
+            "records": {
+                5: {"active": True, "script": "[ENABLE]\nalloc(mem,2048)\n"},
+                6: {"active": True, "parent": 5},
+                7: {"active": True, "parent": 5},
+            },
+            "steps": [{"ticks": 8}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    status = run.status()
+    answered = [item for item in status.results if item.generation == 1]
+    assert answered and answered[-1].ok is True
+    assert "put_down=3" in (answered[-1].value or "")
+    # The order is what this is about, and the stub records it.
+    order = [line for line in run.stdout.splitlines() if line.startswith("deactivated ")]
+    assert order == ["deactivated 6", "deactivated 7", "deactivated 5"]
+
+
+def test_a_record_that_will_not_settle_is_reported_and_does_not_hang_the_stop(tmp_path: Path):
+    """The bound is what makes running this unconditionally safe.
+
+    A record that will not come down inside the same bound every other
+    activation here uses is named, the walk carries on, and the stop that asked
+    for this proceeds either way: it must never become less reliable than the
+    stop that does none of this.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True, "restore_never_settles": True},
+                6: {"active": True},
+            },
+            "steps": [{"ticks": 60}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    status = run.status()
+    answered = [item for item in status.results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    assert "unsettled=5" in (answered[-1].value or "")
+    # The one that could come down still did.
+    assert "put_down=1" in (answered[-1].value or "")
+
+
+def test_a_quiesce_with_nothing_switched_on_says_so_and_costs_nothing(tmp_path: Path):
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5],
+            "records": {5: {"active": False}},
+            "steps": [{"ticks": 4}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is True
+    assert "put_down=0" in (answered[-1].value or "")
