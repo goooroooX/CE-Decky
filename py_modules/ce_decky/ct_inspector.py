@@ -187,6 +187,19 @@ class TableInspection:
     # They are reported so the next version's vocabulary is chosen from what
     # users actually met rather than from another guess.
     unrecognised_pairs: tuple[tuple[str, str], ...] = ()
+    # A `<Signature>` element on the table's root. Cheat Engine refuses a signed
+    # table by returning false from its own load, with no dialog and nothing in
+    # its log, and every one of the 16 signed tables this project has put in
+    # front of this Cheat Engine was refused. It is a structural fact about the
+    # bytes, read here and stated at Review; it refuses nothing by itself.
+    has_signature: bool = False
+    # What that element carried, for the diagnostics log only. Which of Cheat
+    # Engine's three refusals runs is not established, and one of them is a
+    # Windows CNG call under Wine rather than anything about the table, so a
+    # later report needs the parts rather than a verdict.
+    has_signed_hash: bool = False
+    has_public_key: bool = False
+    public_key_bytes: int = 0
     # Labels this had to remove an invisible or bidirectional character from,
     # and values it could not carry. Both used to refuse the whole table.
     sanitized_labels: int = 0
@@ -295,6 +308,10 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
             if is_embedded_file(tag):
                 embedded_files += 1
 
+    signature = _first_child(root, "Signature")
+    signed_hash = None if signature is None else _first_child(signature, "SignedHash")
+    public_key = None if signature is None else _first_child(signature, "PublicKey")
+
     top_entries = _first_child(root, "CheatEntries")
     if top_entries is not None:
         for child in top_entries:
@@ -318,6 +335,10 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
         has_lua=has_lua,
         has_forms=has_forms,
         unrecognised_pairs=tuple(unrecognised),
+        has_signature=signature is not None,
+        has_signed_hash=signed_hash is not None and bool((signed_hash.text or "").strip()),
+        has_public_key=public_key is not None and bool((public_key.text or "").strip()),
+        public_key_bytes=_public_key_bytes(public_key),
         sanitized_labels=len(sanitized),
         dropped_values=sum(1 for item in dropped if item != DROPPED_VALUE_LIST),
         dropped_value_lists=dropped.count(DROPPED_VALUE_LIST),
@@ -519,6 +540,18 @@ _DECLARATION_RE = re.compile(
 # declares 48; a file that declares more than this is not what this sentence is
 # about, and the records simply keep their own defaults.
 MAX_DECLARATIONS = 4096
+
+
+def _public_key_bytes(element) -> int:
+    """How long the signature's key is, for the log and for nothing else.
+
+    A count that refuses the table would be a diagnostic deciding the outcome,
+    which is the one thing this may not do, so text that will not encode is
+    measured rather than rejected.
+    """
+    if element is None:
+        return 0
+    return len((element.text or "").strip().encode("utf-8", "replace"))
 
 
 def _declared_defaults(script: str | None) -> dict[str, str]:

@@ -146,6 +146,17 @@ export interface TableInspection {
    */
   has_forms?: boolean;
   /**
+   * The table carries a `<Signature>` element.
+   *
+   * Cheat Engine refuses a signed table by returning false from its own load,
+   * with no dialog and nothing in its log: every one of the 16 signed tables
+   * this project has put in front of this Cheat Engine was refused, across 8
+   * distinct public keys and table versions 29 to 52. It refuses nothing here
+   * and is stated at Review as the fact it is. Absent from an inspection made
+   * before this was read.
+   */
+  has_signature?: boolean;
+  /**
    * Labels this had to remove an invisible or bidirectional character from, and
    * values it could not carry. Both used to refuse the whole table; measured
    * across 82 FearLess tables, four were lost that way. Absent from an

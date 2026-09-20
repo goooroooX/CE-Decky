@@ -110,6 +110,38 @@ def test_the_log_counts_the_switches_and_names_a_pair_it_could_not_place(tmp_pat
     assert "off=Male" in pairs[0] and "on=Female" in pairs[0]
 
 
+def test_the_log_names_a_signed_table_and_what_its_signature_carried(tmp_path: Path, caplog):
+    """Cheat Engine refuses a signed table with no dialog and nothing in its log.
+
+    Which of its three refusals runs is not established, and one of them is a
+    Windows call under Wine rather than anything about the table, so a later
+    report needs the parts rather than a verdict.
+    """
+    service = _service(tmp_path)
+    source = tmp_path / "signed.CT"
+    source.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<CheatTable CheatEngineTableVersion="45"><CheatEntries>'
+        '<CheatEntry><ID>1</ID><Description>Health</Description>'
+        '<VariableType>4 Bytes</VariableType><Address>game.exe+10</Address></CheatEntry>'
+        '</CheatEntries><Signature><SignedHash>' + "h" * 165 + '</SignedHash>'
+        '<PublicKey>' + "k" * 3774 + '</PublicKey></Signature></CheatTable>\n',
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+
+    with caplog.at_level(logging.INFO, logger="support-logging"):
+        service.inspect_table_sha(str(table["sha256"]))
+        service.inspect_table_sha(str(table["sha256"]))
+
+    signed = [line for line in _messages(caplog) if "event=table.signature_detected" in line]
+    inspected = [line for line in _messages(caplog) if "event=table.inspected" in line]
+    assert len(signed) == 1 and len(inspected) == 1
+    assert "has_signed_hash=true" in signed[0] and "has_public_key=true" in signed[0]
+    assert "public_key_bytes=3774" in signed[0]
+    assert "signed=true" in inspected[0]
+
+
 def test_the_log_says_what_was_saved_for_a_game_not_only_that_a_profile_was_saved(tmp_path: Path, caplog):
     service = _service(tmp_path)
     table = _import_table(service, tmp_path)

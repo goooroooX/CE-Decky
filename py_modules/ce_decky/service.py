@@ -1519,7 +1519,7 @@ class PluginService:
         recorded = self._table_journal.observe(
             digest,
             (
-                switches, dropdowns,
+                switches, dropdowns, inspection.has_signature,
                 inspection.total_entries, len(inspection.controls), actionable,
                 inspection.unsupported_record_id_count, len(inspection.ambiguous_record_ids),
                 inspection.table_version, inspection.has_lua, inspection.has_auto_assembler,
@@ -1552,9 +1552,21 @@ class PluginService:
             # what say whether this table's controls were read as intended.
             switches=switches,
             dropdowns=dropdowns,
+            # A signed table. Cheat Engine refuses one with no dialog and
+            # nothing in its own log, so this line is the only record that the
+            # table CE Decky was asked about carried a signature at all.
+            signed=inspection.has_signature,
         )
         if recorded:
             self._log_unrecognised_pairs(digest, inspection)
+            if inspection.has_signature:
+                log_activity(
+                    self.logger, "info", "table.signature_detected",
+                    table_sha=digest[:12],
+                    has_signed_hash=inspection.has_signed_hash,
+                    has_public_key=inspection.has_public_key,
+                    public_key_bytes=inspection.public_key_bytes,
+                )
         return inspection.as_dict()
 
     def _log_unrecognised_pairs(self, digest: str, inspection) -> None:

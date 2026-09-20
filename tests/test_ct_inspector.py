@@ -407,3 +407,43 @@ def test_a_record_carries_what_its_script_declares_for_its_own_symbol(tmp_path):
     # An address this script does not allocate carries no declaration at all.
     assert by_id[5].declared_default is None
     assert by_id[1].declared_default is None
+
+
+def test_a_signed_table_is_read_as_signed_and_refuses_nothing(tmp_path):
+    """Cheat Engine refuses a signed table silently; this says so out loud.
+
+    Read as a structural fact about the bytes: the element, and what it carried,
+    which is what a later report needs because which of Cheat Engine's three
+    refusals runs is not established and one of them is a Windows call under
+    Wine rather than anything about the table.
+    """
+    signed = (
+        '<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45">'
+        '<CheatEntries><CheatEntry><ID>1</ID><Description>"Health"</Description>'
+        '<VariableType>4 Bytes</VariableType><Address>game.exe+10</Address></CheatEntry></CheatEntries>'
+        '<Signature><SignedHash>' + "h" * 165 + '</SignedHash><PublicKey>' + "k" * 3774 + '</PublicKey></Signature>'
+        '</CheatTable>'
+    ).encode("utf-8")
+    inspection = _inspect(signed, tmp_path / "signed")
+    assert inspection.has_signature is True
+    assert inspection.has_signed_hash is True and inspection.has_public_key is True
+    assert inspection.public_key_bytes == 3774
+    # It is a statement, not a refusal: the table still inspects completely.
+    assert inspection.total_entries == 1 and len(inspection.controls) == 1
+
+    unsigned = signed.replace(b"<Signature>", b"<NotASignature>").replace(b"</Signature>", b"</NotASignature>")
+    plain = _inspect(unsigned, tmp_path / "unsigned")
+    assert plain.has_signature is False
+    assert plain.has_signed_hash is False and plain.has_public_key is False and plain.public_key_bytes == 0
+
+
+def test_an_empty_signature_element_carries_no_parts(tmp_path):
+    empty = (
+        '<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries/>'
+        '<Signature><SignedHash>  </SignedHash></Signature></CheatTable>'
+    ).encode("utf-8")
+    inspection = _inspect(empty, tmp_path)
+    # The element is there, so the table is signed as far as Cheat Engine's own
+    # loader is concerned; what it holds is reported separately and honestly.
+    assert inspection.has_signature is True
+    assert inspection.has_signed_hash is False and inspection.has_public_key is False
