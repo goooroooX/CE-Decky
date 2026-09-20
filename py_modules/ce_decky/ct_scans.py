@@ -25,13 +25,16 @@ reported as not checked rather than searched at whatever it costs.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import re
 import time
+import xml.etree.ElementTree as ET
 
 from .atomic import read_regular_range
 from .pe_version import read_pe_section_names
+from .table_markers import local_tag
 
 # The three Auto Assembler directives that scan for a pattern, longest first so
 # `aobscanmodule` is never read as `aobscan` with a stray suffix.
@@ -475,3 +478,339 @@ def check_executable(
         not_checked=tuple(not_checked),
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
+
+
+# What a line of an Auto Assembler script does with a symbol. Only definitions
+# matter here: a block is removed because it *defines* something the failing
+# scan owns, never because it mentions it, or removing one block would take out
+# everything that reads the same flag.
+_DEFINES_RE = re.compile(r"^\s*(?:label|registersymbol|define|alloc)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+_LABEL_AT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
+_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# One `<AssemblerScript>` element's bytes, so a script can be edited where it
+# lies rather than by rewriting the file around it.
+# The attribute is not optional in practice: a real table writes
+# `<AssemblerScript Async="1">`, and a pattern that assumed a bare tag matched
+# nothing at all in the file this was built against.
+_SCRIPT_BYTES_RE = re.compile(rb"(<AssemblerScript\b[^>]*>)(.*?)(</AssemblerScript>)", re.DOTALL)
+# What one script may be before this stops reading it as one.
+MAX_SCRIPT_LINES = 20000
+
+
+class ScanRepairError(ValueError):
+    """A repair this refused to produce, with the proof that failed."""
+
+
+@dataclass(frozen=True)
+class ScanRepair:
+    """What dropping a scan from a table took out, and what it cost.
+
+    `orphaned` is the cost the user is owed: a record whose address was a symbol
+    the removal took away is a cheat that is gone from the repaired copy. It is
+    empty in the case this was built against, because the block that went only
+    refined a hook another block already made.
+    """
+
+    scans: tuple[str, ...]
+    blocks: int
+    lines: int
+    bytes_removed: int
+    orphaned: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "scans": list(self.scans), "blocks": self.blocks, "lines": self.lines,
+            "bytes_removed": self.bytes_removed, "orphaned": list(self.orphaned),
+        }
+
+
+def _lines_with_endings(text: str) -> list[str]:
+    """Every line of a script, each carrying the ending it had.
+
+    Kept rather than normalised because this rebuilds the file from them: a real
+    table is written with CRLF, and a repair that quietly rewrote every ending
+    would be a diff across the whole script instead of the blocks it removed.
+    """
+    return text.splitlines(keepends=True)
+
+
+def _blocks(lines: list[str]) -> list[tuple[int, int]]:
+    """Runs of non-blank lines, which is what a script's own blocks are.
+
+    An author writes one hook per block with a blank line around it, and that is
+    the unit a scan owns: its scan line, the labels it declares, the code it
+    injects and the restore that puts the bytes back.
+    """
+    found: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip():
+            if start is None:
+                start = index
+        elif start is not None:
+            found.append((start, index))
+            start = None
+    if start is not None:
+        found.append((start, len(lines)))
+    return found
+
+
+def _defined_in(lines: list[str], block: tuple[int, int]) -> set[str]:
+    """Every symbol one block declares, by any of the four ways a script can."""
+    found: set[str] = set()
+    for index in range(*block):
+        declared = _DEFINES_RE.match(lines[index])
+        if declared:
+            found.add(declared.group(1))
+        labelled = _LABEL_AT_RE.match(lines[index])
+        if labelled:
+            found.add(labelled.group(1))
+    return found
+
+
+def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int]:
+    """One script with the blocks a failing scan owns removed, and nothing else.
+
+    What a scan owns is found rather than assumed. Start from the scan's own
+    name and the two symbols a script conventionally derives from it, take every
+    block that *defines* one of them, add whatever those blocks define in turn,
+    and repeat until nothing new is owned. That fixed point is what makes this
+    work on a script nobody generated: the corpus names no generator at all, so
+    a transform gated on one would run for nothing.
+
+    Only definitions pull a block in. A block that merely reads a flag the
+    removed code also read is somebody else's hook and stays, which is the
+    difference between repairing a table and gutting it.
+
+    Returns the repaired text, the symbols that went with it, and how many
+    blocks were taken out. It proves nothing: `assert_repair_closed` does that,
+    and nothing produced here is stored without it.
+    """
+    lines = _lines_with_endings(text)
+    if len(lines) > MAX_SCRIPT_LINES:
+        raise ScanRepairError("this script is longer than one this repairs")
+    blocks = _blocks(lines)
+    scan_lines: dict[str, int] = {}
+    for name in missing:
+        pattern = re.compile(r"^\s*(?:" + "|".join(SCAN_DIRECTIVES) + r")\s*\(\s*" + re.escape(name) + r"\s*,", re.IGNORECASE)
+        for index, line in enumerate(lines):
+            if pattern.match(line):
+                scan_lines[name] = index
+                break
+    if not scan_lines:
+        raise ScanRepairError("this script does not scan for any of those patterns")
+
+    owned = set(scan_lines)
+    for name in list(scan_lines):
+        owned.update({f"{name}_r", f"{name}_i"})
+    # A script writes its scans as one run with no blank line in it, so the
+    # failing scan's line goes on its own and its neighbours stay. What is
+    # protected is a block holding a scan the table still makes, never the
+    # failing scan's own block: that one can also declare the symbols the hook
+    # derives, and leaving those behind would refuse a repair that works.
+    surviving = re.compile(
+        r"^\s*(?:" + "|".join(SCAN_DIRECTIVES) + r")\s*\(\s*(?!(?:" +
+        "|".join(re.escape(name) for name in scan_lines) + r")\s*,)", re.IGNORECASE)
+    scan_blocks = {index for index, block in enumerate(blocks)
+                   if any(surviving.match(lines[at]) for at in range(*block))}
+    removed: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for index, block in enumerate(blocks):
+            if index in removed or index in scan_blocks:
+                continue
+            declared = _defined_in(lines, block)
+            if declared & owned:
+                removed.add(index)
+                owned |= declared
+                changed = True
+
+    drop = set(scan_lines.values())
+    for index in sorted(removed):
+        block = blocks[index]
+        drop.update(range(block[0], block[1]))
+        # The blank line under a block goes with it, or a repair leaves a run of
+        # empty lines where its hooks were.
+        if block[1] < len(lines) and not lines[block[1]].strip():
+            drop.add(block[1])
+    return "".join(line for index, line in enumerate(lines) if index not in drop), owned, len(removed)
+
+
+def assert_repair_closed(repaired: str, owned: set[str], before: set[str] | None = None) -> None:
+    """Prove the repaired script still resolves, or refuse it and say why.
+
+    A repair that leaves one reference behind produces a script Cheat Engine
+    refuses to compile, which is the same outcome as the missing pattern this
+    was meant to fix. So both checks here are about what survived rather than
+    about what went: no surviving line may name a symbol that is gone, and every
+    label a surviving line jumps to must still be defined.
+
+    The first of those is the whole of what the plan asks for in three parts. A
+    `readmem` naming a removed symbol, a `define` or `alloc` anchored on the
+    failing scan, and any other reference are all one thing - a line naming
+    something that is not there any more - and one check that refuses all of
+    them cannot be the one somebody forgets to extend.
+
+    Comments are not code. A script that says in words what a hook used to do
+    would otherwise refuse its own repair, which is a refusal about nothing.
+    """
+    lines = _lines_with_endings(repaired)
+    defined: set[str] = set()
+    for block in _blocks(lines):
+        defined |= _defined_in(lines, block)
+    for index, line in enumerate(lines):
+        code = _without_comment(line)
+        still_named = set(_WORD_RE.findall(code)) & owned
+        if still_named:
+            raise ScanRepairError(
+                f"line {index + 1} still names {sorted(still_named)[0]}, which the repair removed")
+        jump = re.match(r"^\s*(?:jmp|je|jne|jg|jl|jge|jle|ja|jb|call)\s+(?:short\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*$", code.strip(), re.IGNORECASE)
+        # Only a target the repair took away. A script calls things it never
+        # defines - an imported function, a module export, a symbol Cheat Engine
+        # resolves - and those were undefined before the repair too: refusing
+        # over one would be refusing a table for something the repair did not do.
+        if jump and jump.group(1) not in defined and (before is None or jump.group(1) in before):
+            raise ScanRepairError(f"line {index + 1} jumps to {jump.group(1)}, which the repair removed")
+
+
+def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, ScanRepair]:
+    """The same table with the hooks of a failing scan removed, and nothing else.
+
+    A byte-level edit rather than a reserialisation, for the reason the
+    signature transform gives: rewriting the XML would produce a file differing
+    from the author's everywhere the two writers disagree, and the user would be
+    agreeing to bytes nobody has seen. Each script is edited where it lies, in
+    the encoding and the line endings it already had.
+
+    The script text is read exactly as the file stores it, escapes and all. A
+    line is kept or dropped whole, so a line carrying an escaped character is
+    carried through untouched; decoding first would mean writing it back, and
+    two XML writers do not agree about that either.
+
+    This proves nothing about the result. `assert_repair_closed` proves the
+    script still resolves and `assert_only_scans_dropped` proves the table is
+    otherwise the table it was; nothing produced here is stored without both.
+    """
+    wanted = [name for name in dict.fromkeys(missing) if name]
+    if not wanted:
+        raise ScanRepairError("no scan was named to drop")
+    edited = bytearray()
+    at = 0
+    blocks = lines_removed = 0
+    owned: set[str] = set()
+    touched = False
+    for match in _SCRIPT_BYTES_RE.finditer(blob):
+        body = match.group(2)
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if not any(re.search(r"\b" + re.escape(name) + r"\b", text) for name in wanted):
+            continue
+        present = [name for name in wanted if re.search(
+            r"^\s*(?:" + "|".join(SCAN_DIRECTIVES) + r")\s*\(\s*" + re.escape(name) + r"\s*,", text, re.IGNORECASE | re.MULTILINE)]
+        if not present:
+            continue
+        repaired, script_owned, script_blocks = repair_script(text, present)
+        assert_repair_closed(repaired, script_owned, _defined_anywhere(text))
+        edited += blob[at:match.start(2)]
+        edited += repaired.encode("utf-8")
+        at = match.end(2)
+        blocks += script_blocks
+        lines_removed += len(text.splitlines()) - len(repaired.splitlines())
+        owned |= script_owned
+        touched = True
+    if not touched:
+        raise ScanRepairError("no script in this table scans for what was named")
+    edited += blob[at:]
+    derived = bytes(edited)
+    orphaned = _orphaned_records(blob, owned)
+    return derived, ScanRepair(
+        scans=tuple(wanted), blocks=blocks, lines=lines_removed,
+        bytes_removed=len(blob) - len(derived), orphaned=orphaned,
+    )
+
+
+def _orphaned_records(blob: bytes, owned: set[str]) -> tuple[str, ...]:
+    """Records whose address was a symbol the repair took away.
+
+    This is the cost the user is owed in the words they read the table in: those
+    cheats are gone from the repaired copy, and a repair that did not say so
+    would be handing somebody a table quietly missing what they came for.
+    """
+    try:
+        root = ET.fromstring(blob)
+    except ET.ParseError:
+        return ()
+    found: list[str] = []
+    for entry in root.iter():
+        if local_tag(entry.tag) != "CheatEntry":
+            continue
+        address = (entry.findtext("Address") or "").strip()
+        if not address or not (set(_WORD_RE.findall(address)) & owned):
+            continue
+        description = (entry.findtext("Description") or "").strip().strip('"').strip()
+        found.append(description or f"record {(entry.findtext('ID') or '?').strip()}")
+        if len(found) >= 64:
+            break
+    return tuple(found)
+
+
+def _defined_anywhere(text: str) -> set[str]:
+    """Every symbol a script defines, before anything is removed from it."""
+    lines = _lines_with_endings(text)
+    found: set[str] = set()
+    for block in _blocks(lines):
+        found |= _defined_in(lines, block)
+    return found
+
+
+def assert_only_scans_dropped(original: bytes, derived: bytes, dropped: Sequence[str]) -> None:
+    """Prove the derived table is the table it was, minus those hooks.
+
+    The closure proof says the script still resolves. This says the file is
+    still the same table: every record is still there, still named the same
+    thing, still of the same type and still at the same address, and every scan
+    the table still makes is still the scan it was. Between them they are what
+    makes a byte-level edit safe to store, and a failure refuses the repair
+    rather than producing a table nobody can account for.
+    """
+    try:
+        before = ET.fromstring(original)
+        after = ET.fromstring(derived)
+    except ET.ParseError as exc:
+        raise ScanRepairError(f"the repaired table is not readable XML ({exc})") from exc
+
+    def records(root: ET.Element) -> list[tuple[str, str, str, str]]:
+        found = []
+        for entry in root.iter():
+            if local_tag(entry.tag) != "CheatEntry":
+                continue
+            found.append((
+                (entry.findtext("ID") or "").strip(),
+                (entry.findtext("Description") or "").strip(),
+                (entry.findtext("VariableType") or "").strip(),
+                (entry.findtext("Address") or "").strip(),
+            ))
+        return found
+
+    if records(before) != records(after):
+        raise ScanRepairError("the repair changed the table's records, not only its scripts")
+
+    def scans_of(root: ET.Element) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for element in root.iter():
+            if local_tag(element.tag) != "AssemblerScript" or not element.text:
+                continue
+            for scan in read_scans(element.text)[0]:
+                found.setdefault(scan.name, scan.pattern)
+        return found
+
+    was, now = scans_of(before), scans_of(after)
+    gone = set(was) - set(now)
+    if gone != {name for name in dropped if name in was}:
+        raise ScanRepairError(f"the repair removed scans nobody asked it to: {sorted(gone)}")
+    for name, pattern in now.items():
+        if was.get(name) != pattern:
+            raise ScanRepairError(f"the repair changed the pattern {name} scans for")

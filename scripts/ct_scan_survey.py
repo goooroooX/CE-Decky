@@ -36,8 +36,10 @@ sys.path.insert(0, str(ROOT / "py_modules"))
 
 from ce_decky.ct_scans import (  # noqa: E402
     ScanParseError,
+    assert_only_scans_dropped,
     check_executable,
     compile_pattern,
+    drop_unmatched_scans,
     executable_is_packed,
     read_scans,
 )
@@ -179,12 +181,30 @@ def check_one(table: Path, executable: Path, repeat: int) -> dict[str, object]:
     }
 
 
+def repair_one(table: Path, scans: list[str]) -> dict[str, object]:
+    """What dropping those scans from one table would take out, proved.
+
+    Read only: the repaired bytes are produced, proved and thrown away. What
+    comes back is what the repair costs - how many blocks and lines went, how
+    many bytes, and which cheats lost the address they were reached by - which
+    is what decides whether a repair is worth offering at all.
+    """
+    blob = table.read_bytes()
+    derived, repair = drop_unmatched_scans(blob, scans)
+    assert_only_scans_dropped(blob, derived, scans)
+    return {"table": table.name, "proved": True, **repair.as_dict()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tables", type=Path, help="a directory of .CT files to read patterns out of")
     parser.add_argument("--table", type=Path, help="one table to check")
     parser.add_argument("--executable", type=Path, help="the game program to look for its patterns in")
     parser.add_argument("--repeat", type=int, default=1, help="run the check this many times and report each")
+    parser.add_argument(
+        "--repair", metavar="SCAN", action="append", default=[],
+        help="drop this scan from --table and report what it costs; repeat for several",
+    )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
 
@@ -194,7 +214,9 @@ def main() -> int:
     try:
         if args.tables is not None:
             answer["survey"] = survey_tables(args.tables)
-        if args.table is not None:
+        if args.table is not None and args.repair:
+            answer["repair"] = repair_one(args.table, list(args.repair))
+        if args.table is not None and not args.repair:
             if args.executable is None:
                 parser.error("--table needs --executable, which is the program to look in")
             answer["check"] = check_one(args.table, args.executable, args.repeat)
@@ -213,6 +235,11 @@ def main() -> int:
         for row in survey["refused"]:
             print(f"  refused {row['count']:4}  {row['reason']}")
             print(f"           {row['example']}")
+    repaired = answer.get("repair")
+    if isinstance(repaired, dict):
+        print(f"{repaired['table']}: dropping {', '.join(repaired['scans'])} removes "
+              f"{repaired['blocks']} blocks, {repaired['lines']} lines, {repaired['bytes_removed']} bytes")
+        print(f"  cheats that lose their address: {repaired['orphaned'] or 'none'}")
     check = answer.get("check")
     if isinstance(check, dict):
         megabytes = int(check["executable_bytes"]) // (1024 * 1024)

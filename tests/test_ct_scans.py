@@ -16,6 +16,11 @@ import pytest
 from ce_decky.ct_scans import (
     DEFAULT_BUDGET_SECONDS,
     ScanParseError,
+    ScanRepairError,
+    assert_only_scans_dropped,
+    assert_repair_closed,
+    drop_unmatched_scans,
+    repair_script,
     check_executable,
     compile_pattern,
     executable_is_packed,
@@ -255,3 +260,183 @@ def test_the_default_budget_is_a_bound_rather_than_an_expectation():
     """Measured with `scripts/ct_scan_survey.py`: 28 patterns over a 407 MiB
     program cost under a second, so this is room rather than a target."""
     assert DEFAULT_BUDGET_SECONDS >= 5.0
+
+
+# -- repairing a table whose scan no longer matches --------------------------
+
+# The shape a real table carries, which is what the repair is written against:
+# one run of scan lines with no blanks in it, a block declaring the symbols a
+# hook derives from its scan, a block declaring the labels only that hook uses,
+# the injected code, the entry point, and the restore in `[DISABLE]`.
+REPAIRABLE_SCRIPT = """[ENABLE]
+aobscanmodule(aobKeep,game.exe,48 8B 01 48 89 54 24)
+aobscanmodule(aobGone,game.exe,F3 0F 59 F0 48 8B C3)
+alloc(newmem,$1000)
+
+label(bEnabled)
+registersymbol(bEnabled)
+
+label(aobGone_r)
+label(aobGone_i)
+registersymbol(aobGone_r)
+registersymbol(aobGone_i)
+
+label(lblGone)
+label(lblGoneRet)
+
+label(aobKeep_r)
+registersymbol(aobKeep_r)
+
+newmem:
+
+lblGone:
+cmp dword ptr [bEnabled],1
+jne short lblGoneRet
+mulss xmm0,xmm5
+aobGone_i:
+readmem(aobGone,7)
+
+lblKeep:
+readmem(aobKeep,8)
+jmp lblKeepRet
+
+aobGone:
+aobGone_r:
+jmp lblGone
+nop 2
+lblGoneRet:
+
+aobKeep:
+aobKeep_r:
+jmp lblKeep
+lblKeepRet:
+
+[DISABLE]
+
+aobGone_r:
+readmem(aobGone_i,7)
+
+aobKeep_r:
+readmem(aobKeep,8)
+"""
+
+
+def test_a_repair_removes_the_blocks_the_failing_scan_owns_and_no_others():
+    """What a scan owns is found rather than assumed.
+
+    Not one of the 142 corpus tables names the generator that wrote it, so a
+    transform gated on one would run for almost nothing. What it starts from is
+    the scan's own name and the two symbols a script derives from it, and what
+    pulls a block in is *defining* one of those - never merely mentioning it,
+    or removing one hook would take out everything that reads the same flag.
+    """
+    repaired, owned, blocks = repair_script(REPAIRABLE_SCRIPT, ["aobGone"])
+
+    # The declarations, the labels, the injection, the entry point, and the
+    # restore in `[DISABLE]`: the same five a real table carries.
+    assert blocks == 5
+    assert owned == {"aobGone", "aobGone_r", "aobGone_i", "lblGone", "lblGoneRet"}
+    # Everything the other hook needs is still there, including the flag both of
+    # them read: a block that only reads what the removed code read is somebody
+    # else's hook.
+    assert "aobKeep" in repaired and "lblKeep" in repaired
+    assert "bEnabled" in repaired and "registersymbol(bEnabled)" in repaired
+    # And nothing the removal took away is named anywhere that is left.
+    assert "aobGone" not in repaired and "lblGone" not in repaired
+    # The scan line goes on its own: the block it sits in is the run of every
+    # scan the script makes, and its neighbours stay.
+    assert "aobscanmodule(aobKeep,game.exe,48 8B 01 48 89 54 24)" in repaired
+    assert "alloc(newmem,$1000)" in repaired
+
+
+def test_a_repair_that_leaves_a_reference_behind_is_refused():
+    """A script Cheat Engine will not compile is the outcome this exists to fix.
+
+    So the proof is about what survived: a line still naming a removed symbol
+    produces the same dead table as the missing pattern did, and a repair that
+    cannot be shown to resolve is not produced at all.
+    """
+    repaired, owned, _ = repair_script(REPAIRABLE_SCRIPT, ["aobGone"])
+    assert_repair_closed(repaired, owned)
+
+    # A line the removal should have taken and did not.
+    with pytest.raises(ScanRepairError, match="still names"):
+        assert_repair_closed(repaired + "\nmov [aobGone_r],1\n", owned)
+    # A `readmem`, a `define` anchored on the scan, and any other reference are
+    # one thing: a line naming something that is no longer there.
+    with pytest.raises(ScanRepairError, match="aobGone_i"):
+        assert_repair_closed(repaired + "\nreadmem(aobGone_i,7)\n", owned)
+    with pytest.raises(ScanRepairError, match="aobGone"):
+        assert_repair_closed(repaired + "\nalloc(mem,$100,aobGone)\n", owned)
+    # And a comment is not code: a script that says in words what a hook used to
+    # do would otherwise refuse its own repair, which is a refusal about nothing.
+    assert_repair_closed(repaired + "\n// aobGone used to hook here\n", owned)
+    # A jump to a label the repair took away. A target the script never defined
+    # - an imported function, a symbol Cheat Engine resolves - was undefined
+    # before the repair too, and refusing over one refuses a table for something
+    # the repair did not do.
+    with pytest.raises(ScanRepairError, match="which the repair removed"):
+        assert_repair_closed(repaired + "\njmp lblVanished\n", owned, {"lblVanished"})
+    assert_repair_closed(repaired + "\ncall GetCurrentProcessId\n", owned, {"lblKeep"})
+
+
+def test_a_script_that_does_not_scan_for_it_is_refused_rather_than_edited():
+    with pytest.raises(ScanRepairError):
+        repair_script(REPAIRABLE_SCRIPT, ["aobSomethingElse"])
+
+
+def _table_with(script: str, *, extra_records: str = "") -> bytes:
+    return (
+        '<?xml version="1.0"?>\r\n<CheatTable CheatEngineTableVersion="45">\r\n'
+        '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Hook"</Description>'
+        '<VariableType>Auto Assembler Script</VariableType>'
+        f'<AssemblerScript Async="1">{script}</AssemblerScript></CheatEntry>'
+        f'{extra_records}</CheatEntries>\r\n</CheatTable>\r\n'
+    ).encode("utf-8")
+
+
+def test_the_repair_edits_the_script_where_it_lies_and_leaves_the_table_alone():
+    """A byte-level edit, for the reason the signature transform gives.
+
+    Rewriting the XML would produce a file differing from the author's
+    everywhere the two writers disagree, and the user would be agreeing to bytes
+    nobody has seen.
+    """
+    blob = _table_with(REPAIRABLE_SCRIPT)
+    derived, repair = drop_unmatched_scans(blob, ["aobGone"])
+
+    assert repair.scans == ("aobGone",) and repair.blocks == 5
+    assert repair.bytes_removed == len(blob) - len(derived) > 0
+    assert repair.orphaned == ()
+    assert_only_scans_dropped(blob, derived, ["aobGone"])
+    # Everything outside the script is the bytes it was.
+    assert derived.startswith(b'<?xml version="1.0"?>\r\n<CheatTable')
+    assert derived.endswith(b"</CheatEntries>\r\n</CheatTable>\r\n")
+
+
+def test_the_repair_names_the_cheats_it_costs():
+    """A record whose address was a removed symbol is a cheat that is gone.
+
+    Handing somebody a repaired table quietly missing what they came for is the
+    one outcome a repair may not produce silently.
+    """
+    extra = (
+        '<CheatEntry><ID>2</ID><Description>"Acceleration"</Description>'
+        '<VariableType>Float</VariableType><Address>aobGone_r</Address></CheatEntry>'
+    )
+    blob = _table_with(REPAIRABLE_SCRIPT, extra_records=extra)
+    _, repair = drop_unmatched_scans(blob, ["aobGone"])
+    assert repair.orphaned == ("Acceleration",)
+
+
+def test_a_repair_that_changed_the_table_is_refused():
+    """The closure proof says the script resolves; this says it is the same table."""
+    blob = _table_with(REPAIRABLE_SCRIPT)
+    derived, _ = drop_unmatched_scans(blob, ["aobGone"])
+    tampered = derived.replace(b"<Description>\"Hook\"</Description>", b"<Description>\"Other\"</Description>")
+    with pytest.raises(ScanRepairError, match="changed the table's records"):
+        assert_only_scans_dropped(blob, tampered, ["aobGone"])
+    # And one that took a scan nobody asked about.
+    both, _ = drop_unmatched_scans(blob, ["aobGone"])
+    with pytest.raises(ScanRepairError, match="nobody asked"):
+        assert_only_scans_dropped(blob, both, [])
