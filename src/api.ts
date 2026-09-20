@@ -57,14 +57,21 @@ export const inspectTableSource = callable<[selection: string], TableSourceInspe
 export const importTable = callable<[selection: string, memberPath?: string | null, password?: string | null, appId?: number | null], TableStatus>("import_table");
 export const inspectTableSha = callable<[digest: string, appId?: number | null], TableInspection>("inspect_table_sha");
 /**
- * The same table without its signature, stored as a table of its own.
+ * The copy of this table that opens here, stored as a table of its own.
  *
  * The one call that makes CE Decky produce executable content rather than carry
  * it: the result is proven against the source in the backend before anything is
  * stored, and what comes back is an ordinary new table with its own digest, its
  * own inspection and its own consent still to give.
+ *
+ * One call for both of the things that stop a table working - its signature and
+ * a byte pattern this build of the game does not hold - because a user meeting
+ * both would otherwise make two copies and give consent three times for one
+ * table. Which of them applied is recorded on the result. The game and the
+ * program are named for the same reason the scan check names them: what is
+ * removed is decided by what this build of the game actually holds.
  */
-export const deriveUnsignedTable = callable<[sha256: string], TableStatus>("derive_unsigned_table");
+export const prepareTableCopy = callable<[sha256: string, appId: number | null, targetProcess: string | null], TableStatus>("prepare_table_copy");
 /**
  * Whether this game's own program still holds the byte patterns a table scans for.
  *

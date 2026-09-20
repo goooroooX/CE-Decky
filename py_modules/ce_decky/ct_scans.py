@@ -156,6 +156,13 @@ class ScanCheck:
     not_checked: tuple[tuple[str, str], ...] = ()
     elapsed_ms: int = 0
     reason: str | None = None
+    # Whether a copy without the hooks of what is missing is one this can prove,
+    # which is not something this function knows: searching a file says what is
+    # absent, and whether the table survives having it taken out is a question
+    # about the table. Filled in by the caller that holds both. `None` is the
+    # third state and means nobody asked - nothing is missing, or nothing was
+    # searched - and a screen may not read it as a repair that was refused.
+    repairable: bool | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -165,6 +172,7 @@ class ScanCheck:
             "not_checked": [{"name": name, "reason": reason} for name, reason in self.not_checked],
             "elapsed_ms": self.elapsed_ms,
             "reason": self.reason,
+            "repairable": self.repairable,
         }
 
 
@@ -730,6 +738,35 @@ def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, Sc
         scans=tuple(wanted), blocks=blocks, lines=lines_removed,
         bytes_removed=len(blob) - len(derived), orphaned=orphaned,
     )
+
+
+def scans_in_table(blob: bytes) -> list[TableScan]:
+    """Every pattern a whole table scans for, read from the bytes themselves.
+
+    The same scripts `drop_unmatched_scans` edits, read the same way, so what a
+    repaired table is checked against is what a repaired table holds. Reading
+    the bytes rather than a stored file is what lets a result be proven before
+    anybody has agreed to it: a derived table is executable content the user has
+    not consented to yet, and it has no business on disk until they have.
+
+    A name is read once. One table declares the same scan in several scripts -
+    a build for one graphics backend and a build for another, side by side - and
+    a caller asking what this table looks for wants the patterns, not the
+    repetitions.
+    """
+    found: list[TableScan] = []
+    seen: set[str] = set()
+    for match in _SCRIPT_BYTES_RE.finditer(blob):
+        try:
+            text = match.group(2).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        for scan in extract_scans(text):
+            if scan.name.casefold() in seen:
+                continue
+            seen.add(scan.name.casefold())
+            found.append(scan)
+    return found
 
 
 def _orphaned_records(blob: bytes, owned: set[str]) -> tuple[str, ...]:

@@ -2006,10 +2006,12 @@ def test_a_signed_table_can_be_stored_again_without_its_signature(tmp_path: Path
     source.write_text(SIGNED_FIXTURE, encoding="utf-8")
     original = service.import_table(str(source))
 
-    derived = service.derive_unsigned_table(str(original["sha256"]))
+    derived = service.prepare_table_copy(str(original["sha256"]))
 
     assert derived["sha256"] != original["sha256"]
-    assert derived["derived_from"] == {"sha256": original["sha256"], "transform": "remove-signature"}
+    assert derived["derived_from"] == {
+        "sha256": original["sha256"], "transforms": ["remove-signature"], "scans": [], "orphaned": [],
+    }
     # Nothing a provider said about the source follows the bytes CE Decky made.
     assert list(derived["origins"]) == []
     assert derived["filename"].endswith("(unsigned).CT")
@@ -2028,8 +2030,8 @@ def test_deriving_from_a_table_with_no_signature_is_refused(tmp_path: Path):
     source.write_text(SIGNED_FIXTURE.replace("Signature>", "NotASignature>"), encoding="utf-8")
     table = service.import_table(str(source))
 
-    with pytest.raises(ValueError, match="no signature"):
-        service.derive_unsigned_table(str(table["sha256"]))
+    with pytest.raises(ValueError, match="carries no signature"):
+        service.prepare_table_copy(str(table["sha256"]))
 
 
 def test_deriving_the_same_table_twice_stores_it_once(tmp_path: Path):
@@ -2040,8 +2042,8 @@ def test_deriving_the_same_table_twice_stores_it_once(tmp_path: Path):
     source.write_text(SIGNED_FIXTURE, encoding="utf-8")
     original = service.import_table(str(source))
 
-    first = service.derive_unsigned_table(str(original["sha256"]))
-    second = service.derive_unsigned_table(str(original["sha256"]))
+    first = service.prepare_table_copy(str(original["sha256"]))
+    second = service.prepare_table_copy(str(original["sha256"]))
     assert first["sha256"] == second["sha256"]
     assert second["derived_from"] == first["derived_from"]
     stored = [table for table in service.get_status()["tables"] if table["sha256"] == first["sha256"]]
@@ -2072,9 +2074,11 @@ def test_a_stored_signed_table_carries_the_fact_to_the_row(tmp_path: Path):
     assert listed[plain["sha256"]]["has_signature"] is False
     # The copy CE Decky makes is not signed, and the row says which table it
     # was made from so the two can be told apart in one list.
-    derived = service.derive_unsigned_table(str(signed["sha256"]))
+    derived = service.prepare_table_copy(str(signed["sha256"]))
     assert derived["has_signature"] is False
-    assert derived["derived_from"] == {"sha256": signed["sha256"], "transform": "remove-signature"}
+    assert derived["derived_from"] == {
+        "sha256": signed["sha256"], "transforms": ["remove-signature"], "scans": [], "orphaned": [],
+    }
 
 
 def test_a_table_stored_before_the_signature_was_read_is_filled_in_at_startup(tmp_path: Path):
@@ -2197,6 +2201,126 @@ def test_a_game_whose_program_this_device_does_not_know_is_not_checked(tmp_path:
 
     assert answer["reason"] is not None
     assert answer["missing"] == [] and answer["present"] == []
+
+
+SIGNED_SCAN_FIXTURE = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Health"</Description>'
+    '<VariableType>Auto Assembler Script</VariableType>'
+    '<AssemblerScript>[ENABLE]\n'
+    'aobscanmodule(aobPresent,game.exe,48 8B 01 48 89 54 24)\n'
+    'aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)\n'
+    '</AssemblerScript></CheatEntry>'
+    '<CheatEntry><ID>2</ID><Description>"Speed"</Description>'
+    '<VariableType>4 Bytes</VariableType><Address>aobAbsent+8</Address></CheatEntry>'
+    '</CheatEntries>\n'
+    '  <Signature><SignedHash>' + "h" * 165 + '</SignedHash><PublicKey>' + "k" * 128 + '</PublicKey></Signature>\n'
+    '</CheatTable>\n'
+)
+
+
+def test_a_signed_table_missing_a_pattern_is_repaired_in_one_copy(tmp_path: Path, monkeypatch):
+    """One press, one derived table, both transforms recorded on it.
+
+    A user who met the signature and the missing pattern one press at a time
+    would make two copies, give consent three times and be left with two
+    near-identical tables to tell apart. So whatever is wrong goes in one step,
+    and the copy says what was done to it and what that cost.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("prepare-both"))
+    service.initialize()
+    source = tmp_path / "signed-scanner.CT"
+    source.write_text(SIGNED_SCAN_FIXTURE, encoding="utf-8")
+    original = service.import_table(str(source))
+    program = _scan_program(tmp_path)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    derived = service.prepare_table_copy(str(original["sha256"]), 4242)
+
+    assert derived["sha256"] != original["sha256"]
+    assert derived["derived_from"] == {
+        "sha256": original["sha256"],
+        "transforms": ["remove-signature", "drop-unmatched-scans"],
+        "scans": ["aobAbsent"],
+        # The cost, named in the words the table is read in: that cheat is
+        # reached through the hook that went, so it is gone from this copy.
+        "orphaned": ["Speed"],
+    }
+    assert derived["has_signature"] is False
+    # And the copy is one that works here: the pattern the program does hold is
+    # still scanned for, and the one it does not is not.
+    answer = service.check_table_scans(str(derived["sha256"]), 4242)
+    assert answer["missing"] == [] and answer["present"] == ["aobPresent"]
+    # The source is untouched.
+    assert service.inspect_table_sha(str(original["sha256"]))["has_signature"] is True
+
+
+def test_a_table_with_nothing_wrong_is_refused_without_claiming_it_was_checked(tmp_path: Path):
+    """A refusal may not answer a question nobody asked.
+
+    Where this device does not know which program the game runs, no pattern was
+    looked for, and saying every pattern is present would be the one claim this
+    has no evidence for.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("prepare-nothing"))
+    service.initialize()
+    source = tmp_path / "plain.CT"
+    source.write_text(SIGNED_FIXTURE.replace("Signature>", "NotASignature>"), encoding="utf-8")
+    table = service.import_table(str(source))
+
+    with pytest.raises(ValueError, match="could not check its patterns"):
+        service.prepare_table_copy(str(table["sha256"]), 4242)
+
+
+def test_a_repair_that_cannot_be_proved_produces_nothing_and_says_which_proof(tmp_path: Path, monkeypatch):
+    """Every step after the edit is a proof rather than a hope.
+
+    A script whose surviving code still names what the removal took away is one
+    Cheat Engine refuses to compile, which is the same outcome as the missing
+    pattern this was meant to fix. Nothing is stored, and the refusal names the
+    reference that is still there rather than saying a repair was refused.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("prepare-refused"))
+    service.initialize()
+    source = tmp_path / "entangled.CT"
+    source.write_text(
+        SIGNED_SCAN_FIXTURE.replace(
+            'aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)\n',
+            'aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)\n'
+            'registersymbol(aobPresent)\n'
+            'readmem(aobAbsent,8)\n',
+        ),
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+    program = _scan_program(tmp_path)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    before = {row["sha256"] for row in service.get_status()["tables"]}
+    with pytest.raises(ValueError, match="still names aobAbsent"):
+        service.prepare_table_copy(str(table["sha256"]), 4242)
+    assert {row["sha256"] for row in service.get_status()["tables"]} == before
+    # And the screen that would offer the press was told the same thing first.
+    assert service.check_table_scans(str(table["sha256"]), 4242)["repairable"] is False
+
+
+def test_the_scan_check_says_whether_the_repair_it_would_offer_exists(tmp_path: Path, monkeypatch):
+    """A press is offered for a repair that was made and proven, never for a gap."""
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-repairable"))
+    service.initialize()
+    source = tmp_path / "scanner.CT"
+    source.write_text(SCAN_FIXTURE, encoding="utf-8")
+    table = service.import_table(str(source))
+    program = _scan_program(tmp_path)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    assert answer["missing"] == ["aobAbsent"] and answer["repairable"] is True
+    # Three states, not two: nothing missing is nobody asked, and a screen may
+    # not read that as a repair that was refused.
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (None, None))
+    assert service.check_table_scans(str(table["sha256"]), 4242)["repairable"] is None
 
 
 def test_a_table_that_scans_for_nothing_says_so_rather_than_nothing(tmp_path: Path, monkeypatch):

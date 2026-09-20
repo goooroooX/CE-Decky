@@ -3,7 +3,7 @@ import { traceUiAction, traceUiEdit, startUiOperation } from "../uiActions";
 import { DialogButton, Dropdown, Field, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
-import { antiCheatBlockedReason, defaultTargetProcess, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
+import { antiCheatBlockedReason, canPrepareCopy, defaultTargetProcess, derivedChangeSentence, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
 import type { GameExecutableListing, TableInspection, TableScanCheck, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
@@ -68,7 +68,7 @@ interface Props {
    * the bytes that will actually be loaded. Absent where the panel has no way
    * to make one, and the press is then not drawn.
    */
-  onPrepareCopy?: () => Promise<void>;
+  onPrepareCopy?: (targetProcess: string | null) => Promise<void>;
   /**
    * Whether this game's own program still holds the patterns the table scans for.
    *
@@ -240,9 +240,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     // the bytes any source served: what changed, and what it cost. The
     // derivation was proven against the original before it was stored, so the
     // cheats are the ones the author wrote.
-    table.derived_from
-      ? `CE Decky made this copy from ${table.derived_from.sha256.slice(0, 12)} by removing the signature. Nothing else in the table changed, and no source vouched for these bytes.`
-      : null,
+    derivedChangeSentence(table.derived_from),
     // The signature leads what was read out of the table itself: it is the one
     // finding that says the table will probably not open at all. What the
     // reader needs is what it costs them and what it will look like, not how
@@ -265,10 +263,9 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     // with four answers. What is dropped is always the least consequential of
     // what applies, and a healthy table renders none of this at all.
   ].filter((item): item is string => item !== null).slice(0, 2);
-  // Offered for exactly what there is to prepare. A table nobody can improve
-  // gets no press, and a copy that has already been made gets none either: it
-  // is the thing the press produces.
-  const canPrepare = Boolean(onPrepareCopy) && inspection.has_signature === true && !table.derived_from;
+  // Offered for exactly what there is to prepare, which is the signature, a
+  // pattern this build of the game does not hold, or both in one press.
+  const canPrepare = Boolean(onPrepareCopy) && canPrepareCopy(table, inspection, scanAnswer);
   // Most tables never name a process, and the library entry usually points at a
   // launcher rather than the executable that owns the game's memory. Offering
   // what the game is actually running keeps this a controller choice instead of
@@ -531,7 +528,11 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     setError(null);
     const operation = startUiOperation("review.prepare_copy", { table_sha: table.sha256 });
     try {
-      await onPrepareCopy();
+      // The program the answer on screen is about, not the one being typed:
+      // what this removes is decided by what that build of the game holds, and
+      // a copy prepared against a different program from the one the reader was
+      // shown would be a copy of a table nobody reviewed.
+      await onPrepareCopy(scanAskedFor.current);
       operation.completed();
     } catch (cause) {
       operation.failed(cause);

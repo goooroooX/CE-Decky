@@ -37,7 +37,7 @@ const api = vi.hoisted(() => ({
   // outlives the renderer it lives in. Mocked resolved rather than bare, so a
   // flush that fires mid-test settles instead of rejecting into the run.
   recordPanelLog: vi.fn().mockResolvedValue({ ok: true, accepted: 0 }),
-  pollCELaunch: vi.fn(), pollManagedCEInstall: vi.fn(), prepareSession: vi.fn(), repairOwnedLaunchState: vi.fn(), repairSessionState: vi.fn(), runSelfTest: vi.fn(), saveProfile: vi.fn(),
+  pollCELaunch: vi.fn(), pollManagedCEInstall: vi.fn(), prepareSession: vi.fn(), prepareTableCopy: vi.fn(), repairOwnedLaunchState: vi.fn(), repairSessionState: vi.fn(), runSelfTest: vi.fn(), saveProfile: vi.fn(),
   setAutoload: vi.fn(), setExecutionConsent: vi.fn(), setPinnedControl: vi.fn(), setRememberedCheats: vi.fn(), startCESelfTest: vi.fn(),
   startManagedCEInstall: vi.fn(), stopCEForGame: vi.fn(),
 }));
@@ -935,7 +935,11 @@ describe("Home panel and managed setup", () => {
     await waitFor(() => expect(modalState.nodes.filter((node: any) => node.type === CheatSelectionModal)).toHaveLength(1));
     const picker = modalState.nodes.find((node: any) => node.type === CheatSelectionModal);
     await picker.props.onTableRefused("“Init” did not switch on.");
-    const confirm = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
     // What the press actually does: the bytes stay, search goes on showing the
     // copy, and what the mark costs is using it again until it is cleared.
     expect(confirm.props.strDescription).not.toMatch(/search stops offering/);
@@ -960,7 +964,11 @@ describe("Home panel and managed setup", () => {
     renderContent();
     const picker = await openPicker();
     await picker.props.onTableRefused("Init did not switch on.");
-    const confirm = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
     await act(async () => { confirm.props.onOK(); });
     await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining("It is marked as not working") })));
     expect(api.blockTable).toHaveBeenCalledTimes(1);
@@ -979,7 +987,11 @@ describe("Home panel and managed setup", () => {
     await waitFor(() => expect(modalState.nodes.filter((node: any) => node.type === CheatSelectionModal)).toHaveLength(1));
     const picker = modalState.nodes.find((node: any) => node.type === CheatSelectionModal);
     await picker.props.onTableRefused("“Init” did not switch on.");
-    const confirm = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
 
     await act(async () => { confirm.props.onOK(); });
 
@@ -987,6 +999,63 @@ describe("Home panel and managed setup", () => {
     await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining("could not record"),
     })));
+  });
+
+  it("offers the repaired copy where a pattern is missing and the repair is proven", async () => {
+    // The other door to the same press. Review can only ask the scan question
+    // where this device knows which program the game runs, so a table that got
+    // past Review unchecked meets the offer here - the first time a cheat from
+    // it is switched on and comes straight back off.
+    api.checkTableScans.mockResolvedValueOnce({
+      source: "file", present: ["aobHealth"], missing: ["aobSpeed"], not_checked: [],
+      elapsed_ms: 690, reason: null, repairable: true,
+    });
+    api.prepareTableCopy.mockResolvedValue({ ...table, sha256: "f".repeat(64) });
+    renderContent();
+    const picker = await openPicker();
+    await picker.props.onTableRefused("“Init” did not switch on.");
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
+
+    // The answer that might leave them with a working table comes before the
+    // one that retires it, and the pattern is named rather than implied.
+    expect(confirm.props.strOKButtonText).toBe("Try a repaired copy");
+    expect(confirm.props.strMiddleButtonText).toBe("Stop using it");
+    expect(confirm.props.strCancelButtonText).toBe("Keep it");
+    expect(confirm.props.strDescription).toContain("aobSpeed");
+
+    await act(async () => { confirm.props.onOK(); });
+
+    // Nothing durable: the copy is new bytes, and the consent for them is given
+    // on the Review this opens rather than here.
+    await waitFor(() => expect(api.prepareTableCopy).toHaveBeenCalledWith(SHA, 10, null));
+    expect(api.blockTable).not.toHaveBeenCalled();
+    expect(api.revokeTable).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the two answers it has always had when no repair can be proved", async () => {
+    // A pattern is missing and the rest of that script still needs the code
+    // that would have to go. The dialog says so rather than offering a press
+    // that refuses itself.
+    api.checkTableScans.mockResolvedValueOnce({
+      source: "file", present: [], missing: ["aobSpeed"], not_checked: [],
+      elapsed_ms: 12, reason: null, repairable: false,
+    });
+    renderContent();
+    const picker = await openPicker();
+    await picker.props.onTableRefused("“Init” did not switch on.");
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
+
+    expect(confirm.props.strOKButtonText).toBe("Stop using it");
+    expect(confirm.props.strMiddleButtonText).toBeUndefined();
+    expect(confirm.props.strDescription).toContain("cannot make a copy without that pattern");
   });
 
   it("says what makes room when the record list has none", async () => {
@@ -1000,7 +1069,11 @@ describe("Home panel and managed setup", () => {
     renderContent();
     const picker = await openPicker();
     await picker.props.onTableRefused("“Init” did not switch on.");
-    const confirm = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
 
     await act(async () => { confirm.props.onOK(); });
 
@@ -1016,7 +1089,11 @@ describe("Home panel and managed setup", () => {
     renderContent();
     const picker = await openPicker();
     await picker.props.onTableRefused("Init did not switch on.");
-    const confirm = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
     await act(async () => { confirm.props.onOK(); });
     await waitFor(() => expect(api.revokeTable).toHaveBeenCalledWith(10, SHA));
     expect(api.setAutoload).not.toHaveBeenCalled();
@@ -1190,6 +1267,7 @@ describe("Home panel and managed setup", () => {
     await picker.props.onTableRefused("refused again");
 
     // Every press refuses the same way; one dialog for one table is the message.
+    await waitFor(() => expect(modalState.nodes.filter((node: any) => node.type === DeckyConfirmModal)).toHaveLength(1));
     expect(modalState.nodes.filter((node: any) => node.type === DeckyConfirmModal)).toHaveLength(1);
     expect(api.blockTable).not.toHaveBeenCalled();
   });
@@ -3418,13 +3496,74 @@ describe("Home panel and managed setup", () => {
     expect(screen.queryByRole("button", { name: "Prepare a copy that works here" })).toBeNull();
   });
 
+  it("offers the same one press for a pattern this build of the game does not hold", async () => {
+    // One press for whatever is wrong. A table that is only missing a pattern
+    // gets the offer too, and a repair the backend could not prove gets none:
+    // a press that refuses itself when pressed is the non-information an honest
+    // refusal exists to remove.
+    const onPrepareCopy = vi.fn().mockResolvedValue(undefined);
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, has_signature: false, scan_count: 28 } as any}
+      scanCheck={{ source: "file", present: [], missing: ["aobSpeed"], not_checked: [], elapsed_ms: 12, reason: null, repairable: true } as any}
+      scanCheckedProcess="game.exe"
+      onUse={vi.fn()}
+      onPrepareCopy={onPrepareCopy}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    fireEvent.click(within(block).getByRole("button", { name: "Prepare a copy that works here" }));
+    // The program the answer on screen is about, so the copy is prepared
+    // against the build the reader was shown.
+    expect(onPrepareCopy).toHaveBeenCalledWith("game.exe");
+
+    cleanup();
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, has_signature: false, scan_count: 28 } as any}
+      scanCheck={{ source: "file", present: [], missing: ["aobSpeed"], not_checked: [], elapsed_ms: 12, reason: null, repairable: false } as any}
+      scanCheckedProcess="game.exe"
+      onUse={vi.fn()}
+      onPrepareCopy={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const second = await screen.findByTestId("review-findings");
+    expect(second.textContent).toContain("aobSpeed");
+    expect(within(second).queryByRole("button", { name: "Prepare a copy that works here" })).toBeNull();
+  });
+
+  it("tells the reader of a repaired copy what it cost them", async () => {
+    // Both transforms in one copy, and the cheats that are gone with the hooks
+    // that went. A repair that did not say so would be handing somebody a table
+    // quietly missing what they came for.
+    const derived = {
+      ...table, sha256: "e".repeat(64), filename: "Game (repaired).CT",
+      derived_from: {
+        sha256: table.sha256,
+        transforms: ["remove-signature", "drop-unmatched-scans"],
+        scans: ["aobSpeed"], orphaned: ["Infinite boost"],
+      },
+    };
+    render(<TableReviewModal
+      table={derived as any}
+      inspection={{ ...inspect, has_signature: false } as any}
+      onUse={vi.fn()}
+      onPrepareCopy={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("removing the signature");
+    expect(block.textContent).toContain("aobSpeed");
+    expect(block.textContent).toContain("One cheat is gone from this copy: Infinite boost");
+  });
+
   it("tells the reader of a prepared copy what changed and who vouched for it", async () => {
     // The consent on this screen is for these exact bytes, and they are not the
     // bytes any source served. What changed, and what it cost, said where the
     // decision is made.
     const derived = {
       ...table, sha256: "d".repeat(64), filename: "Game (unsigned).CT",
-      derived_from: { sha256: table.sha256, transform: "remove-signature" },
+      derived_from: { sha256: table.sha256, transforms: ["remove-signature"], scans: [], orphaned: [] },
     };
     render(<TableReviewModal
       table={derived as any}

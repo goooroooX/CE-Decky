@@ -1048,7 +1048,7 @@ describe("detached modal density", () => {
     // provenance, rather than being called a local file it never was.
     const derived = {
       ...table, sha256: "d".repeat(64), filename: "Game (unsigned).CT",
-      has_signature: false, derived_from: { sha256: table.sha256, transform: "remove-signature" },
+      has_signature: false, derived_from: { sha256: table.sha256, transforms: ["remove-signature"], scans: [], orphaned: [] },
     };
     render(<ImportedTablesModal tables={[derived] as any} activeSha256={null} onSelect={vi.fn()} onClose={vi.fn()} />);
     const made = screen.getByTestId(`imported-table-${derived.sha256.slice(0, 8)}`);

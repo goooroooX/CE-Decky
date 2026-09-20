@@ -1002,14 +1002,21 @@ const inspectTableSource = callable("inspect_table_source");
 const importTable = callable("import_table");
 const inspectTableSha = callable("inspect_table_sha");
 /**
- * The same table without its signature, stored as a table of its own.
+ * The copy of this table that opens here, stored as a table of its own.
  *
  * The one call that makes CE Decky produce executable content rather than carry
  * it: the result is proven against the source in the backend before anything is
  * stored, and what comes back is an ordinary new table with its own digest, its
  * own inspection and its own consent still to give.
+ *
+ * One call for both of the things that stop a table working - its signature and
+ * a byte pattern this build of the game does not hold - because a user meeting
+ * both would otherwise make two copies and give consent three times for one
+ * table. Which of them applied is recorded on the result. The game and the
+ * program are named for the same reason the scan check names them: what is
+ * removed is decided by what this build of the game actually holds.
  */
-const deriveUnsignedTable = callable("derive_unsigned_table");
+const prepareTableCopy = callable("prepare_table_copy");
 /**
  * Whether this game's own program still holds the byte patterns a table scans for.
  *
@@ -4770,6 +4777,76 @@ function tableIsSigned(table) {
 function derivedFromLabel(table) {
     const source = table.derived_from?.sha256;
     return source ? `derived from ${source.slice(0, 12)}` : null;
+}
+/**
+ * What CE Decky changed in a copy it made, and what that copy cost.
+ *
+ * Said on the copy rather than on the press that made it, because this is where
+ * the consent for these exact bytes is given and they are not the bytes any
+ * source served. Both halves are owed: what was removed, so a reader knows why
+ * this table is not the one they found, and which of their cheats went with it,
+ * so a table quietly missing what they came for is not something they discover
+ * later.
+ *
+ * Every transform this build can apply is named here. An unknown one is
+ * possible on a record written by a build that knew a transform this one does
+ * not, and it is described as a change this build cannot name rather than
+ * passed through as a symbol nobody can read.
+ */
+function derivedChangeSentence(derivation) {
+    if (!derivation)
+        return null;
+    const source = derivation.sha256.slice(0, 12);
+    const parts = [];
+    for (const transform of derivation.transforms) {
+        if (transform === "remove-signature")
+            parts.push("removing the signature");
+        else if (transform === "drop-unmatched-scans") {
+            const scans = derivation.scans ?? [];
+            const named = scans.slice(0, 2).join(", ");
+            const rest = scans.length - Math.min(2, scans.length);
+            const which = rest > 0 ? `${named} and ${rest} more` : named;
+            parts.push(scans.length > 0
+                ? `taking out the code that needed ${which}, which this game's program does not hold`
+                : "taking out the code that needed a pattern this game's program does not hold");
+        }
+        else
+            parts.push("making a change this version cannot name");
+    }
+    // A record carrying no transform at all is not one this can describe. The
+    // store refuses to write one and drops one it cannot read, so this is the
+    // belt on that brace rather than a case anybody has seen.
+    if (parts.length === 0)
+        return null;
+    const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+    const orphaned = derivation.orphaned ?? [];
+    // The cost, in the words the table is read in. No cheat lost is a finding
+    // too: it is the difference between a repair and a table quietly missing
+    // what somebody came for, and it is the common case.
+    const named = orphaned.slice(0, 2).join(", ");
+    const rest = orphaned.length - Math.min(2, orphaned.length);
+    const cost = orphaned.length === 0
+        ? " No cheat was lost."
+        : ` ${orphaned.length === 1 ? "One cheat is" : `${orphaned.length} cheats are`} gone from this copy: ${rest > 0 ? `${named} and ${rest} more` : named}.`;
+    return `CE Decky made this copy from ${source} by ${what}.${cost}`
+        + " Nothing else in the table changed, and no source vouched for these bytes.";
+}
+/**
+ * Whether there is a copy of this table to prepare, and something to prepare it for.
+ *
+ * Offered for exactly what there is to do. A signature is enough on its own:
+ * Cheat Engine will not open the table at all. A missing pattern is enough only
+ * when the backend has made the repair and proved it, which it answers before
+ * this is asked - a press that refuses itself is the non-information an honest
+ * refusal exists to remove. A copy that has already been made gets no press: it
+ * is the thing the press produces.
+ */
+function canPrepareCopy(table, inspection, check) {
+    if (table.derived_from)
+        return false;
+    if (inspection?.has_signature === true)
+        return true;
+    return Boolean(check && check.missing.length > 0 && check.repairable === true);
 }
 /**
  * What a scan check found, as the one sentence Review says about it.
@@ -12157,9 +12234,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         // the bytes any source served: what changed, and what it cost. The
         // derivation was proven against the original before it was stored, so the
         // cheats are the ones the author wrote.
-        table.derived_from
-            ? `CE Decky made this copy from ${table.derived_from.sha256.slice(0, 12)} by removing the signature. Nothing else in the table changed, and no source vouched for these bytes.`
-            : null,
+        derivedChangeSentence(table.derived_from),
         // The signature leads what was read out of the table itself: it is the one
         // finding that says the table will probably not open at all. What the
         // reader needs is what it costs them and what it will look like, not how
@@ -12182,10 +12257,9 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         // with four answers. What is dropped is always the least consequential of
         // what applies, and a healthy table renders none of this at all.
     ].filter((item) => item !== null).slice(0, 2);
-    // Offered for exactly what there is to prepare. A table nobody can improve
-    // gets no press, and a copy that has already been made gets none either: it
-    // is the thing the press produces.
-    const canPrepare = Boolean(onPrepareCopy) && inspection.has_signature === true && !table.derived_from;
+    // Offered for exactly what there is to prepare, which is the signature, a
+    // pattern this build of the game does not hold, or both in one press.
+    const canPrepare = Boolean(onPrepareCopy) && canPrepareCopy(table, inspection, scanAnswer);
     // Most tables never name a process, and the library entry usually points at a
     // launcher rather than the executable that owns the game's memory. Offering
     // what the game is actually running keeps this a controller choice instead of
@@ -12452,7 +12526,11 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         setError(null);
         const operation = startUiOperation("review.prepare_copy", { table_sha: table.sha256 });
         try {
-            await onPrepareCopy();
+            // The program the answer on screen is about, not the one being typed:
+            // what this removes is decided by what that build of the game holds, and
+            // a copy prepared against a different program from the one the reader was
+            // shown would be a copy of a table nobody reviewed.
+            await onPrepareCopy(scanAskedFor.current);
             operation.completed();
         }
         catch (cause) {
@@ -13145,6 +13223,14 @@ const REFUSAL_ASK_WAIT_MS = 4000;
 // writes that cannot run beside another operation, so it waits again rather
 // than being thrown away at the press.
 const REFUSAL_ANSWER_WAIT_MS = 8000;
+// How long the question waits for the scan check that decides whether it has a
+// third answer to offer. The check reads the game's whole program, which is
+// under a second for the file this was measured against and bounded well above
+// that for a pattern with no fast path to find. The user has just been told
+// their table did not work and is waiting for the question, so a check that has
+// not answered by here is left behind and the dialog is the two answers it has
+// always had.
+const REFUSAL_SCAN_WAIT_MS = 5000;
 const BRIDGE_STARTUP_ACTION_BUDGET_MS = 11000;
 const STARTUP_OUTCOME_DELAY_MS = 500;
 /** The exact record the bridge reported a startup failure for, if it named one. */
@@ -15006,17 +15092,24 @@ function Content() {
         };
     };
     /**
-     * The copy of a signed table this Cheat Engine will open, ready to review.
+     * The copy of this table that Cheat Engine will open here, ready to review.
      *
-     * Cheat Engine refuses a signed table by returning false and saying nothing,
-     * so the copy is what the user actually needs and the press that makes it is
-     * offered where they meet the fact. The copy is a table of its own - a new
-     * digest, its own inspection, no origin, because no provider served these
-     * bytes - so it is associated and reviewed exactly like an import, and the
-     * consent is given on its own Review rather than on the press that made it.
+     * Two things stop a table working, and one press deals with whichever of them
+     * applies. Cheat Engine refuses a signed table by returning false and saying
+     * nothing; a byte pattern this build of the game does not hold takes out every
+     * cheat one script owns the moment it is enabled. The copy is a table of its
+     * own - a new digest, its own inspection, no origin, because no provider
+     * served these bytes - so it is associated and reviewed exactly like an
+     * import, and the consent is given on its own Review rather than on the press
+     * that made it.
+     *
+     * The program is named where the screen that pressed this knows which one it
+     * is about. Manage does not, and the backend falls back to the one this
+     * game's profile already uses, which is the same program that screen's rows
+     * are about.
      */
-    const prepareUnsignedCopy = async (sha256) => {
-        const derived = await deriveUnsignedTable(sha256);
+    const prepareTableCopyFor = async (sha256, targetProcess) => {
+        const derived = await prepareTableCopy(sha256, selectedGameRef.current?.appId ?? null, targetProcess);
         await ensureProfileAssociation(derived.sha256);
         return prepareReview(derived.sha256);
     };
@@ -15057,9 +15150,9 @@ function Content() {
                     }
                 });
                 close();
-            }, onPrepareCopy: async () => {
-                const review = await runAction(async function prepareUnsignedTableCopy() {
-                    return prepareUnsignedCopy(table.sha256);
+            }, onPrepareCopy: async (targetProcess) => {
+                const review = await runAction(async function prepareTableCopyFromReview() {
+                    return prepareTableCopyFor(table.sha256, targetProcess);
                 }, { failureShownByCaller: true });
                 // Serial handoff, the way Search and Manage hand over to Review: the
                 // screen being replaced closes first, and the copy's own Review opens
@@ -15245,8 +15338,8 @@ function Content() {
                     logUiFailure("panel.status_after_delete_failed", cause, { table: sha256.slice(0, 12) });
                 });
             }, onPrepareCopy: async (sha256) => {
-                const review = await runAction(async function prepareUnsignedTableCopyFromManage() {
-                    return prepareUnsignedCopy(sha256);
+                const review = await runAction(async function prepareTableCopyFromManage() {
+                    return prepareTableCopyFor(sha256, null);
                 }, { failureShownByCaller: true });
                 close();
                 showPreparedReview(review);
@@ -15438,6 +15531,26 @@ function Content() {
             // only one that matters here.
             if (!mountedRef.current)
                 logUiWarning("panel.table_refusal_asked_after_panel_closed", { table });
+            // What this build of the game does not hold, asked here because it is
+            // what decides whether there is a third answer to offer. A table that
+            // failed on a pattern the program does not have is the case the repair
+            // exists for, and this is the other door to it: Review can only ask the
+            // question when this device knows which program the game runs, and a
+            // table that got past Review unchecked meets the offer here instead.
+            //
+            // Best effort in every direction. This is a question put on top of an
+            // Apply that already failed, and a check that could not run leaves the
+            // dialog the two answers it has always had rather than replacing a
+            // failure the user is being shown with one about diagnosis.
+            const scan = await Promise.race([
+                checkTableScans(tableSha256, game.appId, null).catch((cause) => {
+                    logUiFailure("panel.refusal_scan_check_failed", cause, { table });
+                    return null;
+                }),
+                new Promise((resolve) => { window.setTimeout(() => resolve(null), REFUSAL_SCAN_WAIT_MS); }),
+            ]);
+            if (scan === null)
+                logUiWarning("panel.refusal_scan_check_unavailable", { table });
             // Another Apply may have got here first while this one was waiting.
             if (refusalDialogRef.current === tableSha256) {
                 logUi("panel.table_refusal_already_open", { table });
@@ -15448,7 +15561,7 @@ function Content() {
             // A window that could not be opened must not leave the table looking as
             // though it had been asked about: the guard comes straight back off.
             try {
-                openRefusalDialog();
+                openRefusalDialog(scan);
                 logUi("panel.table_refusal_asked", { table });
             }
             catch (cause) {
@@ -15456,142 +15569,239 @@ function Content() {
                 logUiFailure("panel.table_refusal_dialog_failed", cause, { table });
             }
         })();
-        function openRefusalDialog() {
+        function openRefusalDialog(scan) {
+            // What the check found, and whether a copy without it is one the backend
+            // has made and proven. A repair is offered for a proof that passed, never
+            // for the fact that something is missing: a third answer that refuses
+            // itself when pressed is the non-information this product exists to
+            // remove.
+            const missingScans = scan?.missing.length ?? 0;
+            const repairable = Boolean(scan && missingScans > 0 && scan.repairable === true);
+            // The count the table's own patterns are read against, which is what this
+            // check was handed: what it found, what it did not, and what it could not
+            // look for.
+            const scanned = scan ? scan.present.length + scan.missing.length + scan.not_checked.length : 0;
+            const scanSentence = missingScanFinding(scan, scanned) ?? "";
+            // Said where it applies: a pattern is missing and the script's remaining
+            // code still needs what taking it out would remove, so there is nothing
+            // to offer and the reason is not a mystery.
+            // What is true whatever refused it. The proof fails where the rest of the
+            // script still needs the code that would go, and also where the table
+            // could not be read at all, so naming one of those as the cause would be
+            // stating something nobody established.
+            const noRepair = missingScans > 0 && !repairable
+                ? " CE Decky cannot make a copy without that pattern and prove the rest of the table is still the table you have, so there is none to offer."
+                : "";
+            const question = repairable
+                ? " CE Decky can prepare a copy of this table without the code that needs it, and open it for review. Or stop using this table for this game?"
+                : " Stop using it for this game?";
             // Keeping the table writes nothing at all, which is also what the
             // controller's Back button does: Steam routes gamepad cancel to
             // `onCancel`, so that handler is reached both by the button and by a
             // reflex press to clear the screen, and neither may leave durable state
             // behind. Everything durable happens on the explicit "Stop using it".
-            const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "This table did not work", strDescription: `${reason} Stop using it for this game? These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`, strOKButtonText: "Stop using it", strCancelButtonText: "Keep it", onCancel: traceUiAction("panel.table_refusal.keep", () => { dismiss(); confirm.Close(); }), onOK: traceUiAction("panel.table_refusal.stop", () => {
-                    const interaction = currentUiAction();
-                    dismiss();
-                    confirm.Close();
-                    void answerWhenIdle();
-                    /**
-                     * The answer, once the latch it needs is actually free.
-                     *
-                     * The question is put by a wait that is allowed to give up on that
-                     * latch, because a latch that never comes free must not swallow it.
-                     * That leaves this press arriving while an operation still holds it,
-                     * and `runAction` refuses on the spot: the dialog had already closed
-                     * itself, so the user's answer was accepted-looking and then dropped
-                     * with "Another CE Decky operation is still running" over a table
-                     * that went on applying. Waiting here is the same reasoning as the
-                     * wait that put the question, one step later.
-                     *
-                     * If it never comes free the answer is still not silently lost. It
-                     * says the withdrawal could not be made and that the table is still
-                     * in use, which is a thing the user can act on, rather than a toast
-                     * about an operation they did not start.
-                     */
-                    async function answerWhenIdle() {
-                        if (busyRef.current) {
-                            await Promise.race([
-                                whenIdle(),
-                                new Promise((resolve) => { window.setTimeout(resolve, REFUSAL_ANSWER_WAIT_MS); }),
-                            ]);
+            //
+            // Where there is a repair it takes the primary answer and stopping moves
+            // to the middle, which is the order the reader is owed: the answer that
+            // might give them a working table before the one that retires it. Where
+            // there is none the dialog is the two answers it has always been.
+            const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "This table did not work", strDescription: `${reason}${scanSentence ? ` ${scanSentence}` : ""}${noRepair}${question} These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`, strOKButtonText: repairable ? "Try a repaired copy" : "Stop using it", strMiddleButtonText: repairable ? "Stop using it" : undefined, onMiddleButton: repairable ? traceUiAction("panel.table_refusal.stop_beside_repair", () => { stopUsing(); }) : undefined, strCancelButtonText: "Keep it", onCancel: traceUiAction("panel.table_refusal.keep", () => { dismiss(); confirm.Close(); }), onOK: repairable
+                    ? traceUiAction("panel.table_refusal.repair", () => {
+                        // Captured before the dialog closes, the way the answer beside it
+                        // does: the operation this starts runs detached, and without the
+                        // press it came from the record shows work nobody asked for.
+                        const interaction = currentUiAction();
+                        dismiss();
+                        confirm.Close();
+                        // Nothing durable: the copy is new bytes with a new digest, and
+                        // the consent for them is given on the Review this opens. The
+                        // table that failed is left exactly as it was, because the user
+                        // has not said to stop using it.
+                        void repairWhenIdle();
+                        /**
+                         * The copy, once the latch it needs is actually free.
+                         *
+                         * The same reasoning as the answer beside it, and the same defect
+                         * if it is left out: this question is put by a wait that is
+                         * allowed to give up on that latch, so the press can arrive while
+                         * an operation still holds it and `runAction` refuses on the
+                         * spot - with the dialog already closed, which is a press that
+                         * looked accepted and produced a message about an operation the
+                         * user did not start.
+                         */
+                        async function repairWhenIdle() {
+                            if (busyRef.current) {
+                                await Promise.race([
+                                    whenIdle(),
+                                    new Promise((resolve) => { window.setTimeout(resolve, REFUSAL_ANSWER_WAIT_MS); }),
+                                ]);
+                            }
+                            // Re-read rather than trusting the race: the panel unmounting
+                            // releases every waiter without the operation having finished.
+                            if (busyRef.current) {
+                                const message = `${game.name} is still busy with the last thing you pressed, so no copy was made. Press Apply again to be asked once more.`;
+                                logUiWarning("panel.refusal_repair_blocked", { table });
+                                setError(message);
+                                toaster.toast({ title: "CE Decky", body: message });
+                                return;
+                            }
+                            // This dialog outlives the press that opened it, and everything
+                            // below acts on whatever game is selected now: the copy joins
+                            // that game's library and is prepared against the program that
+                            // game runs. A game switched underneath it would have made a
+                            // copy for the wrong one.
+                            const selected = selectedGameRef.current;
+                            if (!selected || selected.appId !== game.appId || selected.isShortcut !== game.isShortcut) {
+                                const message = `${game.name} is no longer the selected game, so no copy was made. Select it again and press Apply to be asked once more.`;
+                                logUiWarning("panel.refusal_repair_wrong_game", { table });
+                                toaster.toast({ title: "CE Decky", body: message });
+                                return;
+                            }
+                            try {
+                                const review = await runAction(async function prepareTableCopyFromRefusal() {
+                                    return prepareTableCopyFor(tableSha256, null);
+                                }, { interaction });
+                                showPreparedReview(review);
+                            }
+                            catch (cause) {
+                                // `runAction` has already reported it, in a dialog where it
+                                // can. The table is untouched and the question can be put
+                                // again by the next Apply.
+                                logUiFailure("panel.refusal_repair_failed", cause, { table });
+                            }
                         }
-                        // Re-read rather than trusting the race: the panel unmounting
-                        // releases every waiter without the operation having finished, and
-                        // another press may have taken the latch in the gap.
-                        if (busyRef.current) {
-                            const message = `${game.name} is still busy with the last thing you pressed, so this table was not stopped. Try Stop using it again in a moment.`;
-                            logUiWarning("panel.table_refusal_answer_blocked", { table });
-                            setError(message);
-                            toaster.toast({ title: "CE Decky", body: message });
-                            return;
-                        }
-                        try {
-                            await runAction(async () => {
-                                // Whatever this got through, it says so on the way out. Every
-                                // step below is a durable write, the panel that asked is very
-                                // likely gone by now, and a partial answer changes the
-                                // authority exactly as much as a whole one does.
-                                try {
-                                    await answerStopUsing();
-                                }
-                                finally {
-                                    notifyAuthorityChanged();
-                                }
-                            }, { interaction });
-                        }
-                        catch {
-                            // `runAction` has already reported it, in a dialog where it can.
-                            return;
-                        }
-                        // The user has just said this table does not work, so the next
-                        // thing they are going to do is look for one that does. The panel
-                        // they say it from is usually gone by now - the question closes
-                        // Configure cheats, which takes the quick access panel with it - so
-                        // this is a request the panel takes when it comes back rather than
-                        // a control being focused here.
-                        //
-                        // Only when the answer went through. A failure puts a dialog of its
-                        // own over the panel, and moving the ring underneath that is moving
-                        // it somewhere the user cannot see it.
-                        logUi("panel.focus_requested", { control: "search", table });
-                        requestPanelFocus("search");
+                    })
+                    : traceUiAction("panel.table_refusal.stop", () => { stopUsing(); }) }));
+            function stopUsing() {
+                const interaction = currentUiAction();
+                dismiss();
+                confirm.Close();
+                void answerWhenIdle();
+                /**
+                 * The answer, once the latch it needs is actually free.
+                 *
+                 * The question is put by a wait that is allowed to give up on that
+                 * latch, because a latch that never comes free must not swallow it.
+                 * That leaves this press arriving while an operation still holds it,
+                 * and `runAction` refuses on the spot: the dialog had already closed
+                 * itself, so the user's answer was accepted-looking and then dropped
+                 * with "Another CE Decky operation is still running" over a table
+                 * that went on applying. Waiting here is the same reasoning as the
+                 * wait that put the question, one step later.
+                 *
+                 * If it never comes free the answer is still not silently lost. It
+                 * says the withdrawal could not be made and that the table is still
+                 * in use, which is a thing the user can act on, rather than a toast
+                 * about an operation they did not start.
+                 */
+                async function answerWhenIdle() {
+                    if (busyRef.current) {
+                        await Promise.race([
+                            whenIdle(),
+                            new Promise((resolve) => { window.setTimeout(resolve, REFUSAL_ANSWER_WAIT_MS); }),
+                        ]);
                     }
-                    async function answerStopUsing() {
-                        // This dialog outlives the press that opened it, and withdrawing an
-                        // authorization always acts on whatever game is selected now. A
-                        // game switched underneath it would have had the wrong table
-                        // revoked, so the answer only counts for the game it was asked
-                        // about.
-                        const selected = selectedGameRef.current;
-                        // A profile is keyed by AppID *and* by whether the entry is a
-                        // shortcut, and the backend treats a write that disagrees about the
-                        // second one as a different game: it resets the profile, dropping
-                        // the table library and every table's archived preferences with it.
-                        // Everything below reads the profile through `selected` and writes
-                        // it through `game`, so the two identities have to be the same one
-                        // before any of that runs.
-                        if (!selected || selected.appId !== game.appId || selected.isShortcut !== game.isShortcut) {
-                            throw new Error(`${game.name} is no longer the selected game, so nothing was changed. Select it again to stop using this table.`);
-                        }
-                        // The mark is written here, on the answer, rather than before the
-                        // question. A failure to record it is reported and never stops the
-                        // authorization from being withdrawn: the user asked to stop using
-                        // this table, and that has to happen whatever the bookkeeping does.
-                        let marked = false;
-                        // What the backend said when it could not record it. The advisory
-                        // list is bounded and refuses rather than dropping somebody else's
-                        // decision, and the way to make room is a press on a screen the user
-                        // can reach: throwing that sentence away left them with a statement
-                        // that something failed and nothing they could do about it.
-                        let markFailure = null;
-                        try {
-                            await blockTable(tableSha256, reason, game.appId);
-                            // Recorded from here on, whatever the re-read of the list does:
-                            // reporting a write that landed as one that did not is the
-                            // protection failing closed while the user is told it failed.
-                            marked = true;
-                            await refreshBlockedTables();
-                        }
-                        catch (cause) {
-                            logUiFailure("panel.refusal_mark_failed", cause, { table_sha: tableSha256.slice(0, 12) });
-                            markFailure = describeError(cause).slice(0, 240);
-                            const listed = await refreshBlockedTables();
-                            marked = listed.reason ? null : listed.tables.some((entry) => entry.sha256 === tableSha256);
-                        }
-                        // One exact-SHA command withdraws authorization, disarms automatic
-                        // startup and detaches the selection while retaining local bytes.
-                        await revokeProfileTable(game.appId, tableSha256);
-                        toaster.toast({
-                            title: "CE Decky",
-                            body: [
-                                "No longer using this table.",
-                                marked === null
-                                    ? "The not-working mark could not be confirmed; refresh the list under Advanced."
-                                    : marked
-                                        ? "It is marked as not working; clear that under Advanced."
-                                        : markFailure
-                                            ? leadWithCause(markFailure, "CE Decky could not record that it did not work.")
-                                            : "CE Decky could not record that it did not work, so search may offer it again.",
-                            ].filter(Boolean).join(" "),
-                        });
+                    // Re-read rather than trusting the race: the panel unmounting
+                    // releases every waiter without the operation having finished, and
+                    // another press may have taken the latch in the gap.
+                    if (busyRef.current) {
+                        const message = `${game.name} is still busy with the last thing you pressed, so this table was not stopped. Try Stop using it again in a moment.`;
+                        logUiWarning("panel.table_refusal_answer_blocked", { table });
+                        setError(message);
+                        toaster.toast({ title: "CE Decky", body: message });
+                        return;
                     }
-                }) }));
+                    try {
+                        await runAction(async () => {
+                            // Whatever this got through, it says so on the way out. Every
+                            // step below is a durable write, the panel that asked is very
+                            // likely gone by now, and a partial answer changes the
+                            // authority exactly as much as a whole one does.
+                            try {
+                                await answerStopUsing();
+                            }
+                            finally {
+                                notifyAuthorityChanged();
+                            }
+                        }, { interaction });
+                    }
+                    catch {
+                        // `runAction` has already reported it, in a dialog where it can.
+                        return;
+                    }
+                    // The user has just said this table does not work, so the next
+                    // thing they are going to do is look for one that does. The panel
+                    // they say it from is usually gone by now - the question closes
+                    // Configure cheats, which takes the quick access panel with it - so
+                    // this is a request the panel takes when it comes back rather than
+                    // a control being focused here.
+                    //
+                    // Only when the answer went through. A failure puts a dialog of its
+                    // own over the panel, and moving the ring underneath that is moving
+                    // it somewhere the user cannot see it.
+                    logUi("panel.focus_requested", { control: "search", table });
+                    requestPanelFocus("search");
+                }
+                async function answerStopUsing() {
+                    // This dialog outlives the press that opened it, and withdrawing an
+                    // authorization always acts on whatever game is selected now. A
+                    // game switched underneath it would have had the wrong table
+                    // revoked, so the answer only counts for the game it was asked
+                    // about.
+                    const selected = selectedGameRef.current;
+                    // A profile is keyed by AppID *and* by whether the entry is a
+                    // shortcut, and the backend treats a write that disagrees about the
+                    // second one as a different game: it resets the profile, dropping
+                    // the table library and every table's archived preferences with it.
+                    // Everything below reads the profile through `selected` and writes
+                    // it through `game`, so the two identities have to be the same one
+                    // before any of that runs.
+                    if (!selected || selected.appId !== game.appId || selected.isShortcut !== game.isShortcut) {
+                        throw new Error(`${game.name} is no longer the selected game, so nothing was changed. Select it again to stop using this table.`);
+                    }
+                    // The mark is written here, on the answer, rather than before the
+                    // question. A failure to record it is reported and never stops the
+                    // authorization from being withdrawn: the user asked to stop using
+                    // this table, and that has to happen whatever the bookkeeping does.
+                    let marked = false;
+                    // What the backend said when it could not record it. The advisory
+                    // list is bounded and refuses rather than dropping somebody else's
+                    // decision, and the way to make room is a press on a screen the user
+                    // can reach: throwing that sentence away left them with a statement
+                    // that something failed and nothing they could do about it.
+                    let markFailure = null;
+                    try {
+                        await blockTable(tableSha256, reason, game.appId);
+                        // Recorded from here on, whatever the re-read of the list does:
+                        // reporting a write that landed as one that did not is the
+                        // protection failing closed while the user is told it failed.
+                        marked = true;
+                        await refreshBlockedTables();
+                    }
+                    catch (cause) {
+                        logUiFailure("panel.refusal_mark_failed", cause, { table_sha: tableSha256.slice(0, 12) });
+                        markFailure = describeError(cause).slice(0, 240);
+                        const listed = await refreshBlockedTables();
+                        marked = listed.reason ? null : listed.tables.some((entry) => entry.sha256 === tableSha256);
+                    }
+                    // One exact-SHA command withdraws authorization, disarms automatic
+                    // startup and detaches the selection while retaining local bytes.
+                    await revokeProfileTable(game.appId, tableSha256);
+                    toaster.toast({
+                        title: "CE Decky",
+                        body: [
+                            "No longer using this table.",
+                            marked === null
+                                ? "The not-working mark could not be confirmed; refresh the list under Advanced."
+                                : marked
+                                    ? "It is marked as not working; clear that under Advanced."
+                                    : markFailure
+                                        ? leadWithCause(markFailure, "CE Decky could not record that it did not work.")
+                                        : "CE Decky could not record that it did not work, so search may offer it again.",
+                        ].filter(Boolean).join(" "),
+                    });
+                }
+            }
         }
     };
     const openCheatSelection = () => {

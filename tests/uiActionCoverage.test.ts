@@ -48,9 +48,22 @@ it("keeps every owned control handler traced and listed in the action audit, inc
           // inside its own box and passes the caller's already traced handler
           // straight through. Every call site is checked like any other.
           if (file === "components/PanelDensity.tsx" && tag === "TextField" && expression?.getText(ast) === "onChange") continue;
-          if (!expression || !ts.isCallExpression(expression) || !["traceUiAction", "traceUiEdit"].includes(expression.expression.getText(ast)) || !ts.isStringLiteral(expression.arguments[0])) {
+          // A handler that is there is traced. A dialog whose answers change
+          // shape - the refusal dialog gains a third answer where a repair was
+          // proven and drops the middle button where it was not - passes each
+          // branch through the same rule, and a branch that is `undefined` is a
+          // control that is not drawn rather than one nobody traced.
+          const traced = (candidate: ts.Expression | undefined): boolean => {
+            if (!candidate) return false;
+            if (ts.isConditionalExpression(candidate)) return traced(candidate.whenTrue) && traced(candidate.whenFalse);
+            if (ts.isIdentifier(candidate) && candidate.text === "undefined") return true;
+            return ts.isCallExpression(candidate)
+              && ["traceUiAction", "traceUiEdit"].includes(candidate.expression.getText(ast))
+              && ts.isStringLiteral(candidate.arguments[0]);
+          };
+          if (!traced(expression)) {
             missing.push(`${file}:${ast.getLineAndCharacterOfPosition(attribute.pos).line + 1} ${tag}.${attribute.name.getText(ast)}`);
-          } else if (tag === "TextField" && expression.expression.getText(ast) !== "traceUiEdit") {
+          } else if (tag === "TextField" && (!ts.isCallExpression(expression!) || expression!.expression.getText(ast) !== "traceUiEdit")) {
             missing.push(`${file}: TextField must coalesce typing`);
           }
         }

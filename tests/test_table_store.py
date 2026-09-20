@@ -286,6 +286,129 @@ def test_legacy_metadata_is_normalized_without_execution_assumptions(tmp_path: P
     assert item["available"] is True
 
 
+def test_a_derivation_written_by_an_older_build_reads_as_the_one_transform_it_names(tmp_path: Path):
+    """One derived table per transform was how this shipped first.
+
+    Those records name a single `transform`, and they are read as the
+    one-element list they describe rather than dropped: the bytes are what the
+    user consented to, and a note about their history is not something a table
+    they are holding may become unlistable over. Rewriting them was considered
+    and rejected - a migration touching every stored table to reword its
+    history is a risk taken for nothing.
+    """
+    import json
+    import hashlib
+
+    store = TableStore(tmp_path / "store")
+    digest = hashlib.sha256(CT).hexdigest()
+    blob = store.blob_root / digest[:2] / digest / "table.CT"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(CT)
+    store.meta_root.mkdir(parents=True)
+    source = "a" * 64
+    (store.meta_root / f"{digest}.json").write_text(json.dumps({
+        "sha256": digest,
+        "filename": "derived.CT",
+        "size": len(CT),
+        "entry_count": 1,
+        "derived_from": {"sha256": source, "transform": "remove-signature"},
+    }))
+
+    item = store.list_tables()[0]
+
+    assert item["derived_from"] == {
+        "sha256": source, "transforms": ["remove-signature"], "scans": [], "orphaned": [],
+    }
+
+
+def test_a_derivation_naming_a_transform_this_build_cannot_make_is_dropped(tmp_path: Path):
+    """A record may not describe a derivation this build does not know how to make."""
+    import json
+    import hashlib
+
+    store = TableStore(tmp_path / "store")
+    digest = hashlib.sha256(CT).hexdigest()
+    blob = store.blob_root / digest[:2] / digest / "table.CT"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(CT)
+    store.meta_root.mkdir(parents=True)
+    (store.meta_root / f"{digest}.json").write_text(json.dumps({
+        "sha256": digest,
+        "filename": "derived.CT",
+        "size": len(CT),
+        "entry_count": 1,
+        "derived_from": {"sha256": "b" * 64, "transforms": ["remove-signature", "rewrite-everything"]},
+    }))
+
+    assert store.list_tables()[0]["derived_from"] is None
+
+
+def test_a_derivation_record_of_the_wrong_shape_cannot_take_out_the_listing(tmp_path: Path):
+    """A note about one table's history may never cost the user every table.
+
+    Metadata is JSON this store wrote and anything on the device may have
+    rewritten, so the list holding it is read defensively: a transform list
+    carrying something that is not a name is dropped with the note, and the
+    table itself is still listed and still usable.
+    """
+    import json
+    import hashlib
+
+    store = TableStore(tmp_path / "store")
+    digest = hashlib.sha256(CT).hexdigest()
+    blob = store.blob_root / digest[:2] / digest / "table.CT"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(CT)
+    store.meta_root.mkdir(parents=True)
+    (store.meta_root / f"{digest}.json").write_text(json.dumps({
+        "sha256": digest,
+        "filename": "derived.CT",
+        "size": len(CT),
+        "entry_count": 1,
+        "derived_from": {
+            "sha256": "c" * 64,
+            "transforms": [{"remove-signature": True}, ["drop-unmatched-scans"]],
+            "scans": [{"name": "aobSpeed"}],
+        },
+    }))
+
+    listed = store.list_tables()
+
+    assert len(listed) == 1 and listed[0]["available"] is True
+    assert listed[0]["derived_from"] is None
+
+
+def test_a_derivation_reports_every_cheat_that_went_even_where_two_share_a_name(tmp_path: Path):
+    """Two cheats in one table are routinely described the same way.
+
+    Counting them once would report two cheats gone from a copy as one, in the
+    sentence that exists to state what the copy cost.
+    """
+    import json
+    import hashlib
+
+    store = TableStore(tmp_path / "store")
+    digest = hashlib.sha256(CT).hexdigest()
+    blob = store.blob_root / digest[:2] / digest / "table.CT"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(CT)
+    store.meta_root.mkdir(parents=True)
+    (store.meta_root / f"{digest}.json").write_text(json.dumps({
+        "sha256": digest,
+        "filename": "derived.CT",
+        "size": len(CT),
+        "entry_count": 1,
+        "derived_from": {
+            "sha256": "d" * 64,
+            "transforms": ["drop-unmatched-scans"],
+            "scans": ["aobSpeed"],
+            "orphaned": ["Speed", "Speed"],
+        },
+    }))
+
+    assert store.list_tables()[0]["derived_from"]["orphaned"] == ["Speed", "Speed"]
+
+
 def test_verified_blob_detects_same_size_tamper(tmp_path: Path):
     store = TableStore(tmp_path / "tables")
     source = tmp_path / "game.CT"

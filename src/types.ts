@@ -128,12 +128,29 @@ export interface TableScanCheck {
   not_checked: Array<{ name: string; reason: string }>;
   elapsed_ms: number;
   reason: string | null;
+  /**
+   * Whether a copy without the hooks of what is missing is one the backend can
+   * prove. `null` means nobody asked, because nothing is missing or nothing was
+   * searched, and it may never be read as a repair that was refused.
+   */
+  repairable: boolean | null;
 }
 
-/** The exact table a derived one came from, and the one transform applied. */
+/**
+ * The exact table a derived one came from, and what CE Decky did to it.
+ *
+ * One record for one press: a table that was both signed and scanning for a
+ * pattern this build of the game does not hold is repaired in a single step, so
+ * `transforms` is what was applied, in order. `scans` are the patterns whose
+ * hooks went, and `orphaned` names the cheats that were reached through them
+ * and are not in this copy - the cost, which the copy's own Review states
+ * before the consent for it is given.
+ */
 export interface TableDerivation {
   sha256: string;
-  transform: string;
+  transforms: string[];
+  scans: string[];
+  orphaned: string[];
 }
 
 export interface TableOrigin {

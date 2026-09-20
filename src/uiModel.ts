@@ -1,6 +1,6 @@
 import { isArchiveFilename } from "./tableImport";
 import type { GameSummary } from "./steam/client";
-import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, PluginUpdateState, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableInspection, TableScanCheck, TableStatus } from "./types";
+import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, PluginUpdateState, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableDerivation, TableInspection, TableScanCheck, TableStatus } from "./types";
 
 // One 1280x800 Game Mode viewport fits roughly six compact record rows beside
 // the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
@@ -1863,6 +1863,75 @@ export function tableIsSigned(table: Pick<TableStatus, "has_signature"> | null |
 export function derivedFromLabel(table: Pick<TableStatus, "derived_from">): string | null {
   const source = table.derived_from?.sha256;
   return source ? `derived from ${source.slice(0, 12)}` : null;
+}
+
+/**
+ * What CE Decky changed in a copy it made, and what that copy cost.
+ *
+ * Said on the copy rather than on the press that made it, because this is where
+ * the consent for these exact bytes is given and they are not the bytes any
+ * source served. Both halves are owed: what was removed, so a reader knows why
+ * this table is not the one they found, and which of their cheats went with it,
+ * so a table quietly missing what they came for is not something they discover
+ * later.
+ *
+ * Every transform this build can apply is named here. An unknown one is
+ * possible on a record written by a build that knew a transform this one does
+ * not, and it is described as a change this build cannot name rather than
+ * passed through as a symbol nobody can read.
+ */
+export function derivedChangeSentence(derivation: TableDerivation | null | undefined): string | null {
+  if (!derivation) return null;
+  const source = derivation.sha256.slice(0, 12);
+  const parts: string[] = [];
+  for (const transform of derivation.transforms) {
+    if (transform === "remove-signature") parts.push("removing the signature");
+    else if (transform === "drop-unmatched-scans") {
+      const scans = derivation.scans ?? [];
+      const named = scans.slice(0, 2).join(", ");
+      const rest = scans.length - Math.min(2, scans.length);
+      const which = rest > 0 ? `${named} and ${rest} more` : named;
+      parts.push(scans.length > 0
+        ? `taking out the code that needed ${which}, which this game's program does not hold`
+        : "taking out the code that needed a pattern this game's program does not hold");
+    } else parts.push("making a change this version cannot name");
+  }
+  // A record carrying no transform at all is not one this can describe. The
+  // store refuses to write one and drops one it cannot read, so this is the
+  // belt on that brace rather than a case anybody has seen.
+  if (parts.length === 0) return null;
+  const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+  const orphaned = derivation.orphaned ?? [];
+  // The cost, in the words the table is read in. No cheat lost is a finding
+  // too: it is the difference between a repair and a table quietly missing
+  // what somebody came for, and it is the common case.
+  const named = orphaned.slice(0, 2).join(", ");
+  const rest = orphaned.length - Math.min(2, orphaned.length);
+  const cost = orphaned.length === 0
+    ? " No cheat was lost."
+    : ` ${orphaned.length === 1 ? "One cheat is" : `${orphaned.length} cheats are`} gone from this copy: ${rest > 0 ? `${named} and ${rest} more` : named}.`;
+  return `CE Decky made this copy from ${source} by ${what}.${cost}`
+    + " Nothing else in the table changed, and no source vouched for these bytes.";
+}
+
+/**
+ * Whether there is a copy of this table to prepare, and something to prepare it for.
+ *
+ * Offered for exactly what there is to do. A signature is enough on its own:
+ * Cheat Engine will not open the table at all. A missing pattern is enough only
+ * when the backend has made the repair and proved it, which it answers before
+ * this is asked - a press that refuses itself is the non-information an honest
+ * refusal exists to remove. A copy that has already been made gets no press: it
+ * is the thing the press produces.
+ */
+export function canPrepareCopy(
+  table: Pick<TableStatus, "derived_from">,
+  inspection: Pick<TableInspection, "has_signature"> | null,
+  check: TableScanCheck | null | undefined,
+): boolean {
+  if (table.derived_from) return false;
+  if (inspection?.has_signature === true) return true;
+  return Boolean(check && check.missing.length > 0 && check.repairable === true);
 }
 
 /**

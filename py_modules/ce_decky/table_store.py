@@ -104,8 +104,15 @@ class TableArtifact:
     # the bytes are re-inspected whenever they are imported again.
     has_forms: bool = False
     # Where these bytes came from when CE Decky made them rather than carried
-    # them: the exact table they were derived from and the one transform that
-    # was applied, as `{"sha256": ..., "transform": ...}`.
+    # them: the exact table they were derived from, every transform that was
+    # applied in the order it was applied, and what the repairing ones took
+    # out, as `{"sha256": ..., "transforms": [...], "scans": [...],
+    # "orphaned": [...]}`.
+    #
+    # One record for one press. A table that is both signed and scanning for a
+    # pattern this build of the game does not hold is repaired in a single step
+    # and is one derived table, so what it says about itself is a list rather
+    # than a chain of tables each naming the last.
     #
     # A derived table is an ordinary table in every other way - its own digest,
     # its own inspection, its own consent - and it deliberately carries no
@@ -921,7 +928,35 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
 
 # What CE Decky may say it did to a table's bytes. One name per transform, so a
 # record cannot describe a derivation this build does not know how to make.
-KNOWN_TRANSFORMS = frozenset({"remove-signature"})
+KNOWN_TRANSFORMS = frozenset({"remove-signature", "drop-unmatched-scans"})
+
+# What one derivation record may carry of what the repair took out. Both lists
+# are what the copy's own Review says it changed and what that cost, and both
+# come from a table whose author this project does not know, so they are bounded
+# here rather than trusted: a record is a note about history and may never be
+# the reason a table the user is holding cannot be listed.
+MAX_DERIVED_NAMES = 64
+MAX_DERIVED_NAME_CHARS = 128
+
+
+def _normalize_names(raw: object) -> list[str]:
+    """A bounded list of names a derivation reports, or an empty one.
+
+    Repetitions are kept. These are the table author's own words, and two cheats
+    in one table are routinely described the same way: counting them once would
+    report two cheats gone from a copy as one, which is the cost being
+    understated in the one sentence that exists to state it.
+    """
+    if not isinstance(raw, list):
+        return []
+    found: list[str] = []
+    for item in raw[:MAX_DERIVED_NAMES]:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()[:MAX_DERIVED_NAME_CHARS]
+        if name:
+            found.append(name)
+    return found
 
 
 def _normalize_derivation(raw: object) -> dict[str, object] | None:
@@ -931,20 +966,44 @@ def _normalize_derivation(raw: object) -> dict[str, object] | None:
     row says about a table: the bytes are verified on their own, and a table the
     user is holding must not become unusable because a note about its history
     does not parse.
+
+    A record written by a build that made one derived table per transform named
+    a single `transform`, and reads here as the one-element list it describes.
+    Rewriting those records was considered and rejected: the bytes are what the
+    user consented to, the note about them is not identity, and a migration that
+    touched every stored table to reword its history would be a risk taken for
+    nothing.
     """
-    if not isinstance(raw, dict) or set(raw) != {"sha256", "transform"}:
+    if not isinstance(raw, dict):
         return None
     source = raw.get("sha256")
-    transform = raw.get("transform")
     if not isinstance(source, str):
         return None
     try:
         source = _normalize_digest(source)
     except ValueError:
         return None
-    if transform not in KNOWN_TRANSFORMS:
+    if "transforms" in raw:
+        listed = raw.get("transforms")
+        if not isinstance(listed, list):
+            return None
+        # Strings first, then de-duplicated. A record is untrusted JSON, and
+        # `dict.fromkeys` on a list holding a dict or a list raises, which would
+        # take out the listing of every table this device holds over a note
+        # about one table's history.
+        transforms = list(dict.fromkeys(item for item in listed if isinstance(item, str)))
+    else:
+        transforms = [raw["transform"]] if isinstance(raw.get("transform"), str) else []
+    if not transforms or len(transforms) > len(KNOWN_TRANSFORMS):
         return None
-    return {"sha256": source, "transform": transform}
+    if any(name not in KNOWN_TRANSFORMS for name in transforms):
+        return None
+    return {
+        "sha256": source,
+        "transforms": transforms,
+        "scans": _normalize_names(raw.get("scans")),
+        "orphaned": _normalize_names(raw.get("orphaned")),
+    }
 
 
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")

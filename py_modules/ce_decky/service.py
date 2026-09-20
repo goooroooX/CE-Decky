@@ -61,7 +61,14 @@ from .network import NetworkClient
 from .operations import drained_to_thread
 from .catalog import CatalogService
 from .artifact_resolutions import ArtifactResolutions
-from .ct_scans import ScanCheck, check_executable
+from .ct_scans import (
+    ScanCheck,
+    ScanRepairError,
+    assert_only_scans_dropped,
+    check_executable,
+    drop_unmatched_scans,
+    scans_in_table,
+)
 from .table_compatibility import TableCompatibility, compatibility_state, steam_build_id
 from .acquisition import AcquisitionManager
 from .paths import PluginPaths
@@ -1666,13 +1673,17 @@ class PluginService:
         which could not be looked for.
         """
         digest = self._sha(digest)
-        blob = self.table_store.verified_blob(digest)
-        inspection = self._inspect_table_blob(blob, digest, app_id)
-        program, found_by = self._game_program_path(app_id, target_process)
-        if program is None:
-            answer = ScanCheck(source="file", reason="this device does not know which program this game runs")
-        else:
-            answer = check_executable(program, list(inspection.scans))
+        source = self.table_store.verified_blob(digest)
+        inspection = self._inspect_table_blob(source, digest, app_id)
+        answer, found_by = self._scan_answer(inspection, app_id, target_process)
+        # Whether the copy this could prepare is one it can prove, asked here
+        # because this is where the answer is needed: Review offers the press
+        # only for a repair that exists, and the dialog that meets a table which
+        # already failed offers it there for the same reason. Guessing from the
+        # fact that something is missing would put a press on screen that
+        # refuses itself, which is the outcome an honest refusal replaces.
+        if answer.missing:
+            answer = replace(answer, repairable=self._repair_is_provable(source, answer.missing))
         # Every reason, not a count of them: `3 not checked` is the same
         # non-information an honest refusal exists to remove, and which of them
         # it was - another of the game's files, no first byte to find, a spent
@@ -1692,9 +1703,44 @@ class PluginService:
             # cannot say whether the answer was about the build in front of the
             # user at all.
             target=target_process, found_by=found_by,
+            repairable=answer.repairable,
             elapsed_ms=answer.elapsed_ms, reason=answer.reason,
         )
         return answer.as_dict()
+
+    def _scan_answer(self, inspection, app_id: int | None, target_process: str | None) -> tuple[ScanCheck, str | None]:
+        """Look for one table's patterns in the program this game runs.
+
+        The one place that pairing is made, because two callers need the same
+        answer about the same table and a second way of making it would be a
+        second thing to keep true: Review asks so the user can read it before
+        consenting, and the press that prepares a copy asks so it removes the
+        hooks of a pattern that is actually absent rather than of one a screen
+        said was.
+        """
+        program, found_by = self._game_program_path(app_id, target_process)
+        if program is None:
+            return ScanCheck(source="file", reason="this device does not know which program this game runs"), None
+        return check_executable(program, list(inspection.scans)), found_by
+
+    def _repair_is_provable(self, source: Path, missing: tuple[str, ...]) -> bool:
+        """Whether dropping those scans produces a table this would store.
+
+        The transform and both its proofs, run and thrown away. It is the only
+        honest way to answer the question a press has to be offered on: a repair
+        is available when it has been made and proven, not when something is
+        missing. The result is bytes nobody sees, which is why this may run on a
+        screen that is only reading.
+        """
+        try:
+            blob = read_regular_bytes(source, max_bytes=MAX_CT_BYTES)
+            if not blob:
+                return False
+            derived, _ = drop_unmatched_scans(blob, list(missing))
+            assert_only_scans_dropped(blob, derived, list(missing))
+        except (ScanRepairError, OSError, ValueError):
+            return False
+        return True
 
     def _game_program_path(self, app_id: int | None, target_process: str | None = None) -> tuple[Path | None, str | None]:
         """The program this game runs, where this device already knows where it is.
@@ -1840,31 +1886,91 @@ class PluginService:
                 newest = entry
         return None if newest is None else str(newest["executable_path"])
 
-    def derive_unsigned_table(self, digest: str) -> dict[str, object]:
-        """The same table without its signature, stored as a table of its own.
+    def prepare_table_copy(
+        self, digest: str, app_id: int | None = None, target_process: str | None = None,
+    ) -> dict[str, object]:
+        """The copy of this table that opens here, in one step and one table.
 
-        Cheat Engine refuses a signed table and says nothing about why, and the
-        bytes it refuses are the user's to use: this produces the copy that
-        loads. It is the one place CE Decky makes executable content rather than
-        carrying it, so the result is proven against the source before anything
-        is stored, and what comes out is an ordinary new table with its own
-        digest, its own inspection and its own consent to give.
+        Two things stop a table this device is holding from doing anything. Its
+        own signature makes Cheat Engine refuse it and say nothing about why,
+        and a byte pattern this build of the game does not hold takes out every
+        cheat one script owns the moment it is enabled. A table can have both,
+        and a user meeting them one press at a time would make two copies, give
+        consent three times and end up with a library of near-identical tables
+        to tell apart. So whatever is wrong is removed together: one derived
+        table, one new digest, every transform recorded on it, one consent.
+
+        It is the one place CE Decky makes executable content rather than
+        carrying it, so nothing here is trusted from the edit that made it.
+        Each transform is proven against the bytes it was handed before the next
+        one runs, and the whole result is searched again for the patterns that
+        were supposed to survive it. Any proof that fails produces nothing at
+        all and says which one it was.
         """
         digest = self._sha(digest)
         source = self.table_store.verified_blob(digest)
         blob = read_regular_bytes(source, max_bytes=MAX_CT_BYTES)
         if not blob:
             raise ValueError("the table to derive from is missing")
-        log_activity(self.logger, "info", "table.derive_started", source_sha=digest[:12], transform="remove-signature")
+        inspection = self._inspect_table_blob(source, digest, app_id)
+        answer, _found_by = self._scan_answer(inspection, app_id, target_process)
+        missing = list(answer.missing)
+        transforms: list[str] = []
+        if inspection.has_signature:
+            transforms.append("remove-signature")
+        if missing:
+            transforms.append("drop-unmatched-scans")
+        if not transforms:
+            # Not a failure of the press so much as of the screen that offered
+            # it, and it says which of the two questions was answered no rather
+            # than `nothing to do`. What it may not do is answer the second one
+            # when nobody asked it: a check that did not run is not a table
+            # whose patterns are all there, and saying so would be the one claim
+            # this has no evidence for.
+            searched = bool(answer.present or answer.missing)
+            raise ValueError(
+                "this table carries no signature, and every pattern it scans for is in this game's program"
+                if searched else
+                "this table carries no signature, and this device could not check its patterns against the game's program"
+            )
+        log_activity(
+            self.logger, "info", "table.derive_started",
+            source_sha=digest[:12], transforms=",".join(transforms),
+        )
+        derived = blob
+        repair = None
+        stage = transforms[0]
+        # Which proof was standing when this stopped. The message already says
+        # what was wrong with the bytes; this says which question was being
+        # asked of them, so a report names the step rather than leaving the next
+        # reader to infer it from the sentence.
+        proof = "only-the-signature-removed"
         try:
-            derived = strip_signature(blob)
-            assert_only_signature_removed(blob, derived)
-        except TableTransformError as exc:
+            if "remove-signature" in transforms:
+                stripped = strip_signature(derived)
+                assert_only_signature_removed(derived, stripped)
+                derived = stripped
+            if "drop-unmatched-scans" in transforms:
+                stage = "drop-unmatched-scans"
+                proof = "the repaired script still resolves"
+                repaired, repair = drop_unmatched_scans(derived, missing)
+                proof = "every record is the record it was"
+                assert_only_scans_dropped(derived, repaired, missing)
+                derived = repaired
+                proof = "every surviving pattern is still found"
+                # The remainder, proven rather than assumed: a repair that took
+                # out a block some other hook was resolved from would leave a
+                # table that still parses, still holds every record and still
+                # cannot find the game's code. Searching the result is the only
+                # thing that says otherwise, and it is the same search the user
+                # was shown, so it costs what that cost.
+                self._assert_remaining_scans_present(derived, app_id, target_process, missing)
+        except (TableTransformError, ScanRepairError) as exc:
             # Which proof failed, not that one did: `the repair was refused` on
             # its own is the same non-information an honest refusal replaces.
             log_activity(
                 self.logger, "warning", "table.derive_refused",
-                source_sha=digest[:12], transform="remove-signature", proof=str(exc),
+                source_sha=digest[:12], transform=stage, proof=proof, reason=str(exc),
             )
             raise ValueError(str(exc)) from exc
         filename = _derived_filename(self.table_store.get_table(digest).get("filename"))
@@ -1872,14 +1978,48 @@ class PluginService:
             artifact = self.table_store.import_derived(
                 derived,
                 filename=filename,
-                derived_from={"sha256": digest, "transform": "remove-signature"},
+                derived_from={
+                    "sha256": digest,
+                    "transforms": transforms,
+                    # What the copy's own Review says it changed and what that
+                    # cost. It lives on the record because Review opens on the
+                    # stored table rather than on the answer this returned, and
+                    # a cheat that is gone from the copy has to be read before
+                    # the consent for it, not after.
+                    "scans": list(repair.scans) if repair else [],
+                    "orphaned": list(repair.orphaned) if repair else [],
+                },
             )
         log_activity(
             self.logger, "info", "table.derive_completed",
             source_sha=digest[:12], result_sha=artifact.sha256[:12],
-            transforms="remove-signature", bytes_removed=len(blob) - len(derived),
+            transforms=",".join(transforms), bytes_removed=len(blob) - len(derived),
+            records_orphaned=len(repair.orphaned) if repair else 0,
         )
         return artifact.as_dict()
+
+    def _assert_remaining_scans_present(
+        self, derived: bytes, app_id: int | None,
+        target_process: str | None, dropped: list[str],
+    ) -> None:
+        """Prove the repaired table still finds everything it still scans for.
+
+        Only where the program is known and was searched in the first place: a
+        table prepared for a game this device has never launched was never told
+        a pattern was missing either, so there is nothing here to re-check and
+        nothing is claimed. Where it was searched, a pattern that was found
+        before and is not found now is a repair that damaged the table, and
+        this is the proof that refuses it.
+        """
+        program, _found_by = self._game_program_path(app_id, target_process)
+        if program is None:
+            return
+        after = check_executable(program, scans_in_table(derived))
+        still_missing = [name for name in after.missing if name not in dropped]
+        if still_missing:
+            raise ScanRepairError(
+                f"the repaired table no longer finds {still_missing[0]}, which this game's program holds"
+            )
 
     def list_table_code(self, digest: str) -> dict[str, object]:
         """What one exact table carries that Cheat Engine can execute.

@@ -187,7 +187,9 @@ Each identifier below names one owned callback location, even when several rows 
 | `panel.setup_failure.cancel` | `src/index.tsx` | `() => dialog.Close()` |
 | `panel.setup_failure.close` | `src/index.tsx` | `() => dialog.Close()` |
 | `panel.table_refusal.keep` | `src/index.tsx` | `() => { dismiss(); confirm.Close(); }` |
+| `panel.table_refusal.repair` | `src/index.tsx` | Prepare the copy without the hooks of the missing pattern and open its Review; writes nothing durable |
 | `panel.table_refusal.stop` | `src/index.tsx` | Capture interaction, then `answerWhenIdle` passes it into `runAction` |
+| `panel.table_refusal.stop_beside_repair` | `src/index.tsx` | The same answer where a repair was offered, so the log tells the two dialogs apart |
 | `panel_row.expand` | `src/components/PanelDensity.tsx` | `() => setExpanded((isOpen) => !isOpen)` |
 | `panel_row.help` | `src/components/PanelDensity.tsx` | `() => setHelpOpen((isOpen) => !isOpen)` |
 | `provider_catalog.download_again` | `src/providerCatalog.tsx` | `onDownload` |
