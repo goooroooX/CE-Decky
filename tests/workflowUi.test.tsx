@@ -10,6 +10,14 @@ const api = vi.hoisted(() => ({
   getCELaunchCapability: vi.fn(), getManagedCECapability: vi.fn(), getRuntimeStatus: vi.fn(), getStatus: vi.fn(),
   importCE: vi.fn(), importTable: vi.fn(), inspectTableSha: vi.fn(), inspectTableSource: vi.fn(), launchCEForGame: vi.fn(),
   listTableCode: vi.fn(), readTableCode: vi.fn(), createSupportBundle: vi.fn(),
+  // Whether the game's own program still holds what the table scans for, read
+  // while Review is being prepared. Resolved with the answer a game this device
+  // has never launched gets, which is the ordinary one: nothing was checked, so
+  // Review is the screen it always was.
+  checkTableScans: vi.fn().mockResolvedValue({
+    source: "file", present: [], missing: [], not_checked: [], elapsed_ms: 0,
+    reason: "this device does not know which program this game runs",
+  }),
   // What a game's own installed folder holds, read while Review is being
   // prepared. Resolved rather than bare: Review opens without it, and a
   // rejected read must not be what stops a table being authorized.
@@ -3431,6 +3439,82 @@ describe("Home panel and managed setup", () => {
     expect(block.textContent).toContain("no source vouched for these bytes");
     // Nothing left to prepare: this is what the press produces.
     expect(within(block).queryByRole("button", { name: "Prepare a copy that works here" })).toBeNull();
+  });
+
+  it("names the byte pattern this copy of the game does not hold", async () => {
+    // A script finds the game's code by scanning for one. Absent, every cheat
+    // that script owns is dead at once and Cheat Engine says nothing, so the
+    // reader learns it here rather than by starting a game.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, scan_count: 28 } as any}
+      scanCheck={{
+        source: "file", present: [], missing: ["aobAccelerationRateCalc"],
+        not_checked: [], elapsed_ms: 690, reason: null,
+      } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("Of this table's 28 byte patterns, one is not");
+    expect(block.textContent).toContain("aobAccelerationRateCalc");
+    expect(block.textContent).toContain("will do nothing");
+    // The limit that has to be in the wording: Cheat Engine searches the
+    // running game, and this searched the program on disk.
+    expect(block.textContent).toContain("not always what Cheat Engine sees in the running game");
+  });
+
+  it("says nothing about a scan check that could not answer", async () => {
+    // A pattern looked for in another of the game's files, one with no literal
+    // first byte, a spent budget, a game this device has never launched: none
+    // of them is evidence that the table is broken, and a screen that said so
+    // on that basis would be telling the reader their table is the problem
+    // when the check is.
+    for (const check of [
+      { source: "file", present: [], missing: [], not_checked: [{ name: "aobOne", reason: "another program" }], elapsed_ms: 2, reason: null },
+      { source: "file", present: [], missing: [], not_checked: [], elapsed_ms: 0, reason: "this device does not know which program this game runs" },
+      null,
+    ]) {
+      render(<TableReviewModal
+        table={table as any}
+        inspection={{ ...inspect, scan_count: 3 } as any}
+        scanCheck={check as any}
+        onUse={vi.fn()}
+        onCancel={vi.fn()}
+      />);
+      await screen.findByText("Review cheat table");
+      expect(screen.queryByTestId("review-findings")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("keeps the block to two findings, and drops the least consequential", async () => {
+    // One block rather than a row per finding: a screen that asks one question
+    // may not open with four answers. What goes is always the mildest of what
+    // applies - a table that turns itself on is a caution, a table that will
+    // not open and a table whose cheats are dead are not.
+    const flag = (id: number) => ({
+      id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1",
+    });
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, has_signature: true, scan_count: 9, controls: [flag(1), flag(2)] } as any}
+      scanCheck={{
+        source: "file", present: [], missing: ["aobOne", "aobTwo", "aobThree"],
+        not_checked: [], elapsed_ms: 12, reason: null,
+      } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("This table is signed");
+    expect(block.textContent).toContain("3 are not in this copy of the game");
+    // Named to a bound, counted past it: these are the author's own symbols.
+    expect(block.textContent).toContain("aobOne, aobTwo and 1 more");
+    expect(block.textContent).not.toContain("switched on by the table itself");
   });
 
   it("says nothing at Review about a table that switches nothing on by itself", async () => {

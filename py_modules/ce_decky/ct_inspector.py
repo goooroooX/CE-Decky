@@ -10,12 +10,18 @@ import xml.etree.ElementTree as ET
 import unicodedata
 
 from .atomic import read_regular_bytes
+from .ct_scans import TableScan, read_scans
 from .table_markers import is_auto_assembler_marker, is_embedded_file, is_form_marker, is_lua_marker, local_tag
 from .table_store import MAX_CT_BYTES, MAX_XML_ELEMENTS, TableContentError, _FORBIDDEN_XML_MARKERS
 from .text import fit_utf8, is_unsafe_display_character, utf8_len
 
 MAX_INSPECTION_ENTRIES = 100_000
 MAX_INSPECTION_DEPTH = 128
+# How many distinct byte patterns one table may declare before this stops
+# collecting them. The largest in the corpus declares 26 in one script and a
+# few dozen across a table, so this is a bound on a table built to be one
+# rather than a judgement about what an author may write.
+MAX_TABLE_SCANS = 512
 MAX_DESCRIPTION_BYTES = 4096
 MAX_VARIABLE_TYPE_BYTES = 1024
 # What one record's own value list may be, measured against real tables rather
@@ -210,6 +216,15 @@ class TableInspection:
     # was added for holds 6508 of them, and counting it among the values told
     # the user reading Review that a table which lost a picker had lost a value.
     dropped_value_lists: int = 0
+    # Every byte pattern this table's scripts scan for, in the order the table
+    # declares them and with a name read once. A script finds the game's code
+    # with these, and one of them being absent from the build in front of the
+    # user is what kills every cheat that script owns at the same moment.
+    #
+    # The patterns themselves stay on this side: what a screen needs is how
+    # many there are and which of them a check could not find, and an absolute
+    # sixty-byte pattern per record is not something the panel decides with.
+    scans: tuple[TableScan, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -225,6 +240,9 @@ class TableInspection:
             "sanitized_labels": self.sanitized_labels,
             "dropped_values": self.dropped_values,
             "dropped_value_lists": self.dropped_value_lists,
+            # The count, not the patterns: a sentence about a missing one says
+            # how many the table has, and the check that finds it runs here.
+            "scan_count": len(self.scans),
             "embedded_files": self.embedded_files,
             "process_candidates": list(self.process_candidates),
             "controls": [control.as_dict() for control in self.controls],
@@ -386,6 +404,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     sanitized: list[str] = []
     dropped: list[str] = []
     unrecognised: list[tuple[str, str]] = []
+    scans: dict[str, TableScan] = {}
     has_lua = False
     has_auto_assembler = False
     has_forms = False
@@ -419,7 +438,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     if top_entries is not None:
         for child in top_entries:
             if local_tag(child.tag) == "CheatEntry":
-                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped, unrecognised)
+                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped, unrecognised, None, scans)
                 if total_entries > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
 
@@ -445,6 +464,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
         sanitized_labels=len(sanitized),
         dropped_values=sum(1 for item in dropped if item != DROPPED_VALUE_LIST),
         dropped_value_lists=dropped.count(DROPPED_VALUE_LIST),
+        scans=tuple(scans.values()),
         # An Auto Assembler record with no script body is a control kind, not
         # something the table can execute, so the kind and the marker are
         # answered separately.
@@ -492,6 +512,7 @@ def _walk_entry(
     dropped: list[str] | None = None,
     unrecognised: list[tuple[str, str]] | None = None,
     declared: dict[str, str] | None = None,
+    scans: dict[str, TableScan] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -509,6 +530,19 @@ def _walk_entry(
     group_header = (_child_text(element, "GroupHeader") or "").strip() == "1"
     assembler_text = _child_text(element, "AssemblerScript")
     has_assembler = assembler_text is not None or (variable_type or "").casefold() == "auto assembler script"
+    if scans is not None and assembler_text and len(scans) < MAX_TABLE_SCANS:
+        # One list for the whole table, and a name read once: two scripts of one
+        # table routinely scan under the same symbol, and a check that looked
+        # for it twice would report it twice on the screen that names it.
+        #
+        # Keyed rather than searched, because this runs per record: rebuilding
+        # the set of names already held, for every script of a table that may
+        # carry a hundred thousand records, is quadratic in a file this parser
+        # is handed by whoever wrote it.
+        for scan in read_scans(assembler_text)[0]:
+            if len(scans) >= MAX_TABLE_SCANS:
+                break
+            scans.setdefault(scan.name.casefold(), scan)
 
     dropdown = _parse_dropdown(_child_text(element, "DropDownList") or "", sanitized, dropped)
     dropdown_read_only = (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
@@ -572,7 +606,7 @@ def _walk_entry(
     if nested is not None:
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
-                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared)
+                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans)
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count

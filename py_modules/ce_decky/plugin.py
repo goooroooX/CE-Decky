@@ -214,6 +214,9 @@ class Plugin:
     async def delete_table(self, sha256: str):
         return await self.operations.run_blocking(self._svc().delete_table, sha256)
 
+    async def check_table_scans(self, sha256: str, app_id: int | None = None):
+        return await self.operations.run_blocking(self._svc().check_table_scans, sha256, app_id)
+
     async def list_table_code(self, digest: str):
         return await self.operations.run_blocking(self._svc().list_table_code, digest)
 

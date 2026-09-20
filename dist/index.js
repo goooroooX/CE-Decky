@@ -1010,6 +1010,16 @@ const inspectTableSha = callable("inspect_table_sha");
  * own inspection and its own consent still to give.
  */
 const deriveUnsignedTable = callable("derive_unsigned_table");
+/**
+ * Whether this game's own program still holds the byte patterns a table scans for.
+ *
+ * A script finds the game's code by scanning for one, and a pattern that is not
+ * in the build in front of the user takes out every cheat that script owns at
+ * the same moment, with nothing said. Answered before consent, and only where
+ * this device already knows which program the game runs: where it does not, the
+ * answer says so and the screen claims nothing.
+ */
+const checkTableScans = callable("check_table_scans");
 // A table's own executable content, read and never run. Two calls because one
 // table on this device carries half a megabyte of scripts: the index says what
 // is in it, and a section is fetched when the user opens it.
@@ -4759,6 +4769,38 @@ function tableIsSigned(table) {
 function derivedFromLabel(table) {
     const source = table.derived_from?.sha256;
     return source ? `derived from ${source.slice(0, 12)}` : null;
+}
+/**
+ * What a scan check found, as the one sentence Review says about it.
+ *
+ * Only a pattern that was looked for and is not there is worth a sentence.
+ * A check that could not run, a pattern looked for in another of the game's
+ * files and a pattern with no literal first byte to find are all silence here
+ * and a line in the log: this screen may not tell a reader their table is
+ * broken on the strength of a question nobody answered, and a check that fires
+ * on a healthy table is the test every addition to this block has to pass.
+ *
+ * The names are the author's own symbols. They mean nothing to most readers and
+ * everything to the one who opens the script, which is why at most two are
+ * printed and the rest are counted.
+ */
+function missingScanFinding(check, scanCount) {
+    const missing = check?.missing ?? [];
+    if (!check || missing.length === 0)
+        return null;
+    const total = scanCount && scanCount > 0 ? scanCount : missing.length;
+    const named = missing.slice(0, 2).join(", ");
+    const rest = missing.length - Math.min(2, missing.length);
+    const which = rest > 0 ? `${named} and ${rest} more` : named;
+    const count = missing.length === 1 ? "one is" : `${missing.length} are`;
+    // Three short sentences rather than two long ones, because this wraps on a
+    // handheld. The last of them is not a hedge: Cheat Engine searches the
+    // running game and this searched the program on disk, and a reader deciding
+    // whether to keep looking for a different table is entitled to know that the
+    // two can differ.
+    return `Of this table's ${total} byte patterns, ${count} not in this copy of the game's program: ${which}.`
+        + " Cheat Engine finds the game's code with those, so every cheat that needs one will do nothing."
+        + " This was read from the program on disk, which is not always what Cheat Engine sees in the running game.";
 }
 /**
  * What this table does on its own, for the one sentence Review says about it.
@@ -12031,7 +12073,7 @@ function ProcessChoice({ children, label, description, onRescan, rescanning, dis
     // the control.
     SP_JSX.jsx("div", { className: BELOW_FIELD_CLASS, children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: label, description: description, childrenLayout: "below", childrenContainerWidth: "max", bottomSeparator: "standard", children: SP_JSX.jsxs(ActionGroup, { style: { gap: 8 }, children: [SP_JSX.jsx("div", { style: { flex: "1 1 0", minWidth: 0 }, children: children }), onRescan === null ? null : (SP_JSX.jsx(SmallButton, { size: "medium", disabled: disabled || rescanning, onClick: traceUiAction("table_review_modal.on_rescan_2", onRescan), children: rescanning ? "Looking…" : "Refresh" }))] }) }) }) }));
 }
-function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, onCancel }) {
+function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, scanCheck = null, onCancel }) {
     useUiSurface("TableReviewModal", table.sha256);
     // Seeded from the snapshot this screen was opened with, and replaced when the
     // user asks again after starting the game.
@@ -12110,10 +12152,19 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         inspection.has_signature
             ? "This table is signed. Cheat Engine does not open signed tables here, and gives no reason when it refuses one, so it will look like nothing happened."
             : null,
+        // A pattern the game's program does not hold, which is what takes out every
+        // cheat one script owns at the same moment. Ahead of the defaults sentence
+        // because it is a table that will not work rather than one that will work
+        // more than the reader asked for.
+        missingScanFinding(scanCheck, inspection.scan_count),
         defaults
             ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
             : null,
-    ].filter((item) => item !== null);
+        // Two, and the order above is the priority: the block is one block rather
+        // than a row per finding, and a screen that asks one question may not open
+        // with four answers. What is dropped is always the least consequential of
+        // what applies, and a healthy table renders none of this at all.
+    ].filter((item) => item !== null).slice(0, 2);
     // Offered for exactly what there is to prepare. A table nobody can improve
     // gets no press, and a copy that has already been made gets none either: it
     // is the thing the press produces.
@@ -14809,6 +14860,14 @@ function Content() {
         if (!table)
             throw new Error("The imported exact table SHA is no longer available.");
         const nextInspection = await inspectTableSha(sha256, selectedGameRef.current?.appId ?? null);
+        // Before the screen opens, because it is one of the things the screen is
+        // asking the reader to decide on. Best effort in every direction: a game
+        // this device has never launched has no program to look in, and the answer
+        // then says so and Review is the screen it always was.
+        const scanCheck = await checkTableScans(sha256, selectedGameRef.current?.appId ?? null).catch((cause) => {
+            logUiFailure("panel.scan_check_failed", cause, { table: sha256.slice(0, 12) });
+            return null;
+        });
         const existing = currentProfile(nextStatus, selectedGameRef.current);
         // Review is a detached modal, so the running-process observation has to be
         // taken here: it cannot arrive from Home after the modal is open. A failed
@@ -14835,6 +14894,7 @@ function Content() {
         return {
             table,
             inspection: nextInspection,
+            scanCheck,
             observedProcesses,
             installedExecutables,
             // Steam records a non-Steam shortcut's target in AppDetails, but a Steam
@@ -14860,7 +14920,7 @@ function Content() {
         await ensureProfileAssociation(derived.sha256);
         return prepareReview(derived.sha256);
     };
-    const showPreparedReview = ({ table, inspection: nextInspection, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }) => {
+    const showPreparedReview = ({ table, inspection: nextInspection, scanCheck, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }) => {
         let currentActivation = null;
         logUi("panel.modal_opened", {
             modal: "table_review", table_sha: table.sha256.slice(0, 12),
@@ -14877,7 +14937,7 @@ function Content() {
             installed_source: installedExecutables?.source ?? null,
             declared_reason: installedExecutables?.declared_reason ?? null,
         });
-        showContextModal((close) => (SP_JSX.jsx(TableReviewModal, { table: table, inspection: nextInspection, observedProcesses: observedProcesses, launchExecutable: launchExecutable, installedExecutables: installedExecutables, initialTargetProcess: initialTargetProcess, onRefreshProcesses: async () => {
+        showContextModal((close) => (SP_JSX.jsx(TableReviewModal, { table: table, inspection: nextInspection, scanCheck: scanCheck, observedProcesses: observedProcesses, launchExecutable: launchExecutable, installedExecutables: installedExecutables, initialTargetProcess: initialTargetProcess, onRefreshProcesses: async () => {
                 const game = selectedGameRef.current;
                 if (!game)
                     return [];

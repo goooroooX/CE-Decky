@@ -61,6 +61,7 @@ from .network import NetworkClient
 from .operations import drained_to_thread
 from .catalog import CatalogService
 from .artifact_resolutions import ArtifactResolutions
+from .ct_scans import ScanCheck, check_executable
 from .table_compatibility import TableCompatibility, compatibility_state, steam_build_id
 from .acquisition import AcquisitionManager
 from .paths import PluginPaths
@@ -1606,6 +1607,96 @@ class PluginService:
                 self.logger, "info", "table_inspect.unrecognised_pair",
                 table_sha=digest[:12], off=first, on=second,
             )
+
+    def check_table_scans(self, digest: str, app_id: int | None = None) -> dict[str, object]:
+        """Whether this game's own program still holds the patterns this table scans for.
+
+        A script finds the game's code by scanning for a byte pattern, and one
+        of them being absent from the build in front of the user takes out every
+        cheat that script owns at the same moment, silently. Answering it here
+        means the user reads it before they consent rather than after they have
+        started a game and watched nothing happen.
+
+        Only where the program is actually known: the running game's own path,
+        or the one this device's compatibility record kept from the last time a
+        cheat from that game worked. Where neither answers, this says it was not
+        checked and nothing on screen claims anything - a table reviewed for a
+        game this device has never launched gets the Review it gets today, and
+        guessing a path is the invariant this project is most careful about.
+
+        The path never leaves this method. It is an absolute path into the
+        user's own library, the panel's record is collected into an archive
+        attached to public issues, and nothing on screen decides anything with
+        it: what comes back is which patterns were found, which were not, and
+        which could not be looked for.
+        """
+        digest = self._sha(digest)
+        blob = self.table_store.verified_blob(digest)
+        inspection = self._inspect_table_blob(blob, digest, app_id)
+        program = self._game_program_path(app_id)
+        if program is None:
+            answer = ScanCheck(source="file", reason="this device does not know which program this game runs")
+        else:
+            answer = check_executable(program, list(inspection.scans))
+        # Every reason, not a count of them: `3 not checked` is the same
+        # non-information an honest refusal exists to remove, and which of them
+        # it was - another of the game's files, no first byte to find, a spent
+        # budget - is what a later report turns on. Distinct, because one table
+        # produces the same reason thirty times.
+        unreachable = sorted({reason for _, reason in answer.not_checked})
+        log_activity(
+            self.logger, "info", "table.scan_check",
+            table_sha=digest[:12], app_id=app_id, patterns=len(inspection.scans),
+            missing=",".join(answer.missing) or None, source=answer.source,
+            not_checked=len(answer.not_checked) or None,
+            not_checked_why=" | ".join(unreachable) or None,
+            elapsed_ms=answer.elapsed_ms, reason=answer.reason,
+        )
+        return answer.as_dict()
+
+    def _game_program_path(self, app_id: int | None) -> Path | None:
+        """The program this game runs, where this device already knows it.
+
+        Two answers and no third. The running game's own executable is the
+        strongest and is read from the live process table; where the game is not
+        running, the compatibility record kept the path the last proof was made
+        against, which is what lets a table be checked before anything starts.
+        A path that is no longer a file is no answer at all.
+        """
+        if app_id is None:
+            return None
+        try:
+            profile = self.profile_store.get(app_id)
+        except (OSError, ValueError):
+            return None
+        if profile is None or not profile.target_process:
+            return None
+        candidate = self._observed_game_executable_path(profile)
+        if candidate is None:
+            candidate = self._recorded_game_executable_path(app_id, profile.target_process)
+        if not candidate:
+            return None
+        path = Path(candidate)
+        try:
+            return path if path.is_file() and not path.is_symlink() else None
+        except OSError:
+            return None
+
+    def _recorded_game_executable_path(self, app_id: int, target_process: str) -> str | None:
+        """Where this game's program was, the last time a cheat from it worked."""
+        try:
+            snapshot = self.table_compatibility.snapshot()
+        except (OSError, ValueError):
+            return None
+        newest = None
+        for entry in snapshot.get("entries", []):
+            if entry.get("app_id") != app_id or not entry.get("executable_path"):
+                continue
+            if str(entry.get("target_process", "")).casefold() != target_process.casefold():
+                continue
+            if newest is None or entry.get("last_working_at", 0) >= newest.get("last_working_at", 0):
+                newest = entry
+        return None if newest is None else str(newest["executable_path"])
 
     def derive_unsigned_table(self, digest: str) -> dict[str, object]:
         """The same table without its signature, stored as a table of its own.

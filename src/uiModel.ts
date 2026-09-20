@@ -1,6 +1,6 @@
 import { isArchiveFilename } from "./tableImport";
 import type { GameSummary } from "./steam/client";
-import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, PluginUpdateState, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableInspection, TableStatus } from "./types";
+import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, PluginUpdateState, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableInspection, TableScanCheck, TableStatus } from "./types";
 
 // One 1280x800 Game Mode viewport fits roughly six compact record rows beside
 // the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
@@ -1863,6 +1863,41 @@ export function tableIsSigned(table: Pick<TableStatus, "has_signature"> | null |
 export function derivedFromLabel(table: Pick<TableStatus, "derived_from">): string | null {
   const source = table.derived_from?.sha256;
   return source ? `derived from ${source.slice(0, 12)}` : null;
+}
+
+/**
+ * What a scan check found, as the one sentence Review says about it.
+ *
+ * Only a pattern that was looked for and is not there is worth a sentence.
+ * A check that could not run, a pattern looked for in another of the game's
+ * files and a pattern with no literal first byte to find are all silence here
+ * and a line in the log: this screen may not tell a reader their table is
+ * broken on the strength of a question nobody answered, and a check that fires
+ * on a healthy table is the test every addition to this block has to pass.
+ *
+ * The names are the author's own symbols. They mean nothing to most readers and
+ * everything to the one who opens the script, which is why at most two are
+ * printed and the rest are counted.
+ */
+export function missingScanFinding(
+  check: TableScanCheck | null | undefined,
+  scanCount: number | null | undefined,
+): string | null {
+  const missing = check?.missing ?? [];
+  if (!check || missing.length === 0) return null;
+  const total = scanCount && scanCount > 0 ? scanCount : missing.length;
+  const named = missing.slice(0, 2).join(", ");
+  const rest = missing.length - Math.min(2, missing.length);
+  const which = rest > 0 ? `${named} and ${rest} more` : named;
+  const count = missing.length === 1 ? "one is" : `${missing.length} are`;
+  // Three short sentences rather than two long ones, because this wraps on a
+  // handheld. The last of them is not a hedge: Cheat Engine searches the
+  // running game and this searched the program on disk, and a reader deciding
+  // whether to keep looking for a different table is entitled to know that the
+  // two can differ.
+  return `Of this table's ${total} byte patterns, ${count} not in this copy of the game's program: ${which}.`
+    + " Cheat Engine finds the game's code with those, so every cheat that needs one will do nothing."
+    + " This was read from the program on disk, which is not always what Cheat Engine sees in the running game.";
 }
 
 /**

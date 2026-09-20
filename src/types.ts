@@ -78,6 +78,26 @@ export interface TableStatus {
   derived_from?: TableDerivation | null;
 }
 
+/**
+ * Whether a game's own program holds the byte patterns one table scans for.
+ *
+ * Three answers rather than two. `missing` is a pattern that was looked for and
+ * is not there, which is what kills the cheats that need it. `not_checked` is a
+ * pattern nothing was established about - one looked for in another of the
+ * game's files, one with no literal first byte to find, one a spent budget did
+ * not reach - and it is deliberately not `present`. `reason` is set where the
+ * check did not run at all, and then nothing else here says anything.
+ */
+export interface TableScanCheck {
+  /** What was searched. `file` is the game's program on disk. */
+  source: string;
+  present: string[];
+  missing: string[];
+  not_checked: Array<{ name: string; reason: string }>;
+  elapsed_ms: number;
+  reason: string | null;
+}
+
 /** The exact table a derived one came from, and the one transform applied. */
 export interface TableDerivation {
   sha256: string;
@@ -181,6 +201,15 @@ export interface TableInspection {
    * before this was read.
    */
   has_signature?: boolean;
+  /**
+   * How many byte patterns this table's scripts scan for.
+   *
+   * The patterns themselves stay in the backend: what a screen needs is how
+   * many there are and which of them a check could not find in the game, and a
+   * sixty-byte pattern per record is not something the panel decides with.
+   * Absent from an inspection made before this was read.
+   */
+  scan_count?: number;
   /**
    * Labels this had to remove an invisible or bidirectional character from, and
    * values it could not carry. Both used to refuse the whole table; measured

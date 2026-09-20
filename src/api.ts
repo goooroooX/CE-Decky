@@ -32,6 +32,7 @@ import type {
   TableCodeIndex,
   TableInspection,
   TableSourceInspection,
+  TableScanCheck,
   TableStatus,
   StartupPreference,
   ConfiguredValue,
@@ -63,6 +64,16 @@ export const inspectTableSha = callable<[digest: string, appId?: number | null],
  * own inspection and its own consent still to give.
  */
 export const deriveUnsignedTable = callable<[sha256: string], TableStatus>("derive_unsigned_table");
+/**
+ * Whether this game's own program still holds the byte patterns a table scans for.
+ *
+ * A script finds the game's code by scanning for one, and a pattern that is not
+ * in the build in front of the user takes out every cheat that script owns at
+ * the same moment, with nothing said. Answered before consent, and only where
+ * this device already knows which program the game runs: where it does not, the
+ * answer says so and the screen claims nothing.
+ */
+export const checkTableScans = callable<[sha256: string, appId: number | null], TableScanCheck>("check_table_scans");
 // A table's own executable content, read and never run. Two calls because one
 // table on this device carries half a megabyte of scripts: the index says what
 // is in it, and a section is fetched when the user opens it.

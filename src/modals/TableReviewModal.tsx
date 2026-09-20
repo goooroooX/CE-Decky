@@ -3,8 +3,8 @@ import { traceUiAction, traceUiEdit, startUiOperation } from "../uiActions";
 import { DialogButton, Dropdown, Field, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
-import { antiCheatBlockedReason, defaultTargetProcess, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
-import type { GameExecutableListing, TableInspection, TableStatus } from "../types";
+import { antiCheatBlockedReason, defaultTargetProcess, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
+import type { GameExecutableListing, TableInspection, TableScanCheck, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
 import { ActionGroup, BELOW_FIELD_CLASS, CONTENTS_ONLY, DensePanel, InfoFields, PREPARE_ACTION_CLASS, PanelRow, SectionHeading, SmallButton, focusFirstEnabled } from "../components/PanelDensity";
@@ -63,6 +63,14 @@ interface Props {
    * to make one, and the press is then not drawn.
    */
   onPrepareCopy?: () => Promise<void>;
+  /**
+   * Whether this game's own program still holds the patterns the table scans for.
+   *
+   * Absent where the check did not run, which is the ordinary case for a game
+   * this device has never launched: the screen then says nothing about scans,
+   * exactly as it did before this existed.
+   */
+  scanCheck?: TableScanCheck | null;
   onCancel: () => void;
 }
 
@@ -133,7 +141,7 @@ function ProcessChoice(
   );
 }
 
-export function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, onCancel }: Props) {
+export function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, scanCheck = null, onCancel }: Props) {
   useUiSurface("TableReviewModal", table.sha256);
   // Seeded from the snapshot this screen was opened with, and replaced when the
   // user asks again after starting the game.
@@ -210,10 +218,19 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     inspection.has_signature
       ? "This table is signed. Cheat Engine does not open signed tables here, and gives no reason when it refuses one, so it will look like nothing happened."
       : null,
+    // A pattern the game's program does not hold, which is what takes out every
+    // cheat one script owns at the same moment. Ahead of the defaults sentence
+    // because it is a table that will not work rather than one that will work
+    // more than the reader asked for.
+    missingScanFinding(scanCheck, inspection.scan_count),
     defaults
       ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
       : null,
-  ].filter((item): item is string => item !== null);
+    // Two, and the order above is the priority: the block is one block rather
+    // than a row per finding, and a screen that asks one question may not open
+    // with four answers. What is dropped is always the least consequential of
+    // what applies, and a healthy table renders none of this at all.
+  ].filter((item): item is string => item !== null).slice(0, 2);
   // Offered for exactly what there is to prepare. A table nobody can improve
   // gets no press, and a copy that has already been made gets none either: it
   // is the thing the press produces.

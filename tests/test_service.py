@@ -2134,3 +2134,80 @@ def test_filling_the_signature_in_keeps_what_the_reader_only_repairs(tmp_path: P
     written = json.loads(record.read_text(encoding="utf-8"))
     assert written["has_signature"] is True
     assert written["origins"] == stored["origins"]
+
+
+SCAN_FIXTURE = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Health"</Description>'
+    '<VariableType>Auto Assembler Script</VariableType>'
+    '<AssemblerScript>[ENABLE]\n'
+    'aobscanmodule(aobPresent,game.exe,48 8B 01 48 89 54 24)\n'
+    'aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)\n'
+    '</AssemblerScript></CheatEntry></CheatEntries>\n'
+    '</CheatTable>\n'
+)
+
+
+def _scan_program(tmp_path: Path, name: str = "game.exe") -> Path:
+    """A file holding one of the fixture's two patterns and not the other."""
+    path = tmp_path / name
+    path.write_bytes(b"\x00" * 64 + bytes.fromhex("488B0148895424") + b"\x11" * 64)
+    return path
+
+
+def test_the_scan_check_names_the_pattern_this_copy_of_the_game_does_not_hold(tmp_path: Path, monkeypatch):
+    """The finding a user reads before they consent, rather than after a launch.
+
+    A script finds the game's code by scanning for a byte pattern. One absent
+    and every cheat that script owns is dead at once, with nothing said, which
+    is what a table written for an older build looks like from the outside.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-check"))
+    service.initialize()
+    source = tmp_path / "scanner.CT"
+    source.write_text(SCAN_FIXTURE, encoding="utf-8")
+    table = service.import_table(str(source))
+    program = _scan_program(tmp_path)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id: program)
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    assert answer["missing"] == ["aobAbsent"]
+    assert answer["present"] == ["aobPresent"]
+    assert answer["not_checked"] == [] and answer["reason"] is None
+    assert answer["source"] == "file"
+    # And the count the sentence is built from reached the panel with it.
+    assert service.inspect_table_sha(str(table["sha256"]))["scan_count"] == 2
+
+
+def test_a_game_whose_program_this_device_does_not_know_is_not_checked(tmp_path: Path):
+    """Guessing a path here is the invariant this project is most careful about.
+
+    A table reviewed for a game this device has never launched gets the Review
+    it always got: the answer says the check did not run, and nothing on screen
+    claims the table is broken.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-unknown"))
+    service.initialize()
+    source = tmp_path / "scanner.CT"
+    source.write_text(SCAN_FIXTURE, encoding="utf-8")
+    table = service.import_table(str(source))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    assert answer["reason"] is not None
+    assert answer["missing"] == [] and answer["present"] == []
+
+
+def test_a_table_that_scans_for_nothing_says_so_rather_than_nothing(tmp_path: Path, monkeypatch):
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-none"))
+    service.initialize()
+    source = tmp_path / "plain.CT"
+    source.write_text(SIGNED_FIXTURE.replace("Signature>", "NotASignature>"), encoding="utf-8")
+    table = service.import_table(str(source))
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id: _scan_program(tmp_path))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    assert answer["reason"] is not None and answer["missing"] == []
+    assert service.inspect_table_sha(str(table["sha256"]))["scan_count"] == 0

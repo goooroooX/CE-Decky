@@ -19,6 +19,7 @@ import {
   associateTable,
   blockTable,
   deleteTable,
+  checkTableScans,
   deriveUnsignedTable,
   revokeTable,
   cancelManagedCEInstall,
@@ -113,6 +114,7 @@ import type {
   SelfTestResult,
   StartupPreference,
   TableInspection,
+  TableScanCheck,
   TableStatus,
 } from "./types";
 import { causeAsLabel, describeError, leadWithCause } from "./errors";
@@ -2036,6 +2038,8 @@ function Content() {
   interface PreparedReview {
     table: TableStatus;
     inspection: TableInspection;
+    /** What the game's own program holds of what this table scans for, where that is knowable. */
+    scanCheck: TableScanCheck | null;
     observedProcesses: string[];
     launchExecutable: string | null;
     /** What this game's own installed folder holds, for a table that names nothing. */
@@ -2048,6 +2052,14 @@ function Content() {
     const table = nextStatus.tables.find((candidate) => candidate.sha256 === sha256 && candidate.available);
     if (!table) throw new Error("The imported exact table SHA is no longer available.");
     const nextInspection = await inspectTableSha(sha256, selectedGameRef.current?.appId ?? null);
+    // Before the screen opens, because it is one of the things the screen is
+    // asking the reader to decide on. Best effort in every direction: a game
+    // this device has never launched has no program to look in, and the answer
+    // then says so and Review is the screen it always was.
+    const scanCheck = await checkTableScans(sha256, selectedGameRef.current?.appId ?? null).catch((cause) => {
+      logUiFailure("panel.scan_check_failed", cause, { table: sha256.slice(0, 12) });
+      return null;
+    });
     const existing = currentProfile(nextStatus, selectedGameRef.current);
     // Review is a detached modal, so the running-process observation has to be
     // taken here: it cannot arrive from Home after the modal is open. A failed
@@ -2074,6 +2086,7 @@ function Content() {
     return {
       table,
       inspection: nextInspection,
+      scanCheck,
       observedProcesses,
       installedExecutables,
       // Steam records a non-Steam shortcut's target in AppDetails, but a Steam
@@ -2101,7 +2114,7 @@ function Content() {
     return prepareReview(derived.sha256);
   };
 
-  const showPreparedReview = ({ table, inspection: nextInspection, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }: PreparedReview) => {
+  const showPreparedReview = ({ table, inspection: nextInspection, scanCheck, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }: PreparedReview) => {
     let currentActivation: TableActivation | null = null;
     logUi("panel.modal_opened", {
       modal: "table_review", table_sha: table.sha256.slice(0, 12),
@@ -2122,6 +2135,7 @@ function Content() {
       <TableReviewModal
         table={table}
         inspection={nextInspection}
+        scanCheck={scanCheck}
         observedProcesses={observedProcesses}
         launchExecutable={launchExecutable}
         installedExecutables={installedExecutables}
