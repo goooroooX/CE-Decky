@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.29 — 2026-09-20
+
+- [Fixed] An executable larger than 256 MiB declares its version again. That version is one of the two facts a table's compatibility mark is judged on and the only one a game added as a non-Steam shortcut has, so a large executable left every table for it on the unknown mark. The headers, the section table, the resource directory and the version block are each read as their own bounded span now, instead of the whole file being read to reach one of them, and Search and Manage no longer spend a whole-file read per game each time they open. A record already written keeps the blank version it carries until a cheat from that table works once more.
+
 ## 0.9.28 — 2026-09-19
 
 - [New] CE Decky notices its own new releases and installs one on an explicit press. When one is available the panel carries an orange Update to vX.Y.Z button above everything else; pressing it names both versions, warns that Steam's interface restarts, and installs only the version it named. The release is downloaded, checked against the checksum published with it and handed to Decky's own installer, so nothing here needs root or writes into the plugin directory. The download can be stopped and installing cannot, which the window says before the press; an install that fails keeps the checked release in your home folder, and Advanced names that file and how to install it by hand until it is installed, deleted, or no longer newer than what you are running. Advanced, Plugin updates carries the same press, a Check now, and the switch for automatic checking: with it off nothing contacts GitHub and the panel offers nothing, and with it on a check happens only after you have searched for a table recently and at most once every few hours, as one request that names no game, no table and no account of yours. A check that could not finish is reported as that rather than as being up to date.

@@ -277,6 +277,69 @@ def read_regular_bytes_with_stat(
         os.close(fd)
 
 
+def read_regular_range(path: Path, *, offset: int, length: int) -> tuple[bytes, os.stat_result]:
+    """Read one span of a regular file, with the identity that span came from.
+
+    The whole-file readers above are the wrong tool for a large artifact whose
+    interesting part is a known span: a version resource sits at a known offset
+    inside an executable that may be hundreds of megabytes, and reading the file
+    to reach it makes the file's size the bound rather than the structure's. The
+    guarantees are the ones those readers give - no final symlink component, a
+    regular file, one descriptor, and a refusal when that inode changes
+    underneath the read.
+
+    The span is clipped at end of file rather than padded, so a result shorter
+    than ``length`` means the file ends there. The stat this exact descriptor
+    reported is returned with the bytes, because a caller reading several spans
+    has to prove they came from one unchanged file.
+    """
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
+    if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
+        raise ValueError("length must be a positive integer")
+    if path.is_symlink():
+        raise ValueError("file path must be a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise ValueError("file is missing")
+    except OSError as exc:
+        raise ValueError("file could not be opened safely") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("file path must be a regular file")
+        expected = max(0, min(length, info.st_size - offset))
+        data = bytearray()
+        if expected:
+            os.lseek(fd, offset, os.SEEK_SET)
+            while len(data) < expected:
+                chunk = os.read(fd, min(1024 * 1024, expected - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+        final_info = os.fstat(fd)
+        _ensure_stable_range_read(info, final_info, len(data), expected)
+        return bytes(data), final_info
+    finally:
+        os.close(fd)
+
+
+def _ensure_stable_range_read(before: os.stat_result, after: os.stat_result, bytes_read: int, expected: int) -> None:
+    """Reject a span read from an inode that changed while it was being read.
+
+    The whole-file guard compares bytes read against the file size, which a span
+    is not. What is compared here is the span actually asked of this file: a
+    short read of a file whose size never moved is a truncation between the two
+    stats or a descriptor that stopped answering, and neither may pass as data.
+    """
+    identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    if identity_before != identity_after or bytes_read != expected:
+        raise ValueError("file changed while reading")
+
+
 def _ensure_stable_descriptor_read(before: os.stat_result, after: os.stat_result, bytes_read: int, field: str) -> None:
     """Reject in-place mutation while an already-open managed file is being read.
 

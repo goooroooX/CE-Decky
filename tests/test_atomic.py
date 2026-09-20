@@ -89,6 +89,58 @@ def test_read_regular_bytes_with_stat_returns_same_descriptor_metadata(tmp_path:
     assert info is not None and info.st_size == 5
 
 
+def test_read_regular_range_reads_one_span_and_clips_it_at_end_of_file(tmp_path: Path):
+    from ce_decky.atomic import read_regular_range
+
+    path = tmp_path / "blob"
+    path.write_bytes(b"0123456789")
+    data, info = read_regular_range(path, offset=4, length=3)
+    assert data == b"456"
+    assert info.st_size == 10
+    assert read_regular_range(path, offset=8, length=64)[0] == b"89"
+    assert read_regular_range(path, offset=10, length=8)[0] == b""
+    assert read_regular_range(path, offset=4096, length=8)[0] == b""
+
+
+def test_read_regular_range_refuses_a_symlink_and_a_bound_that_is_not_one(tmp_path: Path):
+    from ce_decky.atomic import read_regular_range
+
+    path = tmp_path / "blob"
+    path.write_bytes(b"abc")
+    with pytest.raises(ValueError, match="offset"):
+        read_regular_range(path, offset=-1, length=2)
+    with pytest.raises(ValueError, match="length"):
+        read_regular_range(path, offset=0, length=0)
+    with pytest.raises(ValueError, match="length"):
+        read_regular_range(path, offset=0, length=True)
+    with pytest.raises(ValueError, match="is missing"):
+        read_regular_range(tmp_path / "absent", offset=0, length=2)
+    link = tmp_path / "link"
+    link.symlink_to(path)
+    with pytest.raises(ValueError, match="regular file"):
+        read_regular_range(link, offset=0, length=2)
+
+
+def test_read_regular_range_rejects_same_inode_mutation_while_reading(tmp_path: Path, monkeypatch):
+    import ce_decky.atomic as atomic
+
+    path = tmp_path / "blob"
+    path.write_bytes(b"0123456789")
+    real_read = atomic.os.read
+    changed = False
+
+    def racing_read(fd: int, size: int) -> bytes:
+        nonlocal changed
+        if not changed:
+            changed = True
+            path.write_bytes(b"9876543210")  # same length, same inode, changed metadata
+        return real_read(fd, size)
+
+    monkeypatch.setattr(atomic.os, "read", racing_read)
+    with pytest.raises(ValueError, match="changed while reading"):
+        atomic.read_regular_range(path, offset=2, length=4)
+
+
 def test_load_json_rejects_duplicate_keys_and_non_finite_numbers(tmp_path: Path):
     from ce_decky.atomic import load_json
 

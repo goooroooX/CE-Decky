@@ -2,7 +2,7 @@
 
 The compact entry point for coding agents. Everything else this project holds is in `docs/`, and **Authority and reading routes** below says which document owns what and which one wins.
 
-Current development version: **0.9.28 — 2026-09-19**
+Current development version: **0.9.29 — 2026-09-20**
 
 ## Start here
 
@@ -172,6 +172,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | What is holding this device's memory while Decky and its plugins look hung | `scripts/target_memory_watch.py` |
 | What does one session cost, and how long do the primitives it repeats take | `scripts/target_session_cost_probe.py`, `scripts/target_primitive_bench.py` |
 | Do a real table's controls stay reachable in the QAM, without executing anything the table carries | `scripts/table_ui_probe.py` |
+| What version do real Windows executables declare, and what does reading one cost | `scripts/pe_version_survey.py`; it walks a directory of `.exe` through the production version reader and reports, per file, the version, the size of the resource section, how far into it the directory walk reached and how many spans the read cost |
 | One bounded read-only snapshot of the host, for a report | `scripts/target_snapshot.py` |
 | Routed repository QA, and pinned browser UI QA | `scripts/qa.py`, `scripts/browser_harness.py` |
 | What are the providers actually serving, and what is in real tables | `scripts/provider_probe.py`, `scripts/provider_search_survey.py`, `scripts/provider_corpus_survey.py` |
