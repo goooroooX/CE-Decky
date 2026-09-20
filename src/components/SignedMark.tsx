@@ -13,23 +13,31 @@ const SIGNED_LABEL = "Signed table; Cheat Engine usually refuses one";
  * put in front of this Cheat Engine was refused - and a word because there is
  * no glyph a reader would read as "signed" without being told.
  *
- * Its metrics are the ones the search rows' own chips use, down to the sixteen
- * pixel line that the glyphs beside it are tall, so a row carrying this and a
- * `Local` chip reads as two chips rather than as two different kinds of object.
+ * It sits on the same sixteen pixel line the glyphs beside it are tall, and it
+ * is the narrowest chip in the product on purpose. Wherever it is drawn it
+ * stands beside something the reader came to read - a table's name on Manage,
+ * a result's title on Search - and on a Steam Deck that line is 854 pixels
+ * wide for everything on it. Drawn the way the search rows draw their own
+ * chips, upper case and letter-spaced, it measured 61 pixels against the 45 it
+ * measures here: sixteen pixels of a name, bought with nothing but shouting.
+ * So it keeps the word and gives up the case, the spacing between its letters
+ * and two pixels of padding each side.
+ *
+ * The word is the name and the sentence is a description of it, which is what
+ * `title` carries. It takes no `aria-label`: that would replace the word a
+ * reader can see with a sentence they cannot, which is what the product's
+ * wordless marks use one for and this one has no need of.
  */
 export function SignedMark() {
   return <span
     title={SIGNED_LABEL}
-    aria-label={SIGNED_LABEL}
     style={{
       flex: "0 0 auto",
-      padding: "0 6px",
+      padding: "0 4px",
       borderRadius: 3,
-      fontSize: "0.8em",
+      fontSize: "0.7em",
       lineHeight: "16px",
       fontWeight: 700,
-      letterSpacing: "0.3px",
-      textTransform: "uppercase",
       whiteSpace: "nowrap",
       background: "hsla(41, 73%, 65%, 0.85)",
       color: "hsla(0, 0%, 0%, 0.86)",

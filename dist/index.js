@@ -5851,20 +5851,29 @@ const SIGNED_LABEL = "Signed table; Cheat Engine usually refuses one";
  * put in front of this Cheat Engine was refused - and a word because there is
  * no glyph a reader would read as "signed" without being told.
  *
- * Its metrics are the ones the search rows' own chips use, down to the sixteen
- * pixel line that the glyphs beside it are tall, so a row carrying this and a
- * `Local` chip reads as two chips rather than as two different kinds of object.
+ * It sits on the same sixteen pixel line the glyphs beside it are tall, and it
+ * is the narrowest chip in the product on purpose. Wherever it is drawn it
+ * stands beside something the reader came to read - a table's name on Manage,
+ * a result's title on Search - and on a Steam Deck that line is 854 pixels
+ * wide for everything on it. Drawn the way the search rows draw their own
+ * chips, upper case and letter-spaced, it measured 61 pixels against the 45 it
+ * measures here: sixteen pixels of a name, bought with nothing but shouting.
+ * So it keeps the word and gives up the case, the spacing between its letters
+ * and two pixels of padding each side.
+ *
+ * The word is the name and the sentence is a description of it, which is what
+ * `title` carries. It takes no `aria-label`: that would replace the word a
+ * reader can see with a sentence they cannot, which is what the product's
+ * wordless marks use one for and this one has no need of.
  */
 function SignedMark() {
-    return SP_JSX.jsx("span", { title: SIGNED_LABEL, "aria-label": SIGNED_LABEL, style: {
+    return SP_JSX.jsx("span", { title: SIGNED_LABEL, style: {
             flex: "0 0 auto",
-            padding: "0 6px",
+            padding: "0 4px",
             borderRadius: 3,
-            fontSize: "0.8em",
+            fontSize: "0.7em",
             lineHeight: "16px",
             fontWeight: 700,
-            letterSpacing: "0.3px",
-            textTransform: "uppercase",
             whiteSpace: "nowrap",
             background: "hsla(41, 73%, 65%, 0.85)",
             color: "hsla(0, 0%, 0%, 0.86)",
@@ -11698,14 +11707,6 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
             onClose();
     };
     /**
-     * The two presses a row can carry, in the order a reader wants them.
-     *
-     * Use is first and keeps the ring: it is what this screen is for, and Steam
-     * enters a row at the control covering most of the one above it. Delete is
-     * beside it and is offered only where deleting is possible at all, so a row
-     * for the table this game is using shows nothing to press.
-     */
-    /**
      * What a row is called, and what it is doing.
      *
      * Which group a row is in is answered by the ground it is drawn on rather
@@ -11818,9 +11819,15 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
      * is gone, and Search needs a provider row while Local file needs the
      * original file. Offline with neither, this press is the only thing that can
      * name them, which is what the second group was added for.
+     *
+     * Use keeps the ring wherever it stands: it is what this screen is for, and
+     * it holds the ring through `preferredFocus` rather than by being the first
+     * control, which a signed row's extra press is in front of. Delete is last
+     * and is offered only where deleting is possible at all, so a row for the
+     * table this game is using shows nothing to press.
      */
-    const rowActions = (table, usable, group) => (SP_JSX.jsxs(SP_JSX.Fragment, { children: [canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onPrepareCopy && canSelect && tableIsSigned(table) && table.available
-                && (group === "mine" || !owners?.[table.sha256]) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 }), children: "Prepare" })), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
+    const rowActions = (table, usable, group) => (SP_JSX.jsxs(SP_JSX.Fragment, { children: [onPrepareCopy && canSelect && tableIsSigned(table) && table.available
+                && (group === "mine" || !owners?.[table.sha256]) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 }), children: "Prepare" })), canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
                     if (armed === table.sha256) {
                         setArmed(null);
                         revoke(table.sha256);
@@ -11972,7 +11979,7 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
                                         }), children: "Local file" })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables" }), failure && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-failure", status: true, label: "That did not work", description: failure }) })), remaining.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing imported yet", description: "Open a file above, or search online." }) })), remaining.length > 0 && entries.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing matches that", description: "Clear the filter to see every table." }) })), (entries.length > 0 || filterable) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-summary", tone: "header", truncate: true, scroll: true, fillWithActions: filterable, label: canSelect ? `${mineCount} here, ${deviceCount} elsewhere` : `${mineCount + deviceCount} on this device`, description: canSelect ? "No provider or network needed." : "Choose a game to use one.", actions: filterable ? (SP_JSX.jsx("div", { style: MANAGE_FILTER, children: SP_JSX.jsx(FilterField, { placeholder: "Filter", disabled: selecting, value: filter, onChange: traceUiEdit("imported_tables_modal.filter_by_name_or_digest", (event) => moveTo(() => {
                                                 setFilter(String(event.target.value ?? ""));
                                                 setPage(0);
-                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), mark: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }), tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : null, table.derived_from ? SP_JSX.jsx(DerivedMark, {}) : null] }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
+                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), leadingMark: tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : undefined, mark: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }), table.derived_from ? SP_JSX.jsx(DerivedMark, {}) : null] }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
                                                 if (node)
                                                     rowRefs.current.set(table.sha256, node);
                                                 else

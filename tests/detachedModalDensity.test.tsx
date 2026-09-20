@@ -1011,6 +1011,20 @@ describe("detached modal density", () => {
     />);
     const row = screen.getByTestId(`imported-table-${table.sha256.slice(0, 8)}`);
     expect(within(row).getByText("Signed")).toBeTruthy();
+    // In front of the two presses every row has, because a row lays its
+    // controls out from the right: among them, the extra press stood Use and
+    // Delete in a different column from every other row on the screen, which
+    // is what measuring it on a Steam Deck showed.
+    expect(within(row).getAllByRole("button").map((button) => button.textContent))
+      .toEqual(["Prepare", "Use"]);
+    // And the chip is in front of the name rather than in the column the
+    // controls share, which has about nine pixels to spare on a signed row:
+    // a compatibility glyph beside it there would put that row's buttons in a
+    // column of their own again.
+    const chip = within(row).getByText("Signed");
+    const name = within(row).getByText(/Game\.CT/);
+    expect(chip.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(row).getAllByRole("button").some((button) => button.contains(chip))).toBe(false);
     fireEvent.click(within(row).getByRole("button", { name: "Prepare" }));
     expect(onPrepareCopy).toHaveBeenCalledWith(table.sha256);
 

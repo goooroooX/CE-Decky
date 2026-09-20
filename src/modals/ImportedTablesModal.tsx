@@ -385,14 +385,6 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
     if (!selectingRef.current) onClose();
   };
   /**
-   * The two presses a row can carry, in the order a reader wants them.
-   *
-   * Use is first and keeps the ring: it is what this screen is for, and Steam
-   * enters a row at the control covering most of the one above it. Delete is
-   * beside it and is offered only where deleting is possible at all, so a row
-   * for the table this game is using shows nothing to press.
-   */
-  /**
    * What a row is called, and what it is doing.
    *
    * Which group a row is in is answered by the ground it is drawn on rather
@@ -505,26 +497,41 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
    * is gone, and Search needs a provider row while Local file needs the
    * original file. Offline with neither, this press is the only thing that can
    * name them, which is what the second group was added for.
+   *
+   * Use keeps the ring wherever it stands: it is what this screen is for, and
+   * it holds the ring through `preferredFocus` rather than by being the first
+   * control, which a signed row's extra press is in front of. Delete is last
+   * and is offered only where deleting is possible at all, so a row for the
+   * table this game is using shows nothing to press.
    */
   const rowActions = (table: TableStatus, usable: boolean, group: "mine" | "device") => (
     <>
-      {canSelect && (group === "mine" || !owners?.[table.sha256]) && <DialogButton
-        style={rowActionStyle}
-        preferredFocus={usable}
-        disabled={selecting || !usable}
-        onClick={traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 })}
-      >Use</DialogButton>}
-      {/* Beside Use, on the row that carries the amber mark. A signed table is
-          refused with no message at all, so the press that makes the copy which
-          does open belongs where the user is choosing which table to use rather
-          than one screen further in. It consents to nothing: Review opens on
-          the copy and the consent is given there. */}
+      {/* Ahead of Use, on the row that carries the amber mark. A signed table
+          is refused with no message at all, so the press that makes the copy
+          which does open belongs where the user is choosing which table to use
+          rather than one screen further in. It consents to nothing: Review
+          opens on the copy and the consent is given there.
+
+          In front rather than among them, because a row lays its controls out
+          from the right: anywhere else, a third press moved Use and whichever
+          of Revoke or Delete the row carries into a different column from every
+          other row, and a list whose buttons do not line up down the screen is
+          what `rowActionStyle` exists to prevent. Measured on a Steam Deck the
+          three of them sit inside the column Steam allows, with about nine
+          pixels to spare, which is why the chip that says why this press is
+          here is drawn in front of the row's name instead of in that column. */}
       {onPrepareCopy && canSelect && tableIsSigned(table) && table.available
         && (group === "mine" || !owners?.[table.sha256]) && (
         <DialogButton style={rowActionStyle} disabled={selecting}
           onClick={traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 })}
         >Prepare</DialogButton>
       )}
+      {canSelect && (group === "mine" || !owners?.[table.sha256]) && <DialogButton
+        style={rowActionStyle}
+        preferredFocus={usable}
+        disabled={selecting || !usable}
+        onClick={traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 })}
+      >Use</DialogButton>}
       {onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (
         <DialogButton style={rowActionStyle} disabled={selecting}
           onClick={traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
@@ -825,7 +832,19 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
               longer than this window, and both are what tell one row from the
               next, so the end of each is exactly what a one-line row cannot
               show. They reveal themselves while the ring is on the row, the
-              same way a pinned cheat's two lines do on the panel. */}
+              same way a pinned cheat's two lines do on the panel.
+
+              The signed chip goes in front of a row's name, where the two
+              glyphs do not. A row's controls sit in a column Steam caps at a
+              share of the row's width, and measured on a Steam Deck that column
+              has about nine pixels of room left once a signed row has its three
+              presses: a chip there fits only while the row carries no
+              compatibility glyph beside it, and the moment it does, that row's
+              buttons stand in a different column from every other row on the
+              screen. In front of the name it takes its width from the name
+              instead, which clips and reveals on the ring like every other name
+              here. The glyphs stay where glyphs are: sixteen pixels each, and
+              two of them together are well inside what that column holds. */}
           {visible.map(({ table, group }, index) => (
             <PanelSectionRow key={table.sha256}>
               <PanelRow
@@ -835,9 +854,9 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
                 tone={group === "device" ? "aside" : "own"}
                 label={rowLabel(table, group, index)}
                 description={rowDescription(table)}
+                leadingMark={tableIsSigned(table) ? <SignedMark /> : undefined}
                 mark={<>
                   <CompatibilityMark evidence={compatibility.find((entry) => entry.table_sha256 === table.sha256)} blocked={blockedReasons[table.sha256] ?? null} />
-                  {tableIsSigned(table) ? <SignedMark /> : null}
                   {table.derived_from ? <DerivedMark /> : null}
                 </>}
                 actions={<div style={CONTENTS_ONLY} ref={(node) => {
