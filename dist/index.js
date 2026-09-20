@@ -11955,6 +11955,15 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
     // nothing: a healthy table's Review is the screen it always was.
     const defaults = scriptDefaultsOn(inspection);
     const findings = [
+        // The signature first: it is the one finding that predicts the table will
+        // not open at all. Stated as the measurement it is, with its subject named,
+        // rather than as a prediction about this exact file: nothing here can tell
+        // Cheat Engine's three refusals apart, and one of them is a Windows call
+        // under Wine rather than anything about the table. The measurement and the
+        // helper that took it are in `docs/FIELD_NOTES.md` section 2.
+        inspection.has_signature
+            ? "This table is signed. Every one of the 16 signed tables tested on this device was refused by Cheat Engine, which says nothing about why."
+            : null,
         defaults
             ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
             : null,

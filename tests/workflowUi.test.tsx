@@ -3353,6 +3353,24 @@ describe("Home panel and managed setup", () => {
     expect(block.textContent).toContain("only the ones you choose");
   });
 
+  it("says at Review that a signed table is one this Cheat Engine refuses", async () => {
+    // The fact that removes a launch from the user's path: they learn it here
+    // rather than by starting a game and watching nothing happen. A statement
+    // about 16 measured tables, not a prediction about this one, and it refuses
+    // nothing: the table is still importable and still consentable.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, has_signature: true } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("This table is signed");
+    expect(block.textContent).toContain("16 signed tables tested on this device was refused");
+    // Still usable: this screen states a fact, it does not take the press away.
+    expect(screen.getByRole("button", { name: "Use this table" })).toBeTruthy();
+  });
+
   it("says nothing at Review about a table that switches nothing on by itself", async () => {
     // The test for every addition to this screen: a healthy table renders none
     // of it, and Review is the screen it always was.
