@@ -3366,7 +3366,11 @@ describe("Home panel and managed setup", () => {
     />);
     const block = await screen.findByTestId("review-findings");
     expect(block.textContent).toContain("This table is signed");
-    expect(block.textContent).toContain("16 signed tables tested on this device was refused");
+    expect(block.textContent).toContain("Cheat Engine does not open signed tables here");
+    // What it will look like, which is the part that costs a user a game launch.
+    expect(block.textContent).toContain("look like nothing happened");
+    // Not a count of what this project measured: that belongs in the notes.
+    expect(block.textContent).not.toContain("16");
     // Still usable: this screen states a fact, it does not take the press away.
     expect(screen.getByRole("button", { name: "Use this table" })).toBeTruthy();
   });
