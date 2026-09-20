@@ -28,11 +28,33 @@ same report, so the refusal is the listing.
 The Cheat Engine identity is never guessed: pass either the plugin's Decky
 settings directory, so the exact registered executable is read from the plugin's
 own config, or the exact executable path.
+
+``--table`` puts an exact ``.CT`` in front of that Cheat Engine instead of the
+synthetic self-test table, and the report's ``bridge`` block then carries
+``table_load_state``, ``table_load_error``, ``table_load_route`` and
+``address_list_count`` for it. The bridge loads the session table in its
+bootstrap, before the attach and without depending on a target process, so this
+answers whether this exact Cheat Engine opens this exact table with no game, no
+profile, no consent and no Steam state involved.
+
+Two things it does not do. It does not inspect the bytes first, so it can be
+pointed at a file the table store would refuse, which is the point: what is
+being measured is what Cheat Engine does with them. And the load runs the
+table's own Lua and Auto Assembler, because that is how the production bridge
+loads a table, so this is execution and belongs to a table whose contents are
+already meant to be run. It is bounded only by the ceiling the table store
+imports under.
+
+``ok`` keeps its meaning throughout: it is about the launch, not about the
+table. A Cheat Engine that started, refused the table and stopped cleanly is a
+successful probe reporting a refusal, so read ``bridge.table_load_state`` for
+the answer ``--table`` was asked for.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+from hashlib import sha256
 import json
 import logging
 import os
@@ -58,10 +80,15 @@ from ce_decky.ce_launch import (  # noqa: E402
 )
 from ce_decky.ce_runtime import materialize_private_runtime  # noqa: E402
 from ce_decky.managed_ce import discover_proton_tools  # noqa: E402
+from ce_decky.table_store import MAX_CT_BYTES  # noqa: E402
 
 POLL_SECONDS = 0.25
 TERMINAL_STATES = frozenset({"stopped", "failed", "cancelled"})
 MAX_PREFIX_OWNERSHIP_ENTRIES = 100_000
+
+
+def _table_argument(value: str | None) -> Path | None:
+    return None if value is None else Path(value).expanduser().resolve()
 
 
 def _managed_root(home: Path, override: str | None) -> Path:
@@ -145,7 +172,8 @@ def _prefix_ownership(prefix: Path, expected_uid: int) -> dict[str, object]:
     }
 
 
-async def _probe(home: Path, managed_root: Path, executable: Path, tool_id: str | None) -> dict[str, object]:
+async def _probe(home: Path, managed_root: Path, executable: Path, tool_id: str | None,
+                 table: Path | None = None) -> dict[str, object]:
     tools = discover_proton_tools(home)
     if not tools:
         return {"ok": False, "state": "blocked", "error": "no installed Proton tool was discovered", "tools": []}
@@ -161,6 +189,15 @@ async def _probe(home: Path, managed_root: Path, executable: Path, tool_id: str 
         return {"ok": False, "state": "blocked", "error": "the requested Proton tool ID is not installed",
                 "tools": [item.public() for item in tools]}
 
+    # An exact table to put in front of this Cheat Engine instead of the
+    # synthetic one. Read here rather than in `main` so a file that is missing
+    # or too large is reported as this probe's own refusal, before a Proton
+    # process is started.
+    # `read_regular_bytes` raises rather than answering `None` here, because
+    # `allow_missing` is left at its default: a table that was asked for and is
+    # not there is this probe's refusal, not an empty measurement.
+    table_bytes = None if table is None else read_regular_bytes(table, max_bytes=MAX_CT_BYTES)
+
     imported = inspect_ce_selection(str(executable))
     runtime = materialize_private_runtime(
         source_root=Path(imported.root),
@@ -174,7 +211,8 @@ async def _probe(home: Path, managed_root: Path, executable: Path, tool_id: str 
     )
     try:
         started = await supervisor.start_self_test(
-            tool, Path(runtime.executable), runtime.source_executable_sha256
+            tool, Path(runtime.executable), runtime.source_executable_sha256,
+            table_bytes=table_bytes,
         )
         operation_id = str(started["operation_id"])
         while True:
@@ -217,6 +255,11 @@ async def _probe(home: Path, managed_root: Path, executable: Path, tool_id: str 
         "owned_process_pids_after_close": survivors,
         "supervisor_processes_after_close": len(supervisor._processes),
         "self_test_prefix_ownership": prefix_ownership,
+        "table": None if table is None else {
+            "path": str(table),
+            "sha256": sha256(table_bytes).hexdigest(),
+            "bytes": len(table_bytes),
+        },
         "tools": [item.public() for item in tools],
     }
 
@@ -229,6 +272,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--managed-root", help="plugin-owned managed root (default <home>/.cheat-engine-decky)")
     parser.add_argument("--tool-id", help="exact Proton tool ID from --list-tools; required for a launch")
     parser.add_argument("--list-tools", action="store_true", help="only enumerate installed Proton identities")
+    parser.add_argument("--table", help="an exact .CT to put in front of this Cheat Engine instead of the synthetic self-test table; the report's bridge block then says whether it opened and why not")
     return parser
 
 
@@ -248,11 +292,13 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif arguments.ce_executable:
             result = asyncio.run(
-                _probe(home, managed_root, Path(arguments.ce_executable).expanduser(), arguments.tool_id)
+                _probe(home, managed_root, Path(arguments.ce_executable).expanduser(), arguments.tool_id,
+                       _table_argument(arguments.table))
             )
         elif arguments.settings_dir:
             result = asyncio.run(
-                _probe(home, managed_root, _registered_executable(arguments.settings_dir), arguments.tool_id)
+                _probe(home, managed_root, _registered_executable(arguments.settings_dir), arguments.tool_id,
+                       _table_argument(arguments.table))
             )
         else:
             raise ValueError("pass --settings-dir or --ce-executable unless --list-tools is used")

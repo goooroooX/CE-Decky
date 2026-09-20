@@ -151,6 +151,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Is this ZIP the exact installable artifact | `scripts/target_package_probe.py` |
 | Is this what the official Decky Store would ship, which is a different build from ours | `python scripts/qa.py --profile store`, which runs `scripts/check_store_artifact.py --build` |
 | Does Cheat Engine actually start on this device, through the production launch path rather than a description of it | `scripts/target_ce_launch_probe.py` |
+| Will this exact Cheat Engine open this exact table at all, without a game, a profile or a consent | `scripts/target_ce_launch_probe.py --table`; the load runs what the table carries, so it is execution rather than inspection |
 | Which exact compatibility prefix does this AppID have here | `scripts/target_prefix_probe.py`; read only, and it refuses an ambiguous answer rather than choosing |
 | What does Steam's own JavaScript say this device's library holds, and does it agree with the device's own files | `scripts/target_steam_library_probe.py` |
 | Can this device's own 7-Zip open what the production adapter hands it | `scripts/target_archive_probe.py` |

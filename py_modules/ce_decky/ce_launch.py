@@ -918,12 +918,25 @@ def match_observed_proton(
 
 
 def prepare_self_test_session(
-    root: Path, *, ce_sha256: str, target_process: str, boundary: Path
+    root: Path, *, ce_sha256: str, target_process: str, boundary: Path,
+    table_bytes: bytes | None = None,
 ) -> SelfTestSession:
-    """Write synthetic descriptor/control/table files for a no-game launch."""
+    """Write synthetic descriptor/control/table files for a no-game launch.
+
+    `table_bytes` replaces the synthetic table with an exact one. The bridge
+    loads the session table in its bootstrap, before the attach and without
+    depending on a target process, so a self-test launch answers whether this
+    exact Cheat Engine will open this exact `.CT` with no game, no profile and
+    no consent involved. Nothing in the product passes it; it is how a
+    development probe asks that question, and the default is the byte-identical
+    behaviour every other caller already has.
+    """
     ce_sha256 = _sha(ce_sha256)
     if not _process_basename(target_process):
         raise ValueError("self-test target process must be a bounded .exe basename")
+    table = SELF_TEST_TABLE if table_bytes is None else bytes(table_bytes)
+    if not table:
+        raise ValueError("self-test table must not be empty")
     session_id = str(uuid.uuid4())
     session_root = root / session_id
     _reset_owned_directory(session_root, boundary)
@@ -931,13 +944,13 @@ def prepare_self_test_session(
     control_path = session_root / "control.txt"
     status_path = session_root / "status.txt"
     descriptor_path = session_root / "descriptor.txt"
-    atomic_write_bytes(table_path, SELF_TEST_TABLE, mode=0o400)
+    atomic_write_bytes(table_path, table, mode=0o400)
     atomic_write_bytes(control_path, (CONTROL_HEADER + "\n").encode("utf-8"))
     descriptor = SessionDescriptor(
         session_id=session_id,
         app_id=SELF_TEST_APP_ID,
         ce_sha256=ce_sha256,
-        table_sha256=sha256(SELF_TEST_TABLE).hexdigest(),
+        table_sha256=sha256(table).hexdigest(),
         table_path=wine_z_path(table_path),
         target_process=target_process,
         control_path=wine_z_path(control_path),
@@ -2277,12 +2290,14 @@ class CELaunchSupervisor:
 
     # -- lifecycle -------------------------------------------------------
 
-    async def start_self_test(self, tool: ProtonTool, executable: Path, ce_sha256: str) -> dict[str, object]:
+    async def start_self_test(
+        self, tool: ProtonTool, executable: Path, ce_sha256: str, *, table_bytes: bytes | None = None
+    ) -> dict[str, object]:
         async with self._launch_exclusion:
-            return await self._start_self_test_locked(tool, executable, ce_sha256)
+            return await self._start_self_test_locked(tool, executable, ce_sha256, table_bytes=table_bytes)
 
     async def _start_self_test_locked(
-        self, tool: ProtonTool, executable: Path, ce_sha256: str
+        self, tool: ProtonTool, executable: Path, ce_sha256: str, *, table_bytes: bytes | None = None
     ) -> dict[str, object]:
         self._assert_launcher_is_free(None)
         session = await drained_to_thread(
@@ -2291,6 +2306,7 @@ class CELaunchSupervisor:
             ce_sha256=ce_sha256,
             target_process=executable.name,
             boundary=self.state_root,
+            table_bytes=table_bytes,
         )
         prefix = self.ce_root / "self-test-prefix" / tool.tool_id
         # Keep a known-good owned prefix instead of recreating it per run: the

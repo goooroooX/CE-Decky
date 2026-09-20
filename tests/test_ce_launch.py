@@ -354,6 +354,34 @@ def test_prepare_self_test_session_rejects_a_non_executable_target(tmp_path: Pat
         prepare_self_test_session(tmp_path, ce_sha256="c" * 64, target_process="ce", boundary=tmp_path)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Wine Z: mapping requires POSIX absolute paths")
+def test_prepare_self_test_session_carries_an_exact_table_and_its_own_digest(tmp_path: Path):
+    """An exact table replaces the synthetic one, descriptor digest and all.
+
+    The development probe puts a real `.CT` in front of Cheat Engine to ask
+    whether it opens at all. That only means anything if the bytes reach the
+    session unchanged and the descriptor names their digest rather than the
+    synthetic table's, because the bridge refuses a descriptor whose table
+    digest does not match what it was handed.
+    """
+    blob = b'<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries/></CheatTable>'
+    session = prepare_self_test_session(
+        tmp_path / "self-test", ce_sha256="c" * 64, target_process="cheatengine-x86_64.exe",
+        boundary=tmp_path, table_bytes=blob,
+    )
+    assert Path(session.table_path).read_bytes() == blob
+    assert session.table_sha256 == hashlib.sha256(blob).hexdigest()
+    assert parse_descriptor(Path(session.descriptor_path).read_bytes()).table_sha256 == session.table_sha256
+
+
+def test_prepare_self_test_session_refuses_an_empty_table(tmp_path: Path):
+    with pytest.raises(ValueError, match="must not be empty"):
+        prepare_self_test_session(
+            tmp_path, ce_sha256="c" * 64, target_process="cheatengine-x86_64.exe",
+            boundary=tmp_path, table_bytes=b"",
+        )
+
+
 def _plan(tmp_path: Path, mode: str = MODE_SELF_TEST, app_id: int | None = None):
     return plan_ce_launch(
         mode=mode,
