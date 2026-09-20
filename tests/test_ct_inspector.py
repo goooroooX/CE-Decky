@@ -371,3 +371,39 @@ def test_a_list_that_is_not_a_pair_is_never_a_switch(tmp_path):
     assert _one_dropdown("0:On/Off\n1:Enabled", tmp_path / "both").switch_on_value is None
     # Two entries that write the same key cannot switch anything.
     assert _one_dropdown("1:Disabled\n1:Enabled", tmp_path / "same").switch_on_value is None
+
+
+def test_a_record_carries_what_its_script_declares_for_its_own_symbol(tmp_path):
+    """What the table does on its own, before anybody chooses anything.
+
+    Read from the script that allocates the symbol, so a record named here is
+    one that exists once that script has run. A declaration this cannot read
+    leaves the record with none, which decides nothing.
+    """
+    data = (
+        '<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries>'
+        '<CheatEntry><ID>1</ID><Description>"Enable"</Description>'
+        '<VariableType>Auto Assembler Script</VariableType>'
+        '<AssemblerScript>[ENABLE]\n'
+        'bEnableGodMode:\n  dd 1\n'
+        'bEnableQuietMode:\n  dd 0\n'
+        'fDamageMod:\n  dd (float)10.0\n</AssemblerScript>'
+        '<CheatEntries>'
+        '<CheatEntry><ID>2</ID><Description>"God"</Description><VariableType>4 Bytes</VariableType>'
+        '<Address>bEnableGodMode</Address><DropDownList>0:Disabled\n1:Enabled</DropDownList></CheatEntry>'
+        '<CheatEntry><ID>3</ID><Description>"Quiet"</Description><VariableType>4 Bytes</VariableType>'
+        '<Address>bEnableQuietMode</Address><DropDownList>0:Disabled\n1:Enabled</DropDownList></CheatEntry>'
+        '<CheatEntry><ID>4</ID><Description>"Damage"</Description><VariableType>Float</VariableType>'
+        '<Address>fDamageMod</Address></CheatEntry>'
+        '<CheatEntry><ID>5</ID><Description>"Elsewhere"</Description><VariableType>4 Bytes</VariableType>'
+        '<Address>game.exe+10</Address><DropDownList>0:Disabled\n1:Enabled</DropDownList></CheatEntry>'
+        '</CheatEntries></CheatEntry></CheatEntries></CheatTable>'
+    ).encode("utf-8")
+    by_id = {control.id: control for control in _inspect(data, tmp_path).controls}
+    assert by_id[2].declared_default == "1", "the flag this script switches on by itself"
+    assert by_id[3].declared_default == "0", "and the one it leaves off"
+    # Taken exactly as written, so a cast never compares equal to a switch key.
+    assert by_id[4].declared_default == "(float)10.0"
+    # An address this script does not allocate carries no declaration at all.
+    assert by_id[5].declared_default is None
+    assert by_id[1].declared_default is None

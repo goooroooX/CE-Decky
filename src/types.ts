@@ -118,6 +118,14 @@ export interface TableControl {
    */
   switch_on_value: string | null;
   /**
+   * What the enclosing script declares this record's address to hold, where the
+   * address is a symbol that script allocates and the declaration can be read.
+   *
+   * It says what the table does on its own, before anybody chooses anything: a
+   * flag declared at its on value is one the script switches on by itself.
+   */
+  declared_default: string | null;
+  /**
    * The record only attaches Cheat Engine to the game and changes nothing in
    * it. Table machinery rather than a cheat, so it is listed with the scripts.
    * Absent from an inspection made before this was recognised.

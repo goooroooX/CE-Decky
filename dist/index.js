@@ -4667,6 +4667,49 @@ function switchValuesFor(control) {
     const off = switchValueFor(control, false);
     return on !== null && off !== null ? { on, off } : undefined;
 }
+/**
+ * The switches a script would turn on by itself, and the key that turns each off.
+ *
+ * A table's Auto Assembler script declares its own defaults, and they are not
+ * modest: one real table declares 22 of its 24 flags as on, with damage times
+ * ten and enemies that can barely see. Switching that script on because one
+ * cheat under it was asked for therefore switched on most of the table, while
+ * the panel counted the one cheat and said `1 active`.
+ *
+ * So every switch a script CE Decky enables declares as on is written to its off
+ * key, unless the user asked for that one. It is sent as an ordinary desired
+ * state with no active of its own: the record does not exist until the script
+ * has run, which is exactly the case the runtime client's deferred path already
+ * waits out.
+ */
+function switchesToHoldOff(scripts, controls, requested) {
+    const held = new Map();
+    for (const script of scripts) {
+        if (script.id === null)
+            continue;
+        for (const control of controls) {
+            if (control.id === null || control.id === script.id || requested.has(control.id))
+                continue;
+            if (control.path.length <= script.path.length)
+                continue;
+            if (!script.path.every((segment, index) => control.path[index] === segment))
+                continue;
+            // Only a flag this script declares as on: its address is a symbol the
+            // script itself allocates, so it exists once the script has run, and
+            // there is nothing to hold off about one the script leaves off anyway.
+            // A declaration that could not be read holds nothing off, which is the
+            // table behaving as it did before any of this.
+            if (control.declared_default === null || control.declared_default !== control.switch_on_value)
+                continue;
+            const off = switchValueFor(control, false);
+            // The script that brought it, so a later report can say which one did.
+            // The innermost wins: a flag under two nested scripts is that one's.
+            if (off !== null)
+                held.set(control.id, { control, value: off, script: script.id });
+        }
+    }
+    return [...held.values()];
+}
 /** Every switch record's off key, for a call that only switches things off. */
 function switchOffValues(controls) {
     const values = new Map();
@@ -10931,10 +10974,32 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                         record_id: control.id,
                         active,
                         value,
+                        switch_values: switchValuesFor(control),
                         path: control.path,
                         label: controlRowLabel(control),
                     }];
             });
+            // A script CE Decky switched on carries the table author's own defaults
+            // with it, so every switch under it that nobody asked for is written to
+            // its off key in the same call. Without this the panel counts the one
+            // cheat that was asked for while the game runs everything the script
+            // declared: one real table turns on 22 of its 24 flags this way.
+            const heldOff = switchesToHoldOff([...pluginManaged].flatMap((recordId) => {
+                const script = controlById.get(recordId);
+                return script ? [script] : [];
+            }), safeControls, touchedIds);
+            for (const { control, value } of heldOff) {
+                if (control.id === null)
+                    continue;
+                desired.push({
+                    record_id: control.id,
+                    active: null,
+                    value,
+                    switch_values: switchValuesFor(control),
+                    path: control.path,
+                    label: controlRowLabel(control),
+                });
+            }
             // Any mutation/revalidation failure after this point makes the previous
             // Home snapshot stale. Successful final query below republishes a fresh one.
             onSnapshotInvalidated?.();
@@ -10948,6 +11013,23 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // rather than turning that expected outcome into a failed Apply.
             const finalState = await queryRuntimeControlsPartial(appId, safeControls.flatMap((control) => control.id === null ? [] : [control.id]), confirmed.envelope);
             setUnavailableRecords(new Set(finalState.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
+            // What the script's own defaults cost, read back rather than assumed: a
+            // flag this did not manage to put down is a cheat running that nobody
+            // asked for, and it is the one thing a later report needs to see.
+            if (heldOff.length > 0) {
+                const finalById = new Map(finalState.results.flatMap((result) => result.record_id === null ? [] : [[result.record_id, result]]));
+                for (const scriptId of pluginManaged) {
+                    const mine = heldOff.filter((item) => item.script === scriptId);
+                    if (mine.length === 0)
+                        continue;
+                    logUi("runtime.flags_held_off", {
+                        session: confirmed.envelope?.prepared?.session_id ?? null,
+                        script_record_id: scriptId,
+                        written: mine.length,
+                        failed: mine.filter((item) => item.control.id !== null && finalById.get(item.control.id)?.value !== item.value).length,
+                    });
+                }
+            }
             // Cheat Engine answers `??` for an address it cannot read yet, including
             // every value deliberately deferred above. The typed choice is what this
             // table has to remember, so it stands in wherever the read-back is blank.
@@ -15325,6 +15407,11 @@ function Content() {
             const script = controls.find((candidate) => candidate.id === scriptId);
             return script ? [{ record_id: scriptId, active: false, value: null, path: script.path, label: controlRowLabel(script) }] : [];
         });
+        // The scripts above carry the table author's own defaults, so every switch
+        // under them that this press did not ask for is written to its off key in
+        // the same call. Otherwise one pinned cheat switches on everything its
+        // script declares, and the panel counts the one it was asked for.
+        const heldOff = active ? switchesToHoldOff(ancestors, controls, new Set([recordId])) : [];
         const desired = active
             ? [
                 ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -15342,6 +15429,14 @@ function Content() {
                     path: control.path,
                     label: controlRowLabel(control),
                 },
+                ...heldOff.flatMap(({ control: held, value }) => held.id === null ? [] : [{
+                        record_id: held.id,
+                        active: null,
+                        value,
+                        switch_values: switchValuesFor(held),
+                        path: held.path,
+                        label: controlRowLabel(held),
+                    }]),
                 ...releasedRows,
             ]
             : [
@@ -15359,6 +15454,23 @@ function Content() {
                 // An unrelated unmaterialized child must not turn a successful pinned
                 // toggle into an error.
                 const finalState = await queryRuntimeControlsPartial(game.appId, controls.flatMap((control) => control.id === null ? [] : [control.id]), confirmed.envelope);
+                // What the script's own defaults cost, read back rather than assumed:
+                // a flag this did not manage to put down is a cheat running that
+                // nobody asked for.
+                if (heldOff.length > 0) {
+                    const finalById = new Map(finalState.results.flatMap((result) => result.record_id === null ? [] : [[result.record_id, result]]));
+                    for (const script of ancestors) {
+                        const mine = heldOff.filter((item) => item.script === script.id);
+                        if (script.id === null || mine.length === 0)
+                            continue;
+                        logUi("runtime.flags_held_off", {
+                            session: confirmed.envelope?.prepared?.session_id ?? null,
+                            script_record_id: script.id,
+                            written: mine.length,
+                            failed: mine.filter((item) => item.control.id !== null && finalById.get(item.control.id)?.value !== item.value).length,
+                        });
+                    }
+                }
                 const touched = new Set([recordId]);
                 // The scripts around this cheat are CE Decky's own bookkeeping, so they
                 // are sent to Cheat Engine but never written into the profile as a

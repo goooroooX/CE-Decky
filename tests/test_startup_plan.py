@@ -18,6 +18,35 @@ from ce_decky.profiles import ConfiguredValue, GameProfile, StartupPreference
 from ce_decky.service import PluginService
 from ce_decky.session_protocol import MAX_STARTUP_ACTIONS, effective_startup_plan
 
+FLAG_TABLE = """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID><Description>Enable</Description><VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+bEnableGodMode:
+  dd 1
+bEnableOneHitKill:
+  dd 1</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>2</ID><Description>bEnableGodMode</Description><VariableType>4 Bytes</VariableType>
+          <Address>bEnableGodMode</Address>
+          <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>3</ID><Description>bEnableOneHitKill</Description><VariableType>4 Bytes</VariableType>
+          <Address>bEnableOneHitKill</Address>
+          <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
+"""
+
 NESTED_TABLE = """<?xml version="1.0" encoding="utf-8"?>
 <CheatTable CheatEngineTableVersion="45">
   <CheatEntries>
@@ -99,6 +128,60 @@ def test_an_explicitly_off_cheat_does_not_write_its_configured_value_at_startup(
     assert (3, "active") in by_record, "the independent cheat must still be applied"
     # The enclosing script the applied cheat needs is still derived.
     assert (1, "active") in by_record
+
+
+def test_a_script_that_switches_its_own_flags_on_has_them_held_off_at_startup(tmp_path: Path):
+    """The table author's defaults are not the user's selection.
+
+    One real table declares 22 of its 24 flags as on, so enabling the script the
+    remembered cheat needs brings the rest of the table with it while the panel
+    counts the one cheat. The panel holds them off for a press it makes itself;
+    without this the next Auto-load puts them straight back.
+    """
+    service = _service(tmp_path, "m41")
+    source = tmp_path / "flags.CT"
+    source.write_text(FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    service.save_profile(930, "Game", False, table["sha256"], "game.exe")
+    service.set_execution_consent(930, table["sha256"], True)
+    inspection = _inspection(service, table["sha256"])
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, "1")],
+    )
+
+    actions = effective_startup_plan(profile, inspection)
+    by_record = {(action.record_id, action.kind): action for action in actions}
+    # The script the chosen cheat needs, the chosen cheat itself with its own on
+    # key, and the flag nobody asked for written to its off key.
+    assert (1, "active") in by_record
+    assert by_record[(2, "value")].value == "1"
+    assert by_record[(3, "value")].value == "0"
+    # Never switched, only written: a record that is off is off.
+    assert (3, "active") not in by_record
+    # And the write lands after the script that creates the record.
+    order = [(action.record_id, action.kind) for action in actions]
+    assert order.index((1, "active")) < order.index((3, "value"))
+
+
+def test_a_cheat_the_user_switched_off_keeps_its_own_choice_at_startup(tmp_path: Path):
+    """Holding a script's defaults off may not overwrite an explicit selection."""
+    service = _service(tmp_path, "m42")
+    source = tmp_path / "flags-explicit.CT"
+    source.write_text(FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    service.save_profile(931, "Game", False, table["sha256"], "game.exe")
+    service.set_execution_consent(931, table["sha256"], True)
+    inspection = _inspection(service, table["sha256"])
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, "1"), StartupPreference(3, True, "1")],
+    )
+
+    actions = effective_startup_plan(profile, inspection)
+    by_record = {(action.record_id, action.kind): action for action in actions}
+    assert by_record[(3, "value")].value == "1"
+    assert (3, "active") in by_record
 
 
 def test_an_orphan_off_action_is_never_asked_of_a_record_its_script_will_not_create(tmp_path: Path):

@@ -25,6 +25,7 @@ import {
   controlNeedsValueInput,
   switchOffValues,
   switchValueFor,
+  switchesToHoldOff,
   switchValuesFor,
   controlsMissingRequiredValue,
   missingRequiredValueReason,
@@ -898,6 +899,30 @@ describe("compact cheat rows", () => {
     // a switch would take the list away from every two-entry record.
     const { switch_on_value: _unused, ...older } = choice;
     expect(controlIsSwitch(older as typeof choice)).toBe(false);
+  });
+
+  it("names the switches a script would turn on by itself, and nothing else", () => {
+    const script = { ...base, id: 10, path: ["Enable"], kind: "script" as const, has_assembler_script: true };
+    const flag = (id: number, name: string) => ({
+      ...base, id, path: ["Enable", name], kind: "dropdown" as const,
+      dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][], switch_on_value: "1",
+      declared_default: "1",
+    });
+    const chosen = flag(11, "God mode");
+    const unasked = flag(12, "One hit kill");
+    const multiplier = { ...base, id: 13, path: ["Enable", "Damage"], kind: "value" as const };
+    const elsewhere = flag(14, "Other");
+    const held = switchesToHoldOff([script], [script, chosen, unasked, multiplier, { ...elsewhere, path: ["Other", "Other"] }], new Set([11]));
+    // The one the user asked for is left alone, a value record keeps its own
+    // number, and a switch under a different script is not this script's doing.
+    expect(held.map((item) => [item.control.id, item.value])).toEqual([[12, "0"]]);
+    // A flag the script leaves off, and one whose declaration could not be
+    // read, are both the table behaving as it always did: nothing to hold off.
+    const leftOff = { ...unasked, id: 15, declared_default: "0" };
+    const unreadable = { ...unasked, id: 16, declared_default: null };
+    expect(switchesToHoldOff([script], [script, leftOff, unreadable], new Set())).toEqual([]);
+    // A script with nothing under it asks for nothing.
+    expect(switchesToHoldOff([{ ...base, id: 20, path: ["Alone"], kind: "script" as const }], [script, chosen], new Set())).toEqual([]);
   });
 
   it("keeps one page inside the 800p Game Mode viewport", () => {

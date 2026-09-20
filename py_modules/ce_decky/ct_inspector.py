@@ -143,6 +143,17 @@ class TableControl:
     # values themselves stay exactly as the author wrote them, so nothing
     # downstream loses the list.
     switch_on_value: str | None = None
+    # What the enclosing Auto Assembler script declares this record's address to
+    # hold, where that address is a symbol the script itself allocates and the
+    # declaration can be read: `bEnableGodMode:\n  dd 1` gives `1`.
+    #
+    # It says what the table does on its own, before anybody chooses anything.
+    # Used for two things and nothing else: holding a flag off that the script
+    # would otherwise switch on, and saying so once at Review. A declaration
+    # this cannot read costs both of those rather than deciding anything wrong,
+    # and the symbol is the script's own, so a record named here is one that
+    # exists once that script has run.
+    declared_default: str | None = None
     # This record only attaches Cheat Engine to the game; it is not a cheat.
     attach_only: bool = False
 
@@ -356,6 +367,7 @@ def _walk_entry(
     sanitized: list[str] | None = None,
     dropped: list[str] | None = None,
     unrecognised: list[tuple[str, str]] | None = None,
+    declared: dict[str, str] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -399,6 +411,10 @@ def _walk_entry(
         else "value"
     )
     switch_on_value, unrecognised_pair = _switch_on_value(dropdown) if kind == "dropdown" else (None, None)
+    # What the script above this record says its address holds. The address is a
+    # symbol that script allocates, so this is read from the enclosing script
+    # rather than from this record's own.
+    declared_default = (declared or {}).get(address.strip()) if address.strip() else None
     if unrecognised_pair is not None and unrecognised is not None and unrecognised_pair not in unrecognised:
         if len(unrecognised) < MAX_UNRECOGNISED_PAIRS:
             unrecognised.append(unrecognised_pair)
@@ -415,15 +431,24 @@ def _walk_entry(
             dropdown_values=dropdown,
             dropdown_read_only=dropdown_read_only,
             switch_on_value=switch_on_value,
+            declared_default=declared_default,
         )
     )
 
     count = 1
+    # A record inside this one is read against this script's declarations as
+    # well as those of the scripts above it; the nearest one wins, because that
+    # is the one that allocated the symbol last.
+    nested_declared = declared
+    if assembler_text:
+        own = _declared_defaults(assembler_text)
+        if own:
+            nested_declared = {**(declared or {}), **own}
     nested = _first_child(element, "CheatEntries")
     if nested is not None:
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
-                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised)
+                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared)
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count
@@ -482,6 +507,31 @@ _SWITCH_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 # corpus's 1294 dropdown records reduce to 42 distinct unplaced pairs across all
 # 142 tables, so this is headroom rather than a limit anything real meets.
 MAX_UNRECOGNISED_PAIRS = 64
+
+
+# `bEnableGodMode:` on one line and `dd 1` under it, which is how a Cheat Engine
+# script allocates and initialises a flag. The value is taken exactly as written,
+# so a `(float)0.1` stays that and never compares equal to a switch's key.
+_DECLARATION_RE = re.compile(
+    r"(?mi)^[\t ]*([A-Za-z_]\w*)[\t ]*:[\t ]*(?:\r?\n[\t ]*)?(?:dd|dw|db|dq)[\t ]+([^\s/;]+)"
+)
+# What one script's declarations may cost to read. The largest real script here
+# declares 48; a file that declares more than this is not what this sentence is
+# about, and the records simply keep their own defaults.
+MAX_DECLARATIONS = 4096
+
+
+def _declared_defaults(script: str | None) -> dict[str, str]:
+    """Each symbol this script allocates, and the value it gives it."""
+    if not script:
+        return {}
+    declared: dict[str, str] = {}
+    for symbol, value in _DECLARATION_RE.findall(script):
+        if len(declared) >= MAX_DECLARATIONS:
+            break
+        # First declaration wins, which is the one that runs.
+        declared.setdefault(symbol, value)
+    return declared
 
 
 def _switch_side(label: str) -> int | None:

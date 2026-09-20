@@ -3861,6 +3861,57 @@ describe("Cheat selection workflow", () => {
     expect(screen.queryByText(/Value saved; written when/)).toBeNull();
   });
 
+  it("holds off the flags a script would switch on by itself", async () => {
+    // The table author's own defaults: one real table declares 22 of its 24
+    // flags as on, so switching the script on for one cheat switched on most of
+    // the table while the panel counted the one cheat and said `1 active`.
+    const script = {
+      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    };
+    const flag = (id: number, name: string) => ({
+      id, description: name, path: ["Enable", name], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1",
+      // What the script declares for its own symbol: this is the flag it
+      // switches on by itself, which is the whole reason to hold it off.
+      declared_default: "1",
+    });
+    const chosen = flag(401, "bEnableGodMode");
+    const unasked = flag(402, "bEnableOneHitKill");
+    const live = liveRuntime();
+    live.status.results = [
+      { generation: 1, record_id: 400, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 401, ok: true, active: false, value: "0", error: null },
+      { generation: 1, record_id: 402, ok: true, active: false, value: "0", error: null },
+    ];
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: live, results: live.status.results, unavailable: [],
+    });
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 3, controls: [script, chosen, unasked] } as any,
+    });
+
+    const row = await screen.findByTestId("cheat-row-401");
+    fireEvent.click(within(row).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    const byId = new Map(sent.map((state: any) => [state.record_id, state]));
+    // The script goes on because the chosen cheat needs it, the chosen cheat
+    // goes on, and the one nobody asked for is written to its off key without
+    // being switched at all.
+    expect(byId.get(400)).toMatchObject({ active: true });
+    expect(byId.get(401)).toMatchObject({ active: true });
+    expect(byId.get(402)).toMatchObject({ active: null, value: "0" });
+  });
+
   it("leaves a value list that fits the panel exactly as it was", async () => {
     const picker = {
       id: 301, description: "Difficulty", path: ["Difficulty"], variable_type: "4 Bytes",

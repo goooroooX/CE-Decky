@@ -85,7 +85,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -2949,6 +2949,11 @@ function Content() {
       const script = controls.find((candidate) => candidate.id === scriptId);
       return script ? [{ record_id: scriptId, active: false, value: null, path: script.path, label: controlRowLabel(script) }] : [];
     });
+    // The scripts above carry the table author's own defaults, so every switch
+    // under them that this press did not ask for is written to its off key in
+    // the same call. Otherwise one pinned cheat switches on everything its
+    // script declares, and the panel counts the one it was asked for.
+    const heldOff = active ? switchesToHoldOff(ancestors, controls, new Set([recordId])) : [];
     const desired = active
       ? [
           ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -2966,6 +2971,14 @@ function Content() {
             path: control.path,
             label: controlRowLabel(control),
           },
+          ...heldOff.flatMap(({ control: held, value }) => held.id === null ? [] : [{
+            record_id: held.id,
+            active: null,
+            value,
+            switch_values: switchValuesFor(held),
+            path: held.path,
+            label: controlRowLabel(held),
+          }]),
           ...releasedRows,
         ]
       : [
@@ -2987,6 +3000,24 @@ function Content() {
           controls.flatMap((control) => control.id === null ? [] : [control.id]),
           confirmed.envelope,
         );
+        // What the script's own defaults cost, read back rather than assumed:
+        // a flag this did not manage to put down is a cheat running that
+        // nobody asked for.
+        if (heldOff.length > 0) {
+          const finalById = new Map(finalState.results.flatMap(
+            (result) => result.record_id === null ? [] : [[result.record_id, result] as const],
+          ));
+          for (const script of ancestors) {
+            const mine = heldOff.filter((item) => item.script === script.id);
+            if (script.id === null || mine.length === 0) continue;
+            logUi("runtime.flags_held_off", {
+              session: confirmed.envelope?.prepared?.session_id ?? null,
+              script_record_id: script.id,
+              written: mine.length,
+              failed: mine.filter((item) => item.control.id !== null && finalById.get(item.control.id)?.value !== item.value).length,
+            });
+          }
+        }
         const touched = new Set<number>([recordId]);
         // The scripts around this cheat are CE Decky's own bookkeeping, so they
         // are sent to Cheat Engine but never written into the profile as a

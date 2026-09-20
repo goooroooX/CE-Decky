@@ -1484,6 +1484,67 @@ def effective_startup_plan(profile: GameProfile, inspection: TableInspection) ->
     return _startup_actions(_effective_startup_preferences(profile), inspection)
 
 
+def _held_off_switch_preferences(
+    preferences: list[StartupPreference],
+    controls: dict[int, object],
+    ambiguous: set[int],
+) -> list[StartupPreference]:
+    """Write the off value to every switch a script would switch on by itself.
+
+    A table's Auto Assembler script declares its own defaults, and one real table
+    declares 22 of its 24 flags as on. Auto-load enables that script because a
+    remembered cheat needs it, and everything else the script declares comes on
+    with it while the panel counts the one cheat that was asked for. The panel
+    holds those off for a press it makes itself; without this the next session
+    puts them straight back.
+
+    Sorted after the activation it belongs to by the ordering below, because a
+    record created by a script has a deeper path than the script and does not
+    exist until it has run. These count against the same startup budget as
+    everything else, which is what bounds a script with thousands of flags under
+    it; no table in the sampled corpus carries a tenth of that.
+    """
+    named = {preference.record_id for preference in preferences}
+    switched_on = [
+        control
+        for preference in preferences
+        if preference.active is True and (control := controls.get(preference.record_id)) is not None
+    ]
+    held: dict[int, StartupPreference] = {}
+    for script in switched_on:
+        script_path = getattr(script, "path", ())
+        for record_id, control in controls.items():
+            # A record whose ID this table uses twice is refused for the plan it
+            # is named in, and this must not name one: an addition of ours would
+            # then refuse a whole Auto-load the user's own selection could run.
+            if record_id in named or record_id in ambiguous or control is script:
+                continue
+            path = getattr(control, "path", ())
+            if len(path) <= len(script_path) or tuple(path[:len(script_path)]) != tuple(script_path):
+                continue
+            off = _switch_off_value(control)
+            if off is not None:
+                held[record_id] = StartupPreference(record_id=record_id, active=None, value=off)
+    return list(held.values())
+
+
+def _switch_off_value(control: object) -> str | None:
+    """The off key of a switch this record's own script declares as on.
+
+    Only a flag the script declares: its address is a symbol that script
+    allocates, so the record resolves once the script has run. Holding off a
+    record whose address some other script owns would ask startup for one that
+    cannot resolve, and a startup action that fails rolls the whole plan back -
+    which would make this hygiene cost the user the cheats they asked for.
+    """
+    on = getattr(control, "switch_on_value", None)
+    values = getattr(control, "dropdown_values", ())
+    declared = getattr(control, "declared_default", None)
+    if not isinstance(on, str) or not on or len(values) != 2 or declared != on:
+        return None
+    return next((value for value, _ in values if value != on), None)
+
+
 def _startup_actions(preferences: Iterable[StartupPreference], inspection: TableInspection) -> list[StartupAction]:
     controls = {}
     ambiguous: set[int] = set()
@@ -1509,6 +1570,7 @@ def _startup_actions(preferences: Iterable[StartupPreference], inspection: Table
     expanded = _without_orphan_off_preferences(
         _with_enclosing_scripts(kept, controls, ambiguous), controls
     )
+    expanded = expanded + _held_off_switch_preferences(expanded, controls, ambiguous)
     for preference in expanded:
         if preference.record_id in ambiguous:
             raise ValueError(f"startup MemoryRecord {preference.record_id} is ambiguous in exact table SHA")

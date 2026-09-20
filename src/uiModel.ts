@@ -1800,6 +1800,48 @@ export function switchValuesFor(control: TableControl): { on: string; off: strin
   return on !== null && off !== null ? { on, off } : undefined;
 }
 
+/**
+ * The switches a script would turn on by itself, and the key that turns each off.
+ *
+ * A table's Auto Assembler script declares its own defaults, and they are not
+ * modest: one real table declares 22 of its 24 flags as on, with damage times
+ * ten and enemies that can barely see. Switching that script on because one
+ * cheat under it was asked for therefore switched on most of the table, while
+ * the panel counted the one cheat and said `1 active`.
+ *
+ * So every switch a script CE Decky enables declares as on is written to its off
+ * key, unless the user asked for that one. It is sent as an ordinary desired
+ * state with no active of its own: the record does not exist until the script
+ * has run, which is exactly the case the runtime client's deferred path already
+ * waits out.
+ */
+export function switchesToHoldOff(
+  scripts: readonly TableControl[],
+  controls: readonly TableControl[],
+  requested: ReadonlySet<number>,
+): { control: TableControl; value: string; script: number }[] {
+  const held = new Map<number, { control: TableControl; value: string; script: number }>();
+  for (const script of scripts) {
+    if (script.id === null) continue;
+    for (const control of controls) {
+      if (control.id === null || control.id === script.id || requested.has(control.id)) continue;
+      if (control.path.length <= script.path.length) continue;
+      if (!script.path.every((segment, index) => control.path[index] === segment)) continue;
+      // Only a flag this script declares as on: its address is a symbol the
+      // script itself allocates, so it exists once the script has run, and
+      // there is nothing to hold off about one the script leaves off anyway.
+      // A declaration that could not be read holds nothing off, which is the
+      // table behaving as it did before any of this.
+      if (control.declared_default === null || control.declared_default !== control.switch_on_value) continue;
+      const off = switchValueFor(control, false);
+      // The script that brought it, so a later report can say which one did.
+      // The innermost wins: a flag under two nested scripts is that one's.
+      if (off !== null) held.set(control.id, { control, value: off, script: script.id });
+    }
+  }
+  return [...held.values()];
+}
+
 /** Every switch record's off key, for a call that only switches things off. */
 export function switchOffValues(controls: readonly TableControl[]): Map<number, string> {
   const values = new Map<number, string>();

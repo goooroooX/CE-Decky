@@ -50,6 +50,7 @@ import {
   rememberedSelectionBudgetError,
   safeActionableControls,
   switchValuesFor,
+  switchesToHoldOff,
   unusedActiveScripts,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
@@ -736,10 +737,36 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           record_id: control.id,
           active,
           value,
+          switch_values: switchValuesFor(control),
           path: control.path,
           label: controlRowLabel(control),
         }];
       });
+      // A script CE Decky switched on carries the table author's own defaults
+      // with it, so every switch under it that nobody asked for is written to
+      // its off key in the same call. Without this the panel counts the one
+      // cheat that was asked for while the game runs everything the script
+      // declared: one real table turns on 22 of its 24 flags this way.
+      const heldOff = switchesToHoldOff(
+        [...pluginManaged].flatMap((recordId) => {
+          const script = controlById.get(recordId);
+          return script ? [script] : [];
+        }),
+        safeControls,
+        touchedIds,
+      );
+      for (const { control, value } of heldOff) {
+        if (control.id === null) continue;
+        desired.push({
+          record_id: control.id,
+          active: null,
+          value,
+          switch_values: switchValuesFor(control),
+          path: control.path,
+          label: controlRowLabel(control),
+        });
+      }
+
       // Any mutation/revalidation failure after this point makes the previous
       // Home snapshot stale. Successful final query below republishes a fresh one.
       onSnapshotInvalidated?.();
@@ -759,6 +786,24 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       setUnavailableRecords(new Set(
         finalState.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]),
       ));
+      // What the script's own defaults cost, read back rather than assumed: a
+      // flag this did not manage to put down is a cheat running that nobody
+      // asked for, and it is the one thing a later report needs to see.
+      if (heldOff.length > 0) {
+        const finalById = new Map(finalState.results.flatMap(
+          (result) => result.record_id === null ? [] : [[result.record_id, result] as const],
+        ));
+        for (const scriptId of pluginManaged) {
+          const mine = heldOff.filter((item) => item.script === scriptId);
+          if (mine.length === 0) continue;
+          logUi("runtime.flags_held_off", {
+            session: confirmed.envelope?.prepared?.session_id ?? null,
+            script_record_id: scriptId,
+            written: mine.length,
+            failed: mine.filter((item) => item.control.id !== null && finalById.get(item.control.id)?.value !== item.value).length,
+          });
+        }
+      }
       // Cheat Engine answers `??` for an address it cannot read yet, including
       // every value deliberately deferred above. The typed choice is what this
       // table has to remember, so it stands in wherever the read-back is blank.
