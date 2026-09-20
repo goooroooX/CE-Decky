@@ -20,6 +20,7 @@ import argparse
 import json
 from pathlib import Path
 import platform
+import struct
 import sys
 import time
 
@@ -49,15 +50,21 @@ def survey_one(path: Path) -> dict[str, object]:
     started = time.perf_counter()
     try:
         version = _version_from_pe(ranges)
-    except (OSError, ValueError) as exc:
-        version, refused = None, str(exc)
+    # The same set the production reader answers `None` for. Catching less than
+    # it does would make this crash on a file the product handles.
+    except (OSError, ValueError, struct.error, IndexError, UnicodeDecodeError) as exc:
+        version, refused = None, f"{type(exc).__name__}: {exc}"
     else:
         refused = None
     finally:
         pe_version._find_version_entry = walk
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = -1
     return {
         "path": str(path),
-        "bytes": path.stat().st_size,
+        "bytes": size,
         "version": version,
         "refused": refused,
         "resource_bytes": _resource_bytes(path),
@@ -120,7 +127,18 @@ def main() -> int:
         print("pe-version-survey: no executables under the roots given", file=sys.stderr)
         return 1
 
-    rows = [survey_one(path) for path in seen]
+    # One unreadable file never ends a survey of hundreds: a broken symlink, a
+    # directory that looks like an executable and a file this user may not open
+    # are all ordinary in a games folder, and each is a row rather than a stop.
+    rows = []
+    for path in seen:
+        try:
+            rows.append(survey_one(path))
+        except OSError as exc:
+            rows.append({
+                "path": str(path), "bytes": -1, "version": None, "refused": f"{type(exc).__name__}: {exc}",
+                "resource_bytes": None, "directory_reach": 0, "spans": 0, "elapsed_ms": 0.0,
+            })
     declared = [row for row in rows if row["version"]]
     report = {
         "host": f"{platform.system()} {platform.machine()} python {platform.python_version()}",

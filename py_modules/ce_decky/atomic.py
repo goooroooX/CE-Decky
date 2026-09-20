@@ -9,6 +9,15 @@ from typing import Any
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
 
+# Every reader below checks that it has a regular file, and every one of them
+# checked it after the open. Opening a FIFO for reading blocks until somebody
+# opens the other end, so a path that is not a regular file could hang the call
+# rather than be refused by it: measured here, a ranged read of a FIFO never
+# returned. `O_NONBLOCK` makes the open itself return, and the check that was
+# always there then refuses it. It changes nothing for a regular file, and it is
+# absent on Windows, where the whole case is.
+_NONBLOCKING_OPEN = getattr(os, "O_NONBLOCK", 0)
+
 
 class DurabilityUnknownError(OSError):
     """The new content is already in place and its durability is not established.
@@ -104,7 +113,7 @@ def load_json(path: Path, default: Any, *, max_bytes: int = MAX_JSON_BYTES) -> A
     # allocation.
     if path.is_symlink():
         raise ValueError("JSON state path must be a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | _NONBLOCKING_OPEN | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
@@ -162,7 +171,7 @@ def read_regular_bytes(path: Path, *, max_bytes: int, allow_missing: bool = Fals
         raise ValueError("max_bytes must be a positive integer")
     if path.is_symlink():
         raise ValueError("file path must be a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | _NONBLOCKING_OPEN | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
@@ -206,7 +215,7 @@ def read_proc_bytes(path: Path, *, max_bytes: int) -> bytes | None:
         raise ValueError("procfs max_bytes must be a positive integer")
     if path.is_symlink():
         raise ValueError("procfs path must be a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | _NONBLOCKING_OPEN | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
@@ -245,7 +254,7 @@ def read_regular_bytes_with_stat(
         raise ValueError("max_bytes must be a positive integer")
     if path.is_symlink():
         raise ValueError("file path must be a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | _NONBLOCKING_OPEN | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
@@ -299,7 +308,7 @@ def read_regular_range(path: Path, *, offset: int, length: int) -> tuple[bytes, 
         raise ValueError("length must be a positive integer")
     if path.is_symlink():
         raise ValueError("file path must be a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | _NONBLOCKING_OPEN | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:

@@ -275,7 +275,9 @@ function describeError(cause, fallback = GENERIC_FALLBACK) {
 const MAX_PROMOTED_CAUSE = 60;
 /** A cause ended as a sentence, so our own next step can follow it. */
 function endSentence(text) {
-    return /[.!?]$/.test(text) ? text : `${text}.`;
+    // A backend sentence can end in punctuation that is already a full stop's
+    // job, and `refused:.` reads as a typo rather than as a finding.
+    return /[.!?:;\u2026]$/.test(text) ? text : `${text}.`;
 }
 /**
  * One line whose first clause is the finding rather than our framing.

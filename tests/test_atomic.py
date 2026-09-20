@@ -121,6 +121,29 @@ def test_read_regular_range_refuses_a_symlink_and_a_bound_that_is_not_one(tmp_pa
         read_regular_range(link, offset=0, length=2)
 
 
+def test_a_path_that_is_not_a_regular_file_is_refused_rather_than_waited_on(tmp_path: Path):
+    """Opening a FIFO for reading blocks until somebody opens the other end.
+
+    Every reader here checks for a regular file after the open, so the check
+    could never be reached: a ranged read of one never returned at all. The
+    open is non-blocking now and the check that was always there refuses it.
+    """
+    import ce_decky.atomic as atomic
+
+    if os.name != "posix":
+        pytest.skip("named pipes are a POSIX case")
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="regular file"):
+        atomic.read_regular_range(fifo, offset=0, length=4)
+    with pytest.raises(ValueError, match="regular file"):
+        atomic.read_regular_bytes(fifo, max_bytes=16)
+    with pytest.raises(ValueError, match="regular file"):
+        atomic.read_regular_bytes_with_stat(fifo, max_bytes=16)
+    with pytest.raises(ValueError, match="regular file"):
+        atomic.load_json(fifo, None)
+
+
 def test_read_regular_range_rejects_same_inode_mutation_while_reading(tmp_path: Path, monkeypatch):
     import ce_decky.atomic as atomic
 
