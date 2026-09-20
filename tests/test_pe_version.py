@@ -86,6 +86,23 @@ def test_falls_back_to_the_fixed_binary_version_with_no_string_table(tmp_path: P
     assert read_pe_version(_pe_with_resource(tmp_path, fixed_only)) == "7.7.0.10621"
 
 
+def test_reports_the_sections_a_pe_declares(tmp_path: Path):
+    """Read by the one PE reader here, because a packer names itself in them.
+
+    A scan of a file's bytes is evidence about a running game only while the
+    file holds the code that runs, and the section table is where a packer or a
+    DRM wrapper says it does not.
+    """
+    from ce_decky.pe_version import read_pe_section_names
+
+    sample = _pe_with_resource(tmp_path, _version_block())
+    assert read_pe_section_names(sample) == (".rsrc",)
+    plain = tmp_path / "plain.bin"
+    plain.write_bytes(b"not a pe at all")
+    assert read_pe_section_names(plain) is None
+    assert read_pe_section_names(tmp_path / "absent.exe") is None
+
+
 def test_a_file_that_is_not_a_pe_declares_no_version(tmp_path: Path):
     path = tmp_path / "not-a-pe.exe"
     path.write_bytes(b"not an executable at all")

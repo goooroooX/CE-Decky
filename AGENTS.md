@@ -172,6 +172,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | What is holding this device's memory while Decky and its plugins look hung | `scripts/target_memory_watch.py` |
 | What does one session cost, and how long do the primitives it repeats take | `scripts/target_session_cost_probe.py`, `scripts/target_primitive_bench.py` |
 | Do a real table's controls stay reachable in the QAM, without executing anything the table carries | `scripts/table_ui_probe.py` |
+| What does a table scan for, and does this game's program hold it | `scripts/ct_scan_survey.py`; `--tables` over a directory reports what the production parser read out of real tables and what it refused, with the reason and an example of each, and `--table` and `--executable` runs the check the panel runs and prints which patterns are present, which are missing and what it cost. Read only: no table is stored and no game is started |
 | What version do real Windows executables declare, and what does reading one cost | `scripts/pe_version_survey.py`; it walks a directory of `.exe` through the production version reader and reports, per file, the version, the size of the resource section, how far into it the directory walk reached and how many spans the read cost |
 | One bounded read-only snapshot of the host, for a report | `scripts/target_snapshot.py` |
 | Routed repository QA, and pinned browser UI QA | `scripts/qa.py`, `scripts/browser_harness.py` |

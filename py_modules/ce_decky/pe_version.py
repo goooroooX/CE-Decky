@@ -18,6 +18,7 @@ knowing the version is a normal outcome, not an import failure.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import struct
 import unicodedata
@@ -110,7 +111,24 @@ class _Ranges:
         return fetched if fetched.has(offset, length) else None
 
 
-def _version_from_pe(ranges: _Ranges) -> str | None:
+@dataclass(frozen=True)
+class _Headers:
+    """Where one PE keeps the things a reader of it has to find."""
+
+    window: _Window
+    optional: int
+    optional_size: int
+    sections: int
+    directories_at: int
+
+
+def _headers(ranges: _Ranges) -> _Headers | None:
+    """The walk from `MZ` to the optional header's data directories, once.
+
+    Two readers need it and neither may become a second PE parser: the version
+    block is reached through the directories, and the section names are read
+    off the table that follows the optional header.
+    """
     head = ranges.window(0, _HEADER_BYTES)
     if not head.has(0, 64) or head.read(0, 2) != b"MZ":
         return None
@@ -135,6 +153,48 @@ def _version_from_pe(ranges: _Ranges) -> str | None:
         directories_at = optional + 112
     else:
         return None
+    return _Headers(headers, optional, optional_size, sections, directories_at)
+
+
+def read_pe_section_names(path: Path) -> tuple[str, ...] | None:
+    """Every section name this executable declares, or `None` for what is not a PE.
+
+    A scan of a file's bytes says what Cheat Engine will find in the running
+    game only while the file on disk holds the code that runs. A packer or a
+    DRM wrapper leaves its own name in this table, which is the cheapest honest
+    way to know that the answer would be a guess. Read through the same bounded
+    spans and the same identity check as everything else here; a file that
+    cannot be read this way is not a PE as far as this is concerned.
+    """
+    try:
+        ranges = _Ranges(path)
+        headers = _headers(ranges)
+        if headers is None:
+            return None
+        found = _sections(ranges, headers)
+        # A PE has at least one section - `_headers` refuses a file claiming
+        # none - so an empty table here means the table could not be read, and
+        # saying so is not the same as saying the file declares nothing.
+        return tuple(name for name, _ in found) if found else None
+    except (OSError, ValueError, struct.error, IndexError, UnicodeDecodeError):
+        return None
+
+
+def _sections(ranges: _Ranges, headers: _Headers) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """This PE's section table: each entry's name and the spans it claims."""
+    section_table_at = headers.optional + headers.optional_size
+    window = ranges.covering(headers.window, section_table_at, headers.sections * 40)
+    if window is None:
+        return []
+    return _section_table(window, section_table_at, headers.sections)
+
+
+def _version_from_pe(ranges: _Ranges) -> str | None:
+    found = _headers(ranges)
+    if found is None:
+        return None
+    headers = found.window
+    directories_at = found.directories_at
     if not headers.has(directories_at - 4, 4):
         return None
     directory_count = headers.u32(directories_at - 4)
@@ -145,11 +205,9 @@ def _version_from_pe(ranges: _Ranges) -> str | None:
     if resource_rva == 0 or resource_size == 0:
         return None
 
-    section_table_at = optional + optional_size
-    section_window = ranges.covering(headers, section_table_at, sections * 40)
-    if section_window is None:
+    table = [span for _, span in _sections(ranges, found)]
+    if not table:
         return None
-    table = _section_table(section_window, section_table_at, sections)
     base = _offset_for_rva(table, resource_rva)
     if base is None:
         return None
@@ -172,17 +230,21 @@ def _version_from_pe(ranges: _Ranges) -> str | None:
     return _version_from_block(block.read(start, data_size))
 
 
-def _section_table(window: _Window, offset: int, count: int) -> list[tuple[int, int, int, int]]:
-    table: list[tuple[int, int, int, int]] = []
+def _section_table(window: _Window, offset: int, count: int) -> list[tuple[str, tuple[int, int, int, int]]]:
+    table: list[tuple[str, tuple[int, int, int, int]]] = []
     for index in range(count):
         header = offset + index * 40
         if not window.has(header, 40):
             break
+        # Eight bytes, NUL padded, and what a packer writes there is the thing
+        # being read: decoded leniently so an odd name is still reported rather
+        # than costing the whole table.
+        name = window.read(header, 8).split(b"\x00", 1)[0].decode("ascii", "replace")
         virtual_size = window.u32(header + 8)
         virtual_address = window.u32(header + 12)
         raw_size = window.u32(header + 16)
         raw_pointer = window.u32(header + 20)
-        table.append((virtual_address, max(virtual_size, raw_size), raw_pointer, raw_size))
+        table.append((name, (virtual_address, max(virtual_size, raw_size), raw_pointer, raw_size)))
     return table
 
 
