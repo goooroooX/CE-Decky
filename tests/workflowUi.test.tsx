@@ -3389,7 +3389,12 @@ describe("Home panel and managed setup", () => {
       onCancel={vi.fn()}
     />);
     const block = await screen.findByTestId("review-findings");
-    fireEvent.click(within(block).getByRole("button", { name: "Prepare a copy that works here" }));
+    const prepare = within(block).getByRole("button", { name: "Prepare a copy that works here" });
+    // Drawn in its own green, which is the one thing on this screen that says
+    // this press is an offer rather than another step. The colour is a class on
+    // the box around it, so losing the box loses the colour silently.
+    expect(prepare.closest(".ce-decky-prepare")).toBeTruthy();
+    fireEvent.click(prepare);
     expect(onPrepareCopy).toHaveBeenCalled();
 
     cleanup();

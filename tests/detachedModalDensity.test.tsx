@@ -1025,7 +1025,9 @@ describe("detached modal density", () => {
     const name = within(row).getByText(/Game\.CT/);
     expect(chip.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(row).getAllByRole("button").some((button) => button.contains(chip))).toBe(false);
-    fireEvent.click(within(row).getByRole("button", { name: "Prepare" }));
+    const prepare = within(row).getByRole("button", { name: "Prepare" });
+    expect(prepare.closest(".ce-decky-prepare")).toBeTruthy();
+    fireEvent.click(prepare);
     expect(onPrepareCopy).toHaveBeenCalledWith(table.sha256);
 
     cleanup();

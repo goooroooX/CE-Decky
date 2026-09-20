@@ -1968,6 +1968,8 @@ const NOTE_CLASS = "ce-decky-note";
  * placed by a row.
  */
 const UPDATE_ACTION_CLASS = "ce-decky-update";
+/** Marks the press that prepares a copy of a table, drawn in its own green. */
+const PREPARE_ACTION_CLASS = "ce-decky-prepare";
 /** Marks a row that is currently showing its revealed block. */
 const OPEN_ROW_CLASS = "ce-decky-open";
 /**
@@ -2036,6 +2038,14 @@ function densityCss() {
         // carries one orange instead of two that nearly match.
         "--ce-update-accent: #fd5605",
         "--ce-update-accent-text: #ffffff",
+        // The press that makes a copy of a table this Cheat Engine will not open.
+        // Dark green because it is the one press on a screen full of neutral ones
+        // that is an offer rather than a step: everything else on a row or in the
+        // Review block either uses what is there or takes it away. Dark, not the
+        // bright green a compatibility mark is drawn in, so a button and a verdict
+        // are not the same green on one screen.
+        "--ce-prepare-accent: #15653a",
+        "--ce-prepare-accent-text: #ffffff",
         // The row that heads a list is the list's first row of data, not the
         // caption above it: it is set a step darker than the panel and holds the
         // rows that follow off itself.
@@ -2223,6 +2233,11 @@ function densityCss() {
         `${scope} .${NOTE_CLASS} { padding: 2px 20px 5px; font-size: 11px; line-height: 15px; color: hsla(0, 0%, 100%, 0.62); }`,
         `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button`
             + ` { background: var(--ce-update-accent); color: var(--ce-update-accent-text); }`,
+        // The same shape for the same reason: the colour is what the press is,
+        // and Steam's own focus fill is what says where the ring is, so the
+        // colour steps aside while the control is the one being walked.
+        `${scope} .${PREPARE_ACTION_CLASS}:not(:focus-within) button`
+            + ` { background: var(--ce-prepare-accent); color: var(--ce-prepare-accent-text); }`,
         `${sectionSelector} { margin-bottom: 6px; }`,
         // Steam renders a section heading at 16px/22px with 8px beneath it; five
         // headings on one diagnostics screen cost more than the rows they label.
@@ -11827,7 +11842,7 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
      * table this game is using shows nothing to press.
      */
     const rowActions = (table, usable, group) => (SP_JSX.jsxs(SP_JSX.Fragment, { children: [onPrepareCopy && canSelect && tableIsSigned(table) && table.available
-                && (group === "mine" || !owners?.[table.sha256]) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 }), children: "Prepare" })), canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
+                && (group === "mine" || !owners?.[table.sha256]) && (SP_JSX.jsx("div", { className: PREPARE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 }), children: "Prepare" }) })), canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
                     if (armed === table.sha256) {
                         setArmed(null);
                         revoke(table.sha256);
@@ -12381,7 +12396,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
                                     { label: "Source", description: origin ? `${origin.provider} · ${origin.original_filename || table.filename}` : "Local file" },
                                     { label: "Contents", description: `${inspection.total_entries} entries · ${inspection.controls.length} inspected controls · CE table ${inspection.table_version ?? "unknown"}${notTakenAsWritten ? ` · ${notTakenAsWritten}` : ""}` },
                                     { label: "Executable content", description: `${inspection.has_lua ? "Lua " : ""}${inspection.has_auto_assembler ? "AutoAssembler " : ""}${inspection.has_forms ? "its own window " : ""}${inspection.embedded_files ? `${inspection.embedded_files} embedded file(s)` : ""}`.trim() || "No static executable-content markers found" },
-                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), findings.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-findings", status: true, label: "What CE Decky found", description: findings.join(" "), actions: canPrepare ? (SP_JSX.jsx(SmallButton, { disabled: busy || aborting || preparing, onClick: traceUiAction("table_review_modal.prepare_copy", () => { void prepare(); }, { table_sha: table.sha256 }), children: preparing ? "Preparing…" : "Prepare a copy that works here" })) : undefined }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
+                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), findings.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-findings", status: true, label: "What CE Decky found", description: findings.join(" "), actions: canPrepare ? (SP_JSX.jsx("div", { className: PREPARE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: busy || aborting || preparing, onClick: traceUiAction("table_review_modal.prepare_copy", () => { void prepare(); }, { table_sha: table.sha256 }), children: preparing ? "Preparing…" : "Prepare a copy that works here" }) })) : undefined }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
                                     ? undefined
                                     : onRefreshProcesses
                                         ? "This table names no process and none is running for this game. Start the game and press Look again, or enter the .exe basename."

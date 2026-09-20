@@ -7,7 +7,7 @@ import { antiCheatBlockedReason, defaultTargetProcess, installedGameExecutables,
 import type { GameExecutableListing, TableInspection, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
-import { ActionGroup, BELOW_FIELD_CLASS, CONTENTS_ONLY, DensePanel, InfoFields, PanelRow, SectionHeading, SmallButton, focusFirstEnabled } from "../components/PanelDensity";
+import { ActionGroup, BELOW_FIELD_CLASS, CONTENTS_ONLY, DensePanel, InfoFields, PREPARE_ACTION_CLASS, PanelRow, SectionHeading, SmallButton, focusFirstEnabled } from "../components/PanelDensity";
 import { TableCodeModal } from "./TableCodeModal";
 
 const CUSTOM_PROCESS = "__custom_process__";
@@ -581,10 +581,12 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
                 label="What CE Decky found"
                 description={findings.join(" ")}
                 actions={canPrepare ? (
-                  <SmallButton
-                    disabled={busy || aborting || preparing}
-                    onClick={traceUiAction("table_review_modal.prepare_copy", () => { void prepare(); }, { table_sha: table.sha256 })}
-                  >{preparing ? "Preparing…" : "Prepare a copy that works here"}</SmallButton>
+                  <div className={PREPARE_ACTION_CLASS} style={CONTENTS_ONLY}>
+                    <SmallButton
+                      disabled={busy || aborting || preparing}
+                      onClick={traceUiAction("table_review_modal.prepare_copy", () => { void prepare(); }, { table_sha: table.sha256 })}
+                    >{preparing ? "Preparing…" : "Prepare a copy that works here"}</SmallButton>
+                  </div>
                 ) : undefined}
               />
             </PanelSectionRow>

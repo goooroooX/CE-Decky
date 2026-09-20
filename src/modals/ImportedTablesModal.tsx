@@ -3,7 +3,7 @@ import { traceUiAction, traceUiEdit, startUiOperation } from "../uiActions";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { DialogButton, Field, ModalRoot, PanelSection, PanelSectionRow } from "@decky/ui";
 import { modalActionStyle } from "../components/ModalActions";
-import { CONTENTS_ONLY, DensePanel, FilterField, PanelRow, SectionHeading, SmallButton, focusFirstEnabled, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
+import { CONTENTS_ONLY, DensePanel, FilterField, PREPARE_ACTION_CLASS, PanelRow, SectionHeading, SmallButton, focusFirstEnabled, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
 import { PagerFooter } from "../components/PagerFooter";
 import { tableHolderLabel, type TableHolders } from "../tableHolders";
 import { CompatibilityMark, isCompatibilityFailure } from "../components/CompatibilityMark";
@@ -522,9 +522,11 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
           here is drawn in front of the row's name instead of in that column. */}
       {onPrepareCopy && canSelect && tableIsSigned(table) && table.available
         && (group === "mine" || !owners?.[table.sha256]) && (
-        <DialogButton style={rowActionStyle} disabled={selecting}
-          onClick={traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 })}
-        >Prepare</DialogButton>
+        <div className={PREPARE_ACTION_CLASS} style={CONTENTS_ONLY}>
+          <DialogButton style={rowActionStyle} disabled={selecting}
+            onClick={traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 })}
+          >Prepare</DialogButton>
+        </div>
       )}
       {canSelect && (group === "mine" || !owners?.[table.sha256]) && <DialogButton
         style={rowActionStyle}

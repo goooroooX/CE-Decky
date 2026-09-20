@@ -26,32 +26,40 @@ Steam's own `MenuStore.OpenQuickAccessMenu`, through
 gives every plugin for the same purpose, and then Decky's own
 `deckyState.setActivePlugin`.
 
-`--press` then opens one of this plugin's own screens, by the name on the
-control: `--press Manage`, `--press "Configure cheats"`, `--press "Look inside"`.
-It finds that control inside this plugin's own DOM and activates it, so what
-runs is the handler the plugin wrote for it.
+`--press` then activates one of this plugin's own controls, by the name on it:
+`--press Manage`, `--press "Configure cheats"`, and where a name is on several
+rows at once, `--press imported-table-33a60e6b:Use`. It finds that control
+inside this plugin's own DOM and clicks it, so what runs is the handler the
+plugin wrote for it, and it can be repeated to go deeper.
 
-Two limits make that safe to have here. The name has to be one of the presses
-that opens a screen, listed in `NAVIGATION_PRESSES` below: anything that
-authorizes, downloads, writes or destroys is not in that list and is refused by
-name, so this cannot press **Use this table**, **Delete** or **Apply**. And a
-control that is disabled is reported as disabled rather than activated, because
-a press that Steam would have refused is not evidence about anything.
+**Any of this plugin's controls, and every one of them is reported.** This is a
+testing tool, and a screen behind a press that writes is still a screen somebody
+has to look at: **Use**, **Apply**, **Delete** and the rest are reachable here.
+What that costs is a rule, not a refusal - the operator has to be told what was
+pressed on their device. So every press this makes is named on its own line as
+it happens, with the surface it was found on, and a run that pressed anything
+ends with the list of what it pressed, in order. A report from a run that drove
+the device repeats that list: a press nobody was told about is the defect this
+rule exists to prevent, not the press itself.
 
-A name is matched against every surface this plugin is drawing, so a name that
-means one thing here and another there is not in that list either: **Search**
-opens the search screen from the panel and spends a provider request inside it,
-**Cancel** leaves a dialog and stops a running Cheat Engine installation on the
-panel. Those are in `SCOPED_PRESSES` instead, written `<data-testid>:<name>`,
-which is the same name looked for only inside the one row the reader prints
-that id for - identity by where the control is, rather than by what it says.
+Only controls that are actually drawn are reachable: a modal Steam has closed
+can stay in the document with its handlers intact, and a press that landed on
+one of those would run a screen nobody is looking at while reporting itself as
+a press that worked.
+
+Two limits remain, and neither is about which name is allowed. A name that is on
+more than one control presses nothing and says where each of them is, because
+**Cancel** leaves a dialog on one screen and stops a running Cheat Engine
+installation on another, and guessing between them is exactly the press nobody
+consented to. Write `<data-testid>:<name>` to name the one row instead, which is
+identity by where the control is rather than by what it says. And a control that
+is disabled is reported as disabled rather than activated, because a press Steam
+would have refused is not evidence about anything.
 
 None of this fabricates controller input, and none of it reaches Steam's own
 interface: it is this plugin's own buttons, the ones its component tests press
-by the same names. So reaching one of this plugin's screens is a thing to do
-rather than a thing to ask somebody for. What is outside the list - a running
-game, Steam's own interface, and the controls that authorize, download, write
-or destroy - is what still needs a person at the device.
+by the same names. A running game and Steam's own interface are what still needs
+a person at the device.
 
 Works the same against the machine it runs on and against a Steam Deck over
 SSH, because it is the device's own CEF endpoint either way: run it on the
@@ -61,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -275,77 +284,122 @@ _OPEN = """
 """
 
 
-# The presses this may make, which are the ones that open a screen and nothing
-# else. Every other control on this plugin's surfaces either authorizes, spends
-# a network, writes durable state or destroys something, and a helper that can
-# reach those is one press away from doing it to a real device by accident.
-NAVIGATION_PRESSES = (
-    "Manage",
-    "Configure cheats",
-    "Advanced\u2026",
-    "Look inside",
-    "Debug",
-    "Local file",
-    # Reads what this plugin has put on disk and opens the report. It writes
-    # nothing: the report is what offers deletion, and that is the press below.
-    "Check",
-    # Opens the screen that asks what to delete, and nothing else: the presses
-    # that actually remove anything are "Delete these" and the OK in Steam's own
-    # confirmation behind it, and neither is in this list or reachable from it.
-    "Delete\u2026",
-    "Back",
-    "Back to the list",
-    "Close",
-    "\u2039 Previous",
-    "Next \u203a",
-)
-
-# The presses whose name is not enough, and what makes them one press.
+# How a press names one control rather than a word that is on several.
 #
-# A name is matched against every surface this plugin is drawing, so a label
-# that means one thing on one screen and another elsewhere is not a name at all:
-# **Search** opens the search screen on the panel and spends a provider request
-# inside it, **Cancel** leaves a dialog and stops a Cheat Engine installation in
-# progress on the panel. Those are named by the row they are in - the same
-# `data-testid` the reader prints - so the control is identified by where it is
-# rather than by what it happens to say.
-SCOPED_PRESSES = (
-    # The panel's own way into the search screen, which is the row the table
-    # lives in rather than the button inside the screen it opens.
-    "table-row:Search",
-)
+# A bare name is matched against every surface this plugin is drawing, and some
+# words are on more than one of them: **Search** opens the search screen from
+# the panel and spends a provider request inside it, **Cancel** leaves a dialog
+# and stops a Cheat Engine installation in progress on the panel, **Use** is on
+# every row of a list. A name that lands on several presses nothing and reports
+# where each one is; `<data-testid>:<name>` then names the one row to look in,
+# which is identity by where the control is rather than by what it says.
+SCOPE_SEPARATOR = ":"
+_SCOPE_RE = re.compile(r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+")
 
-# Activates one of this plugin's own controls, found by the name on it. The
-# allowlist is checked here as well as in the caller, so the expression sent to
-# the page can only ever name one of them.
+# Activates one of this plugin's own controls, found by the name on it.
+#
+# Every match is collected before anything is clicked, and a name on more than
+# one control presses none of them: this reaches the presses that write, and a
+# press that landed on whichever control happened to be first in the document is
+# one nobody asked for. What comes back names where each match was, so the
+# caller can both report the press it made and describe the ones it refused.
 _PRESS = r"""
 (() => {
   const wanted = %(label)s;
   const scope = %(scope)s;
-  for (const panel of Array.from(document.querySelectorAll(".ce-decky-dense"))) {
-    const within = scope === null ? panel : panel.querySelector('[data-testid="' + scope + '"]');
-    if (within === null) continue;
-    for (const button of Array.from(within.querySelectorAll("button"))) {
-      const label = (button.textContent || "").replace(/\s+/g, " ").trim();
-      if (label !== wanted) continue;
-      if (button.disabled) return JSON.stringify({ pressed: false, reason: "that control is disabled right now" });
-      button.click();
-      return JSON.stringify({ pressed: true, label });
+  const surface = (node) => {
+    for (let at = node; at; at = at.parentElement) {
+      const id = at.getAttribute && at.getAttribute("data-testid");
+      if (id) return id;
+    }
+    return null;
+  };
+  // One entry per control, not one per wrapper it happens to sit inside: this
+  // plugin's dense wrapper nests, so a plain walk found the same button three
+  // times and reported four rows as twelve. The depth kept is the deepest
+  // wrapper that holds it, because that is the screen it belongs to: taking
+  // the first would file a modal's own button under the panel behind it.
+  const byButton = new Map();
+  const panels = Array.from(document.querySelectorAll(".ce-decky-dense"));
+  for (let depth = 0; depth < panels.length; depth += 1) {
+    const panel = panels[depth];
+    const within = scope === null ? [panel] : Array.from(panel.querySelectorAll('[data-testid="' + scope + '"]'));
+    for (const box of within) {
+      for (const button of Array.from(box.querySelectorAll("button"))) {
+        const label = (button.textContent || "").replace(/\s+/g, " ").trim();
+        if (label !== wanted) continue;
+        // Only what is actually drawn. A modal Steam has closed can stay in the
+        // document with no box at all, and its buttons still carry their
+        // handlers: a press that landed on one of those would run a screen the
+        // reader is not looking at and report itself as a press that worked.
+        if (button.getClientRects().length === 0) continue;
+        const held = byButton.get(button);
+        if (held === undefined || depth > held.depth) byButton.set(button, { button, where: surface(button), depth });
+      }
     }
   }
-  return JSON.stringify({ pressed: false, reason: "no control with that name is on screen" });
+  const found = Array.from(byButton.values());
+  if (found.length === 0) return JSON.stringify({ pressed: false, reason: "no control with that name is on screen" });
+  // The screen in front of the reader, and only that one. Opening a modal
+  // leaves the one under it in the document and drawn, so the same row exists
+  // once per screen that is open: a press has to mean the one on top, which is
+  // the last of them in document order, or every second visit to a screen
+  // makes its own controls ambiguous.
+  const front = Math.max.apply(null, found.map((match) => match.depth));
+  const facing = found.filter((match) => match.depth === front);
+  if (facing.length > 1) {
+    const places = facing.map((match) => match.where || "an unnamed surface");
+    return JSON.stringify({
+      pressed: false, matches: places,
+      reason: "that name is on " + facing.length + " controls of the screen in front ("
+        + places.join(", ") + "); name the one row as <data-testid>:<name>",
+    });
+  }
+  const only = facing[0];
+  if (only.button.disabled) {
+    return JSON.stringify({ pressed: false, where: only.where, reason: "that control is disabled right now" });
+  }
+  only.button.click();
+  return JSON.stringify({ pressed: true, label: wanted, where: only.where });
 })()
 """
 
 
-def press(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, Any]:
-    """Activate one of this plugin's own navigation controls.
+def press_target(label: str) -> tuple[str | None, str]:
+    """The row to look in and the name to look for, out of one `--press` word.
 
-    `label` is either a name from `NAVIGATION_PRESSES` or one of the
-    `SCOPED_PRESSES`, written `<data-testid>:<name>`, which is the same name
-    looked for only inside that one row.
+    `<data-testid>:<name>` scopes the search to that one row; anything else is
+    a bare name looked for across every surface. Every test id this plugin
+    writes is one hyphenated token - `manage-list`, `table-row`,
+    `imported-table-33a60e6b` - so that is what a scope has to look like, and a
+    control whose own wording carries a colon keeps it. Getting that wrong is
+    loud rather than silent: the press then finds no control of that name and
+    says so.
     """
-    scope, _, name = label.rpartition(":") if label in SCOPED_PRESSES else ("", "", label)
+    head, sep, rest = label.partition(SCOPE_SEPARATOR)
+    if sep and rest and _SCOPE_RE.fullmatch(head):
+        return head, rest
+    return None, label
+
+
+def _refusal_rank(answer: dict[str, Any]) -> int:
+    """How much one page's refusal actually saw, so the best one is reported."""
+    if answer.get("matches"):
+        return 3
+    if answer.get("where"):
+        return 2
+    return 0 if answer.get("reason") == "no page answered" else 1
+
+
+def press(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, Any]:
+    """Activate one of this plugin's own controls, and say which one it was.
+
+    Any control this plugin draws, including the ones that write: this is a
+    testing tool and the screen behind such a press is a screen somebody has to
+    look at. What the caller owes in return is the report - the answer names the
+    label and the surface it was found on, and the caller prints both.
+    """
+    scope, name = press_target(label)
     expression = _PRESS % {"label": json.dumps(name), "scope": json.dumps(scope or None)}
     last: dict[str, Any] = {"pressed": False, "reason": "no page answered"}
     for page in pages:
@@ -371,7 +425,12 @@ def press(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, 
             continue
         if answer.get("pressed"):
             return answer
-        last = answer
+        # Several pages answer and most of them draw nothing of this plugin's,
+        # so "not on screen" from one of those must not bury "that name is on
+        # four controls" from the page that is actually showing the screen. The
+        # refusal kept is the one that saw the most.
+        if _refusal_rank(answer) >= _refusal_rank(last):
+            last = answer
     return last
 
 
@@ -617,20 +676,24 @@ def main() -> int:
             print(f"panel read: {exc}", file=sys.stderr)
             return 1
 
+    # What this run did to the device, in the order it did it. Printed as each
+    # press lands and again at the end, because a press that writes is the one
+    # thing a reader of this output must not have to infer.
+    made: list[str] = []
     for label in args.press:
-        if label not in NAVIGATION_PRESSES and label not in SCOPED_PRESSES:
-            allowed = ", ".join(NAVIGATION_PRESSES + SCOPED_PRESSES)
-            print(
-                f"panel read: {label!r} is not one of the presses this may make. It opens screens "
-                f"and nothing else: {allowed}",
-                file=sys.stderr,
-            )
-            return 1
         pressed = press(pages, label, args.timeout)
         if not pressed.get("pressed"):
             print(f"panel read: could not press {label!r}: {pressed.get('reason')}", file=sys.stderr)
+            if made:
+                print(f"presses made before that: {', '.join(made)}", file=sys.stderr)
             return 1
-        print(f"pressed {label}")
+        # The name that was pressed and the surface it was found on, which for
+        # a scoped press is what the scope asked for rather than the scope
+        # repeated back. One wording, on the line and in the closing list.
+        where = pressed.get("where")
+        name = str(pressed.get("label") or label)
+        made.append(f"{name} on {where}" if where else name)
+        print(f"pressed {made[-1]}")
         # The screen it opens mounts a frame or two later.
         time.sleep(1.5)
         try:
@@ -662,10 +725,17 @@ def main() -> int:
         )
         return 1
     if args.json:
-        print(json.dumps({"schema": 1, "surfaces": found}, indent=2, sort_keys=True))
+        # In the report too, not only on the terminal: a JSON answer is what
+        # gets pasted into a finding, and a run that drove the device has to
+        # carry what it pressed wherever its output goes.
+        print(json.dumps({"schema": 1, "pressed": made, "surfaces": found}, indent=2, sort_keys=True))
     else:
         for answer in found:
             _print(answer, args.testid, args.metrics)
+    if made:
+        # Last line, after the screen: this ran against a real device, and the
+        # operator is owed the list of what it pressed on theirs.
+        print(f"this run pressed, in order: {', '.join(made)}")
     return 0
 
 

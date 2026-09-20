@@ -136,6 +136,8 @@ const NOTE_CLASS = "ce-decky-note";
  * placed by a row.
  */
 export const UPDATE_ACTION_CLASS = "ce-decky-update";
+/** Marks the press that prepares a copy of a table, drawn in its own green. */
+export const PREPARE_ACTION_CLASS = "ce-decky-prepare";
 /** Marks a row that is currently showing its revealed block. */
 export const OPEN_ROW_CLASS = "ce-decky-open";
 
@@ -221,6 +223,14 @@ function densityCss(): string | null {
     // carries one orange instead of two that nearly match.
     "--ce-update-accent: #fd5605",
     "--ce-update-accent-text: #ffffff",
+    // The press that makes a copy of a table this Cheat Engine will not open.
+    // Dark green because it is the one press on a screen full of neutral ones
+    // that is an offer rather than a step: everything else on a row or in the
+    // Review block either uses what is there or takes it away. Dark, not the
+    // bright green a compatibility mark is drawn in, so a button and a verdict
+    // are not the same green on one screen.
+    "--ce-prepare-accent: #15653a",
+    "--ce-prepare-accent-text: #ffffff",
     // The row that heads a list is the list's first row of data, not the
     // caption above it: it is set a step darker than the panel and holds the
     // rows that follow off itself.
@@ -408,6 +418,11 @@ function densityCss(): string | null {
     `${scope} .${NOTE_CLASS} { padding: 2px 20px 5px; font-size: 11px; line-height: 15px; color: hsla(0, 0%, 100%, 0.62); }`,
     `${scope} .${UPDATE_ACTION_CLASS}:not(:focus-within) button`
       + ` { background: var(--ce-update-accent); color: var(--ce-update-accent-text); }`,
+    // The same shape for the same reason: the colour is what the press is,
+    // and Steam's own focus fill is what says where the ring is, so the
+    // colour steps aside while the control is the one being walked.
+    `${scope} .${PREPARE_ACTION_CLASS}:not(:focus-within) button`
+      + ` { background: var(--ce-prepare-accent); color: var(--ce-prepare-accent-text); }`,
     `${sectionSelector} { margin-bottom: 6px; }`,
     // Steam renders a section heading at 16px/22px with 8px beneath it; five
     // headings on one diagnostics screen cost more than the rows they label.
