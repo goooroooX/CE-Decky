@@ -995,6 +995,67 @@ describe("detached modal density", () => {
     expect((within(settled).getByRole("button", { name: "Use" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("marks a signed row, offers the copy on it, and names what a derived row came from", async () => {
+    // Cheat Engine refuses a signed table by returning false and saying
+    // nothing, so a row that offers one has to say so before it is pressed and
+    // the copy that does open has to be reachable from the same row. The
+    // derived copy is an ordinary flat row that names the table it came from.
+    const onPrepareCopy = vi.fn().mockResolvedValue(undefined);
+    const signed = { ...table, has_signature: true };
+    render(<ImportedTablesModal
+      tables={[signed] as any}
+      activeSha256={null}
+      onSelect={vi.fn()}
+      onPrepareCopy={onPrepareCopy}
+      onClose={vi.fn()}
+    />);
+    const row = screen.getByTestId(`imported-table-${table.sha256.slice(0, 8)}`);
+    expect(within(row).getByText("Signed")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: "Prepare" }));
+    expect(onPrepareCopy).toHaveBeenCalledWith(table.sha256);
+
+    cleanup();
+    // An unsigned table has nothing to prepare, and no mark on it.
+    render(<ImportedTablesModal
+      tables={[{ ...table, has_signature: false }] as any}
+      activeSha256={null}
+      onSelect={vi.fn()}
+      onPrepareCopy={vi.fn()}
+      onClose={vi.fn()}
+    />);
+    const plain = screen.getByTestId(`imported-table-${table.sha256.slice(0, 8)}`);
+    expect(within(plain).queryByText("Signed")).toBeNull();
+    expect(within(plain).queryByRole("button", { name: "Prepare" })).toBeNull();
+
+    cleanup();
+    // The copy: where it came from, in the slot the row already spends on
+    // provenance, rather than being called a local file it never was.
+    const derived = {
+      ...table, sha256: "d".repeat(64), filename: "Game (unsigned).CT",
+      has_signature: false, derived_from: { sha256: table.sha256, transform: "remove-signature" },
+    };
+    render(<ImportedTablesModal tables={[derived] as any} activeSha256={null} onSelect={vi.fn()} onClose={vi.fn()} />);
+    const made = screen.getByTestId(`imported-table-${derived.sha256.slice(0, 8)}`);
+    expect(made.textContent).toContain(`derived from ${table.sha256.slice(0, 12)}`);
+    expect(made.textContent).not.toContain("Local file");
+  });
+
+  it("says nothing about a signature the store has not read yet", () => {
+    // Three states, and the third is not the second: a record written before
+    // the store read the question carries no answer, and a row that turned
+    // that into "not signed" would make the one claim it has no evidence for.
+    render(<ImportedTablesModal
+      tables={[{ ...table, has_signature: undefined }] as any}
+      activeSha256={null}
+      onSelect={vi.fn()}
+      onPrepareCopy={vi.fn()}
+      onClose={vi.fn()}
+    />);
+    const row = screen.getByTestId(`imported-table-${table.sha256.slice(0, 8)}`);
+    expect(within(row).queryByText("Signed")).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Prepare" })).toBeNull();
+  });
+
   it("gives the game picker's stacked dropdown air under it", () => {
     // The dense field padding is four pixels top and bottom, which centres an
     // inline control and leaves a stacked one sitting on the bottom edge of its

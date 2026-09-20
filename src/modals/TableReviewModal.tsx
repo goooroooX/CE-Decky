@@ -53,6 +53,16 @@ interface Props {
    * Resolves to a sentence for this screen when there is nothing to stop.
    */
   onAbort?: () => Promise<string | null>;
+  /**
+   * Make a copy of this table that this Cheat Engine will open, and review that.
+   *
+   * Offered only where there is something to prepare, which today is a
+   * signature. It never consents to anything: the copy is a new table with its
+   * own digest, and this screen opens again on it so the consent is given for
+   * the bytes that will actually be loaded. Absent where the panel has no way
+   * to make one, and the press is then not drawn.
+   */
+  onPrepareCopy?: () => Promise<void>;
   onCancel: () => void;
 }
 
@@ -123,7 +133,7 @@ function ProcessChoice(
   );
 }
 
-export function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onCancel }: Props) {
+export function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, onCancel }: Props) {
   useUiSurface("TableReviewModal", table.sha256);
   // Seeded from the snapshot this screen was opened with, and replaced when the
   // user asks again after starting the game.
@@ -181,12 +191,22 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
   // nothing: a healthy table's Review is the screen it always was.
   const defaults = scriptDefaultsOn(inspection);
   const findings = [
-    // The signature first: it is the one finding that says the table will
-    // probably not open at all. What the reader needs is what it costs them and
-    // what it will look like, not how many tables this project measured: the 16
-    // of 16, the keys they spanned and the helper that took them are in
-    // `docs/FIELD_NOTES.md` section 2, where the next person changing this
-    // sentence can check it.
+    // First on the screen that opens directly after the press that made these
+    // bytes, because until it is read this looks like some other table the
+    // reader did not choose. Said on the copy rather than on the press, because
+    // this is where the consent for these exact bytes is given and they are not
+    // the bytes any source served: what changed, and what it cost. The
+    // derivation was proven against the original before it was stored, so the
+    // cheats are the ones the author wrote.
+    table.derived_from
+      ? `CE Decky made this copy from ${table.derived_from.sha256.slice(0, 12)} by removing the signature. Nothing else in the table changed, and no source vouched for these bytes.`
+      : null,
+    // The signature leads what was read out of the table itself: it is the one
+    // finding that says the table will probably not open at all. What the
+    // reader needs is what it costs them and what it will look like, not how
+    // many tables this project measured: the 16 of 16, the keys they spanned
+    // and the helper that took them are in `docs/FIELD_NOTES.md` section 2,
+    // where the next person changing this sentence can check it.
     inspection.has_signature
       ? "This table is signed. Cheat Engine does not open signed tables here, and gives no reason when it refuses one, so it will look like nothing happened."
       : null,
@@ -194,6 +214,10 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
       ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
       : null,
   ].filter((item): item is string => item !== null);
+  // Offered for exactly what there is to prepare. A table nobody can improve
+  // gets no press, and a copy that has already been made gets none either: it
+  // is the thing the press produces.
+  const canPrepare = Boolean(onPrepareCopy) && inspection.has_signature === true && !table.derived_from;
   // Most tables never name a process, and the library entry usually points at a
   // launcher rather than the executable that owns the game's memory. Offering
   // what the game is actually running keeps this a controller choice instead of
@@ -319,6 +343,11 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
   const abortingRef = useRef(false);
   const abortPendingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether the copy is being made. Its own latch rather than the activation's:
+  // it is a short backend call that consents to nothing, and the row it sits on
+  // has to say the press was taken.
+  const [preparing, setPreparing] = useState(false);
+  const preparingRef = useRef(false);
   const [step, setStep] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -366,7 +395,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
    * validity alone kept this press live over a process that does not exist on
    * this device.
    */
-  const usable = !busy && !aborting && targetValid && !antiCheatReason && !noWindowsProgram;
+  const usable = !busy && !aborting && !preparing && targetValid && !antiCheatReason && !noWindowsProgram;
   const origin = table.origins[table.origins.length - 1];
 
   const use = async () => {
@@ -398,6 +427,32 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
       setStoppable(false);
       setStep(null);
       setStartedAt(null);
+    }
+  };
+
+  /**
+   * Make the copy this Cheat Engine will open, and review that instead.
+   *
+   * Nothing durable about this table changes: the copy is new bytes with a new
+   * digest, and the consent for them is given on the screen this opens rather
+   * than here. A refusal is said on this screen, because the window that would
+   * carry it is the one being replaced.
+   */
+  const prepare = async () => {
+    if (!onPrepareCopy || preparingRef.current || busyRef.current || abortingRef.current) return;
+    preparingRef.current = true;
+    setPreparing(true);
+    setError(null);
+    const operation = startUiOperation("review.prepare_copy", { table_sha: table.sha256 });
+    try {
+      await onPrepareCopy();
+      operation.completed();
+    } catch (cause) {
+      operation.failed(cause);
+      setError(describeError(cause));
+    } finally {
+      preparingRef.current = false;
+      setPreparing(false);
     }
   };
 
@@ -441,7 +496,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
   }
 
   return (
-    <ModalRoot onCancel={traceUiAction("table_review_modal.cancel_back", () => { if (!busyRef.current && !abortingRef.current) onCancel(); })}>
+    <ModalRoot onCancel={traceUiAction("table_review_modal.cancel_back", () => { if (!busyRef.current && !abortingRef.current && !preparingRef.current) onCancel(); })}>
       <Focusable style={{ minWidth: 420, maxWidth: 620 }}>
         <DensePanel>
           <PanelSection>
@@ -525,6 +580,12 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
                 status
                 label="What CE Decky found"
                 description={findings.join(" ")}
+                actions={canPrepare ? (
+                  <SmallButton
+                    disabled={busy || aborting || preparing}
+                    onClick={traceUiAction("table_review_modal.prepare_copy", () => { void prepare(); }, { table_sha: table.sha256 })}
+                  >{preparing ? "Preparing…" : "Prepare a copy that works here"}</SmallButton>
+                ) : undefined}
               />
             </PanelSectionRow>
           )}
@@ -676,7 +737,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
               thing it could do was report that there was nothing to stop. */}
           {busy && onAbort
             ? <DialogButton style={modalActionStyle} disabled={aborting || !stoppable} onClick={traceUiAction("table_review_modal.abort", () => void abort())}>{aborting ? "Stopping…" : "Stop and cancel"}</DialogButton>
-            : <DialogButton style={modalActionStyle} preferredFocus={!usable} disabled={busy || aborting} onClick={traceUiAction("table_review_modal.cancel", () => { if (!busyRef.current && !abortingRef.current) onCancel(); })}>Cancel</DialogButton>}
+            : <DialogButton style={modalActionStyle} preferredFocus={!usable} disabled={busy || aborting || preparing} onClick={traceUiAction("table_review_modal.cancel", () => { if (!busyRef.current && !abortingRef.current && !preparingRef.current) onCancel(); })}>Cancel</DialogButton>}
         </ModalActions>
       </Focusable>
     </ModalRoot>

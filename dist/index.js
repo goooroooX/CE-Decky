@@ -1009,7 +1009,7 @@ const inspectTableSha = callable("inspect_table_sha");
  * stored, and what comes back is an ordinary new table with its own digest, its
  * own inspection and its own consent still to give.
  */
-callable("derive_unsigned_table");
+const deriveUnsignedTable = callable("derive_unsigned_table");
 // A table's own executable content, read and never run. Two calls because one
 // table on this device carries half a megabyte of scripts: the index says what
 // is in it, and a section is fetched when the user opens it.
@@ -3003,12 +3003,17 @@ const trailingRowFillStyle = { ...trailingRowStyle, width: "100%" };
 // glyph, which is what every screen did before there was a choice. Reserving it
 // everywhere took 22 pixels out of the quick access panel's one narrow row for
 // a mark that is often not there, and moved Search and Manage for nothing.
+// A minimum rather than a width: one glyph still reserves the same column on
+// every row, which is what keeps a list of them lined up, and a row carrying a
+// second statement about its bytes - that they are signed, that CE Decky made
+// them - grows to hold it instead of drawing it over the row's own text.
 const markStyle = {
     flex: "0 0 auto",
-    width: "var(--ce-row-mark-width, auto)",
+    minWidth: "var(--ce-row-mark-width, auto)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    gap: 4,
     lineHeight: 0,
 };
 // A block rather than an inline span: a row may put more than a word here, and
@@ -4720,6 +4725,27 @@ function switchesToHoldOff(scripts, controls, requested) {
     return [...held.values()];
 }
 /**
+ * Whether a listed table's bytes carry the signature this Cheat Engine refuses.
+ *
+ * Only a recorded `true` says so. A record written before the store read the
+ * question carries no answer, and a row that turned that into "not signed"
+ * would be making the one claim it has no evidence for; the backend fills those
+ * in from the bytes at startup, so the unknown state is brief and quiet.
+ */
+function tableIsSigned(table) {
+    return table?.has_signature === true;
+}
+/**
+ * The one line a derived row adds, naming the table CE Decky made it from.
+ *
+ * Twelve characters of the source digest, which is the identity the rest of the
+ * product prints and enough to find the row it came from in the same list.
+ */
+function derivedFromLabel(table) {
+    const source = table.derived_from?.sha256;
+    return source ? `derived from ${source.slice(0, 12)}` : null;
+}
+/**
  * What this table does on its own, for the one sentence Review says about it.
  *
  * A script's declarations are the author's preset rather than the user's
@@ -5809,6 +5835,53 @@ const SAME_TABLE_LABEL = "Same table bytes as another source";
  */
 function SameTableMark() {
     return SP_JSX.jsx("span", { role: "img", title: SAME_TABLE_LABEL, "aria-label": SAME_TABLE_LABEL, style: { color: "var(--ce-accent, hsla(203, 89%, 66%, 0.85))", whiteSpace: "nowrap", flexShrink: 0, lineHeight: 0 }, children: SP_JSX.jsxs("svg", { width: "16", height: "16", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", style: { verticalAlign: "middle" }, children: [SP_JSX.jsx("rect", { x: "2.5", y: "2.5", width: "8", height: "9.5", rx: "1", fill: "none", stroke: "currentColor" }), SP_JSX.jsx("rect", { x: "5.5", y: "4.5", width: "8", height: "9.5", rx: "1", fill: "none", stroke: "currentColor" })] }) });
+}
+
+const SIGNED_LABEL = "Signed table; Cheat Engine usually refuses one";
+/**
+ * One amber chip on a row whose bytes carry the table's own `<Signature>`.
+ *
+ * Not a compatibility glyph, and deliberately a different shape from one.
+ * `CompatibilityMark` is a verdict about whether the table worked here, earned
+ * by running it; this is a property of the bytes, known before anything is
+ * tried. Drawn as amber on the same ring it would have read as `retest`, which
+ * means the opposite: it worked, and the build moved.
+ *
+ * Amber because it is worth stopping on - every signed table this project has
+ * put in front of this Cheat Engine was refused - and a word because there is
+ * no glyph a reader would read as "signed" without being told.
+ *
+ * Its metrics are the ones the search rows' own chips use, down to the sixteen
+ * pixel line that the glyphs beside it are tall, so a row carrying this and a
+ * `Local` chip reads as two chips rather than as two different kinds of object.
+ */
+function SignedMark() {
+    return SP_JSX.jsx("span", { title: SIGNED_LABEL, "aria-label": SIGNED_LABEL, style: {
+            flex: "0 0 auto",
+            padding: "0 6px",
+            borderRadius: 3,
+            fontSize: "0.8em",
+            lineHeight: "16px",
+            fontWeight: 700,
+            letterSpacing: "0.3px",
+            textTransform: "uppercase",
+            whiteSpace: "nowrap",
+            background: "hsla(41, 73%, 65%, 0.85)",
+            color: "hsla(0, 0%, 0%, 0.86)",
+        }, children: "Signed" });
+}
+
+const DERIVED_LABEL = "CE Decky made this copy from another table";
+/**
+ * One passive glyph for bytes this device produced rather than received.
+ *
+ * Provenance, never status, and drawn in the panel's accent for the same reason
+ * `SameTableMark` is: a row can carry a compatibility verdict beside it and the
+ * two must not read as one finding. What it means is on the row's own line,
+ * which names the table these bytes came from.
+ */
+function DerivedMark() {
+    return SP_JSX.jsx("span", { role: "img", title: DERIVED_LABEL, "aria-label": DERIVED_LABEL, style: { color: "var(--ce-accent, hsla(203, 89%, 66%, 0.85))", whiteSpace: "nowrap", flexShrink: 0, lineHeight: 0 }, children: SP_JSX.jsxs("svg", { width: "16", height: "16", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", style: { verticalAlign: "middle" }, children: [SP_JSX.jsx("rect", { x: "1.5", y: "3", width: "5.5", height: "10", rx: "1", fill: "none", stroke: "currentColor" }), SP_JSX.jsx("rect", { x: "9", y: "3", width: "5.5", height: "10", rx: "1", fill: "none", stroke: "currentColor" }), SP_JSX.jsx("path", { d: "M7.4 8h1.2M7.9 6.9L9.1 8l-1.2 1.1", fill: "none", stroke: "currentColor", strokeWidth: "1.2" })] }) });
 }
 
 /**
@@ -7076,7 +7149,7 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
                         // has been republished, so it stays reachable: the row opens, the
                         // window says the copy is marked, and the ring lands on the download.
                         const blocked = blockedView.byDigest[table.sha256.toLowerCase()];
-                        return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { className: FOCUS_SCROLL_CLASS, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !onLocalSelected, onClick: traceUiAction("catalog.local_table", () => showExistingChoice(table, { provenance: "local_only" }), { table_sha: table.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: table.filename }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, table.sha256), blocked: blocked ?? null }), SP_JSX.jsx("span", { style: ROW_MARK_LOCAL, children: "Local" })] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
+                        return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { className: FOCUS_SCROLL_CLASS, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !onLocalSelected, onClick: traceUiAction("catalog.local_table", () => showExistingChoice(table, { provenance: "local_only" }), { table_sha: table.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: table.filename }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, table.sha256), blocked: blocked ?? null }), tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : null, table.derived_from ? SP_JSX.jsx(DerivedMark, {}) : null, SP_JSX.jsx("span", { style: ROW_MARK_LOCAL, children: "Local" })] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
                                                         // When, which release, how large: the three a reader scans
                                                         // for, in that order, ahead of the identity that answers
                                                         // which exact bytes these are.
@@ -7093,6 +7166,9 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
                                                         advertisedRelease(table),
                                                         formatSize(table.size),
                                                         table.sha256.slice(0, 12),
+                                                        // Where the bytes came from, for the one kind of row whose
+                                                        // answer is another row in the same list.
+                                                        derivedFromLabel(table),
                                                         "on this device",
                                                     ].filter(Boolean).join(" · ") }) })] }) }) }) }, `local:${table.sha256}`));
                     }
@@ -7129,7 +7205,7 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
                                         showExistingChoice(localTable, { result, provenance });
                                     else
                                         void acquire(result);
-                                }, { provider: result.provider, artifact_id: result.artifact_id, table_sha: localTable?.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: result.table_title }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, subjectDigest), blocked: failureRecord }), marks.duplicate ? SP_JSX.jsx(SameTableMark, {}) : null, mark ? SP_JSX.jsx("span", { style: mark.style, children: mark.text }) : null] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
+                                }, { provider: result.provider, artifact_id: result.artifact_id, table_sha: localTable?.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: result.table_title }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, subjectDigest), blocked: failureRecord }), marks.duplicate ? SP_JSX.jsx(SameTableMark, {}) : null, localTable && tableIsSigned(localBySha.get(localTable.sha256)) ? SP_JSX.jsx(SignedMark, {}) : null, mark ? SP_JSX.jsx("span", { style: mark.style, children: mark.text }) : null] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
                                                     // When, which release, how large. One post commonly carries
                                                     // every revision of the same table, so its attachments share a
                                                     // filename, a title and the date of the post they sit in: the
@@ -11428,7 +11504,12 @@ function describeParts(table) {
     return [
         advertisedRelease(table),
         `${table.entry_count} ${table.entry_count === 1 ? "record" : "records"}`,
-        origin ? origin.provider : "Local file",
+        // Where these bytes came from, in the one slot the row already spends on
+        // that question. A table CE Decky derived came from another table on this
+        // device, and calling it a local file would be naming a file that was never
+        // opened; a derived table carries no origin, so this slot is free on
+        // exactly the rows that need it.
+        derivedFromLabel(table) ?? (origin ? origin.provider : "Local file"),
         // The download where there was one, and otherwise when the file was opened
         // here: both answer when this copy arrived, which is the question a reader
         // comparing two of them is asking.
@@ -11489,7 +11570,7 @@ function arrived(at) {
  * moved, or whose provider row stopped coming back, became unreachable state -
  * which is not what "switch between imported tables" is supposed to mean.
  */
-function ImportedTablesModal({ compatibility = [], tables, otherTables = [], owners, activeSha256: initialActiveSha256, activeAuthorized = true, canSelect = true, blockedReasons = {}, selectedBy: initialSelectedBy = {}, holderIds: initialHolderIds = {}, onRevoke, onRefreshHolders, onOpenLocalFile, onSelect, onDelete, onClose }) {
+function ImportedTablesModal({ compatibility = [], tables, otherTables = [], owners, activeSha256: initialActiveSha256, activeAuthorized = true, canSelect = true, blockedReasons = {}, selectedBy: initialSelectedBy = {}, holderIds: initialHolderIds = {}, onRevoke, onRefreshHolders, onOpenLocalFile, onSelect, onDelete, onPrepareCopy, onClose }) {
     useUiSurface("ImportedTablesModal");
     const [selectedBy, setSelectedBy] = SP_REACT.useState(initialSelectedBy);
     const [holderIds, setHolderIds] = SP_REACT.useState(initialHolderIds);
@@ -11512,6 +11593,29 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
             // Said on the row the press was made on, exactly as a failed removal is.
             // This screen is a modal, and a window raised over it can appear behind
             // it and read as a press that did nothing.
+            .catch((cause) => { operation.failed(cause); setFailure(describeError(cause)); })
+            .finally(() => {
+            selectingRef.current = false;
+            setSelecting(false);
+        });
+    };
+    /**
+     * Make the copy of a signed table that this Cheat Engine will open.
+     *
+     * The same latch and the same failure surface as `select`, because it ends
+     * the same way: the parent closes this window and opens Review on the copy,
+     * where the consent for those bytes is given.
+     */
+    const prepareCopy = (sha256) => {
+        if (selectingRef.current || !onPrepareCopy)
+            return;
+        setArmed(null);
+        setFailure(null);
+        selectingRef.current = true;
+        setSelecting(true);
+        const operation = startUiOperation("manage.prepare_copy", { table_sha: sha256 });
+        void (async () => onPrepareCopy(sha256))()
+            .then(() => operation.completed())
             .catch((cause) => { operation.failed(cause); setFailure(describeError(cause)); })
             .finally(() => {
             selectingRef.current = false;
@@ -11715,7 +11819,8 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
      * original file. Offline with neither, this press is the only thing that can
      * name them, which is what the second group was added for.
      */
-    const rowActions = (table, usable, group) => (SP_JSX.jsxs(SP_JSX.Fragment, { children: [canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
+    const rowActions = (table, usable, group) => (SP_JSX.jsxs(SP_JSX.Fragment, { children: [canSelect && (group === "mine" || !owners?.[table.sha256]) && SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, preferredFocus: usable, disabled: selecting || !usable, onClick: traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 }), children: "Use" }), onPrepareCopy && canSelect && tableIsSigned(table) && table.available
+                && (group === "mine" || !owners?.[table.sha256]) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 }), children: "Prepare" })), onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (SP_JSX.jsx(DFL.DialogButton, { style: rowActionStyle, disabled: selecting, onClick: traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
                     if (armed === table.sha256) {
                         setArmed(null);
                         revoke(table.sha256);
@@ -11867,7 +11972,7 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
                                         }), children: "Local file" })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables" }), failure && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-failure", status: true, label: "That did not work", description: failure }) })), remaining.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing imported yet", description: "Open a file above, or search online." }) })), remaining.length > 0 && entries.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing matches that", description: "Clear the filter to see every table." }) })), (entries.length > 0 || filterable) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-summary", tone: "header", truncate: true, scroll: true, fillWithActions: filterable, label: canSelect ? `${mineCount} here, ${deviceCount} elsewhere` : `${mineCount + deviceCount} on this device`, description: canSelect ? "No provider or network needed." : "Choose a game to use one.", actions: filterable ? (SP_JSX.jsx("div", { style: MANAGE_FILTER, children: SP_JSX.jsx(FilterField, { placeholder: "Filter", disabled: selecting, value: filter, onChange: traceUiEdit("imported_tables_modal.filter_by_name_or_digest", (event) => moveTo(() => {
                                                 setFilter(String(event.target.value ?? ""));
                                                 setPage(0);
-                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), mark: SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
+                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), mark: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }), tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : null, table.derived_from ? SP_JSX.jsx(DerivedMark, {}) : null] }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
                                                 if (node)
                                                     rowRefs.current.set(table.sha256, node);
                                                 else
@@ -11904,7 +12009,7 @@ function ProcessChoice({ children, label, description, onRescan, rescanning, dis
     // the control.
     SP_JSX.jsx("div", { className: BELOW_FIELD_CLASS, children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: label, description: description, childrenLayout: "below", childrenContainerWidth: "max", bottomSeparator: "standard", children: SP_JSX.jsxs(ActionGroup, { style: { gap: 8 }, children: [SP_JSX.jsx("div", { style: { flex: "1 1 0", minWidth: 0 }, children: children }), onRescan === null ? null : (SP_JSX.jsx(SmallButton, { size: "medium", disabled: disabled || rescanning, onClick: traceUiAction("table_review_modal.on_rescan_2", onRescan), children: rescanning ? "Looking…" : "Refresh" }))] }) }) }) }));
 }
-function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onCancel }) {
+function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, onCancel }) {
     useUiSurface("TableReviewModal", table.sha256);
     // Seeded from the snapshot this screen was opened with, and replaced when the
     // user asks again after starting the game.
@@ -11964,12 +12069,22 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
     // nothing: a healthy table's Review is the screen it always was.
     const defaults = scriptDefaultsOn(inspection);
     const findings = [
-        // The signature first: it is the one finding that says the table will
-        // probably not open at all. What the reader needs is what it costs them and
-        // what it will look like, not how many tables this project measured: the 16
-        // of 16, the keys they spanned and the helper that took them are in
-        // `docs/FIELD_NOTES.md` section 2, where the next person changing this
-        // sentence can check it.
+        // First on the screen that opens directly after the press that made these
+        // bytes, because until it is read this looks like some other table the
+        // reader did not choose. Said on the copy rather than on the press, because
+        // this is where the consent for these exact bytes is given and they are not
+        // the bytes any source served: what changed, and what it cost. The
+        // derivation was proven against the original before it was stored, so the
+        // cheats are the ones the author wrote.
+        table.derived_from
+            ? `CE Decky made this copy from ${table.derived_from.sha256.slice(0, 12)} by removing the signature. Nothing else in the table changed, and no source vouched for these bytes.`
+            : null,
+        // The signature leads what was read out of the table itself: it is the one
+        // finding that says the table will probably not open at all. What the
+        // reader needs is what it costs them and what it will look like, not how
+        // many tables this project measured: the 16 of 16, the keys they spanned
+        // and the helper that took them are in `docs/FIELD_NOTES.md` section 2,
+        // where the next person changing this sentence can check it.
         inspection.has_signature
             ? "This table is signed. Cheat Engine does not open signed tables here, and gives no reason when it refuses one, so it will look like nothing happened."
             : null,
@@ -11977,6 +12092,10 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
             ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
             : null,
     ].filter((item) => item !== null);
+    // Offered for exactly what there is to prepare. A table nobody can improve
+    // gets no press, and a copy that has already been made gets none either: it
+    // is the thing the press produces.
+    const canPrepare = Boolean(onPrepareCopy) && inspection.has_signature === true && !table.derived_from;
     // Most tables never name a process, and the library entry usually points at a
     // launcher rather than the executable that owns the game's memory. Offering
     // what the game is actually running keeps this a controller choice instead of
@@ -12098,6 +12217,11 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
     const abortingRef = SP_REACT.useRef(false);
     const abortPendingRef = SP_REACT.useRef(false);
     const [error, setError] = SP_REACT.useState(null);
+    // Whether the copy is being made. Its own latch rather than the activation's:
+    // it is a short backend call that consents to nothing, and the row it sits on
+    // has to say the press was taken.
+    const [preparing, setPreparing] = SP_REACT.useState(false);
+    const preparingRef = SP_REACT.useRef(false);
     const [step, setStep] = SP_REACT.useState(null);
     const [startedAt, setStartedAt] = SP_REACT.useState(null);
     const [elapsedSeconds, setElapsedSeconds] = SP_REACT.useState(0);
@@ -12145,7 +12269,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
      * validity alone kept this press live over a process that does not exist on
      * this device.
      */
-    const usable = !busy && !aborting && targetValid && !antiCheatReason && !noWindowsProgram;
+    const usable = !busy && !aborting && !preparing && targetValid && !antiCheatReason && !noWindowsProgram;
     const origin = table.origins[table.origins.length - 1];
     const use = async () => {
         if (!targetValid || antiCheatReason || noWindowsProgram || busyRef.current || abortingRef.current)
@@ -12179,6 +12303,34 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
             setStoppable(false);
             setStep(null);
             setStartedAt(null);
+        }
+    };
+    /**
+     * Make the copy this Cheat Engine will open, and review that instead.
+     *
+     * Nothing durable about this table changes: the copy is new bytes with a new
+     * digest, and the consent for them is given on the screen this opens rather
+     * than here. A refusal is said on this screen, because the window that would
+     * carry it is the one being replaced.
+     */
+    const prepare = async () => {
+        if (!onPrepareCopy || preparingRef.current || busyRef.current || abortingRef.current)
+            return;
+        preparingRef.current = true;
+        setPreparing(true);
+        setError(null);
+        const operation = startUiOperation("review.prepare_copy", { table_sha: table.sha256 });
+        try {
+            await onPrepareCopy();
+            operation.completed();
+        }
+        catch (cause) {
+            operation.failed(cause);
+            setError(describeError(cause));
+        }
+        finally {
+            preparingRef.current = false;
+            setPreparing(false);
         }
     };
     const abort = async () => {
@@ -12216,13 +12368,13 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
     if (codeOpen) {
         return (SP_JSX.jsx(TableCodeModal, { sha256: table.sha256, filename: table.filename, onBack: () => setCodeOpen(false) }));
     }
-    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_review_modal.cancel_back", () => { if (!busyRef.current && !abortingRef.current)
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("table_review_modal.cancel_back", () => { if (!busyRef.current && !abortingRef.current && !preparingRef.current)
             onCancel(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 620 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Review cheat table" }), SP_JSX.jsx(InfoFields, { items: [
                                     { label: table.filename, description: `SHA-256 ${table.sha256.slice(0, 12)}… · ${Math.max(1, Math.ceil(table.size / 1024))} KiB` },
                                     { label: "Source", description: origin ? `${origin.provider} · ${origin.original_filename || table.filename}` : "Local file" },
                                     { label: "Contents", description: `${inspection.total_entries} entries · ${inspection.controls.length} inspected controls · CE table ${inspection.table_version ?? "unknown"}${notTakenAsWritten ? ` · ${notTakenAsWritten}` : ""}` },
                                     { label: "Executable content", description: `${inspection.has_lua ? "Lua " : ""}${inspection.has_auto_assembler ? "AutoAssembler " : ""}${inspection.has_forms ? "its own window " : ""}${inspection.embedded_files ? `${inspection.embedded_files} embedded file(s)` : ""}`.trim() || "No static executable-content markers found" },
-                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), findings.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-findings", status: true, label: "What CE Decky found", description: findings.join(" ") }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
+                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), findings.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-findings", status: true, label: "What CE Decky found", description: findings.join(" "), actions: canPrepare ? (SP_JSX.jsx(SmallButton, { disabled: busy || aborting || preparing, onClick: traceUiAction("table_review_modal.prepare_copy", () => { void prepare(); }, { table_sha: table.sha256 }), children: preparing ? "Preparing…" : "Prepare a copy that works here" })) : undefined }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
                                     ? undefined
                                     : onRefreshProcesses
                                         ? "This table names no process and none is running for this game. Start the game and press Look again, or enter the .exe basename."
@@ -12251,7 +12403,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
                                             setCustomProcess("");
                                     }, (option) => ({ table_sha: table.sha256, process: String(option.data) })), disabled: busy }) })), !noWindowsProgram && selector !== CUSTOM_PROCESS && declared.has(selector.toLowerCase()) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-declared-choice", label: "What Steam starts for this game", description: "Steam's own record for the version installed here, not an observation.", help: "Nothing has been seen running yet. A game that starts through a launcher of its own declares the launcher, so if it turns out to run something else, CE Decky says so the first time you start it and offers what it actually found." }) })), !noWindowsProgram && selector !== CUSTOM_PROCESS && !declared.has(selector.toLowerCase()) && fromGameFiles.has(selector.toLowerCase()) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-installed-choice", label: "Read from this game's files", description: "The game's own installed executable, not an observation.", help: "Nothing has been seen running yet. If the game turns out to run something else, CE Decky says so the first time you start it and offers what it actually found." }) })), !noWindowsProgram && selector === CUSTOM_PROCESS && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Process (.exe basename)", value: customProcess, onChange: traceUiEdit("table_review_modal.process_exe_basename", (event) => setCustomProcess(String(event.target.value ?? ""))), disabled: busy }) })), !noWindowsProgram && !targetValid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Process required", description: "Choose or enter one unambiguous filename ending in .exe. Paths are not accepted." }) }), antiCheatReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Anti-cheat detected", description: antiCheatReason }) })), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Could not use table", description: error }) }), busy && step && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: step, description: "Cheat Engine loads the table and answers when it is ready, usually within fifteen seconds on a handheld.", trailing: (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }, children: [elapsedText(elapsedSeconds), SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } })] })) }) }))] }) }), SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: usable, disabled: !usable, onClick: traceUiAction("table_review_modal.use_this_table", () => void use()), children: "Use this table" }), busy && onAbort
                             ? SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: aborting || !stoppable, onClick: traceUiAction("table_review_modal.abort", () => void abort()), children: aborting ? "Stopping…" : "Stop and cancel" })
-                            : SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !usable, disabled: busy || aborting, onClick: traceUiAction("table_review_modal.cancel", () => { if (!busyRef.current && !abortingRef.current)
+                            : SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: !usable, disabled: busy || aborting || preparing, onClick: traceUiAction("table_review_modal.cancel", () => { if (!busyRef.current && !abortingRef.current && !preparingRef.current)
                                     onCancel(); }), children: "Cancel" })] })] }) }));
 }
 
@@ -14671,6 +14823,21 @@ function Content() {
             initialTargetProcess: existing?.target_process ?? null,
         };
     };
+    /**
+     * The copy of a signed table this Cheat Engine will open, ready to review.
+     *
+     * Cheat Engine refuses a signed table by returning false and saying nothing,
+     * so the copy is what the user actually needs and the press that makes it is
+     * offered where they meet the fact. The copy is a table of its own - a new
+     * digest, its own inspection, no origin, because no provider served these
+     * bytes - so it is associated and reviewed exactly like an import, and the
+     * consent is given on its own Review rather than on the press that made it.
+     */
+    const prepareUnsignedCopy = async (sha256) => {
+        const derived = await deriveUnsignedTable(sha256);
+        await ensureProfileAssociation(derived.sha256);
+        return prepareReview(derived.sha256);
+    };
     const showPreparedReview = ({ table, inspection: nextInspection, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }) => {
         let currentActivation = null;
         logUi("panel.modal_opened", {
@@ -14708,6 +14875,15 @@ function Content() {
                     }
                 });
                 close();
+            }, onPrepareCopy: async () => {
+                const review = await runAction(async function prepareUnsignedTableCopy() {
+                    return prepareUnsignedCopy(table.sha256);
+                }, { failureShownByCaller: true });
+                // Serial handoff, the way Search and Manage hand over to Review: the
+                // screen being replaced closes first, and the copy's own Review opens
+                // over the panel rather than over a window on its way out.
+                close();
+                showPreparedReview(review);
             }, onAbort: async () => {
                 const activation = currentActivation;
                 if (!activation || activation.finished || activation.appId === null)
@@ -14886,6 +15062,12 @@ function Content() {
                 void refreshStatus().catch((cause) => {
                     logUiFailure("panel.status_after_delete_failed", cause, { table: sha256.slice(0, 12) });
                 });
+            }, onPrepareCopy: async (sha256) => {
+                const review = await runAction(async function prepareUnsignedTableCopyFromManage() {
+                    return prepareUnsignedCopy(sha256);
+                }, { failureShownByCaller: true });
+                close();
+                showPreparedReview(review);
             }, onSelect: async (sha256) => {
                 // The same contract as the press beside it. This screen is a modal,
                 // a window raised over it can appear behind it, and the row the press

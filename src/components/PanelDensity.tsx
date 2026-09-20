@@ -1481,12 +1481,17 @@ const trailingRowFillStyle: CSSProperties = { ...trailingRowStyle, width: "100%"
 // glyph, which is what every screen did before there was a choice. Reserving it
 // everywhere took 22 pixels out of the quick access panel's one narrow row for
 // a mark that is often not there, and moved Search and Manage for nothing.
+// A minimum rather than a width: one glyph still reserves the same column on
+// every row, which is what keeps a list of them lined up, and a row carrying a
+// second statement about its bytes - that they are signed, that CE Decky made
+// them - grows to hold it instead of drawing it over the row's own text.
 const markStyle: CSSProperties = {
   flex: "0 0 auto",
-  width: "var(--ce-row-mark-width, auto)",
+  minWidth: "var(--ce-row-mark-width, auto)",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
+  gap: 4,
   lineHeight: 0,
 };
 

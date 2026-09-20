@@ -2046,3 +2046,91 @@ def test_deriving_the_same_table_twice_stores_it_once(tmp_path: Path):
     assert second["derived_from"] == first["derived_from"]
     stored = [table for table in service.get_status()["tables"] if table["sha256"] == first["sha256"]]
     assert len(stored) == 1
+
+
+def test_a_stored_signed_table_carries_the_fact_to_the_row(tmp_path: Path):
+    """The mark is on a listed row, and a row is listed from metadata.
+
+    Review parses the table and can read the signature itself. Search and
+    Manage never parse anything: they list what the store recorded, so the fact
+    has to be in the record or the chip can never be drawn.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("signed-status"))
+    service.initialize()
+    signed_source = tmp_path / "signed.CT"
+    signed_source.write_text(SIGNED_FIXTURE, encoding="utf-8")
+    plain_source = tmp_path / "plain.CT"
+    plain_source.write_text(SIGNED_FIXTURE.replace("Signature>", "NotASignature>"), encoding="utf-8")
+
+    signed = service.import_table(str(signed_source))
+    plain = service.import_table(str(plain_source))
+
+    assert signed["has_signature"] is True
+    assert plain["has_signature"] is False
+    listed = {table["sha256"]: table for table in service.get_status()["tables"]}
+    assert listed[signed["sha256"]]["has_signature"] is True
+    assert listed[plain["sha256"]]["has_signature"] is False
+    # The copy CE Decky makes is not signed, and the row says which table it
+    # was made from so the two can be told apart in one list.
+    derived = service.derive_unsigned_table(str(signed["sha256"]))
+    assert derived["has_signature"] is False
+    assert derived["derived_from"] == {"sha256": signed["sha256"], "transform": "remove-signature"}
+
+
+def test_a_table_stored_before_the_signature_was_read_is_filled_in_at_startup(tmp_path: Path):
+    """Every table already on a device was recorded without this field.
+
+    Without the startup pass the mark would appear only on tables imported
+    after the upgrade, which is exactly the set the user does not have yet. The
+    answer is read from the bytes, which is the only place it has ever been.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("signed-backfill"))
+    service.initialize()
+    source = tmp_path / "signed.CT"
+    source.write_text(SIGNED_FIXTURE, encoding="utf-8")
+    table = service.import_table(str(source))
+    digest = str(table["sha256"])
+
+    # An older build's record: schema 4, and no answer about the signature.
+    record = service.table_store.meta_root / f"{digest}.json"
+    stored = json.loads(record.read_text(encoding="utf-8"))
+    stored.pop("has_signature")
+    stored["schema_version"] = 4
+    record.write_text(json.dumps(stored), encoding="utf-8")
+    # Read back before the pass: unknown, and a row says nothing rather than
+    # calling a signed table unsigned.
+    assert service.table_store.get_table(digest)["has_signature"] is None
+
+    PluginService(paths, logging.getLogger("signed-backfill-restart")).initialize()
+
+    assert service.table_store.get_table(digest)["has_signature"] is True
+
+
+def test_filling_the_signature_in_keeps_what_the_reader_only_repairs(tmp_path: Path):
+    """The pass adds one field; it does not rewrite the record in the reader's image.
+
+    The metadata reader drops provenance it cannot parse rather than refusing
+    the whole table, which is right for a read and would be data loss on a
+    write: a pass that runs over every table on the device at startup would
+    take those rows off the disk for good.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    service = PluginService(paths, logging.getLogger("signed-backfill-keeps"))
+    service.initialize()
+    source = tmp_path / "signed.CT"
+    source.write_text(SIGNED_FIXTURE, encoding="utf-8")
+    digest = str(service.import_table(str(source))["sha256"])
+
+    record = service.table_store.meta_root / f"{digest}.json"
+    stored = json.loads(record.read_text(encoding="utf-8"))
+    stored.pop("has_signature")
+    stored["schema_version"] = 4
+    stored["origins"] = [{"provider": "fearless", "artifact_id": "not a full origin row"}]
+    record.write_text(json.dumps(stored), encoding="utf-8")
+
+    PluginService(paths, logging.getLogger("signed-backfill-keeps-restart")).initialize()
+
+    written = json.loads(record.read_text(encoding="utf-8"))
+    assert written["has_signature"] is True
+    assert written["origins"] == stored["origins"]

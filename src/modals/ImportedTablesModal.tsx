@@ -7,9 +7,11 @@ import { CONTENTS_ONLY, DensePanel, FilterField, PanelRow, SectionHeading, Small
 import { PagerFooter } from "../components/PagerFooter";
 import { tableHolderLabel, type TableHolders } from "../tableHolders";
 import { CompatibilityMark, isCompatibilityFailure } from "../components/CompatibilityMark";
+import { SignedMark } from "../components/SignedMark";
+import { DerivedMark } from "../components/DerivedMark";
 import type { CompatibilityEvidence, TableStatus } from "../types";
 import { describeError } from "../errors";
-import { MANAGE_PAGE_SIZE, MANAGE_ROW_HEIGHT, MIN_MANAGE_ROWS, advertisedRelease, clampPage, pageCount, pageItems, shortBlockedReason, type BlockedMark } from "../uiModel";
+import { MANAGE_PAGE_SIZE, MANAGE_ROW_HEIGHT, MIN_MANAGE_ROWS, advertisedRelease, clampPage, derivedFromLabel, pageCount, pageItems, shortBlockedReason, tableIsSigned, type BlockedMark } from "../uiModel";
 import { MODAL_BOTTOM_PADDING, latchChrome, rowsThatFit, viewportHeight, type LatchedChrome } from "../viewport";
 import { logUi } from "../supportLog";
 
@@ -117,6 +119,16 @@ interface Props {
    * belongs on the row the press was made on.
    */
   onDelete?: (sha256: string) => Promise<void>;
+  /**
+   * Make a copy of one signed table that this Cheat Engine will open.
+   *
+   * Offered on the row that carries the mark, because this screen is where a
+   * table the user already has is chosen and a signed one is refused with no
+   * message at all. It consents to nothing: the copy is a new table with its
+   * own digest, and it resolves with Review open on it, the same way `onSelect`
+   * does. A failure must reject rather than raise a window of its own.
+   */
+  onPrepareCopy?: (sha256: string) => Promise<void>;
   onClose: () => void;
 }
 
@@ -185,7 +197,12 @@ function describeParts(table: TableStatus): Array<string | null> {
   return [
     advertisedRelease(table),
     `${table.entry_count} ${table.entry_count === 1 ? "record" : "records"}`,
-    origin ? origin.provider : "Local file",
+    // Where these bytes came from, in the one slot the row already spends on
+    // that question. A table CE Decky derived came from another table on this
+    // device, and calling it a local file would be naming a file that was never
+    // opened; a derived table carries no origin, so this slot is free on
+    // exactly the rows that need it.
+    derivedFromLabel(table) ?? (origin ? origin.provider : "Local file"),
     // The download where there was one, and otherwise when the file was opened
     // here: both answer when this copy arrived, which is the question a reader
     // comparing two of them is asking.
@@ -248,7 +265,7 @@ function arrived(at: string | null): string | null {
  * moved, or whose provider row stopped coming back, became unreachable state -
  * which is not what "switch between imported tables" is supposed to mean.
  */
-export function ImportedTablesModal({ compatibility = [], tables, otherTables = [], owners, activeSha256: initialActiveSha256, activeAuthorized = true, canSelect = true, blockedReasons = {}, selectedBy: initialSelectedBy = {}, holderIds: initialHolderIds = {}, onRevoke, onRefreshHolders, onOpenLocalFile, onSelect, onDelete, onClose }: Props) {
+export function ImportedTablesModal({ compatibility = [], tables, otherTables = [], owners, activeSha256: initialActiveSha256, activeAuthorized = true, canSelect = true, blockedReasons = {}, selectedBy: initialSelectedBy = {}, holderIds: initialHolderIds = {}, onRevoke, onRefreshHolders, onOpenLocalFile, onSelect, onDelete, onPrepareCopy, onClose }: Props) {
   useUiSurface("ImportedTablesModal");
   const [selectedBy, setSelectedBy] = useState(initialSelectedBy);
   const [holderIds, setHolderIds] = useState(initialHolderIds);
@@ -270,6 +287,28 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
       // Said on the row the press was made on, exactly as a failed removal is.
       // This screen is a modal, and a window raised over it can appear behind
       // it and read as a press that did nothing.
+      .catch((cause) => { operation.failed(cause); setFailure(describeError(cause)); })
+      .finally(() => {
+        selectingRef.current = false;
+        setSelecting(false);
+      });
+  };
+  /**
+   * Make the copy of a signed table that this Cheat Engine will open.
+   *
+   * The same latch and the same failure surface as `select`, because it ends
+   * the same way: the parent closes this window and opens Review on the copy,
+   * where the consent for those bytes is given.
+   */
+  const prepareCopy = (sha256: string) => {
+    if (selectingRef.current || !onPrepareCopy) return;
+    setArmed(null);
+    setFailure(null);
+    selectingRef.current = true;
+    setSelecting(true);
+    const operation = startUiOperation("manage.prepare_copy", { table_sha: sha256 });
+    void (async () => onPrepareCopy(sha256))()
+      .then(() => operation.completed())
       .catch((cause) => { operation.failed(cause); setFailure(describeError(cause)); })
       .finally(() => {
         selectingRef.current = false;
@@ -475,6 +514,17 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
         disabled={selecting || !usable}
         onClick={traceUiAction("imported_tables_modal.use", () => select(table.sha256), { table_sha: table.sha256 })}
       >Use</DialogButton>}
+      {/* Beside Use, on the row that carries the amber mark. A signed table is
+          refused with no message at all, so the press that makes the copy which
+          does open belongs where the user is choosing which table to use rather
+          than one screen further in. It consents to nothing: Review opens on
+          the copy and the consent is given there. */}
+      {onPrepareCopy && canSelect && tableIsSigned(table) && table.available
+        && (group === "mine" || !owners?.[table.sha256]) && (
+        <DialogButton style={rowActionStyle} disabled={selecting}
+          onClick={traceUiAction("imported_tables_modal.prepare_copy", () => prepareCopy(table.sha256), { table_sha: table.sha256 })}
+        >Prepare</DialogButton>
+      )}
       {onRevoke && ((selectedBy[table.sha256]?.count ?? 0) > 0 || table.sha256 === activeSha256) && (
         <DialogButton style={rowActionStyle} disabled={selecting}
           onClick={traceUiAction("imported_tables_modal.revoke_or_confirm", () => {
@@ -785,7 +835,11 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
                 tone={group === "device" ? "aside" : "own"}
                 label={rowLabel(table, group, index)}
                 description={rowDescription(table)}
-                mark={<CompatibilityMark evidence={compatibility.find((entry) => entry.table_sha256 === table.sha256)} blocked={blockedReasons[table.sha256] ?? null} />}
+                mark={<>
+                  <CompatibilityMark evidence={compatibility.find((entry) => entry.table_sha256 === table.sha256)} blocked={blockedReasons[table.sha256] ?? null} />
+                  {tableIsSigned(table) ? <SignedMark /> : null}
+                  {table.derived_from ? <DerivedMark /> : null}
+                </>}
                 actions={<div style={CONTENTS_ONLY} ref={(node) => {
                   if (node) rowRefs.current.set(table.sha256, node);
                   else rowRefs.current.delete(table.sha256);

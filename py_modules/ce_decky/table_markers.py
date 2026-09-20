@@ -86,3 +86,18 @@ def is_form_marker(tag: str, parent_tag: str | None = None) -> bool:
     if tag in FORM_ELEMENT_TAGS:
         return True
     return parent_tag in FORM_CONTAINER_TAGS and tag not in NON_FORM_TAGS
+
+
+def is_table_signature(tag: str, parent_tag: str | None) -> bool:
+    """The table's own `<Signature>`, which Cheat Engine refuses to open.
+
+    A direct child of the table root and nothing else. `Signature` is an
+    ordinary word and a table is free to carry a record, a form control or a
+    script variable called that; only the one Cheat Engine reads is the fact a
+    row reports, and that one is where Cheat Engine writes it.
+
+    `ct_inspector` asks the same question of the parsed root, because it has the
+    element itself to read the signature's parts out of. This is the streaming
+    reader's spelling of the same rule, for the metadata a listed row carries.
+    """
+    return tag == "Signature" and parent_tag == "CheatTable"

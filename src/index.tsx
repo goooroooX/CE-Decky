@@ -19,6 +19,7 @@ import {
   associateTable,
   blockTable,
   deleteTable,
+  deriveUnsignedTable,
   revokeTable,
   cancelManagedCEInstall,
   clearBlockedTables,
@@ -2084,6 +2085,22 @@ function Content() {
     };
   };
 
+  /**
+   * The copy of a signed table this Cheat Engine will open, ready to review.
+   *
+   * Cheat Engine refuses a signed table by returning false and saying nothing,
+   * so the copy is what the user actually needs and the press that makes it is
+   * offered where they meet the fact. The copy is a table of its own - a new
+   * digest, its own inspection, no origin, because no provider served these
+   * bytes - so it is associated and reviewed exactly like an import, and the
+   * consent is given on its own Review rather than on the press that made it.
+   */
+  const prepareUnsignedCopy = async (sha256: string): Promise<PreparedReview> => {
+    const derived = await deriveUnsignedTable(sha256);
+    await ensureProfileAssociation(derived.sha256);
+    return prepareReview(derived.sha256);
+  };
+
   const showPreparedReview = ({ table, inspection: nextInspection, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }: PreparedReview) => {
     let currentActivation: TableActivation | null = null;
     logUi("panel.modal_opened", {
@@ -2128,6 +2145,16 @@ function Content() {
             }
           });
           close();
+        }}
+        onPrepareCopy={async () => {
+          const review = await runAction(async function prepareUnsignedTableCopy() {
+            return prepareUnsignedCopy(table.sha256);
+          }, { failureShownByCaller: true });
+          // Serial handoff, the way Search and Manage hand over to Review: the
+          // screen being replaced closes first, and the copy's own Review opens
+          // over the panel rather than over a window on its way out.
+          close();
+          showPreparedReview(review);
         }}
         onAbort={async () => {
           const activation = currentActivation;
@@ -2342,6 +2369,13 @@ function Content() {
           void refreshStatus().catch((cause) => {
             logUiFailure("panel.status_after_delete_failed", cause, { table: sha256.slice(0, 12) });
           });
+        }}
+        onPrepareCopy={async (sha256) => {
+          const review = await runAction(async function prepareUnsignedTableCopyFromManage() {
+            return prepareUnsignedCopy(sha256);
+          }, { failureShownByCaller: true });
+          close();
+          showPreparedReview(review);
         }}
         onSelect={async (sha256) => {
           // The same contract as the press beside it. This screen is a modal,

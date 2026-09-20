@@ -1843,6 +1843,29 @@ export function switchesToHoldOff(
 }
 
 /**
+ * Whether a listed table's bytes carry the signature this Cheat Engine refuses.
+ *
+ * Only a recorded `true` says so. A record written before the store read the
+ * question carries no answer, and a row that turned that into "not signed"
+ * would be making the one claim it has no evidence for; the backend fills those
+ * in from the bytes at startup, so the unknown state is brief and quiet.
+ */
+export function tableIsSigned(table: Pick<TableStatus, "has_signature"> | null | undefined): boolean {
+  return table?.has_signature === true;
+}
+
+/**
+ * The one line a derived row adds, naming the table CE Decky made it from.
+ *
+ * Twelve characters of the source digest, which is the identity the rest of the
+ * product prints and enough to find the row it came from in the same list.
+ */
+export function derivedFromLabel(table: Pick<TableStatus, "derived_from">): string | null {
+  const source = table.derived_from?.sha256;
+  return source ? `derived from ${source.slice(0, 12)}` : null;
+}
+
+/**
  * What this table does on its own, for the one sentence Review says about it.
  *
  * A script's declarations are the author's preset rather than the user's

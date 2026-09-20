@@ -3375,6 +3375,59 @@ describe("Home panel and managed setup", () => {
     expect(screen.getByRole("button", { name: "Use this table" })).toBeTruthy();
   });
 
+  it("offers the copy that opens, only where there is one to make", async () => {
+    // The press that removes a game launch from the user's path: they learn the
+    // table is refused here and leave with the copy that is not, rather than
+    // starting a game to watch nothing happen. It consents to nothing - the
+    // copy is a table of its own and Review opens on it.
+    const onPrepareCopy = vi.fn().mockResolvedValue(undefined);
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, has_signature: true } as any}
+      onUse={vi.fn()}
+      onPrepareCopy={onPrepareCopy}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    fireEvent.click(within(block).getByRole("button", { name: "Prepare a copy that works here" }));
+    expect(onPrepareCopy).toHaveBeenCalled();
+
+    cleanup();
+    // Nothing to prepare on a table this Cheat Engine will open as it is.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, has_signature: false } as any}
+      onUse={vi.fn()}
+      onPrepareCopy={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    await screen.findByText("Review cheat table");
+    expect(screen.queryByRole("button", { name: "Prepare a copy that works here" })).toBeNull();
+  });
+
+  it("tells the reader of a prepared copy what changed and who vouched for it", async () => {
+    // The consent on this screen is for these exact bytes, and they are not the
+    // bytes any source served. What changed, and what it cost, said where the
+    // decision is made.
+    const derived = {
+      ...table, sha256: "d".repeat(64), filename: "Game (unsigned).CT",
+      derived_from: { sha256: table.sha256, transform: "remove-signature" },
+    };
+    render(<TableReviewModal
+      table={derived as any}
+      inspection={{ ...inspect, has_signature: false } as any}
+      onUse={vi.fn()}
+      onPrepareCopy={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain(`CE Decky made this copy from ${table.sha256.slice(0, 12)}`);
+    expect(block.textContent).toContain("Nothing else in the table changed");
+    expect(block.textContent).toContain("no source vouched for these bytes");
+    // Nothing left to prepare: this is what the press produces.
+    expect(within(block).queryByRole("button", { name: "Prepare a copy that works here" })).toBeNull();
+  });
+
   it("says nothing at Review about a table that switches nothing on by itself", async () => {
     // The test for every addition to this screen: a healthy table renders none
     // of it, and Review is the screen it always was.

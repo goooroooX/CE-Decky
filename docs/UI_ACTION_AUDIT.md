@@ -177,6 +177,7 @@ Each identifier below names one owned callback location, even when several rows 
 | `imported_tables_modal.delete_or_confirm` | `src/modals/ImportedTablesModal.tsx` | `() => { if (armed === table.sha256) { setArmed(null); remove(table.sha256); return; } setFailure(nul...` |
 | `imported_tables_modal.filter_by_name_or_digest` | `src/modals/ImportedTablesModal.tsx` | `(event: any) => moveTo(() => { setFilter(String(event.target.value ?? "")); setPage(0); })` |
 | `imported_tables_modal.local_file` | `src/modals/ImportedTablesModal.tsx` | `() => { onClose(); onOpenLocalFile(); }` |
+| `imported_tables_modal.prepare_copy` | `src/modals/ImportedTablesModal.tsx` | `() => prepareCopy(table.sha256)` |
 | `imported_tables_modal.revoke_or_confirm` | `src/modals/ImportedTablesModal.tsx` | Arm exact-table confirmation, then revoke its captured holders and refresh their state |
 | `imported_tables_modal.use` | `src/modals/ImportedTablesModal.tsx` | `() => select(table.sha256)` |
 | `pager.next` | `src/components/PagerFooter.tsx` | `() => { turnedRef.current = "next"; onPage(Math.min(pages - 1, page + 1)); }` |
@@ -211,6 +212,7 @@ Each identifier below names one owned callback location, even when several rows 
 | `table_review_modal.look_inside` | `src/modals/TableReviewModal.tsx` | `openCode` |
 | `table_review_modal.look_inside_this_table` | `src/modals/TableReviewModal.tsx` | `openCode` |
 | `table_review_modal.on_rescan_2` | `src/modals/TableReviewModal.tsx` | `onRescan` |
+| `table_review_modal.prepare_copy` | `src/modals/TableReviewModal.tsx` | `() => { void prepare(); }` |
 | `table_review_modal.process_exe_basename` | `src/modals/TableReviewModal.tsx` | `(event: any) => setCustomProcess(String(event.target.value ?? ""))` |
 | `table_review_modal.use_this_table` | `src/modals/TableReviewModal.tsx` | `() => void use()` |
 | `table_search_modal.cancel` | `src/modals/TableSearchModal.tsx` | `cancel` |

@@ -13,12 +13,14 @@ import { forgetRejectedArtifact, isRejectedArtifact, isArchiveFilename } from ".
 import { showActionFailure } from "./modals/ActionFailureModal";
 import { TableAcquisitionModal } from "./modals/TableAcquisitionModal";
 import { ModalActions, modalActionStyle } from "./components/ModalActions";
-import { PROVIDER_PAGE_SIZE, advertisedRelease, clampPage, pageCount, pageItems, providerShortName, releaseLabel, tableRowRefusals, type BlockedLookups, type BlockedMark } from "./uiModel";
+import { PROVIDER_PAGE_SIZE, advertisedRelease, clampPage, derivedFromLabel, pageCount, pageItems, providerShortName, releaseLabel, tableIsSigned, tableRowRefusals, type BlockedLookups, type BlockedMark } from "./uiModel";
 import { MODAL_BOTTOM_PADDING, latchChrome, rowsThatFit, viewportHeight, type LatchedChrome } from "./viewport";
 import { CONTENTS_ONLY, FOCUS_SCROLL_CLASS, FocusScrollText, PanelRow, SectionHeading, SmallButton, focusFirstEnabled, usePageHeight, useRowHeight } from "./components/PanelDensity";
 import { PagerFooter } from "./components/PagerFooter";
 import { CompatibilityMark, gameCompatibility, isCompatibilityFailure } from "./components/CompatibilityMark";
 import { SameTableMark } from "./components/SameTableMark";
+import { SignedMark } from "./components/SignedMark";
+import { DerivedMark } from "./components/DerivedMark";
 import type { CompatibilityEvidence, ArtifactResolution, AcquisitionStatus, BlockedTableCause, CatalogResult, CatalogSearchOutcome, ProviderSearchSummary, TableSearchProgress, TableStatus } from "./types";
 import { describeError } from "./errors";
 import { logUi, logUiFailure, logUiWarning } from "./supportLog";
@@ -1653,6 +1655,12 @@ export function ProviderCatalog({
                   <div style={TITLE_ROW}>
                     <span style={TITLE_TEXT}><FocusScrollText paced>{table.filename}</FocusScrollText></span>
                     <CompatibilityMark evidence={gameCompatibility(compatibilityView, appId, table.sha256)} blocked={blocked ?? null} />
+                    {/* Two facts about the bytes themselves, known before
+                        anything is tried: that this Cheat Engine refuses them,
+                        and that this device made them. Neither is a verdict,
+                        which is why neither is drawn on the glyph beside it. */}
+                    {tableIsSigned(table) ? <SignedMark /> : null}
+                    {table.derived_from ? <DerivedMark /> : null}
                     {/* The chip says what this device can do with the bytes,
                         which for a row that exists because the bytes are here
                         is always the same thing. What is recorded about them is
@@ -1676,6 +1684,9 @@ export function ProviderCatalog({
                     advertisedRelease(table),
                     formatSize(table.size),
                     table.sha256.slice(0, 12),
+                    // Where the bytes came from, for the one kind of row whose
+                    // answer is another row in the same list.
+                    derivedFromLabel(table),
                     "on this device",
                   ].filter(Boolean).join(" · ")}</FocusScrollText></span>
                 </div>
@@ -1738,6 +1749,11 @@ export function ProviderCatalog({
                   <span style={TITLE_TEXT}><FocusScrollText paced>{result.table_title}</FocusScrollText></span>
                   <CompatibilityMark evidence={gameCompatibility(compatibilityView, appId, subjectDigest)} blocked={failureRecord} />
                   {marks.duplicate ? <SameTableMark /> : null}
+                  {/* Only where this device holds the bytes, and only from the
+                      stored record of them: a row's own local half can be a
+                      placeholder built from what the source said, and whether a
+                      file is signed is not known until it is here. */}
+                  {localTable && tableIsSigned(localBySha.get(localTable.sha256)) ? <SignedMark /> : null}
                   {mark ? <span style={mark.style}>{mark.text}</span> : null}
                 </div>
                 <span style={SUBTLE_TEXT}><FocusScrollText paced>{[

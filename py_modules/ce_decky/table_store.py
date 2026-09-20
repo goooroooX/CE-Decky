@@ -21,7 +21,7 @@ from .archive_import import (
 from .atomic import DurabilityUnknownError, durable_unlink, atomic_write_json, fsync_directory, load_json, read_regular_bytes
 from .activity_log import log_activity, log_failure
 from .table_blocklist import CAUSE_UNUSABLE, BlockedTableError
-from .table_markers import is_auto_assembler_marker, is_embedded_file, is_form_marker, is_lua_marker, local_tag
+from .table_markers import is_auto_assembler_marker, is_embedded_file, is_form_marker, is_lua_marker, is_table_signature, local_tag
 from .text import utf8_len
 
 # What may be selected here, derived from what the archive layer can actually
@@ -68,7 +68,7 @@ class ArchiveWithoutTable(TableContentError):
 # field, and stamped it as the schema that does not have one. The reader happens
 # to tolerate that, which is exactly what makes it a trap: nothing is visibly
 # wrong until something migrates on the marker.
-TABLE_METADATA_SCHEMA = 4
+TABLE_METADATA_SCHEMA = 5
 
 
 @dataclass(frozen=True)
@@ -113,6 +113,14 @@ class TableArtifact:
     # for what CE Decky produced. Absent from metadata written before this
     # existed, which reads as None: a table nobody derived.
     derived_from: dict[str, object] | None = None
+    # Whether the bytes carry the table's own `<Signature>`, which this Cheat
+    # Engine refuses to open.
+    #
+    # `None` is not `False`: it is a record written before this was read, and a
+    # row says nothing rather than saying a signed table is unsigned. The
+    # startup pass fills those in from the bytes, which is the only place the
+    # answer has ever been.
+    has_signature: bool | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -195,13 +203,13 @@ class TableStore:
                                 if data is None or sha256(data).hexdigest() != digest:
                                     raise ValueError("orphan blob failed SHA-256 verification")
                                 _reject_dtd_and_entities_bytes(data)
-                                version, lua, assembler, embedded, forms, records = _inspect_xml_bytes(data)
+                                version, lua, assembler, embedded, forms, signed, records = _inspect_xml_bytes(data)
                                 artifact = TableArtifact(
                                     sha256=digest, filename=f"Recovered-{digest[:12]}.CT", size=len(data),
                                     table_version=version, has_lua=lua, has_auto_assembler=assembler,
                                     has_embedded_files=embedded, has_forms=forms,
                                     executable_content=lua or assembler or embedded or forms,
-                                    entry_count=records, blob_path=str(blob),
+                                    entry_count=records, blob_path=str(blob), has_signature=signed,
                                 )
                                 atomic_write_json(metadata, artifact.as_dict())
                                 log_activity(logger, "info", "table.orphan_recovered", table_sha=digest)
@@ -506,7 +514,7 @@ class TableStore:
                 refusal = exc
         try:
             _reject_dtd_and_entities_bytes(snapshot)
-            table_version, has_lua, has_auto_assembler, has_embedded_files, has_forms, entry_count = _inspect_xml_bytes(snapshot)
+            table_version, has_lua, has_auto_assembler, has_embedded_files, has_forms, has_signature, entry_count = _inspect_xml_bytes(snapshot)
         except TableContentError as exc:
             # These exact bytes are not a table and never will be. Remembering
             # that by content is what stops the same file being found, paid for
@@ -556,6 +564,7 @@ class TableStore:
             has_auto_assembler=has_auto_assembler,
             has_embedded_files=has_embedded_files,
             has_forms=has_forms,
+            has_signature=has_signature,
             executable_content=has_lua or has_auto_assembler or has_embedded_files or has_forms,
             entry_count=entry_count,
             blob_path=str(blob_path),
@@ -593,6 +602,83 @@ class TableStore:
             ) from exc
 
         return artifact
+
+    def fill_signature_marks(self, logger) -> None:
+        """Read the signature fact for records written before it was recorded.
+
+        A signed table is one this Cheat Engine refuses, and the row that says
+        so is listed from metadata rather than from the bytes. Every table
+        already on the device was recorded without the field, so without this
+        the mark would only ever appear on tables imported after the upgrade -
+        which is exactly the set of tables the user does not have yet.
+
+        One pass at startup, bounded the way orphan recovery is bounded, and
+        every failure is per-record: a table whose bytes cannot be read keeps
+        its unknown answer, stays listed and stays usable, and is tried again on
+        the next startup. Nothing here is a mutation of a table; the bytes are
+        never touched and only the record's own note about them is written.
+        """
+        if not self.meta_root.exists():
+            return
+        try:
+            self._ensure_roots(self.meta_root)
+            entries: list[Path] = []
+            with os.scandir(self.meta_root) as scan:
+                for count, entry in enumerate(scan, 1):
+                    if count > MAX_TABLE_METADATA_ENTRIES:
+                        raise ValueError("table metadata catalog exceeds entry limit")
+                    if entry.name.endswith(".json"):
+                        entries.append(Path(entry.path))
+        except (OSError, ValueError) as exc:
+            log_failure(logger, "table.signature_backfill_failed", exc, expected=True)
+            return
+        read_bytes = 0
+        filled = 0
+        for path in sorted(entries, key=lambda item: item.name):
+            try:
+                if path.is_symlink():
+                    continue
+                digest = _normalize_digest(path.stem)
+                raw = load_json(path, None, max_bytes=256 * 1024)
+                # Validated through the ordinary reader, so nothing is rewritten
+                # that the reader would refuse - but what is written back is the
+                # record as it stands plus the one new field. Writing the
+                # normalized form instead would make this pass quietly drop the
+                # things that reader repairs rather than refuses, an origin row
+                # it could not parse among them, for every table on the device.
+                current = _normalize_table_metadata(raw, digest)
+                if current.get("has_signature") is not None:
+                    continue
+                assert isinstance(raw, dict)
+                expected_blob = self.blob_root / digest[:2] / digest / "table.CT"
+                size = int(current["size"])
+                # A table whose file is gone lists as one and is not a failure
+                # to report once per load. It has no bytes to read the answer
+                # out of, and it gets the answer back if the bytes come back.
+                if not _blob_matches_metadata(expected_blob, size):
+                    continue
+                if read_bytes + size > 128 * 1024 * 1024:
+                    # The rest waits for the next startup rather than making
+                    # load pay for a whole library of bytes at once.
+                    break
+                blob = self._verified_blob_path(digest)
+                data = read_regular_bytes(blob, max_bytes=MAX_CT_BYTES)
+                if data is None or sha256(data).hexdigest() != digest:
+                    raise ValueError("stored table failed SHA-256 verification")
+                read_bytes += len(data)
+                # Already-promoted bytes, proven by digest against the record
+                # that was written after they passed the entity check, so that
+                # check is not paid for a second time here.
+                signed = _inspect_xml_bytes(data)[_SIGNATURE_FIELD]
+                raw["has_signature"] = signed
+                raw["schema_version"] = TABLE_METADATA_SCHEMA
+                raw["blob_path"] = str(expected_blob)
+                atomic_write_json(path, raw)
+                filled += 1
+            except (OSError, ValueError, TypeError) as exc:
+                log_failure(logger, "table.signature_backfill_skipped", exc, expected=True, table_sha=path.stem[:12])
+        if filled:
+            log_activity(logger, "info", "table.signature_marks_filled", tables=filled)
 
     def add_origin(self, digest: str, origin: dict[str, object]) -> dict[str, object]:
         normalized = _normalize_digest(digest)
@@ -762,14 +848,14 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
         "schema_version", "sha256", "filename", "size", "table_version",
         "has_lua", "has_auto_assembler", "has_embedded_files", "has_forms",
         "executable_content", "entry_count", "blob_path", "origins",
-        "imported_at", "derived_from",
+        "imported_at", "derived_from", "has_signature",
     }
     if set(raw) - allowed:
         raise ValueError("table metadata contains unknown fields")
     if raw.get("sha256") != digest:
         raise ValueError("table metadata identity mismatch")
     schema = raw.get("schema_version", 1)
-    if isinstance(schema, bool) or not isinstance(schema, int) or schema not in {1, 2, 3, TABLE_METADATA_SCHEMA}:
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema not in {1, 2, 3, 4, TABLE_METADATA_SCHEMA}:
         raise ValueError("unsupported table metadata schema")
     filename = _display_filename(raw.get("filename"))
     size = raw.get("size")
@@ -811,6 +897,12 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
         # thing a row says, never a thing a table's identity rests on.
         imported_at = None
     derived_from = _normalize_derivation(raw.get("derived_from"))
+    # Three states, not two. A record written before this was read carries no
+    # answer at all, and the difference between "no signature" and "nobody has
+    # looked" is the whole of what the row may claim.
+    signature = raw.get("has_signature")
+    if not isinstance(signature, bool):
+        signature = None
     return {
         "schema_version": TABLE_METADATA_SCHEMA,
         "sha256": digest,
@@ -823,6 +915,7 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
         "origins": origins,
         "imported_at": imported_at,
         "derived_from": derived_from,
+        "has_signature": signature,
     }
 
 
@@ -1014,13 +1107,20 @@ def _snapshot_source(
             os.close(src_fd)
 
 
-def _inspect_xml_bytes(data: bytes) -> tuple[str | None, bool, bool, bool, bool, int]:
+# Where the signature answer sits in what `_inspect_xml_bytes` returns, for the
+# one reader that wants that field alone. Named so a field added in front of it
+# is a change to this line rather than a wrong answer written to every record.
+_SIGNATURE_FIELD = 5
+
+
+def _inspect_xml_bytes(data: bytes) -> tuple[str | None, bool, bool, bool, bool, bool, int]:
     """Read only bounded metadata from an untrusted CT snapshot without building a full DOM."""
     version: str | None = None
     has_lua = False
     has_auto_assembler = False
     has_embedded_files = False
     has_forms = False
+    has_signature = False
     entry_count = 0
     element_count = 0
     root_seen = False
@@ -1043,7 +1143,12 @@ def _inspect_xml_bytes(data: bytes) -> tuple[str | None, bool, bool, bool, bool,
                     version = element.attrib.get("CheatEngineTableVersion")
                 parent_tag = open_tags[-1] if open_tags else None
                 open_tags.append(tag)
-                if is_form_marker(tag, parent_tag):
+                # Read here rather than only in Review's inspector, because the
+                # row that carries the mark is listed from this metadata and
+                # never parses the table.
+                if is_table_signature(tag, parent_tag):
+                    has_signature = True
+                elif is_form_marker(tag, parent_tag):
                     has_forms = True
                 elif is_embedded_file(tag):
                     has_embedded_files = True
@@ -1065,7 +1170,7 @@ def _inspect_xml_bytes(data: bytes) -> tuple[str | None, bool, bool, bool, bool,
         raise TableContentError(f"the file is not a valid Cheat Engine table: its XML is malformed ({exc})") from exc
     if not root_seen:
         raise TableContentError("the file contains no Cheat Engine table XML")
-    return version, has_lua, has_auto_assembler, has_embedded_files, has_forms, entry_count
+    return version, has_lua, has_auto_assembler, has_embedded_files, has_forms, has_signature, entry_count
 
 
 def _reject_dtd_and_entities(path: Path) -> None:

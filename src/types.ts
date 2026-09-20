@@ -57,6 +57,31 @@ export interface TableStatus {
    * and it is what a table imported before arrival was tracked does not have.
    */
   imported_at?: string | null;
+  /**
+   * Whether these stored bytes carry the table's own `<Signature>`.
+   *
+   * Three states, and the third is why this is not a plain boolean: `true` is a
+   * table this Cheat Engine refuses to open, `false` is one it will read, and
+   * absent is a record written before the store read the question. A row says
+   * nothing where nothing is known rather than calling a signed table unsigned;
+   * the backend fills the missing answers in from the bytes at startup.
+   */
+  has_signature?: boolean | null;
+  /**
+   * Where CE Decky made these bytes from, for a table it derived itself.
+   *
+   * Absent for every table a user brought here, which is nearly all of them. A
+   * derived table is ordinary in every other way - its own digest, its own
+   * inspection, its own consent - and deliberately carries no origin, because
+   * no provider served these bytes.
+   */
+  derived_from?: TableDerivation | null;
+}
+
+/** The exact table a derived one came from, and the one transform applied. */
+export interface TableDerivation {
+  sha256: string;
+  transform: string;
 }
 
 export interface TableOrigin {

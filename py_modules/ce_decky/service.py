@@ -335,6 +335,9 @@ class PluginService:
         self.paths.ensure()
         with self._mutation_lock:
             self.table_store.reconcile_orphan_blobs(self.logger)
+            # The signature fact for tables stored before it was recorded. A
+            # row carries the mark, and a row is listed from metadata.
+            self.table_store.fill_signature_marks(self.logger)
         if not self.paths.config_path.exists():
             self.config_store.save(self.config_store.load())
         self._adopt_legacy_preferences()
