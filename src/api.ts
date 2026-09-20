@@ -69,11 +69,12 @@ export const deriveUnsignedTable = callable<[sha256: string], TableStatus>("deri
  *
  * A script finds the game's code by scanning for one, and a pattern that is not
  * in the build in front of the user takes out every cheat that script owns at
- * the same moment, with nothing said. Answered before consent, and only where
- * this device already knows which program the game runs: where it does not, the
- * answer says so and the screen claims nothing.
+ * the same moment, with nothing said. Answered before consent, about the exact
+ * program the screen is proposing to attach to, and only where this device
+ * already knows where that program is: where it does not, the answer says so
+ * and the screen claims nothing.
  */
-export const checkTableScans = callable<[sha256: string, appId: number | null], TableScanCheck>("check_table_scans");
+export const checkTableScans = callable<[sha256: string, appId: number | null, targetProcess: string | null], TableScanCheck>("check_table_scans");
 // A table's own executable content, read and never run. Two calls because one
 // table on this device carries half a megabyte of scripts: the index says what
 // is in it, and a section is fetched when the user opens it.

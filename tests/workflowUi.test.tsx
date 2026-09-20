@@ -3488,6 +3488,35 @@ describe("Home panel and managed setup", () => {
     }
   });
 
+  it("drops a scan finding the moment the reader picks a different program", async () => {
+    // A scan answer is about one program, and this screen is where the reader
+    // chooses which one Cheat Engine attaches to. What was true of the program
+    // they moved away from is not true of the one in front of them.
+    const onCheckScans = vi.fn().mockResolvedValue({
+      source: "file", present: ["aobOne"], missing: [], not_checked: [], elapsed_ms: 4, reason: null,
+    });
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, scan_count: 4, process_candidates: ["first.exe", "second.exe"] } as any}
+      scanCheck={{
+        source: "file", present: [], missing: ["aobOne"], not_checked: [], elapsed_ms: 5, reason: null,
+      } as any}
+      scanCheckedProcess="first.exe"
+      onCheckScans={onCheckScans}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    // It opened on the program the answer was read against, so the finding stands.
+    expect((await screen.findByTestId("review-findings")).textContent).toContain("aobOne");
+
+    fireEvent.change(screen.getByLabelText("Game process") as HTMLSelectElement, { target: { value: "second.exe" } });
+
+    // Gone at once rather than after the new answer arrives: nothing has been
+    // established about the program now selected.
+    await waitFor(() => expect(screen.queryByTestId("review-findings")).toBeNull());
+    await waitFor(() => expect(onCheckScans).toHaveBeenCalledWith("second.exe"));
+  });
+
   it("keeps the block to two findings, and drops the least consequential", async () => {
     // One block rather than a row per finding: a screen that asks one question
     // may not open with four answers. What goes is always the mildest of what

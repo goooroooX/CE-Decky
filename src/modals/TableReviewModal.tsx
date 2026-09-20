@@ -12,6 +12,12 @@ import { TableCodeModal } from "./TableCodeModal";
 
 const CUSTOM_PROCESS = "__custom_process__";
 
+// How long a changed program is left to settle before the scan check is asked
+// again. The process can be typed rather than chosen, and every whole basename
+// on the way to the intended one would otherwise cost a read of Steam's own
+// stores and a bounded walk of a game's folder.
+const SCAN_RECHECK_DELAY_MS = 400;
+
 interface Props {
   table: TableStatus;
   inspection: TableInspection;
@@ -71,6 +77,23 @@ interface Props {
    * exactly as it did before this existed.
    */
   scanCheck?: TableScanCheck | null;
+  /**
+   * Which program that answer is about.
+   *
+   * A scan check is about one program, and this screen is where the reader
+   * chooses which one Cheat Engine attaches to. An answer about the program
+   * they have just moved away from is not an answer about the one in front of
+   * them, so the finding goes the moment the two differ.
+   */
+  scanCheckedProcess?: string | null;
+  /**
+   * Ask again, for the program the reader has just chosen.
+   *
+   * Absent where the panel cannot ask, and then a changed process simply leaves
+   * the screen saying nothing about scans, which is the honest state: nothing
+   * has been established about the program now selected.
+   */
+  onCheckScans?: (targetProcess: string) => Promise<TableScanCheck | null>;
   onCancel: () => void;
 }
 
@@ -141,7 +164,7 @@ function ProcessChoice(
   );
 }
 
-export function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, scanCheck = null, onCancel }: Props) {
+export function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, scanCheck = null, scanCheckedProcess = null, onCheckScans, onCancel }: Props) {
   useUiSurface("TableReviewModal", table.sha256);
   // Seeded from the snapshot this screen was opened with, and replaced when the
   // user asks again after starting the game.
@@ -194,6 +217,17 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
       .finally(() => setRescanning(false));
   };
   const antiCheatReason = antiCheatBlockedReason(observedProcesses);
+  // The scan answer this screen is currently entitled to state, and which
+  // program it is about. Seeded with what was read before the screen opened;
+  // replaced when the reader chooses a different program, because an answer
+  // about the one they moved away from is not an answer about this one.
+  const [scanAnswer, setScanAnswer] = useState<TableScanCheck | null>(scanCheck);
+  // Which program the answer on screen is about, and whether this screen has
+  // settled on one yet. The first render is not a change of mind: it is where
+  // the screen resolves the program it opened on, and the answer it was handed
+  // is already about that one.
+  const scanAskedFor = useRef<string | null>(scanCheckedProcess);
+  const scanSettled = useRef(false);
   // Everything this screen has to say about the table itself, in one block.
   // Each item is at most a sentence, and the block is absent when there is
   // nothing: a healthy table's Review is the screen it always was.
@@ -222,7 +256,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     // cheat one script owns at the same moment. Ahead of the defaults sentence
     // because it is a table that will not work rather than one that will work
     // more than the reader asked for.
-    missingScanFinding(scanCheck, inspection.scan_count),
+    missingScanFinding(scanAnswer, inspection.scan_count),
     defaults
       ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
       : null,
@@ -403,6 +437,41 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
   ].filter(Boolean).join(" · ");
   const targetProcess = selector === CUSTOM_PROCESS ? customProcess.trim() : selector;
   const targetValid = isValidProcessBasename(targetProcess);
+  // A scan answer is about one program. When the reader picks another, what is
+  // on screen stops being true of it, so it goes at once and the question is
+  // asked again for the one now selected. Nothing is said in between: silence
+  // is what this screen owes for a program nothing has been established about.
+  useEffect(() => {
+    if (!targetValid) return;
+    if (!scanSettled.current) {
+      scanSettled.current = true;
+      const asked = scanAskedFor.current;
+      scanAskedFor.current = targetProcess;
+      // Only where the two disagree, which means the screen resolved a
+      // different program from the one the answer was read against.
+      if (!asked || asked.toLowerCase() === targetProcess.toLowerCase()) return;
+    }
+    if (targetProcess === scanAskedFor.current) return;
+    scanAskedFor.current = targetProcess;
+    // Gone at once, asked for after a pause. The name can be typed rather than
+    // chosen, and `ab.exe` on the way to `abc.exe` is a whole valid basename:
+    // asking on each of them would spend a store read, a manifest read and a
+    // bounded walk per keystroke. What the reader sees is immediate either way,
+    // because what they see while this settles is nothing.
+    setScanAnswer(null);
+    if (!onCheckScans) return;
+    let current = true;
+    const wanted = targetProcess;
+    const timer = window.setTimeout(() => {
+      void onCheckScans(wanted)
+        .then((next) => { if (current && scanAskedFor.current === wanted) setScanAnswer(next); })
+        .catch((cause) => {
+          logUiFailure("review.scan_check_failed", cause, { table_sha: table.sha256.slice(0, 12) });
+          if (current && scanAskedFor.current === wanted) setScanAnswer(null);
+        });
+    }, SCAN_RECHECK_DELAY_MS);
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [targetProcess, targetValid, onCheckScans]);
   /**
    * Whether the decision this window is for can be made right now.
    *

@@ -87,7 +87,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -2040,6 +2040,8 @@ function Content() {
     inspection: TableInspection;
     /** What the game's own program holds of what this table scans for, where that is knowable. */
     scanCheck: TableScanCheck | null;
+    /** Which program that answer is about, so the screen can drop it if the reader picks another. */
+    scanCheckedProcess: string | null;
     observedProcesses: string[];
     launchExecutable: string | null;
     /** What this game's own installed folder holds, for a table that names nothing. */
@@ -2052,14 +2054,6 @@ function Content() {
     const table = nextStatus.tables.find((candidate) => candidate.sha256 === sha256 && candidate.available);
     if (!table) throw new Error("The imported exact table SHA is no longer available.");
     const nextInspection = await inspectTableSha(sha256, selectedGameRef.current?.appId ?? null);
-    // Before the screen opens, because it is one of the things the screen is
-    // asking the reader to decide on. Best effort in every direction: a game
-    // this device has never launched has no program to look in, and the answer
-    // then says so and Review is the screen it always was.
-    const scanCheck = await checkTableScans(sha256, selectedGameRef.current?.appId ?? null).catch((cause) => {
-      logUiFailure("panel.scan_check_failed", cause, { table: sha256.slice(0, 12) });
-      return null;
-    });
     const existing = currentProfile(nextStatus, selectedGameRef.current);
     // Review is a detached modal, so the running-process observation has to be
     // taken here: it cannot arrive from Home after the modal is open. A failed
@@ -2083,10 +2077,32 @@ function Content() {
         return null;
       })
       : null;
+    // Last, because it is about one program and the one it is about is the one
+    // this screen is going to propose: the running game outranks the table's
+    // own hint, which outranks what Steam starts, and all three are only known
+    // once the reads above have answered. A game's first table has no saved
+    // process at all, which is exactly the Review that used to be checked
+    // against nothing.
+    const proposed = defaultTargetProcess({
+      confirmed: existing?.target_process ?? null,
+      tableHints: nextInspection.process_candidates,
+      observed: withoutWineRuntimeProcesses(observedProcesses),
+      launchExecutable: observed?.launch_executable ?? (game?.isShortcut ? appDetails?.shortcutExe ?? null : null),
+      installed: installedExecutables,
+    });
+    // Best effort in every direction: a game whose program this device has
+    // never located has nothing to look in, and the answer then says so and
+    // Review is the screen it always was.
+    const scanCheck = await checkTableScans(sha256, selectedGameRef.current?.appId ?? null, proposed || null)
+      .catch((cause) => {
+        logUiFailure("panel.scan_check_failed", cause, { table: sha256.slice(0, 12) });
+        return null;
+      });
     return {
       table,
       inspection: nextInspection,
       scanCheck,
+      scanCheckedProcess: proposed || null,
       observedProcesses,
       installedExecutables,
       // Steam records a non-Steam shortcut's target in AppDetails, but a Steam
@@ -2114,7 +2130,7 @@ function Content() {
     return prepareReview(derived.sha256);
   };
 
-  const showPreparedReview = ({ table, inspection: nextInspection, scanCheck, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }: PreparedReview) => {
+  const showPreparedReview = ({ table, inspection: nextInspection, scanCheck, scanCheckedProcess, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }: PreparedReview) => {
     let currentActivation: TableActivation | null = null;
     logUi("panel.modal_opened", {
       modal: "table_review", table_sha: table.sha256.slice(0, 12),
@@ -2136,6 +2152,8 @@ function Content() {
         table={table}
         inspection={nextInspection}
         scanCheck={scanCheck}
+        scanCheckedProcess={scanCheckedProcess}
+        onCheckScans={async (process) => checkTableScans(table.sha256, selectedGameRef.current?.appId ?? null, process)}
         observedProcesses={observedProcesses}
         launchExecutable={launchExecutable}
         installedExecutables={installedExecutables}

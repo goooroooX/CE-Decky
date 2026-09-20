@@ -399,6 +399,60 @@ def _within(root: Path, candidate: Path) -> bool:
     return True
 
 
+def program_in_tree(root: Path, basename: str) -> Path | None:
+    """One named Windows program under a directory, where that directory holds it.
+
+    For the game a shortcut points at. A shortcut has no manifest and no install
+    folder, so the listing above answers nothing for one; what Steam recorded
+    instead is the command it starts, and the directory that command lives in is
+    the game's own. That directory is what this is rooted at.
+
+    It invents no name: the basename is the program the screen is about to
+    propose attaching to, and this only says where under that directory it is.
+    Bounded exactly as the listing is - the same depth, the same entry budget -
+    and it never leaves the directory it was given, so a link pointing out of
+    the game's folder resolves to no answer rather than to somebody else's file.
+    """
+    if not basename or "/" in basename or "\\" in basename:
+        return None
+    try:
+        anchor = root.resolve()
+    except OSError:
+        return None
+    wanted = basename.casefold()
+    seen = 0
+    level = [anchor]
+    for _ in range(MAX_DEPTH + 1):
+        following: list[Path] = []
+        for directory in level:
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        seen += 1
+                        if seen > MAX_ENTRIES:
+                            return None
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                following.append(Path(entry.path))
+                                continue
+                            if not entry.is_file(follow_symlinks=False) or entry.name.casefold() != wanted:
+                                continue
+                        except OSError:
+                            continue
+                        found = Path(entry.path)
+                        try:
+                            if found.resolve().is_relative_to(anchor):
+                                return found
+                        except (OSError, ValueError):
+                            continue
+            except OSError:
+                continue
+        if not following:
+            return None
+        level = following
+    return None
+
+
 def _walk(root: Path) -> tuple[list[GameExecutable], bool, bool]:
     """Bounded breadth-first listing of the `.exe` files under one directory.
 

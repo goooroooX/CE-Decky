@@ -52,8 +52,8 @@ from .ct_inspector import (
     strip_signature,
 )
 from .table_code import list_table_code as read_code_index, read_table_code as read_code_section
-from .game_files import game_executables
-from .steam_library import local_library
+from .game_files import game_executables, program_in_tree
+from .steam_library import local_library, shortcut_program
 from .game_identity import Candidate, aliases as game_aliases, decide_match, query_plan
 from .managed_ce import discover_steam_library_roots, ManagedCEManager, discover_proton_tools, read_managed_provenance, validate_managed_installation
 from .network_tls import build_verified_ssl_context
@@ -1608,7 +1608,7 @@ class PluginService:
                 table_sha=digest[:12], off=first, on=second,
             )
 
-    def check_table_scans(self, digest: str, app_id: int | None = None) -> dict[str, object]:
+    def check_table_scans(self, digest: str, app_id: int | None = None, target_process: str | None = None) -> dict[str, object]:
         """Whether this game's own program still holds the patterns this table scans for.
 
         A script finds the game's code by scanning for a byte pattern, and one
@@ -1633,7 +1633,7 @@ class PluginService:
         digest = self._sha(digest)
         blob = self.table_store.verified_blob(digest)
         inspection = self._inspect_table_blob(blob, digest, app_id)
-        program = self._game_program_path(app_id)
+        program, found_by = self._game_program_path(app_id, target_process)
         if program is None:
             answer = ScanCheck(source="file", reason="this device does not know which program this game runs")
         else:
@@ -1650,37 +1650,144 @@ class PluginService:
             missing=",".join(answer.missing) or None, source=answer.source,
             not_checked=len(answer.not_checked) or None,
             not_checked_why=" | ".join(unreachable) or None,
+            # Which program this is about and how this device came to know
+            # where it is. The path itself never travels; which of the three
+            # answers produced it is the identity the whole result turns on,
+            # and a report that cannot tell a running game from a record of one
+            # cannot say whether the answer was about the build in front of the
+            # user at all.
+            target=target_process, found_by=found_by,
             elapsed_ms=answer.elapsed_ms, reason=answer.reason,
         )
         return answer.as_dict()
 
-    def _game_program_path(self, app_id: int | None) -> Path | None:
-        """The program this game runs, where this device already knows it.
+    def _game_program_path(self, app_id: int | None, target_process: str | None = None) -> tuple[Path | None, str | None]:
+        """The program this game runs, where this device already knows where it is.
 
-        Two answers and no third. The running game's own executable is the
-        strongest and is read from the live process table; where the game is not
-        running, the compatibility record kept the path the last proof was made
-        against, which is what lets a table be checked before anything starts.
-        A path that is no longer a file is no answer at all.
+        Four answers and no fifth, strongest first: the process the game is
+        running right now, the path this device's own compatibility record kept
+        from the last time a cheat for that game worked, the program Steam
+        itself says it starts for an installed library entry, and - for a
+        non-Steam shortcut, which has neither a manifest nor an install folder -
+        the game's own directory as Steam recorded it. Each is something this
+        device already established; none of them is a path assembled from a
+        convention, which is the invariant this project is most careful about.
+
+        Which program is asked about matters as much as where it is. `Review`
+        proposes one before it asks for consent - the running game outranks the
+        table's own hint, which outranks what Steam starts - and that proposal
+        is what belongs here, because the answer is about the program the user
+        is being asked to attach to. Without one, the profile's own is used,
+        which is what a game that has been used with a table before already
+        has; with neither, nothing is checked and the screen says nothing.
+
+        Returns the path and which of the three found it. The path stays here:
+        it is an absolute path into the user's own library, and the panel's
+        record is collected into an archive attached to public issues.
         """
         if app_id is None:
+            return None, None
+        if target_process:
+            try:
+                # A program the caller named and this cannot read is no answer.
+                # Falling back to the profile's own here would quietly report
+                # about a different program from the one that was asked about.
+                wanted = _optional_process(target_process)
+            except ValueError:
+                return None, None
+        else:
+            try:
+                profile = self.profile_store.get(app_id)
+            except (OSError, ValueError):
+                return None, None
+            wanted = None if profile is None else profile.target_process
+        if not wanted:
+            return None, None
+        # Asked in order and stopped at the first answer: the strongest is the
+        # game as it is running, which is the only one of the four about this
+        # moment rather than about a record of an earlier one. Each of the rest
+        # costs a read of its own - a store, a manifest, a bounded walk - and an
+        # ordinary Review pays for none of them once one has answered.
+        sources = (
+            ("running", lambda: observe_game_executable_path(app_id, wanted)),
+            ("recorded", lambda: self._recorded_game_executable_path(app_id, wanted)),
+            ("installed", lambda: self._installed_game_program_path(app_id, wanted)),
+            ("shortcut", lambda: self._shortcut_game_program_path(app_id, wanted)),
+        )
+        for found_by, resolve in sources:
+            try:
+                candidate = resolve()
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if not candidate:
+                continue
+            path = Path(candidate)
+            try:
+                if path.is_file() and not path.is_symlink():
+                    return path, found_by
+            except OSError:
+                continue
+        return None, None
+
+    def _shortcut_game_program_path(self, app_id: int, target_process: str) -> str | None:
+        """Where a non-Steam shortcut's own game keeps the program of that name.
+
+        A shortcut has no manifest and no install folder, so the Steam listing
+        answers nothing for one, and on this project's own target the game that
+        every measurement was made against is exactly that. What Steam has
+        instead is the command it starts, which is commonly a launcher rather
+        than the program a table's patterns are in: the one measured here names
+        `<game>.exe` while its table scans `<game>-Win64-Shipping.exe`, three
+        directories down. So the command is read for the directory it lives in,
+        and the program is looked for under that directory by the exact name the
+        screen is about to propose - bounded the same way the Steam listing's
+        own walk is, and never leaving the directory Steam recorded.
+        """
+        target = shortcut_program(self.paths.user_home, app_id)
+        if not target:
             return None
+        root = Path(target).parent
+        if Path(target).name.casefold() == target_process.casefold():
+            return target
+        found = program_in_tree(root, target_process)
+        return None if found is None else str(found)
+
+    def _installed_game_program_path(self, app_id: int, target_process: str) -> str | None:
+        """Where an installed Steam game keeps the program of that name.
+
+        Steam has to know what it starts, so this answers for a game that has
+        never run here, which is the ordinary case for a table chosen the day it
+        is downloaded. It is the same listing Review offers its candidates from
+        and marks as what Steam starts, read through Steam's own manifest and
+        the same library discovery every other Steam read here uses. A game that
+        is not a Steam library entry has no such record and gets no answer.
+        """
         try:
-            profile = self.profile_store.get(app_id)
-        except (OSError, ValueError):
+            listing = game_executables(self.paths.user_home, app_id)
+        except (OSError, ValueError, RuntimeError):
             return None
-        if profile is None or not profile.target_process:
+        install_dir = listing.get("install_dir")
+        if not isinstance(install_dir, str) or not install_dir:
             return None
-        candidate = self._observed_game_executable_path(profile)
-        if candidate is None:
-            candidate = self._recorded_game_executable_path(app_id, profile.target_process)
-        if not candidate:
-            return None
-        path = Path(candidate)
-        try:
-            return path if path.is_file() and not path.is_symlink() else None
-        except OSError:
-            return None
+        root = Path(install_dir)
+        for entry in listing.get("executables", []):
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or name.casefold() != target_process.casefold():
+                continue
+            directory = entry.get("directory")
+            found = root / directory / name if isinstance(directory, str) and directory else root / name
+            try:
+                # Inside the library Steam named it in, and nowhere else: the
+                # listing is bounded and read only, and a path that resolves out
+                # of that directory is not this game's program whatever it says.
+                if found.resolve().is_relative_to(root.resolve()):
+                    return str(found)
+            except (OSError, ValueError):
+                continue
+        return None
+
 
     def _recorded_game_executable_path(self, app_id: int, target_process: str) -> str | None:
         """Where this game's program was, the last time a cheat from it worked."""

@@ -248,6 +248,80 @@ def _target_is_here(exe: object) -> bool:
         return True
 
 
+def shortcut_program(user_home: Path, app_id: int) -> str | None:
+    """The program Steam itself recorded for one non-Steam shortcut.
+
+    A shortcut has no manifest and no install folder, so the listing that
+    answers for a Steam library entry answers nothing for one. What it has
+    instead is Steam's own record of what it starts, which is the same store
+    this module already reads to know the shortcut exists at all.
+
+    The field is a command line rather than a path: it can be quoted, it can
+    carry arguments, and it can be a wrapper that says nothing about what it
+    runs. Only an absolute path is returned, and only when it is there; every
+    other shape is no answer rather than a guess at one.
+    """
+    try:
+        roots, _ = discover_steam_library_roots(user_home)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    signed = app_id - (1 << 32) if app_id >= (1 << 31) else app_id
+    for root in sorted(roots if isinstance(roots, list) else [roots]):
+        userdata = Path(root) / "userdata"
+        try:
+            users = sorted(os.listdir(userdata))
+        except OSError:
+            continue
+        for user in users:
+            try:
+                data = read_regular_bytes(userdata / user / "config/shortcuts.vdf", max_bytes=MAX_SHORTCUTS_BYTES, allow_missing=True)
+            except (OSError, ValueError):
+                continue
+            if data is None:
+                continue
+            try:
+                nodes = parse_binary(data)
+            except (ValueError, RuntimeError):
+                continue
+            for top in nodes:
+                if top.key.casefold() != "shortcuts" or not isinstance(top.value, list):
+                    continue
+                for entry in top.value:
+                    if not isinstance(entry.value, list):
+                        continue
+                    fields = {
+                        getattr(node, "key", "").casefold(): node.value
+                        for node in entry.value if hasattr(node, "key")
+                    }
+                    stored = fields.get("appid")
+                    if not isinstance(stored, int) or isinstance(stored, bool) or stored not in (app_id, signed):
+                        continue
+                    target = _absolute_target(fields.get("exe"))
+                    if target is not None:
+                        return target
+    return None
+
+
+def _absolute_target(exe: object) -> str | None:
+    """The absolute program one shortcut's command line names, where it names one."""
+    if not isinstance(exe, str):
+        return None
+    text = exe.strip()
+    if not text:
+        return None
+    if text.startswith('"'):
+        closing = text.find('"', 1)
+        target = text[1:closing] if closing > 1 else text[1:]
+    else:
+        target = text.split()[0]
+    if not target.startswith("/"):
+        return None
+    try:
+        return target if Path(target).is_file() else None
+    except OSError:
+        return None
+
+
 def _shortcut_app_ids(steam_roots: list[Path]) -> tuple[set[int], str | None]:
     """Every non-Steam shortcut this device's own store holds.
 

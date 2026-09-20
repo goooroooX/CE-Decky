@@ -2168,7 +2168,7 @@ def test_the_scan_check_names_the_pattern_this_copy_of_the_game_does_not_hold(tm
     source.write_text(SCAN_FIXTURE, encoding="utf-8")
     table = service.import_table(str(source))
     program = _scan_program(tmp_path)
-    monkeypatch.setattr(service, "_game_program_path", lambda app_id: program)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
 
     answer = service.check_table_scans(str(table["sha256"]), 4242)
 
@@ -2205,9 +2205,104 @@ def test_a_table_that_scans_for_nothing_says_so_rather_than_nothing(tmp_path: Pa
     source = tmp_path / "plain.CT"
     source.write_text(SIGNED_FIXTURE.replace("Signature>", "NotASignature>"), encoding="utf-8")
     table = service.import_table(str(source))
-    monkeypatch.setattr(service, "_game_program_path", lambda app_id: _scan_program(tmp_path))
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (_scan_program(tmp_path), "running"))
 
     answer = service.check_table_scans(str(table["sha256"]), 4242)
 
     assert answer["reason"] is not None and answer["missing"] == []
     assert service.inspect_table_sha(str(table["sha256"]))["scan_count"] == 0
+
+
+def test_the_program_is_resolved_from_what_this_device_already_established(tmp_path: Path, monkeypatch):
+    """Three answers, strongest first, and no fourth.
+
+    The running game outranks a record of one, which outranks what Steam says
+    it starts. Each is something this device established; a path assembled from
+    a convention is the one thing that may never happen here.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-resolve"))
+    service.initialize()
+    program = _scan_program(tmp_path)
+    service.save_profile(4242, "A game", False, None, "game.exe")
+
+    # Nothing knows where it is: no answer, and nothing is invented.
+    monkeypatch.setattr(service_module, "observe_game_executable_path", lambda app_id, process: None)
+    monkeypatch.setattr(service, "_recorded_game_executable_path", lambda app_id, process: None)
+    monkeypatch.setattr(service, "_installed_game_program_path", lambda app_id, process: None)
+    assert service._game_program_path(4242) == (None, None)
+
+    # What Steam says it starts, for a game that has never run here. This is
+    # the ordinary case for a table chosen the day it is downloaded.
+    monkeypatch.setattr(service, "_installed_game_program_path", lambda app_id, process: str(program))
+    assert service._game_program_path(4242) == (program, "installed")
+
+    # A record of the last time a cheat for it worked outranks that.
+    monkeypatch.setattr(service, "_recorded_game_executable_path", lambda app_id, process: str(program))
+    assert service._game_program_path(4242)[1] == "recorded"
+
+    # And the game as it is running outranks all of them, because it is the
+    # only one that is about this moment rather than a record of an earlier one.
+    monkeypatch.setattr(service_module, "observe_game_executable_path", lambda app_id, process: str(program))
+    assert service._game_program_path(4242)[1] == "running"
+
+
+def test_a_shortcut_is_answered_from_the_game_directory_steam_recorded(tmp_path: Path, monkeypatch):
+    """A non-Steam shortcut has no manifest and no install folder.
+
+    What Steam has for one is the command it starts, and that is commonly a
+    launcher rather than the program a table's patterns are in: the game this
+    project measures against names one at the top of its folder and keeps the
+    program three directories down. So the command is read for its directory
+    and the program is looked for under it by the exact name the screen is
+    about to propose.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-shortcut"))
+    service.initialize()
+    game = tmp_path / "A Game"
+    deep = game / "Binaries" / "Win64"
+    deep.mkdir(parents=True)
+    launcher = game / "launcher.exe"
+    launcher.write_bytes(b"\x90" * 32)
+    program = deep / "game-Win64-Shipping.exe"
+    program.write_bytes(b"\x90" * 32)
+    service.save_profile(4242, "A game", True, None, "game-Win64-Shipping.exe")
+    monkeypatch.setattr(service_module, "observe_game_executable_path", lambda app_id, process: None)
+    monkeypatch.setattr(service, "_recorded_game_executable_path", lambda app_id, process: None)
+    monkeypatch.setattr(service_module, "shortcut_program", lambda user_home, app_id: str(launcher))
+
+    assert service._game_program_path(4242) == (program, "shortcut")
+    # And a name that is not under that directory is no answer rather than
+    # somebody else's file.
+    assert service._game_program_path(4242, "elsewhere.exe") == (None, None)
+
+
+def test_the_program_asked_about_is_the_one_review_proposes(tmp_path: Path, monkeypatch):
+    """A table's first Review has no saved process, and the game may be running.
+
+    The profile stores a target process only once the user has pressed **Use
+    this table**, so a game's first table had nothing to resolve against and
+    was never checked - including while the game was running in front of the
+    reader. What Review is about to propose is what the answer has to be about.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-proposed"))
+    service.initialize()
+    program = _scan_program(tmp_path)
+    service.save_profile(4242, "A game", False, None, None)
+    asked: list[str] = []
+
+    def running(app_id, process):
+        asked.append(process)
+        return str(program) if process == "proposed.exe" else None
+
+    monkeypatch.setattr(service_module, "observe_game_executable_path", running)
+    monkeypatch.setattr(service, "_recorded_game_executable_path", lambda app_id, process: None)
+    monkeypatch.setattr(service, "_installed_game_program_path", lambda app_id, process: None)
+
+    # With no proposal and no saved process there is nothing to ask about.
+    assert service._game_program_path(4242) == (None, None)
+    assert asked == []
+    # With one, that is the program the answer is about.
+    assert service._game_program_path(4242, "proposed.exe") == (program, "running")
+    assert asked == ["proposed.exe"]
+    # And a process name that is not one is refused rather than resolved.
+    assert service._game_program_path(4242, "../../etc/passwd") == (None, None)

@@ -1015,9 +1015,10 @@ const deriveUnsignedTable = callable("derive_unsigned_table");
  *
  * A script finds the game's code by scanning for one, and a pattern that is not
  * in the build in front of the user takes out every cheat that script owns at
- * the same moment, with nothing said. Answered before consent, and only where
- * this device already knows which program the game runs: where it does not, the
- * answer says so and the screen claims nothing.
+ * the same moment, with nothing said. Answered before consent, about the exact
+ * program the screen is proposing to attach to, and only where this device
+ * already knows where that program is: where it does not, the answer says so
+ * and the screen claims nothing.
  */
 const checkTableScans = callable("check_table_scans");
 // A table's own executable content, read and never run. Two calls because one
@@ -12046,6 +12047,11 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
 }
 
 const CUSTOM_PROCESS = "__custom_process__";
+// How long a changed program is left to settle before the scan check is asked
+// again. The process can be typed rather than chosen, and every whole basename
+// on the way to the intended one would otherwise cost a read of Steam's own
+// stores and a bounded walk of a game's folder.
+const SCAN_RECHECK_DELAY_MS = 400;
 /** `m:ss` since the press, for a wait that is long enough to be doubted. */
 function elapsedText(seconds) {
     const whole = Math.max(0, Math.floor(seconds));
@@ -12073,7 +12079,7 @@ function ProcessChoice({ children, label, description, onRescan, rescanning, dis
     // the control.
     SP_JSX.jsx("div", { className: BELOW_FIELD_CLASS, children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: label, description: description, childrenLayout: "below", childrenContainerWidth: "max", bottomSeparator: "standard", children: SP_JSX.jsxs(ActionGroup, { style: { gap: 8 }, children: [SP_JSX.jsx("div", { style: { flex: "1 1 0", minWidth: 0 }, children: children }), onRescan === null ? null : (SP_JSX.jsx(SmallButton, { size: "medium", disabled: disabled || rescanning, onClick: traceUiAction("table_review_modal.on_rescan_2", onRescan), children: rescanning ? "Looking…" : "Refresh" }))] }) }) }) }));
 }
-function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, scanCheck = null, onCancel }) {
+function TableReviewModal({ table, inspection, observedProcesses: initialObservedProcesses = [], launchExecutable, installedExecutables = null, initialTargetProcess, onRefreshProcesses, onUse, onAbort, onPrepareCopy, scanCheck = null, scanCheckedProcess = null, onCheckScans, onCancel }) {
     useUiSurface("TableReviewModal", table.sha256);
     // Seeded from the snapshot this screen was opened with, and replaced when the
     // user asks again after starting the game.
@@ -12128,6 +12134,17 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
             .finally(() => setRescanning(false));
     };
     const antiCheatReason = antiCheatBlockedReason(observedProcesses);
+    // The scan answer this screen is currently entitled to state, and which
+    // program it is about. Seeded with what was read before the screen opened;
+    // replaced when the reader chooses a different program, because an answer
+    // about the one they moved away from is not an answer about this one.
+    const [scanAnswer, setScanAnswer] = SP_REACT.useState(scanCheck);
+    // Which program the answer on screen is about, and whether this screen has
+    // settled on one yet. The first render is not a change of mind: it is where
+    // the screen resolves the program it opened on, and the answer it was handed
+    // is already about that one.
+    const scanAskedFor = SP_REACT.useRef(scanCheckedProcess);
+    const scanSettled = SP_REACT.useRef(false);
     // Everything this screen has to say about the table itself, in one block.
     // Each item is at most a sentence, and the block is absent when there is
     // nothing: a healthy table's Review is the screen it always was.
@@ -12156,7 +12173,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         // cheat one script owns at the same moment. Ahead of the defaults sentence
         // because it is a table that will not work rather than one that will work
         // more than the reader asked for.
-        missingScanFinding(scanCheck, inspection.scan_count),
+        missingScanFinding(scanAnswer, inspection.scan_count),
         defaults
             ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
             : null,
@@ -12333,6 +12350,47 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
     ].filter(Boolean).join(" · ");
     const targetProcess = selector === CUSTOM_PROCESS ? customProcess.trim() : selector;
     const targetValid = isValidProcessBasename(targetProcess);
+    // A scan answer is about one program. When the reader picks another, what is
+    // on screen stops being true of it, so it goes at once and the question is
+    // asked again for the one now selected. Nothing is said in between: silence
+    // is what this screen owes for a program nothing has been established about.
+    SP_REACT.useEffect(() => {
+        if (!targetValid)
+            return;
+        if (!scanSettled.current) {
+            scanSettled.current = true;
+            const asked = scanAskedFor.current;
+            scanAskedFor.current = targetProcess;
+            // Only where the two disagree, which means the screen resolved a
+            // different program from the one the answer was read against.
+            if (!asked || asked.toLowerCase() === targetProcess.toLowerCase())
+                return;
+        }
+        if (targetProcess === scanAskedFor.current)
+            return;
+        scanAskedFor.current = targetProcess;
+        // Gone at once, asked for after a pause. The name can be typed rather than
+        // chosen, and `ab.exe` on the way to `abc.exe` is a whole valid basename:
+        // asking on each of them would spend a store read, a manifest read and a
+        // bounded walk per keystroke. What the reader sees is immediate either way,
+        // because what they see while this settles is nothing.
+        setScanAnswer(null);
+        if (!onCheckScans)
+            return;
+        let current = true;
+        const wanted = targetProcess;
+        const timer = window.setTimeout(() => {
+            void onCheckScans(wanted)
+                .then((next) => { if (current && scanAskedFor.current === wanted)
+                setScanAnswer(next); })
+                .catch((cause) => {
+                logUiFailure("review.scan_check_failed", cause, { table_sha: table.sha256.slice(0, 12) });
+                if (current && scanAskedFor.current === wanted)
+                    setScanAnswer(null);
+            });
+        }, SCAN_RECHECK_DELAY_MS);
+        return () => { current = false; window.clearTimeout(timer); };
+    }, [targetProcess, targetValid, onCheckScans]);
     /**
      * Whether the decision this window is for can be made right now.
      *
@@ -14860,14 +14918,6 @@ function Content() {
         if (!table)
             throw new Error("The imported exact table SHA is no longer available.");
         const nextInspection = await inspectTableSha(sha256, selectedGameRef.current?.appId ?? null);
-        // Before the screen opens, because it is one of the things the screen is
-        // asking the reader to decide on. Best effort in every direction: a game
-        // this device has never launched has no program to look in, and the answer
-        // then says so and Review is the screen it always was.
-        const scanCheck = await checkTableScans(sha256, selectedGameRef.current?.appId ?? null).catch((cause) => {
-            logUiFailure("panel.scan_check_failed", cause, { table: sha256.slice(0, 12) });
-            return null;
-        });
         const existing = currentProfile(nextStatus, selectedGameRef.current);
         // Review is a detached modal, so the running-process observation has to be
         // taken here: it cannot arrive from Home after the modal is open. A failed
@@ -14891,10 +14941,32 @@ function Content() {
                 return null;
             })
             : null;
+        // Last, because it is about one program and the one it is about is the one
+        // this screen is going to propose: the running game outranks the table's
+        // own hint, which outranks what Steam starts, and all three are only known
+        // once the reads above have answered. A game's first table has no saved
+        // process at all, which is exactly the Review that used to be checked
+        // against nothing.
+        const proposed = defaultTargetProcess({
+            confirmed: existing?.target_process ?? null,
+            tableHints: nextInspection.process_candidates,
+            observed: withoutWineRuntimeProcesses(observedProcesses),
+            launchExecutable: observed?.launch_executable ?? (game?.isShortcut ? appDetails?.shortcutExe ?? null : null),
+            installed: installedExecutables,
+        });
+        // Best effort in every direction: a game whose program this device has
+        // never located has nothing to look in, and the answer then says so and
+        // Review is the screen it always was.
+        const scanCheck = await checkTableScans(sha256, selectedGameRef.current?.appId ?? null, proposed || null)
+            .catch((cause) => {
+            logUiFailure("panel.scan_check_failed", cause, { table: sha256.slice(0, 12) });
+            return null;
+        });
         return {
             table,
             inspection: nextInspection,
             scanCheck,
+            scanCheckedProcess: proposed || null,
             observedProcesses,
             installedExecutables,
             // Steam records a non-Steam shortcut's target in AppDetails, but a Steam
@@ -14920,7 +14992,7 @@ function Content() {
         await ensureProfileAssociation(derived.sha256);
         return prepareReview(derived.sha256);
     };
-    const showPreparedReview = ({ table, inspection: nextInspection, scanCheck, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }) => {
+    const showPreparedReview = ({ table, inspection: nextInspection, scanCheck, scanCheckedProcess, observedProcesses, launchExecutable, installedExecutables, initialTargetProcess }) => {
         let currentActivation = null;
         logUi("panel.modal_opened", {
             modal: "table_review", table_sha: table.sha256.slice(0, 12),
@@ -14937,7 +15009,7 @@ function Content() {
             installed_source: installedExecutables?.source ?? null,
             declared_reason: installedExecutables?.declared_reason ?? null,
         });
-        showContextModal((close) => (SP_JSX.jsx(TableReviewModal, { table: table, inspection: nextInspection, scanCheck: scanCheck, observedProcesses: observedProcesses, launchExecutable: launchExecutable, installedExecutables: installedExecutables, initialTargetProcess: initialTargetProcess, onRefreshProcesses: async () => {
+        showContextModal((close) => (SP_JSX.jsx(TableReviewModal, { table: table, inspection: nextInspection, scanCheck: scanCheck, scanCheckedProcess: scanCheckedProcess, onCheckScans: async (process) => checkTableScans(table.sha256, selectedGameRef.current?.appId ?? null, process), observedProcesses: observedProcesses, launchExecutable: launchExecutable, installedExecutables: installedExecutables, initialTargetProcess: initialTargetProcess, onRefreshProcesses: async () => {
                 const game = selectedGameRef.current;
                 if (!game)
                     return [];
