@@ -4710,6 +4710,24 @@ function switchesToHoldOff(scripts, controls, requested) {
     }
     return [...held.values()];
 }
+/**
+ * What this table does on its own, for the one sentence Review says about it.
+ *
+ * A script's declarations are the author's preset rather than the user's
+ * choice, and a reader deciding whether to use a table is entitled to know it
+ * switches most of itself on. Counted from what the scripts declare, so a table
+ * whose declarations cannot be read says nothing rather than guessing, and a
+ * table that declares nothing on says nothing either: there is no finding.
+ */
+function scriptDefaultsOn(inspection) {
+    // Counted over what the picker will actually draw, so the number on this
+    // screen is the number of switches the reader then meets: a record with a
+    // duplicate ID, or one under a script whose address cannot be resolved, is
+    // offered nowhere and may not be counted here either.
+    const switches = safeActionableControls(inspection).filter((control) => controlIsSwitch(control));
+    const on = switches.filter((control) => control.declared_default === control.switch_on_value).length;
+    return on > 0 ? { on, switches: switches.length } : null;
+}
 /** Every switch record's off key, for a call that only switches things off. */
 function switchOffValues(controls) {
     const values = new Map();
@@ -11932,6 +11950,15 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
             .finally(() => setRescanning(false));
     };
     const antiCheatReason = antiCheatBlockedReason(observedProcesses);
+    // Everything this screen has to say about the table itself, in one block.
+    // Each item is at most a sentence, and the block is absent when there is
+    // nothing: a healthy table's Review is the screen it always was.
+    const defaults = scriptDefaultsOn(inspection);
+    const findings = [
+        defaults
+            ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
+            : null,
+    ].filter((item) => item !== null);
     // Most tables never name a process, and the library entry usually points at a
     // launcher rather than the executable that owns the game's memory. Offering
     // what the game is actually running keeps this a controller choice instead of
@@ -12177,7 +12204,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
                                     { label: "Source", description: origin ? `${origin.provider} · ${origin.original_filename || table.filename}` : "Local file" },
                                     { label: "Contents", description: `${inspection.total_entries} entries · ${inspection.controls.length} inspected controls · CE table ${inspection.table_version ?? "unknown"}${notTakenAsWritten ? ` · ${notTakenAsWritten}` : ""}` },
                                     { label: "Executable content", description: `${inspection.has_lua ? "Lua " : ""}${inspection.has_auto_assembler ? "AutoAssembler " : ""}${inspection.has_forms ? "its own window " : ""}${inspection.embedded_files ? `${inspection.embedded_files} embedded file(s)` : ""}`.trim() || "No static executable-content markers found" },
-                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
+                                ] }), table.executable_content ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: "Confirmation required", description: "This exact table SHA can execute Lua, Auto Assembler, embedded content, or a window it brought with it. Using it authorizes only this exact SHA.", actions: (SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { size: "medium", disabled: busy, onClick: traceUiAction("table_review_modal.look_inside", openCode), children: "Look inside" }) })) }) })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: lookInsideRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.DialogButton, { disabled: busy, onClick: traceUiAction("table_review_modal.look_inside_this_table", openCode), children: "Look inside this table" }) }) })), findings.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-findings", status: true, label: "What CE Decky found", description: findings.join(" ") }) })), rescanError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "review-rescan-error", status: true, label: "Could not look for the game's processes", description: `${rescanError} The choices below are from the last look that worked.` }) })), noWindowsProgram && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "review-no-windows-program", label: "This game is installed as a Linux build", description: "Its folder holds no Windows program, and Steam's own record names one this device does not have. Cheat Engine attaches to a Windows program running under Proton, so there is nothing here for it to attach to. Install this game's Windows version, by setting a Proton compatibility tool for it in Steam, and open this screen again." }) })), !noWindowsProgram && (SP_JSX.jsx(ProcessChoice, { label: "Game process", description: candidates.length
                                     ? undefined
                                     : onRefreshProcesses
                                         ? "This table names no process and none is running for this game. Start the game and press Look again, or enter the .exe basename."

@@ -3,7 +3,7 @@ import { traceUiAction, traceUiEdit, startUiOperation } from "../uiActions";
 import { DialogButton, Dropdown, Field, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
-import { antiCheatBlockedReason, defaultTargetProcess, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, withoutWineRuntimeProcesses } from "../uiModel";
+import { antiCheatBlockedReason, defaultTargetProcess, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
 import type { GameExecutableListing, TableInspection, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
@@ -176,6 +176,15 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
       .finally(() => setRescanning(false));
   };
   const antiCheatReason = antiCheatBlockedReason(observedProcesses);
+  // Everything this screen has to say about the table itself, in one block.
+  // Each item is at most a sentence, and the block is absent when there is
+  // nothing: a healthy table's Review is the screen it always was.
+  const defaults = scriptDefaultsOn(inspection);
+  const findings = [
+    defaults
+      ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
+      : null,
+  ].filter((item): item is string => item !== null);
   // Most tables never name a process, and the library entry usually points at a
   // launcher rather than the executable that owns the game's memory. Offering
   // what the game is actually running keeps this a controller choice instead of
@@ -494,6 +503,22 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
               panel underneath records it too, and this screen is drawn over
               that panel, so its error row is not something the user can see
               while they are choosing what Cheat Engine attaches to. */}
+          {/* One block for everything CE Decky found in this table itself, rather
+              than a row per finding: a signed table, a scan that will not match
+              and a script that switches itself on are all the same question for
+              the reader, which is what they are agreeing to. A table with
+              nothing to say renders none of it and this screen looks as it did.
+              */}
+          {findings.length > 0 && (
+            <PanelSectionRow>
+              <PanelRow
+                testId="review-findings"
+                status
+                label="What CE Decky found"
+                description={findings.join(" ")}
+              />
+            </PanelSectionRow>
+          )}
           {rescanError && (
             <PanelSectionRow>
               <PanelRow

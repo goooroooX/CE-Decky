@@ -66,6 +66,7 @@ import {
   rememberedSelectionBudgetError,
   runtimeAttachCandidates,
   safeActionableControls,
+  scriptDefaultsOn,
   sortPinnedControls,
   startupParentWarnings,
   withoutKnownLaunchers,
@@ -923,6 +924,27 @@ describe("compact cheat rows", () => {
     expect(switchesToHoldOff([script], [script, leftOff, unreadable], new Set())).toEqual([]);
     // A script with nothing under it asks for nothing.
     expect(switchesToHoldOff([{ ...base, id: 20, path: ["Alone"], kind: "script" as const }], [script, chosen], new Set())).toEqual([]);
+  });
+
+  it("counts what a table switches on by itself, and says nothing when it does not", () => {
+    const flag = (id: number, declared: string | null) => ({
+      ...base, id, path: ["Enable", `Flag ${id}`], kind: "dropdown" as const,
+      dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][],
+      switch_on_value: "1", declared_default: declared,
+    });
+    const inspection = (controls: unknown[], ambiguous: number[] = []) =>
+      ({ controls, ambiguous_record_ids: ambiguous } as any);
+    expect(scriptDefaultsOn(inspection([flag(1, "1"), flag(2, "1"), flag(3, "0")])))
+      .toEqual({ on: 2, switches: 3 });
+    // A table that switches nothing on by itself has no finding to report, and
+    // neither has one whose declarations could not be read at all.
+    expect(scriptDefaultsOn(inspection([flag(1, "0"), flag(2, null)]))).toBe(null);
+    expect(scriptDefaultsOn(inspection([{ ...base, id: 9, path: ["Health"] }]))).toBe(null);
+    expect(scriptDefaultsOn(null)).toBe(null);
+    // A record the picker will not draw is not counted on the screen that
+    // promises how many the picker holds.
+    expect(scriptDefaultsOn(inspection([flag(1, "1"), flag(2, "1")], [2])))
+      .toEqual({ on: 1, switches: 1 });
   });
 
   it("keeps one page inside the 800p Game Mode viewport", () => {

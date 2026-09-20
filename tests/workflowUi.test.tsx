@@ -3331,6 +3331,45 @@ describe("Home panel and managed setup", () => {
   });
 
 
+  it("says once, at Review, that the table switches most of itself on", async () => {
+    // The author's preset is not the user's choice, and a reader deciding
+    // whether to use this table is entitled to know it turns 22 of its 24
+    // cheats on by itself. One block, one sentence, and nothing on any other
+    // screen.
+    const flag = (id: number, declared: string | null) => ({
+      id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: declared,
+    });
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, controls: [flag(1, "1"), flag(2, "1"), flag(3, "0")] } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("Of this table's 3 on/off cheats, 2 are switched on by the table itself");
+    expect(block.textContent).toContain("only the ones you choose");
+  });
+
+  it("says nothing at Review about a table that switches nothing on by itself", async () => {
+    // The test for every addition to this screen: a healthy table renders none
+    // of it, and Review is the screen it always was.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, controls: [{
+        id: 1, description: "Health", path: ["Health"], variable_type: "4 Bytes",
+        kind: "value", group_header: false, has_assembler_script: false,
+        dropdown_values: [], dropdown_read_only: false, switch_on_value: null, declared_default: null,
+      }] } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    await screen.findByText("Review cheat table");
+    expect(screen.queryByTestId("review-findings")).toBeNull();
+  });
+
   it("offers the game's running executables when the table names no process", async () => {
     // The exact FearLess table for Voyage 12 names no process at all, and
     // the library entry points at a launcher rather than the game binary.

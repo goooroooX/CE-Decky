@@ -1842,6 +1842,25 @@ export function switchesToHoldOff(
   return [...held.values()];
 }
 
+/**
+ * What this table does on its own, for the one sentence Review says about it.
+ *
+ * A script's declarations are the author's preset rather than the user's
+ * choice, and a reader deciding whether to use a table is entitled to know it
+ * switches most of itself on. Counted from what the scripts declare, so a table
+ * whose declarations cannot be read says nothing rather than guessing, and a
+ * table that declares nothing on says nothing either: there is no finding.
+ */
+export function scriptDefaultsOn(inspection: TableInspection | null): { on: number; switches: number } | null {
+  // Counted over what the picker will actually draw, so the number on this
+  // screen is the number of switches the reader then meets: a record with a
+  // duplicate ID, or one under a script whose address cannot be resolved, is
+  // offered nowhere and may not be counted here either.
+  const switches = safeActionableControls(inspection).filter((control) => controlIsSwitch(control));
+  const on = switches.filter((control) => control.declared_default === control.switch_on_value).length;
+  return on > 0 ? { on, switches: switches.length } : null;
+}
+
 /** Every switch record's off key, for a call that only switches things off. */
 export function switchOffValues(controls: readonly TableControl[]): Map<number, string> {
   const values = new Map<number, string>();
