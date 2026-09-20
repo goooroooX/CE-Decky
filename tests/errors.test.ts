@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeError, pythonTracebackSummary } from "../src/errors";
+import { MAX_PROMOTED_CAUSE, causeAsLabel, describeError, leadWithCause, pythonTracebackSummary } from "../src/errors";
 
 /**
  * Decky Loader 3.2.6 builds `new PyError(name, data.error.error, traceback)`
@@ -56,6 +56,32 @@ describe("describeError", () => {
   it("passes through plain string and non-Error rejections", () => {
     expect(describeError("resident bridge is disconnected")).toBe("resident bridge is disconnected");
     expect(describeError(404)).toBe("404");
+  });
+
+  it("puts the finding first, where a truncated row will still show it", () => {
+    // A panel row is cut to one line, and the first forty characters or so are
+    // what a narrow panel is certain to show. Opening with our own framing
+    // spends them on what the label above already said.
+    const line = leadWithCause("Cheat Engine refused to open the table", "Stop it and start it again.");
+    expect(line).toBe("Cheat Engine refused to open the table. Stop it and start it again.");
+    expect(line.slice(0, 40)).toContain("Cheat Engine refused to open the table");
+    // A cause that is already a sentence is not given a second full stop, and
+    // one the backend never wrote leaves our own line standing alone.
+    expect(leadWithCause("The bridge timed out.", "Try again.")).toBe("The bridge timed out. Try again.");
+    expect(leadWithCause(null, "Try again.")).toBe("Try again.");
+    expect(leadWithCause("   ", "Try again.")).toBe("Try again.");
+    expect(leadWithCause("read\n  timed out", "Try again.")).toBe("read timed out. Try again.");
+  });
+
+  it("promotes only a cause short enough to be a label", () => {
+    expect(causeAsLabel("Cheat Engine refused to open the table.")).toBe("Cheat Engine refused to open the table");
+    expect(causeAsLabel(" the address list is empty ")).toBe("the address list is empty");
+    expect(causeAsLabel("x".repeat(MAX_PROMOTED_CAUSE))).toBe("x".repeat(MAX_PROMOTED_CAUSE));
+    // Longer than a label can carry, so it stays in the description, where the
+    // row can be opened to read the whole of it.
+    expect(causeAsLabel("x".repeat(MAX_PROMOTED_CAUSE + 1))).toBe(null);
+    expect(causeAsLabel(null)).toBe(null);
+    expect(causeAsLabel("")).toBe(null);
   });
 
   it("reads the exception line of a traceback and ignores its frames", () => {

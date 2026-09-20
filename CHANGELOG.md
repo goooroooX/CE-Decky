@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.29 — 2026-09-20
 
+- [Changed] A message on the panel says what was found before it says what CE Decky was doing. A table Cheat Engine would not open reported itself as "Table not loaded" over a line reading "Cheat Engine is running, but it could not open this…", which is two rows of screen and no finding: the cause the backend named was past the cut. The cause leads every composed message now, and a short one becomes the row's own label, so the first words on the row are the reason. Nothing grew: the row is cut to one line and opens on a press exactly as before.
 - [Fixed] An executable larger than 256 MiB declares its version again. That version is one of the two facts a table's compatibility mark is judged on and the only one a game added as a non-Steam shortcut has, so a large executable left every table for it on the unknown mark. The headers, the section table, the resource directory and the version block are each read as their own bounded span now, instead of the whole file being read to reach one of them, and Search and Manage no longer spend a whole-file read per game each time they open. A record already written keeps the blank version it carries until a cheat from that table works once more.
 
 ## 0.9.28 — 2026-09-19

@@ -5,6 +5,7 @@ import { CheatRow } from "./CheatRow";
 import { CompatibilityMark } from "./CompatibilityMark";
 import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, UPDATE_ACTION_CLASS } from "./PanelDensity";
 import { HEXPAW_DATA_URI } from "../assets/hexpaw";
+import { leadWithCause } from "../errors";
 import type { BlockedMark, PinnedCheatRow } from "../uiModel";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
 import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from "../types";
@@ -147,6 +148,16 @@ interface Props {
    * whether the line carries a backend message or a Windows process name.
    */
   runtimeTextComplete: boolean;
+  /**
+   * The cause for the runtime row's label, where the backend named a short one.
+   *
+   * Both halves of a cut row are cut, so this is about order rather than about
+   * space: the label is read first and shown first, and a row that spends it on
+   * `Table not loaded` says only what the row already means. Absent, the row
+   * keeps that generic label, which is still the right one when the backend
+   * named no cause or named one too long to lead with.
+   */
+  runtimeLabel?: string;
   /** The table exceeds the live-control budget, so no snapshot is possible. */
   liveControlsUnavailable: boolean;
   /** The bridge is attached but never got this table into Cheat Engine. */
@@ -245,6 +256,7 @@ export function HomePanel(props: Props) {
     runtimeReady,
     runtimeText,
     runtimeTextComplete,
+    runtimeLabel,
     liveControlsUnavailable,
     tableLoadFailed,
     liveSnapshotError,
@@ -300,7 +312,7 @@ export function HomePanel(props: Props) {
     // either way, so this never contradicts a successful launch.
     : liveSnapshotError
       ? {
-        text: `Live cheat state could not be read: ${liveSnapshotError} Open Configure cheats to try again.`,
+        text: leadWithCause(liveSnapshotError, "The live cheat state could not be read; open Configure cheats to try again."),
         complete: false,
       }
       : { text: "Open Configure cheats to refresh the live state.", complete: true };
@@ -547,7 +559,7 @@ export function HomePanel(props: Props) {
             truncate
             tone="header"
             status={runtimeRowStatus}
-            label={launchPending ? "Starting Cheat Engine" : tableLoadFailed ? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected"}
+            label={launchPending ? "Starting Cheat Engine" : tableLoadFailed ? runtimeLabel ?? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected"}
             description={launchPending
               ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
               : runtimeHint?.text ?? runtimeText}

@@ -84,3 +84,38 @@ export function describeError(cause: unknown, fallback: string = GENERIC_FALLBAC
   if (!text || text === "[object Object]") return fallback;
   return text;
 }
+
+/**
+ * The longest backend finding that may become a row label.
+ *
+ * A cut row cuts its label too, so this is not a promise that the whole of it
+ * shows: it is the length past which a finding is no longer a label. Sixty
+ * characters is about two lines of a narrow panel, and anything longer belongs
+ * in the description, which the reader can open.
+ */
+export const MAX_PROMOTED_CAUSE = 60;
+
+/** A cause ended as a sentence, so our own next step can follow it. */
+function endSentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * One line whose first clause is the finding rather than our framing.
+ *
+ * Panel rows truncate, and the first line is all a narrow panel is certain to
+ * show: a message that opens with what we were trying to do spends it saying
+ * what the label above it already said, and pushes the one specific fact off
+ * the screen. The cause leads and the next step follows it.
+ */
+export function leadWithCause(cause: string | null | undefined, next: string): string {
+  const finding = typeof cause === "string" ? cause.trim().replace(/\s+/g, " ") : "";
+  return finding ? `${endSentence(finding)} ${next}` : next;
+}
+
+/** The cause as a row label, or `null` when it is too long to be one. */
+export function causeAsLabel(cause: string | null | undefined): string | null {
+  if (typeof cause !== "string") return null;
+  const text = cause.trim().replace(/\s+/g, " ").replace(/[.\s]+$/, "");
+  return text && text.length <= MAX_PROMOTED_CAUSE ? text : null;
+}

@@ -206,8 +206,8 @@ describe("compact QAM home navigation", () => {
     // this panel and the one a user has to read in full: the backend writes
     // part of it. The row truncates, so without a stop of its own there is no
     // controller press anywhere that can finish it.
-    const loadFailed = "Cheat Engine is running, but it could not open this table: the address list is empty. "
-      + "Stop it and start it again; if that repeats, the table cannot be used with this Cheat Engine.";
+    const loadFailed = "the address list is empty and Cheat Engine reported nothing it could open. "
+      + "Stop Cheat Engine and start it again; if that repeats, this table cannot be used with this Cheat Engine.";
     render(<HomePanel {...props({
       runtimeReady: false,
       tableLoadFailed: true,

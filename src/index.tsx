@@ -114,7 +114,7 @@ import type {
   TableInspection,
   TableStatus,
 } from "./types";
-import { describeError } from "./errors";
+import { causeAsLabel, describeError, leadWithCause } from "./errors";
 import { notifyAuthorityChanged, subscribeAuthorityChanged } from "./panelAuthority";
 import { requestPanelFocus, subscribePanelFocus, takePanelFocus } from "./panelFocus";
 import { logUi, logUiFailure, logUiWarning, readSupportLog } from "./supportLog";
@@ -224,7 +224,7 @@ function startupFailureReason(envelope: RuntimeEnvelope | null): string {
   const failed = (envelope?.status?.results ?? []).find((result) => result.generation === 0 && !result.ok);
   if (!failed) return `Auto-load could not restore the saved cheats.${residue}`;
   const record = failed.record_id === null ? "a saved cheat" : `MemoryRecord ${failed.record_id}`;
-  return `Auto-load could not restore ${record}: ${failed.error ?? "Cheat Engine did not accept it"}.${residue}`;
+  return `${leadWithCause(failed.error ?? "Cheat Engine did not accept the change", `Auto-load could not restore ${record}.`)}${residue}`;
 }
 
 /**
@@ -938,7 +938,7 @@ function Content() {
         nextInspection = await inspectTableSha(profile.table_sha256, canonical.appId);
       } catch (cause) {
         logUiFailure("panel.table_inspection_failed", cause, { app_id: canonical.appId, table_sha: profile.table_sha256.slice(0, 12) });
-        hydrationError = `Saved table inspection failed: ${describeError(cause)}`;
+        hydrationError = leadWithCause(describeError(cause), "The saved table could not be inspected.");
       }
     }
     if (generation !== gameGenerationRef.current) return null;
@@ -1008,7 +1008,7 @@ function Content() {
     // not describe this one for even one render.
     setCELaunch((current) => current && current.appId === null ? current : null);
     const nextLaunch = await refreshCELaunch(canonical.appId).catch((cause) => {
-      setError(`Cheat Engine launch state for this game could not be read: ${describeError(cause)}`);
+      setError(leadWithCause(describeError(cause), "Cheat Engine launch state for this game could not be read."));
       return null;
     });
     if (statusRef.current?.table_compatibility?.entries.some((entry) => entry.app_id === canonical.appId)) {
@@ -1522,15 +1522,26 @@ function Content() {
   // bounded length and wrapping the whole of it inline would push the panel's
   // own controls down the screen. Those keep their stop, stay cut to the line,
   // and open on a press.
-  const { text: runtimeText, complete: runtimeTextComplete } = ((): { text: string; complete: boolean } => {
+  const { text: runtimeText, complete: runtimeTextComplete, label: runtimeLabel } = ((): { text: string; complete: boolean; label?: string } => {
     if (recoveredBridgeMismatch && runtimeSessionReady) {
       return { text: `${recoveredBridgeMismatch}. Stop it and start it again to use live cheats.`, complete: false };
     }
     if (tableLoadFailed) {
-      const detail = runtime?.status?.table_load_error ? `: ${runtime.status.table_load_error}` : "";
+      // Two lines of screen used to carry no finding at all: the label said
+      // `Table not loaded`, which is what the row means anyway, and the cause
+      // the backend named sat behind `Cheat Engine is running, but it could not
+      // open this…`, where the cut fell. A short cause takes the label instead,
+      // so the first thing on the row is the finding; a long one leads the
+      // description, which is the same rule one line down. The row keeps its
+      // cut and its stop either way, because the panel below it is a column of
+      // controls and a failure may not push them down the screen.
+      const cause = runtime?.status?.table_load_error ?? null;
+      const promoted = causeAsLabel(cause);
+      const next = "Stop Cheat Engine and start it again; if that repeats, this table cannot be used with this Cheat Engine.";
+      if (promoted) return { text: next, complete: false, label: promoted };
       return {
-        text: `Cheat Engine is running, but it could not open this table${detail}. Stop it and start it again; if that repeats, the table cannot be used with this Cheat Engine.`,
-        complete: false,
+        text: cause ? leadWithCause(cause, next) : `Cheat Engine could not open this table. ${next}`,
+        complete: cause === null,
       };
     }
     if (runtimeReady) {
@@ -2683,7 +2694,7 @@ function Content() {
                   : marked
                     ? "It is marked as not working; clear that under Advanced."
                     : markFailure
-                      ? `CE Decky could not record that it did not work: ${markFailure}`
+                      ? leadWithCause(markFailure, "CE Decky could not record that it did not work.")
                       : "CE Decky could not record that it did not work, so search may offer it again.",
               ].filter(Boolean).join(" "),
             });
@@ -2994,7 +3005,7 @@ function Content() {
         recordLiveSnapshot(finalState.results, finalState.envelope);
         const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
         if (budgetError) {
-          throw new Error(`The runtime change was confirmed, but it was not remembered: ${budgetError}`);
+          throw new Error(leadWithCause(budgetError, "The runtime change was confirmed, but it was not remembered."));
         }
         try {
           await commitDesiredState({
@@ -3086,7 +3097,7 @@ function Content() {
       recordLiveSnapshot(finalState.results, finalState.envelope);
       const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
       if (budgetError) {
-        throw new Error(`The cheats were switched off, but that was not remembered: ${budgetError}`);
+        throw new Error(leadWithCause(budgetError, "The cheats were switched off, but that was not remembered."));
       }
       try {
         // A lost receipt here is reconcilable: the write is exact desired state
@@ -3905,6 +3916,7 @@ function Content() {
       runtimeReady={runtimeReady}
       runtimeText={runtimeText}
       runtimeTextComplete={runtimeTextComplete}
+      runtimeLabel={runtimeLabel}
       liveControlsUnavailable={beyondLiveControlBudget}
       tableLoadFailed={tableLoadFailed}
       liveSnapshotError={liveSnapshotError}

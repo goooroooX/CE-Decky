@@ -803,7 +803,7 @@ describe("Home panel and managed setup", () => {
     runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: refused(), results: refused().status.results, unavailable: [] });
     renderContent();
     const failed = await screen.findByTestId("runtime-row");
-    await waitFor(() => expect(failed.textContent).toContain("Table not loaded"));
+    await waitFor(() => expect(failed.textContent).toContain("Cheat Engine refused to open the table"));
     expect(failed.querySelector('[data-testid="focusable"]')).toBeTruthy();
     expect(failed.querySelector(".ce-decky-ellipsis")).toBeTruthy();
   });
@@ -826,8 +826,36 @@ describe("Home panel and managed setup", () => {
     renderContent();
 
     expect(await screen.findByText("Game.CT")).toBeTruthy();
-    expect(await screen.findByText(/could not open this table: Cheat Engine refused to open the table/)).toBeTruthy();
-    expect(screen.getByTestId("runtime-row").textContent).toContain("Table not loaded");
+    // The finding leads: a short cause the backend named becomes the label,
+    // which is the first thing on the row, and the generic wording it replaced
+    // said only what the row already means.
+    const row = screen.getByTestId("runtime-row");
+    await waitFor(() => expect(row.textContent).toContain("Cheat Engine refused to open the table"));
+    expect(row.textContent).not.toContain("Table not loaded");
+    expect(row.textContent?.slice(0, 40)).toContain("Cheat Engine refused");
+    expect(row.textContent).toContain("Stop Cheat Engine and start it again");
+  });
+
+  it("leads the line with a cause too long to be a label", async () => {
+    // Longer than a label can carry, so it stays in the description - but at
+    // the front of it, because the row is cut to one line and the front is
+    // what the reader gets. Our own framing follows it.
+    const long = "the table's script refused to run and Cheat Engine reported that its address list stayed empty";
+    const failed = () => {
+      const runtime = liveRuntime();
+      runtime.status.table_load_state = "failed";
+      runtime.status.table_load_error = long;
+      return runtime;
+    };
+    api.getRuntimeStatus.mockResolvedValue(failed());
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: failed(), results: failed().status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: failed(), results: failed().status.results, unavailable: [] });
+    renderContent();
+
+    const row = await screen.findByTestId("runtime-row");
+    await waitFor(() => expect(row.textContent).toContain(long));
+    expect(row.textContent).toContain("Table not loaded");
+    expect(row.textContent?.indexOf(long)).toBeLessThan(row.textContent!.indexOf("Stop Cheat Engine"));
   });
 
   it("does not offer live cheats for a session whose table was never opened", async () => {
@@ -4555,7 +4583,7 @@ describe("Launching the selected table", () => {
     fireEvent.click(start);
 
     await waitFor(() => expect(api.launchCEForGame).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByTestId("runtime-row").textContent).toContain("Table not loaded"));
+    await waitFor(() => expect(screen.getByTestId("runtime-row").textContent).toContain("Cheat Engine refused to open the table"));
     expect(decky.toast).not.toHaveBeenCalledWith(
       expect.objectContaining({ body: "Table loaded and Cheat Engine connected." }),
     );
@@ -6896,7 +6924,7 @@ describe("The live snapshot never overturns a launch", () => {
     runtimeClient.queryRuntimeControlsPartial.mockRejectedValue(new Error("bridge read timed out"));
     renderContent();
 
-    expect(await screen.findByText(/Live cheat state could not be read: bridge read timed out/)).toBeTruthy();
+    expect(await screen.findByText(/^bridge read timed out\. The live cheat state could not be read/)).toBeTruthy();
   });
 
   it.each(["Search", "Manage"])("publishes first autoload evidence to %s without remounting", async (surface) => {

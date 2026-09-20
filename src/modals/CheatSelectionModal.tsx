@@ -51,7 +51,7 @@ import {
   unusedActiveScripts,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
-import { describeError } from "../errors";
+import { describeError, leadWithCause } from "../errors";
 import { durableResidue } from "../durableWrite";
 import { logUi, logUiFailure } from "../supportLog";
 import { MODAL_BOTTOM_PADDING, isShortScreen, latchChrome, rowsThatFit, viewportHeight, type LatchedChrome } from "../viewport";
@@ -768,7 +768,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       );
       const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
       if (finalBudgetError) {
-        throw new Error(`Runtime changes were confirmed, but the remembered-state safety budget changed before persistence: ${finalBudgetError}`);
+        throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
       }
       onSnapshot?.(finalState.results, finalState.envelope);
       // Cheat Engine answers `??` for a record it cannot read yet, so adopting

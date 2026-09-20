@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { ActionGroup, ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, UPDATE_ACTION_CLASS, focusFirstEnabled } from "../components/PanelDensity";
 import { DestructiveAction, ModalActions, modalActionStyle } from "../components/ModalActions";
 import { DebugDetails } from "../components/DebugDetails";
-import { describeError } from "../errors";
+import { describeError, leadWithCause } from "../errors";
 import { TableCodeModal } from "./TableCodeModal";
 import { openExternalWeb } from "../externalNavigation";
 import { logUiFailure } from "../supportLog";
@@ -693,7 +693,7 @@ export function AdvancedModal(props: Props) {
         // Never a row of zeroes here. Nothing was measured, and totals of zero
         // state as fact that nothing has happened, which is a different and
         // much more misleading claim than saying the record is unreadable.
-        ? `What each source has done cannot be read: ${providerSources.diagnostics_reason}`
+        ? leadWithCause(providerSources.diagnostics_reason, "What each source has done cannot be read.")
         : providerSources
           ? sourceTotals.measured === 0
             ? "No source has been searched yet."
@@ -947,7 +947,10 @@ export function AdvancedModal(props: Props) {
     ? ""
     : tableLoad === "pending"
       ? " \u00b7 table not loaded yet"
-      : ` \u00b7 table could not be opened${runtimeView?.status?.table_load_error ? `: ${runtimeView.status.table_load_error}` : ""}`;
+      // The cause replaces our framing here rather than following it: this line
+      // is a sequence of facts joined by separators, and "table could not be
+      // opened" is what the reader already knows from being told a cause at all.
+      : ` \u00b7 ${runtimeView?.status?.table_load_error || "table could not be opened"}`;
   // Import, Forget and the self-test change or occupy the global Cheat Engine
   // registration, which the backend refuses while *any* game owns a live one -
   // this one included. Filtering the selected game out of that answer is what

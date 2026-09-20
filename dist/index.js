@@ -264,6 +264,38 @@ function describeError(cause, fallback = GENERIC_FALLBACK) {
         return fallback;
     return text;
 }
+/**
+ * The longest backend finding that may become a row label.
+ *
+ * A cut row cuts its label too, so this is not a promise that the whole of it
+ * shows: it is the length past which a finding is no longer a label. Sixty
+ * characters is about two lines of a narrow panel, and anything longer belongs
+ * in the description, which the reader can open.
+ */
+const MAX_PROMOTED_CAUSE = 60;
+/** A cause ended as a sentence, so our own next step can follow it. */
+function endSentence(text) {
+    return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+/**
+ * One line whose first clause is the finding rather than our framing.
+ *
+ * Panel rows truncate, and the first line is all a narrow panel is certain to
+ * show: a message that opens with what we were trying to do spends it saying
+ * what the label above it already said, and pushes the one specific fact off
+ * the screen. The cause leads and the next step follows it.
+ */
+function leadWithCause(cause, next) {
+    const finding = typeof cause === "string" ? cause.trim().replace(/\s+/g, " ") : "";
+    return finding ? `${endSentence(finding)} ${next}` : next;
+}
+/** The cause as a row label, or `null` when it is too long to be one. */
+function causeAsLabel(cause) {
+    if (typeof cause !== "string")
+        return null;
+    const text = cause.trim().replace(/\s+/g, " ").replace(/[.\s]+$/, "");
+    return text && text.length <= MAX_PROMOTED_CAUSE ? text : null;
+}
 
 /**
  * A bounded in-memory record of what the panel did, for the support bundle.
@@ -8243,7 +8275,7 @@ const HEXPAW_DATA_URI = "data:image/png;base64,"
  * must be reachable without scrolling the quick-access column.
  */
 function HomePanel(props) {
-    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
+    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, runtimeLabel, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, onAdvanced, busy, error, } = props;
     const workflowBlocked = busy || setupPending || updateRunning;
     const searchDisabled = workflowBlocked || !game;
     // See `preferSearchFocus`: the mount decides, and nothing after it does.
@@ -8273,7 +8305,7 @@ function HomePanel(props) {
         // either way, so this never contradicts a successful launch.
         : liveSnapshotError
             ? {
-                text: `Live cheat state could not be read: ${liveSnapshotError} Open Configure cheats to try again.`,
+                text: leadWithCause(liveSnapshotError, "The live cheat state could not be read; open Configure cheats to try again."),
                 complete: false,
             }
             : { text: "Open Configure cheats to refresh the live state.", complete: true };
@@ -8313,7 +8345,7 @@ function HomePanel(props) {
             : "Automatic detection is unavailable; choose one";
     return (SP_JSX.jsxs(DensePanel, { children: [mascotVisible && (SP_JSX.jsx("div", { style: { display: "flex", justifyContent: "center", padding: 0, margin: "-8px 0 3px" }, children: SP_JSX.jsx("img", { src: HEXPAW_DATA_URI, alt: "HexPaw, the CE Decky mascot", width: 112, style: { width: 112, height: "auto", display: "block" } }) })), (updateVersion || updateRunning) && (SP_JSX.jsx(DFL.PanelSection, { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { "data-testid": "panel-update", className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: traceUiAction("home_panel.update", onUpdate, { version: updateVersion }), children: updateRunning ? "Updating CE Decky…" : `Update to v${updateVersion ?? ""}` }) }) }) })), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Setup" }), ceReady ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", truncate: true, label: ceStatusText, description: ceDetail || "Ready", actions: setupPending ? undefined : (SP_JSX.jsx(SmallButton, { disabled: busy || ceRunning || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.reinstall", onReinstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: reinstallLabel.startsWith("Reinstall") ? "Reinstall" : "Install" })) }) })) : (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-row", label: "Cheat Engine is not installed", description: ceStatusText }) }), !setupPending && !setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || Boolean(ceIdentityBlockedReason) || !installAvailable, onClick: traceUiAction("home_panel.download_and_install_ce", () => onInstall(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Download and install CE" }) }))] })), ceIdentityBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "ce-owned-elsewhere", truncate: true, label: "Cheat Engine setup is busy", description: ceIdentityBlockedReason }) })), setupStatusError && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-status-error", truncate: true, label: "Setup status unavailable", description: setupStatusError, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.retry", onRetrySetupStatus, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Retry" }) }) })), installOperation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "setup-progress", truncate: true, label: installOperation.state.replace(/_/g, " "), description: `${installOperation.message}${installOperation.error ? ` · ${installOperation.error}` : ""}`, actions: installBusy ? SP_JSX.jsx(SmallButton, { disabled: managedCancelling, onClick: traceUiAction("home_panel.cancel", onCancelInstall, { app_id: game?.appId, table_sha: table?.sha256 }), children: managedCancelling ? "Cancelling…" : "Cancel" }) : undefined }) })), installBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", height: 24 }, children: SP_JSX.jsx(DFL.Spinner, { "aria-label": "CE setup in progress", style: { width: 18, height: 18, flexShrink: 0 } }) }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "game-row", truncate: true, scroll: true, label: game ? appDetails?.displayName || game.name : "No game selected", description: gameDetail, actions: SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || gameChangeBlocked, onClick: traceUiAction("home_panel.choose_game", onChooseGame, { app_id: game?.appId, table_sha: table?.sha256 }), children: game ? "Change" : "Choose" }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "table-row", truncate: true, scroll: true, label: table ? table.filename : selectedTableMissing ? "Selected table is missing" : "No table selected", description: table
                                 ? `${tableSource} · ${table.sha256.slice(0, 8)}${tableMarkedNotWorking ? " · marked as not working" : ""}`
-                                : selectedTableMissing ?? "Search online, or open one this device already has", leadingMark: table ? SP_JSX.jsx(CompatibilityMark, { evidence: tableEvidence, blocked: tableBlocked }) : undefined, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: searchButtonRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: openOnSearch, disabled: searchDisabled, onClick: traceUiAction("home_panel.search", onSearchTable, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Search" }) }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.manage", onOpenImportedTables, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Manage" })] })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "runtime-row", truncate: true, tone: "header", status: runtimeRowStatus, label: launchPending ? "Starting Cheat Engine" : tableLoadFailed ? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected", description: launchPending
+                                : selectedTableMissing ?? "Search online, or open one this device already has", leadingMark: table ? SP_JSX.jsx(CompatibilityMark, { evidence: tableEvidence, blocked: tableBlocked }) : undefined, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: searchButtonRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: openOnSearch, disabled: searchDisabled, onClick: traceUiAction("home_panel.search", onSearchTable, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Search" }) }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.manage", onOpenImportedTables, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Manage" })] })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "runtime-row", truncate: true, tone: "header", status: runtimeRowStatus, label: launchPending ? "Starting Cheat Engine" : tableLoadFailed ? runtimeLabel ?? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected", description: launchPending
                                 ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
                                 : runtimeHint?.text ?? runtimeText, trailing: launchPending ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) }), pinnedRows.map((row) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { variant: "panel", testId: `pinned-cheat-${row.recordId}`, label: row.label, summary: row.summary, active: row.active, disabled: workflowBlocked || pinnedBusyRecordId !== null, highlighted: pinnedBusyRecordId === row.recordId, onActiveChange: traceUiAction("home_panel.toggle_cheat", (active) => onTogglePinnedCheat(row.recordId, active), (active) => ({ app_id: game?.appId, table_sha: table?.sha256, record_id: row.recordId, active })) }) }, row.recordId))), pinnedCount > 0 && pinnedRows.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Pinned controls", truncate: true, description: `${pinnedCount} pinned; connect Cheat Engine to use them here.` }) })), pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: label, truncate: true }) }, `${index}:${label}`))), pinnedCount === 0 && activeCheatLabels.length > 4 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: `+${activeCheatLabels.length - 4} more`, truncate: true }) })), table && targetNotRunning && !startBlockedRowShown && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "panel-target-not-running", label: `${targetProcess} is not running in this game`, description: `This game is running ${targetNotRunning.join(", ")}. Cheat Engine attaches to one exact program, so set the target under Advanced before starting it.` }) })), table && !runtimeReady && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !startRuntimeAvailable, onClick: traceUiAction("home_panel.load_table_start_ce", () => onStartRuntime(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Load table & start CE" }) }), !launchPending && !startRuntimeAvailable && startRuntimeBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Cannot start yet", description: startRuntimeBlockedReason }) }))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !table, onClick: traceUiAction("home_panel.configure_cheats", () => onChooseCheats(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Configure cheats" }) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "panel-error", label: "Attention", description: error }) }), SP_JSX.jsxs(ActionRow, { testId: "panel-actions", navEntryPreferPosition: DFL.NavEntryPositionPreferences.PREFERRED_CHILD, children: [SP_JSX.jsx(SmallButton, { grow: true, preferredFocus: !openOnSearch, disabled: workflowBlocked, onClick: traceUiAction("home_panel.advanced", onAdvanced, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Advanced\u2026" }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || !runtimeReady || !activeCheatSnapshotReady, onClick: traceUiAction("home_panel.disable_all", onDisableAllCheats, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Disable all" }), launchPending
                                 ? SP_JSX.jsx(SmallButton, { onClick: traceUiAction("home_panel.cancel_ce_launch", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Cancel CE launch" })
@@ -9520,7 +9552,7 @@ function AdvancedModal(props) {
                 // Never a row of zeroes here. Nothing was measured, and totals of zero
                 // state as fact that nothing has happened, which is a different and
                 // much more misleading claim than saying the record is unreadable.
-                ? `What each source has done cannot be read: ${providerSources.diagnostics_reason}`
+                ? leadWithCause(providerSources.diagnostics_reason, "What each source has done cannot be read.")
                 : providerSources
                     ? sourceTotals.measured === 0
                         ? "No source has been searched yet."
@@ -9733,7 +9765,10 @@ function AdvancedModal(props) {
         ? ""
         : tableLoad === "pending"
             ? " \u00b7 table not loaded yet"
-            : ` \u00b7 table could not be opened${runtimeView?.status?.table_load_error ? `: ${runtimeView.status.table_load_error}` : ""}`;
+            // The cause replaces our framing here rather than following it: this line
+            // is a sequence of facts joined by separators, and "table could not be
+            // opened" is what the reader already knows from being told a cause at all.
+            : ` \u00b7 ${runtimeView?.status?.table_load_error || "table could not be opened"}`;
     // Import, Forget and the self-test change or occupy the global Cheat Engine
     // registration, which the backend refuses while *any* game owns a live one -
     // this one included. Filtering the selected game out of that answer is what
@@ -10794,7 +10829,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             const remembered = rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged);
             const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
             if (finalBudgetError) {
-                throw new Error(`Runtime changes were confirmed, but the remembered-state safety budget changed before persistence: ${finalBudgetError}`);
+                throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
             }
             onSnapshot?.(finalState.results, finalState.envelope);
             // Cheat Engine answers `??` for a record it cannot read yet, so adopting
@@ -12580,7 +12615,7 @@ function startupFailureReason(envelope) {
     if (!failed)
         return `Auto-load could not restore the saved cheats.${residue}`;
     const record = failed.record_id === null ? "a saved cheat" : `MemoryRecord ${failed.record_id}`;
-    return `Auto-load could not restore ${record}: ${failed.error ?? "Cheat Engine did not accept it"}.${residue}`;
+    return `${leadWithCause(failed.error ?? "Cheat Engine did not accept the change", `Auto-load could not restore ${record}.`)}${residue}`;
 }
 /**
  * What a refused **Change** says, in the terms the user can act in.
@@ -13271,7 +13306,7 @@ function Content() {
             }
             catch (cause) {
                 logUiFailure("panel.table_inspection_failed", cause, { app_id: canonical.appId, table_sha: profile.table_sha256.slice(0, 12) });
-                hydrationError = `Saved table inspection failed: ${describeError(cause)}`;
+                hydrationError = leadWithCause(describeError(cause), "The saved table could not be inspected.");
             }
         }
         if (generation !== gameGenerationRef.current)
@@ -13340,7 +13375,7 @@ function Content() {
         // not describe this one for even one render.
         setCELaunch((current) => current && current.appId === null ? current : null);
         const nextLaunch = await refreshCELaunch(canonical.appId).catch((cause) => {
-            setError(`Cheat Engine launch state for this game could not be read: ${describeError(cause)}`);
+            setError(leadWithCause(describeError(cause), "Cheat Engine launch state for this game could not be read."));
             return null;
         });
         if (statusRef.current?.table_compatibility?.entries.some((entry) => entry.app_id === canonical.appId)) {
@@ -13845,15 +13880,27 @@ function Content() {
     // bounded length and wrapping the whole of it inline would push the panel's
     // own controls down the screen. Those keep their stop, stay cut to the line,
     // and open on a press.
-    const { text: runtimeText, complete: runtimeTextComplete } = (() => {
+    const { text: runtimeText, complete: runtimeTextComplete, label: runtimeLabel } = (() => {
         if (recoveredBridgeMismatch && runtimeSessionReady) {
             return { text: `${recoveredBridgeMismatch}. Stop it and start it again to use live cheats.`, complete: false };
         }
         if (tableLoadFailed) {
-            const detail = runtime?.status?.table_load_error ? `: ${runtime.status.table_load_error}` : "";
+            // Two lines of screen used to carry no finding at all: the label said
+            // `Table not loaded`, which is what the row means anyway, and the cause
+            // the backend named sat behind `Cheat Engine is running, but it could not
+            // open this…`, where the cut fell. A short cause takes the label instead,
+            // so the first thing on the row is the finding; a long one leads the
+            // description, which is the same rule one line down. The row keeps its
+            // cut and its stop either way, because the panel below it is a column of
+            // controls and a failure may not push them down the screen.
+            const cause = runtime?.status?.table_load_error ?? null;
+            const promoted = causeAsLabel(cause);
+            const next = "Stop Cheat Engine and start it again; if that repeats, this table cannot be used with this Cheat Engine.";
+            if (promoted)
+                return { text: next, complete: false, label: promoted };
             return {
-                text: `Cheat Engine is running, but it could not open this table${detail}. Stop it and start it again; if that repeats, the table cannot be used with this Cheat Engine.`,
-                complete: false,
+                text: cause ? leadWithCause(cause, next) : `Cheat Engine could not open this table. ${next}`,
+                complete: cause === null,
             };
         }
         if (runtimeReady) {
@@ -14912,7 +14959,7 @@ function Content() {
                                     : marked
                                         ? "It is marked as not working; clear that under Advanced."
                                         : markFailure
-                                            ? `CE Decky could not record that it did not work: ${markFailure}`
+                                            ? leadWithCause(markFailure, "CE Decky could not record that it did not work.")
                                             : "CE Decky could not record that it did not work, so search may offer it again.",
                             ].filter(Boolean).join(" "),
                         });
@@ -15193,7 +15240,7 @@ function Content() {
                 recordLiveSnapshot(finalState.results, finalState.envelope);
                 const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
                 if (budgetError) {
-                    throw new Error(`The runtime change was confirmed, but it was not remembered: ${budgetError}`);
+                    throw new Error(leadWithCause(budgetError, "The runtime change was confirmed, but it was not remembered."));
                 }
                 try {
                     await commitDesiredState({
@@ -15281,7 +15328,7 @@ function Content() {
             recordLiveSnapshot(finalState.results, finalState.envelope);
             const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
             if (budgetError) {
-                throw new Error(`The cheats were switched off, but that was not remembered: ${budgetError}`);
+                throw new Error(leadWithCause(budgetError, "The cheats were switched off, but that was not remembered."));
             }
             try {
                 // A lost receipt here is reconcilable: the write is exact desired state
@@ -15916,7 +15963,7 @@ function Content() {
                 ? "The file for this game's selected table is gone. Download or open it again, or pick another."
                 : null, tableMarkedNotWorking: selectedTableMarkedNotWorking, tableEvidence: profile?.table_sha256
                 ? status?.table_compatibility?.entries.find((entry) => (entry.app_id === selectedGame?.appId && entry.table_sha256 === profile.table_sha256))
-                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, onStopCE: () => {
+                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, runtimeLabel: runtimeLabel, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, onStopCE: () => {
                 const pending = launchInProgress;
                 if (pending) {
                     // The launch that is still waiting owns the busy latch, so cancelling
