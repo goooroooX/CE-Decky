@@ -85,7 +85,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -2962,6 +2962,7 @@ function Content() {
             record_id: recordId,
             active,
             value: active ? valueToApply : null,
+            switch_values: switchValuesFor(control),
             path: control.path,
             label: controlRowLabel(control),
           },
@@ -3077,7 +3078,7 @@ function Content() {
       .flatMap((control) => control.id === null ? [] : [control.id]);
     void runAction(async () => {
       dropLiveSnapshot();
-      const result = await deactivateAllActiveControls(game.appId, recordIds);
+      const result = await deactivateAllActiveControls(game.appId, recordIds, switchOffValues(controls));
       // A child destroyed by a parent this call switched off is the intended
       // outcome; the helper already accepted it and the caller must not undo
       // that by demanding the record still answer.

@@ -28,6 +28,7 @@ import {
   matchingDropdownValues,
   inactiveAncestorControl,
   inactiveAncestorControls,
+  controlIsSwitch,
   controlNeedsValueInput,
   controlsMissingRequiredValue,
   pinnedMissingRequiredValue,
@@ -48,6 +49,7 @@ import {
   rememberedSelection,
   rememberedSelectionBudgetError,
   safeActionableControls,
+  switchValuesFor,
   unusedActiveScripts,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
@@ -653,7 +655,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       const stagedStates = safeControls.flatMap((control) => {
         if (control.id === null) return [];
         const state = effective[control.id];
-        return state ? [{ record_id: control.id, active: state.active, value: state.value }] : [];
+        return state
+          ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
+          : [];
       });
       const prospectiveRemembered = rememberedSelection(
         safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged,
@@ -1006,7 +1010,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 const context = controlRowContext(control);
                 // The staged value is the semantic string; the row shows a
                 // display copy so invisible/bidi characters cannot reorder it.
-                const value = presentableControlValue(state?.value);
+                // A switch carries its own answer in the toggle beside it, so
+                // `= 1` on the summary line is the same fact twice.
+                const value = controlIsSwitch(control) ? null : presentableControlValue(state?.value);
                 // An active record whose value still has to be supplied always
                 // shows its editor, even before the user opens the details.
                 const valueRequired = state?.active === true && controlNeedsValueInput(control);
@@ -1019,8 +1025,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 // search and no way to jump. Past a screenful, the list is
                 // narrowed by typing and only what is offered is rendered.
                 const searchable = control.kind === "dropdown"
+                  && !controlIsSwitch(control)
                   && control.dropdown_values.length > DROPDOWN_SEARCH_THRESHOLD;
-                const choices = control.kind === "dropdown" && isExpanded
+                // A switch has no list to offer, so none is computed for it and
+                // the render below has one condition rather than two.
+                const choices = control.kind === "dropdown" && isExpanded && !controlIsSwitch(control)
                   ? matchingDropdownValues(
                     control.dropdown_values,
                     (searchable && valueQuery?.id === recordId ? valueQuery.text : ""),
@@ -1114,7 +1123,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                               cannot act on either way. What is left is the one
                               thing that is theirs: something else is about to
                               be switched on, or this value is not live yet. */}
-                          {controlAcceptsTypedValue(control) && blockedBy(control) && (
+                          {/* A switch has no value of its own to save, so only
+                              the first half of this is ever true of one: it is
+                              about to switch its enclosing script on with it. */}
+                          {blockedBy(control) && (controlAcceptsTypedValue(control) || (controlIsSwitch(control) && state?.active === true)) && (
                             <PanelNote>
                               {state?.active === true
                                 ? `Also switches on \u201c${controlRowLabel(blockedBy(control)!)}\u201d.`

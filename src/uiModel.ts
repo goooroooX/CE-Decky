@@ -637,20 +637,31 @@ export function rememberedSelection(
       // back. An explicitly touched record therefore keeps its deliberate
       // inactive choice; an untouched one keeps whatever it had.
       if (touchedActive.has(recordId)) {
-        remembered.push({ record_id: recordId, active: false, value: prior?.value ?? null });
+        // A switch's value follows its toggle here too. The record is gone, so
+        // what is stored now is what the next session replays, and storing the
+        // on key beside "off" writes the cheat's own on value into the game and
+        // then releases it, which is the cheat on rather than off.
+        const value = controlIsSwitch(control) ? switchValueFor(control, false) : prior?.value ?? null;
+        remembered.push({ record_id: recordId, active: false, value });
       } else if (prior) {
         remembered.push(prior);
       }
       continue;
     }
     const active = touchedActive.has(recordId) ? state.active : prior?.active ?? null;
+    // A switch's toggle is its value, so touching the one touches the other.
+    // Remembering `active` alone would replay the activation next session with
+    // nothing written, and a flag frozen at whatever the game happens to hold
+    // is a cheat that reports itself on and is off.
+    const valueTouched = touchedValues.has(recordId)
+      || (controlIsSwitch(control) && touchedActive.has(recordId));
     // Cheat Engine reports `??` for a record it cannot read yet. Remembering
     // that would replay a meaningless write on the next session and would erase
     // the value the user actually chose, so keep the previous one instead.
-    const observed = touchedValues.has(recordId)
+    const observed = valueTouched
       ? (control.kind === "value" || control.kind === "dropdown" ? displayableControlValue(state.value) : null)
       : null;
-    const value = touchedValues.has(recordId) ? observed ?? prior?.value ?? null : prior?.value ?? null;
+    const value = valueTouched ? observed ?? prior?.value ?? null : prior?.value ?? null;
     if (active !== null || value !== null) remembered.push({ record_id: recordId, active, value });
   }
   return remembered;
@@ -1755,8 +1766,54 @@ export function controlRowContext(control: TableControl): string {
   return control.path.slice(0, -1).join(" \u203a ");
 }
 
+/**
+ * True when this record is drawn as a plain on/off switch.
+ *
+ * Its two list entries are an on/off pair, so the list and the field would both
+ * be asking the reader to say again what the toggle beside them already says.
+ * The backend decides this from the author's own labels; see `ct_inspector`.
+ */
+export function controlIsSwitch(control: TableControl): boolean {
+  // A string, not merely "not null": a backend that predates this field sends
+  // no field at all, and reading that as a switch would take the list away from
+  // every two-entry record in the table.
+  return typeof control.switch_on_value === "string"
+    && control.switch_on_value !== ""
+    && control.dropdown_values.length === 2;
+}
+
+/** The key a switch record's toggle writes, or `null` when it is not one. */
+export function switchValueFor(control: TableControl, active: boolean | null): string | null {
+  if (active === null || !controlIsSwitch(control)) return null;
+  const on = control.switch_on_value as string;
+  if (active) return on;
+  // The off key is the other entry, whatever number the author gave it. It has
+  // to be written: a record left at its on value with the freeze released is a
+  // cheat still running under a switch that says it is off.
+  return control.dropdown_values.find(([value]) => value !== on)?.[0] ?? null;
+}
+
+/** Both keys of a switch record, for a desired state to carry, else undefined. */
+export function switchValuesFor(control: TableControl): { on: string; off: string } | undefined {
+  const on = switchValueFor(control, true);
+  const off = switchValueFor(control, false);
+  return on !== null && off !== null ? { on, off } : undefined;
+}
+
+/** Every switch record's off key, for a call that only switches things off. */
+export function switchOffValues(controls: readonly TableControl[]): Map<number, string> {
+  const values = new Map<number, string>();
+  for (const control of controls) {
+    if (control.id === null) continue;
+    const off = switchValueFor(control, false);
+    if (off !== null) values.set(control.id, off);
+  }
+  return values;
+}
+
 /** True when this exact control accepts a typed value. */
 export function controlAcceptsTypedValue(control: TableControl): boolean {
+  if (controlIsSwitch(control)) return false;
   return control.kind === "value" || (control.kind === "dropdown" && !control.dropdown_read_only);
 }
 
@@ -1883,6 +1940,9 @@ export function missingRequiredValueReason(missing: readonly TableControl[]): st
  * screen the moment the record is switched on rather than behind More.
  */
 export function controlNeedsValueInput(control: TableControl): boolean {
+  // A switch carries a value by construction: its toggle writes one key or the
+  // other, so there is never a moment where it is on with nothing written.
+  if (controlIsSwitch(control)) return false;
   return controlAcceptsTypedValue(control)
     || (control.kind === "dropdown" && control.dropdown_values.length > 0);
 }
@@ -1989,7 +2049,9 @@ export function pinnedCheatRows(
     // A value CE cannot read yet still has a confirmed choice behind it, so show
     // what this table was set to rather than nothing. Resolved once, where the
     // press on this row resolves it too.
-    const value = presentableControlValue(pinnedControlValue(
+    // A switch says what it is by being on or off, so `= 1` beside it is the
+    // same fact written twice in the row's own scarcest space.
+    const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(
       latest.value,
       rememberedById.get(control.id)?.value,
       configuredById.get(control.id)?.value,

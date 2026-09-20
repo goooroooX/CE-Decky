@@ -3835,6 +3835,32 @@ describe("Cheat selection workflow", () => {
     await waitFor(() => expect((screen.getByLabelText("Value") as HTMLSelectElement).value).toBe("6508"));
   });
 
+  it("draws a two-entry on/off record as a plain switch, with no list and no field", async () => {
+    // The instruction this exists for: a table of `bEnable*` flags drew a
+    // dropdown and a text field on every one of them, so switching on a cheat
+    // meant answering a question the toggle beside it had already answered.
+    const flag = {
+      id: 302, description: "bEnableGodMode", path: ["bEnableGodMode"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1",
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 302, ok: true, active: false, value: "0" }], unavailable: [],
+    });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 1, controls: [flag] } as any });
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    expect(screen.queryByLabelText("Value")).toBeNull();
+    expect(screen.queryByLabelText("Custom value")).toBeNull();
+    expect(screen.queryByLabelText("Find a value")).toBeNull();
+    // The row's own switch is still there, and it is the whole control.
+    expect(screen.getByTestId("cheat-row-302")).toBeTruthy();
+    // A switch has no value of its own to save, so the note about a value
+    // waiting for its script is never said of one.
+    expect(screen.queryByText(/Value saved; written when/)).toBeNull();
+  });
+
   it("leaves a value list that fits the panel exactly as it was", async () => {
     const picker = {
       id: 301, description: "Difficulty", path: ["Difficulty"], variable_type: "4 Bytes",
@@ -5293,7 +5319,7 @@ describe("Pinned live controls", () => {
     const disable = await screen.findByRole("button", { name: "Disable all" });
     fireEvent.click(disable);
 
-    await waitFor(() => expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, [21, 20]));
+    await waitFor(() => expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, [21, 20], new Map()));
   });
 
   it("remembers only the cheats Disable all actually switched off", async () => {

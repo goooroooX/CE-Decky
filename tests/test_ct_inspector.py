@@ -301,3 +301,73 @@ def test_a_dropped_value_list_is_counted_as_a_list_and_not_as_one_value(tmp_path
     # The record survives; only its list is gone.
     assert len(inspection.controls) == 1
     assert inspection.controls[0].dropdown_values == ()
+
+
+def _one_dropdown(entries: str, tmp_path, read_only: str = "") -> object:
+    data = (
+        '<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries>'
+        '<CheatEntry><ID>1</ID><Description>"bEnableGodMode"</Description>'
+        '<VariableType>4 Bytes</VariableType><Address>game.exe+10</Address>'
+        f'<DropDownList>{entries}</DropDownList>{read_only}'
+        '</CheatEntry></CheatEntries></CheatTable>'
+    ).encode("utf-8")
+    return _inspect(data, tmp_path).controls[0]
+
+
+def test_a_two_entry_list_that_says_off_and_on_is_a_switch(tmp_path):
+    # The key for on is whatever the author wrote: the corpus carries `1040`/
+    # `2400` and three tables whose active side is `0`, so writing `1` for on
+    # would switch those records the wrong way.
+    assert _one_dropdown("0:Disabled\n1:Enabled", tmp_path / "a").switch_on_value == "1"
+    assert _one_dropdown("0:Yes\n1:No", tmp_path / "b").switch_on_value == "0"
+    assert _one_dropdown("1:Disabled\n2:Enabled", tmp_path / "c").switch_on_value == "2"
+    assert _one_dropdown("1040:Off\n2400:On", tmp_path / "d").switch_on_value == "2400"
+    # Decoration is separators, not something to strip by name, and a pair
+    # written in another language is the same pair.
+    assert _one_dropdown("0:\U0001f512 Locked\n1:\U0001f513 Unlocked", tmp_path / "e").switch_on_value == "1"
+    assert _one_dropdown("0:Нет\n1:Да", tmp_path / "f").switch_on_value == "1"
+    assert _one_dropdown("0:否 No\n1:是 Yes", tmp_path / "g").switch_on_value == "1"
+
+
+def test_two_named_alternatives_keep_their_list(tmp_path):
+    # 73 of the corpus's 541 two-entry lists are a choice between two named
+    # things, and the labels are the information. `No Gravity` is the dangerous
+    # one: its negative word names the cheat rather than the off side.
+    for entries in (
+        "0:Male\n1:Female",
+        "0:Set Own Ammo\n1:Unlimited Ammo",
+        "0:CMYK\n1:RGB",
+        "0:No Gravity\n1:Original Value",
+        "0:Zero\n1:Max",
+    ):
+        control = _one_dropdown(entries, tmp_path / entries[2:6].strip())
+        assert control.switch_on_value is None
+        assert control.kind == "dropdown"
+
+
+def test_a_pair_the_vocabulary_cannot_place_is_reported_once(tmp_path):
+    inspection = _inspect(
+        (
+            '<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries>'
+            '<CheatEntry><ID>1</ID><Description>"A"</Description><VariableType>4 Bytes</VariableType>'
+            '<Address>game.exe+10</Address><DropDownList>0:Male\n1:Female</DropDownList></CheatEntry>'
+            '<CheatEntry><ID>2</ID><Description>"B"</Description><VariableType>4 Bytes</VariableType>'
+            '<Address>game.exe+14</Address><DropDownList>0:Male\n1:Female</DropDownList></CheatEntry>'
+            '<CheatEntry><ID>3</ID><Description>"C"</Description><VariableType>4 Bytes</VariableType>'
+            '<Address>game.exe+18</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>'
+            '</CheatEntries></CheatTable>'
+        ).encode("utf-8"),
+        tmp_path,
+    )
+    assert inspection.unrecognised_pairs == (("Male", "Female"),)
+
+
+def test_a_list_that_is_not_a_pair_is_never_a_switch(tmp_path):
+    assert _one_dropdown("0:Off\n1:On\n2:Maybe", tmp_path / "three").switch_on_value is None
+    assert _one_dropdown("0:Enabled", tmp_path / "one").switch_on_value is None
+    read_only = _one_dropdown("", tmp_path / "empty", read_only="<DropDownReadOnly>1</DropDownReadOnly>")
+    assert read_only.kind == "dropdown" and read_only.switch_on_value is None
+    # One label carrying both sides is a list the author wrote out, not a side.
+    assert _one_dropdown("0:On/Off\n1:Enabled", tmp_path / "both").switch_on_value is None
+    # Two entries that write the same key cannot switch anything.
+    assert _one_dropdown("1:Disabled\n1:Enabled", tmp_path / "same").switch_on_value is None

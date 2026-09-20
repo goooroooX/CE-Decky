@@ -49,6 +49,22 @@ def summarize_inspection(name: str, inspection: TableInspection) -> dict[str, ob
         "groups": sum(control.kind == "group" for control in inspection.controls),
         "scripts": kinds["script"],
         "dropdowns": kinds["dropdown"],
+        # A two-entry list whose labels are an on/off pair is drawn as a switch
+        # and shows no list and no field, so how many of a table's dropdowns are
+        # switches is what says how many controls the reader actually meets.
+        "switches": sum(control.switch_on_value is not None for control in safe),
+        "two_entry_dropdowns": sum(control.kind == "dropdown" and len(control.dropdown_values) == 2 for control in safe),
+        # The keys a switch record actually writes, off then on. What says
+        # whether a switch may assume `0` and `1`, and it may not.
+        "switch_keys": sorted({
+            (
+                next((value for value, _ in control.dropdown_values if value != control.switch_on_value), ""),
+                control.switch_on_value,
+            )
+            for control in safe
+            if control.switch_on_value is not None and len(control.dropdown_values) == 2
+        }),
+        "unrecognised_pairs": [list(pair) for pair in inspection.unrecognised_pairs],
         "values": kinds["value"],
         "dropdown_values": dropdown_values,
         "max_dropdown_values": max_dropdown_values,
@@ -78,7 +94,49 @@ def inspect_path(path: Path) -> dict[str, object]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tables", nargs="+", type=Path)
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="one aggregate over every table given, instead of a report per table",
+    )
     return parser
+
+
+def summarize_all(reports: list[dict[str, object]]) -> dict[str, object]:
+    """One aggregate over many tables, for a decision measured against a corpus."""
+    read = [report for report in reports if "error" not in report]
+    pairs: dict[tuple[str, str], int] = {}
+    for report in read:
+        for pair in report.get("unrecognised_pairs", []):  # type: ignore[union-attr]
+            key = (pair[0], pair[1])
+            pairs[key] = pairs.get(key, 0) + 1
+    keys: dict[tuple[str, str], int] = {}
+    for report in read:
+        for pair in report.get("switch_keys", []):  # type: ignore[union-attr]
+            key = (pair[0], pair[1])
+            keys[key] = keys.get(key, 0) + 1
+    total = lambda field: sum(int(report[field]) for report in read)  # noqa: E731
+    two_entry = total("two_entry_dropdowns")
+    switches = total("switches")
+    return {
+        "tables": len(reports),
+        "unreadable": len(reports) - len(read),
+        "entries": total("entries"),
+        "safe_actionable_controls": total("safe_actionable_controls"),
+        "dropdowns": total("dropdowns"),
+        "two_entry_dropdowns": two_entry,
+        "switches": switches,
+        "switch_share": round(switches / two_entry, 3) if two_entry else None,
+        "switch_keys": [
+            {"off": key[0], "on": key[1], "tables": count}
+            for key, count in sorted(keys.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "distinct_unrecognised_pairs": len(pairs),
+        "unrecognised_pairs": [
+            {"labels": list(pair), "tables": count}
+            for pair, count in sorted(pairs.items(), key=lambda item: (-item[1], item[0]))
+        ],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -91,7 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, UnicodeError, ValueError) as exc:
             failed = True
             output.append({"name": path.name, "error": str(exc), "navigation_complete": False})
-    print(json.dumps({"schema": 1, "tables": output}, ensure_ascii=False, indent=2, sort_keys=True))
+    report: dict[str, object] = {"schema": 1}
+    if args.summary:
+        report["summary"] = summarize_all(output)
+    else:
+        report["tables"] = output
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     return 1 if failed else 0
 
 

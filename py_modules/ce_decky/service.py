@@ -1514,9 +1514,12 @@ class PluginService:
         # panel re-inspects on every context refresh, so this is recorded once
         # per table and again only if the same digest ever parses differently.
         actionable = sum(1 for control in inspection.controls if control.id is not None)
-        self._table_journal.observe(
+        switches = sum(1 for control in inspection.controls if control.switch_on_value is not None)
+        dropdowns = sum(1 for control in inspection.controls if control.kind == "dropdown")
+        recorded = self._table_journal.observe(
             digest,
             (
+                switches, dropdowns,
                 inspection.total_entries, len(inspection.controls), actionable,
                 inspection.unsupported_record_id_count, len(inspection.ambiguous_record_ids),
                 inspection.table_version, inspection.has_lua, inspection.has_auto_assembler,
@@ -1543,8 +1546,33 @@ class PluginService:
             dropped_values=inspection.dropped_values,
             dropped_value_lists=inspection.dropped_value_lists,
             process_hints=",".join(inspection.process_candidates[:6]) or None,
+            # How many of this table's records the picker draws as a plain
+            # switch, and how many keep a list. A cheat drawn wrongly is
+            # reported as a cheat that does nothing, and the two counts are
+            # what say whether this table's controls were read as intended.
+            switches=switches,
+            dropdowns=dropdowns,
         )
+        if recorded:
+            self._log_unrecognised_pairs(digest, inspection)
         return inspection.as_dict()
+
+    def _log_unrecognised_pairs(self, digest: str, inspection) -> None:
+        """Name the two-entry lists the switch vocabulary could not place.
+
+        Nothing behaves differently for one: the record keeps its dropdown,
+        which is the right outcome for every such pair the corpus holds. The
+        line exists so the next version's vocabulary is chosen from what users
+        actually met rather than from another guess, and it is a property of the
+        table rather than of this device or this user, so nothing about either
+        travels with it. One line per distinct pair, beside the inspection line
+        and only when that line was written.
+        """
+        for first, second in inspection.unrecognised_pairs:
+            log_activity(
+                self.logger, "info", "table_inspect.unrecognised_pair",
+                table_sha=digest[:12], off=first, on=second,
+            )
 
     def list_table_code(self, digest: str) -> dict[str, object]:
         """What one exact table carries that Cheat Engine can execute.

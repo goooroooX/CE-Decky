@@ -109,6 +109,15 @@ export interface TableControl {
   dropdown_values: [string, string][];
   dropdown_read_only: boolean;
   /**
+   * The key this record's list uses for on, when its two entries are an on/off
+   * pair rather than a choice between two named things.
+   *
+   * Set, the record is drawn as a plain switch: no list, no field, and the
+   * toggle writes this key for on and the other one for off. The list itself is
+   * still carried, because it is what says which key the other one is.
+   */
+  switch_on_value: string | null;
+  /**
    * The record only attaches Cheat Engine to the game and changes nothing in
    * it. Table machinery rather than a cheat, so it is listed with the scripts.
    * Absent from an inspection made before this was recognised.

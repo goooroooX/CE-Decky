@@ -339,6 +339,47 @@ describe("runtime ACK client", () => {
     expect(api.writeRuntimeCommands.mock.calls[1][1].map((command: any) => command.record_id)).toEqual([1, 3]);
     expect(api.writeRuntimeCommands.mock.calls[2][1].every((command: any) => command.kind === "query")).toBe(true);
   });
+  it("puts every switch back to its off key after the release", async () => {
+    // Releasing the freeze leaves the record holding the value it was frozen
+    // at, so a table of flags would report nothing active with every flag in
+    // the game still set. The write comes after the verification, so what the
+    // game keeps is what was written last.
+    const queryResults = [
+      { generation: 1, record_id: 1, ok: true, active: true, value: "1", error: null },
+      { generation: 2, record_id: 2, ok: true, active: true, value: "7", error: null },
+    ];
+    const deactivateResults = [
+      { generation: 3, record_id: 1, ok: true, active: false, value: "1", error: null },
+      { generation: 4, record_id: 2, ok: true, active: false, value: "7", error: null },
+    ];
+    const verifyResults = [
+      { generation: 5, record_id: 1, ok: true, active: false, value: "1", error: null },
+      { generation: 6, record_id: 2, ok: true, active: false, value: "7", error: null },
+    ];
+    const restored = [{ generation: 7, record_id: 1, ok: true, active: false, value: "0", error: null }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(3, queryResults))
+      .mockResolvedValueOnce(envelope(3, queryResults))
+      .mockResolvedValueOnce(envelope(5, [...queryResults, ...deactivateResults]))
+      .mockResolvedValueOnce(envelope(5, [...queryResults, ...deactivateResults]))
+      .mockResolvedValueOnce(envelope(7, [...queryResults, ...deactivateResults, ...verifyResults]))
+      .mockResolvedValueOnce(envelope(7, [...queryResults, ...deactivateResults, ...verifyResults]))
+      .mockResolvedValueOnce(envelope(8, [...queryResults, ...deactivateResults, ...verifyResults, ...restored]));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 5 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 7 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 8 });
+
+    // Only record 1 is a switch; record 2 keeps whatever it holds.
+    await deactivateAllActiveControls(10, [1, 2], new Map([[1, "0"]]));
+    const last = api.writeRuntimeCommands.mock.calls.at(-1)![1];
+    expect(last.map((command: any) => [command.kind, command.record_id, command.value])).toEqual([
+      ["set_value", 1, "0"],
+    ]);
+  });
+
   it("reports partial bulk deactivation with the latest bridge state", async () => {
     const queryResults = [
       { generation: 1, record_id: 1, ok: true, active: true, value: null, error: null },
@@ -513,6 +554,69 @@ describe("runtime ACK client", () => {
     expect(result.results.at(-1)).toMatchObject({ record_id: 7, active: true, value: "2" });
   });
 
+
+  it("switches a switch record off by writing the other key, after releasing it", async () => {
+    // Releasing the freeze is not switching such a cheat off: the record keeps
+    // the value it was frozen at, so a `0:Disabled/1:Enabled` flag would report
+    // itself off with the cheat still running in the game.
+    const initialQuery = [{ generation: 1, record_id: 7, ok: true, active: true, value: "1", error: null }];
+    const mutation = [
+      { generation: 2, record_id: 7, ok: true, active: false, value: "1", error: null },
+      { generation: 3, record_id: 7, ok: true, active: false, value: "0", error: null },
+    ];
+    const verified = [{ generation: 4, record_id: 7, ok: true, active: false, value: "0", error: null }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(2, initialQuery))
+      .mockResolvedValueOnce(envelope(2, initialQuery))
+      .mockResolvedValueOnce(envelope(4, [...initialQuery, ...mutation]))
+      .mockResolvedValueOnce(envelope(4, [...initialQuery, ...mutation]))
+      .mockResolvedValueOnce(envelope(5, [...initialQuery, ...mutation, ...verified]));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 2 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 4 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 5 });
+
+    await applyRuntimeSelection(10, [
+      { record_id: 7, active: false, value: "1", switch_values: { on: "1", off: "0" } },
+    ]);
+    const sent = api.writeRuntimeCommands.mock.calls[1][1];
+    // The release first, so a refusal leaves nothing written, and the key the
+    // author gave the off side rather than a literal zero.
+    expect(sent.map((command: any) => [command.kind, command.value])).toEqual([
+      ["set_active", "0"], ["set_value", "0"],
+    ]);
+  });
+
+  it("switches a switch record on by writing its own on key first", async () => {
+    // The key is whatever the author wrote: the corpus carries ('1','2') pairs
+    // and records whose active side is 0, so a literal 1 would switch those the
+    // wrong way. The staged `value` is ignored; the toggle is the value.
+    const initialQuery = [{ generation: 1, record_id: 7, ok: true, active: false, value: "1", error: null }];
+    const mutation = [
+      { generation: 2, record_id: 7, ok: true, active: false, value: "2", error: null },
+      { generation: 3, record_id: 7, ok: true, active: true, value: "2", error: null },
+    ];
+    const verified = [{ generation: 4, record_id: 7, ok: true, active: true, value: "2", error: null }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(2, initialQuery))
+      .mockResolvedValueOnce(envelope(2, initialQuery))
+      .mockResolvedValueOnce(envelope(4, [...initialQuery, ...mutation]))
+      .mockResolvedValueOnce(envelope(4, [...initialQuery, ...mutation]))
+      .mockResolvedValueOnce(envelope(5, [...initialQuery, ...mutation, ...verified]));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 2 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 4 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 5 });
+
+    await applyRuntimeSelection(10, [
+      { record_id: 7, active: true, value: "ignored", switch_values: { on: "2", off: "1" } },
+    ]);
+    expect(api.writeRuntimeCommands.mock.calls[1][1].map((command: any) => [command.kind, command.value])).toEqual([
+      ["set_value", "2"], ["set_active", "1"],
+    ]);
+  });
 
   it("records the newly activated cheat even when an earlier selection was already active", async () => {
     const queried = [

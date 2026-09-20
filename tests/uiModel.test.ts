@@ -17,11 +17,15 @@ import {
   refusedStartupEnable,
   CONTROL_PAGE_SIZE,
   controlAcceptsTypedValue,
+  controlIsSwitch,
   DROPDOWN_SEARCH_THRESHOLD,
   DROPDOWN_VALUE_LIMIT,
   describeValueChoices,
   matchingDropdownValues,
   controlNeedsValueInput,
+  switchOffValues,
+  switchValueFor,
+  switchValuesFor,
   controlsMissingRequiredValue,
   missingRequiredValueReason,
   pinnedMissingRequiredValue,
@@ -375,6 +379,39 @@ describe("controller UI model", () => {
     expect(sectionLabel(["Setup", "Cheats"], 0)).toBe("Setup \u203a Cheats");
     // And a single group keeps the whole of its own name.
     expect(sectionLabel(["Only group"], 0)).toBe("Only group");
+  });
+
+  it("remembers a switch's key with its toggle, because the toggle is the value", () => {
+    // Remembering `active` alone replays the activation next session with
+    // nothing written, and a flag frozen at whatever the game holds is a cheat
+    // that reports itself on and is off. The user never typed a value here:
+    // they pressed the switch, which is the only control such a record has.
+    const flag = {
+      id: 4, description: "bEnableGodMode", path: ["bEnableGodMode"], variable_type: "4 Bytes",
+      kind: "dropdown" as const, group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]] as [string, string][],
+      dropdown_read_only: false, switch_on_value: "1",
+    };
+    expect(rememberedSelection([flag], [{ record_id: 4, active: true, value: "1" }], [], new Set([4]), new Set()))
+      .toEqual([{ record_id: 4, active: true, value: "1" }]);
+    // And switched off it remembers the off key, not the on one it had.
+    expect(rememberedSelection(
+      [flag],
+      [{ record_id: 4, active: false, value: "0" }],
+      [{ record_id: 4, active: true, value: "1" }],
+      new Set([4]),
+      new Set(),
+    )).toEqual([{ record_id: 4, active: false, value: "0" }]);
+    // Switched off along with the script that created it, so it has no state
+    // row at all. Keeping the on value it used to hold would write that value
+    // into the game next session and then release it, which is the cheat on.
+    expect(rememberedSelection(
+      [flag],
+      [],
+      [{ record_id: 4, active: true, value: "1" }],
+      new Set([4]),
+      new Set(),
+    )).toEqual([{ record_id: 4, active: false, value: "0" }]);
   });
 
   it("remembers only explicit CE Decky selections and preflights persistence before runtime mutation", () => {
@@ -819,6 +856,48 @@ describe("compact cheat rows", () => {
     expect(controlAcceptsTypedValue({ ...base, path: ["s"], kind: "script" })).toBe(false);
     expect(controlAcceptsTypedValue({ ...base, path: ["d"], kind: "dropdown" })).toBe(true);
     expect(controlAcceptsTypedValue({ ...base, path: ["d"], kind: "dropdown", dropdown_read_only: true })).toBe(false);
+  });
+
+  it("draws a two-entry on/off list as a switch and nothing else", () => {
+    const flag = {
+      ...base, path: ["bEnableGodMode"], kind: "dropdown" as const,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]] as [string, string][],
+      switch_on_value: "1",
+    };
+    expect(controlIsSwitch(flag)).toBe(true);
+    // Neither control is drawn for it, and it is never held back for a missing
+    // value: the toggle writes one key or the other, so it always has one.
+    expect(controlAcceptsTypedValue(flag)).toBe(false);
+    expect(controlNeedsValueInput(flag)).toBe(false);
+    expect(switchValueFor(flag, true)).toBe("1");
+    expect(switchValueFor(flag, false)).toBe("0");
+    expect(switchValueFor(flag, null)).toBe(null);
+    expect(switchValuesFor(flag)).toEqual({ on: "1", off: "0" });
+    expect([...switchOffValues([flag])]).toEqual([[7, "0"]]);
+  });
+
+  it("writes the key the author gave each side, whatever its number", () => {
+    const reversed = {
+      ...base, path: ["Immortal"], kind: "dropdown" as const,
+      dropdown_values: [["1040", "Yes"], ["2400", "No"]] as [string, string][],
+      switch_on_value: "1040",
+    };
+    expect(switchValueFor(reversed, true)).toBe("1040");
+    expect(switchValueFor(reversed, false)).toBe("2400");
+  });
+
+  it("keeps the list for anything the backend did not call a switch", () => {
+    const choice = {
+      ...base, path: ["Body"], kind: "dropdown" as const,
+      dropdown_values: [["0", "Male"], ["1", "Female"]] as [string, string][],
+      switch_on_value: null,
+    };
+    expect(controlIsSwitch(choice)).toBe(false);
+    expect(controlNeedsValueInput(choice)).toBe(true);
+    // A backend that predates the field sends none at all, and reading that as
+    // a switch would take the list away from every two-entry record.
+    const { switch_on_value: _unused, ...older } = choice;
+    expect(controlIsSwitch(older as typeof choice)).toBe(false);
   });
 
   it("keeps one page inside the 800p Game Mode viewport", () => {

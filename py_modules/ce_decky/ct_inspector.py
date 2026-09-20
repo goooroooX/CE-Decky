@@ -137,6 +137,12 @@ class TableControl:
     has_assembler_script: bool
     dropdown_values: tuple[tuple[str, str], ...] = ()
     dropdown_read_only: bool = False
+    # The key this record's list uses for on, when its two entries are an
+    # on/off pair rather than a choice between two named things. Set, the panel
+    # draws a switch and writes this key for on and the other one for off; the
+    # values themselves stay exactly as the author wrote them, so nothing
+    # downstream loses the list.
+    switch_on_value: str | None = None
     # This record only attaches Cheat Engine to the game; it is not a cheat.
     attach_only: bool = False
 
@@ -164,6 +170,12 @@ class TableInspection:
     # runs code and puts a window on screen while carrying no `<LuaScript>` at
     # all - which Review used to describe as no executable content.
     has_forms: bool = False
+    # Two-entry lists whose labels this could not place as an on/off pair, one
+    # entry per distinct pair. Nothing behaves differently for one: it keeps its
+    # dropdown, which is the right outcome for every such pair in the corpus.
+    # They are reported so the next version's vocabulary is chosen from what
+    # users actually met rather than from another guess.
+    unrecognised_pairs: tuple[tuple[str, str], ...] = ()
     # Labels this had to remove an invisible or bidirectional character from,
     # and values it could not carry. Both used to refuse the whole table.
     sanitized_labels: int = 0
@@ -246,6 +258,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     # cannot carry, are both things the user is entitled to be told about.
     sanitized: list[str] = []
     dropped: list[str] = []
+    unrecognised: list[tuple[str, str]] = []
     has_lua = False
     has_auto_assembler = False
     has_forms = False
@@ -275,7 +288,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     if top_entries is not None:
         for child in top_entries:
             if local_tag(child.tag) == "CheatEntry":
-                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped)
+                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped, unrecognised)
                 if total_entries > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
 
@@ -293,6 +306,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
         total_entries=total_entries,
         has_lua=has_lua,
         has_forms=has_forms,
+        unrecognised_pairs=tuple(unrecognised),
         sanitized_labels=len(sanitized),
         dropped_values=sum(1 for item in dropped if item != DROPPED_VALUE_LIST),
         dropped_value_lists=dropped.count(DROPPED_VALUE_LIST),
@@ -341,6 +355,7 @@ def _walk_entry(
     processes: set[str],
     sanitized: list[str] | None = None,
     dropped: list[str] | None = None,
+    unrecognised: list[tuple[str, str]] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -383,6 +398,10 @@ def _walk_entry(
         else "dropdown" if dropdown or dropdown_read_only
         else "value"
     )
+    switch_on_value, unrecognised_pair = _switch_on_value(dropdown) if kind == "dropdown" else (None, None)
+    if unrecognised_pair is not None and unrecognised is not None and unrecognised_pair not in unrecognised:
+        if len(unrecognised) < MAX_UNRECOGNISED_PAIRS:
+            unrecognised.append(unrecognised_pair)
     controls.append(
         TableControl(
             id=record_id,
@@ -395,6 +414,7 @@ def _walk_entry(
             attach_only=_is_attach_only(assembler_text),
             dropdown_values=dropdown,
             dropdown_read_only=dropdown_read_only,
+            switch_on_value=switch_on_value,
         )
     )
 
@@ -403,7 +423,7 @@ def _walk_entry(
     if nested is not None:
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
-                count += _walk_entry(child, path, controls, processes, sanitized, dropped)
+                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised)
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count
@@ -433,6 +453,72 @@ def _unique_dropdown_label(label: str, value: str, seen: set[str]) -> str:
         candidate = f"{head}{suffix}".strip()
         if candidate and candidate not in seen:
             return candidate
+
+
+# What a two-entry list says when it is an on/off switch rather than a choice
+# between two named things. The labels are the whole of the rule: neither the
+# variable type nor the key values decide it.
+#
+# `scripts/table_ui_probe.py --summary` over the 142 real tables in the sampled
+# corpus: 541 records declare exactly two entries and this places 468 of them,
+# 86.5%. The 73 it leaves are two named alternatives, `Male / Female`,
+# `CMYK / RGB`, `Set Own Ammo / Unlimited Ammo`, and they keep their list
+# because there the labels are the information. `No Gravity / Original Value`
+# is why a negative word alone is not enough to decide a side.
+_SWITCH_OFF_WORDS = frozenset({
+    "no", "off", "disabled", "disable", "inactive", "locked", "false", "unavailable", "none",
+    "\u043d\u0435\u0442", "\u5426",
+})
+_SWITCH_ON_WORDS = frozenset({
+    "yes", "on", "enabled", "enable", "active", "unlocked", "true", "available",
+    "\u0434\u0430", "\u662f",
+})
+# Words, and nothing else: a label is `\U0001f44d ON`, `Enabled (default)` or
+# `\u5426` as often as it is one bare word, so the emoji, the punctuation and the
+# brackets are separators rather than something to strip by name.
+_SWITCH_WORD = re.compile(r"[^\W_]+", re.UNICODE)
+# How many distinct unrecognised pairs one table reports. The log line exists to
+# choose the next version's vocabulary from what users actually met, and the
+# corpus's 1294 dropdown records reduce to 42 distinct unplaced pairs across all
+# 142 tables, so this is headroom rather than a limit anything real meets.
+MAX_UNRECOGNISED_PAIRS = 64
+
+
+def _switch_side(label: str) -> int | None:
+    """`1` for a label that says on, `-1` for one that says off, else `None`."""
+    words = {word.casefold() for word in _SWITCH_WORD.findall(unicodedata.normalize("NFKC", label))}
+    says_off = bool(words & _SWITCH_OFF_WORDS)
+    says_on = bool(words & _SWITCH_ON_WORDS)
+    # A label that says both says neither: `Off/On` as one entry is a list of
+    # choices the author wrote out, not a side of a switch.
+    if says_off == says_on:
+        return None
+    return 1 if says_on else -1
+
+
+def _switch_on_value(dropdown: tuple[tuple[str, str], ...]) -> tuple[str | None, tuple[str, str] | None]:
+    """The key meaning on, or the pair that was not recognised as a switch.
+
+    The key is whatever the author wrote, not `1`. The corpus carries four
+    distinct key pairs behind these labels: `0` off and `1` on in 28 tables,
+    `1` off and `0` on in 3, and one each of `1040`/`2400` and `2`/`1`. Writing
+    `1` for on would switch the records in five of those 33 tables the wrong
+    way, which is a cheat that reports itself on and is not.
+    """
+    if len(dropdown) != 2:
+        return None, None
+    (first_value, first_label), (second_value, second_label) = dropdown
+    # Two entries that write the same value cannot switch anything, whatever
+    # they are called. A table may declare that; a switch drawn for it would
+    # write the same key for on and for off.
+    if first_value == second_value:
+        return None, None
+    sides = (_switch_side(first_label), _switch_side(second_label))
+    if sides == (-1, 1):
+        return second_value, None
+    if sides == (1, -1):
+        return first_value, None
+    return None, (first_label, second_label)
 
 
 def _parse_dropdown(raw: str, sanitized: list[str] | None = None, dropped: list[str] | None = None) -> tuple[tuple[str, str], ...]:

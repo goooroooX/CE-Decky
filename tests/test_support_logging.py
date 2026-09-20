@@ -69,6 +69,47 @@ def test_the_log_says_what_a_table_parsed_as_not_only_that_it_was_inspected(tmp_
     assert "table_format=45" in inspected[0]
 
 
+def test_the_log_counts_the_switches_and_names_a_pair_it_could_not_place(tmp_path: Path, caplog):
+    """A cheat drawn wrongly is reported as a cheat that does nothing.
+
+    The counts say how this table's controls were read, and the pair the
+    vocabulary could not place is named so the next list is chosen from what
+    users met rather than from a guess. Nothing behaves differently for it: the
+    record keeps its dropdown.
+    """
+    service = _service(tmp_path)
+    source = tmp_path / "pairs.CT"
+    source.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry><ID>1</ID><Description>God mode</Description>
+      <VariableType>4 Bytes</VariableType><Address>game.exe+10</Address>
+      <DropDownList>0:Disabled
+1:Enabled</DropDownList></CheatEntry>
+    <CheatEntry><ID>2</ID><Description>Body</Description>
+      <VariableType>4 Bytes</VariableType><Address>game.exe+14</Address>
+      <DropDownList>0:Male
+1:Female</DropDownList></CheatEntry>
+  </CheatEntries>
+</CheatTable>
+""",
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+
+    with caplog.at_level(logging.INFO, logger="support-logging"):
+        service.inspect_table_sha(str(table["sha256"]))
+        service.inspect_table_sha(str(table["sha256"]))
+
+    inspected = [line for line in _messages(caplog) if "event=table.inspected" in line]
+    pairs = [line for line in _messages(caplog) if "event=table_inspect.unrecognised_pair" in line]
+    assert len(inspected) == 1 and len(pairs) == 1
+    assert "switches=1" in inspected[0]
+    assert "dropdowns=2" in inspected[0]
+    assert "off=Male" in pairs[0] and "on=Female" in pairs[0]
+
+
 def test_the_log_says_what_was_saved_for_a_game_not_only_that_a_profile_was_saved(tmp_path: Path, caplog):
     service = _service(tmp_path)
     table = _import_table(service, tmp_path)

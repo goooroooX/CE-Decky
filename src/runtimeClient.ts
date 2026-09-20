@@ -1,7 +1,7 @@
 import { logUiWarning } from "./supportLog";
 import { confirmTableWorking, getRuntimeStatus, writeRuntimeCommands } from "./api";
 import type { RuntimeEnvelope, RuntimeResult } from "./types";
-import { describeError } from "./errors";
+import { describeError, leadWithCause } from "./errors";
 import { isPreCommitRefusal } from "./durableWrite";
 import { monotonicNow } from "./elapsed";
 
@@ -34,6 +34,15 @@ export interface RuntimeDesiredState {
   path?: readonly string[];
   /** Human name for this record, used in any message the user has to read. */
   label?: string;
+  /**
+   * The two keys a switch record's toggle writes, when this record is one.
+   *
+   * Present, `active` decides the value and `value` is ignored: the record's
+   * list is the switch, so on writes one key and off writes the other. Off has
+   * to write: releasing the freeze on a record still holding its on value
+   * leaves the cheat running in the game under a switch that says it is off.
+   */
+  switch_values?: { on: string; off: string };
 }
 
 export class RuntimeOperationError extends Error {
@@ -557,6 +566,21 @@ function describeMutationFailure(
   return failed.error ?? `${subject} mutation failed.`;
 }
 
+/**
+ * The value this desired state asks for: the switch's key, or what was staged.
+ *
+ * A switch record's list is its control, so `active` decides what is written
+ * and any value staged beside it is ignored. Everything that acts on the value
+ * has to agree on this, the write and the verification alike, or a record is
+ * written with one and checked against the other.
+ */
+function wantedValue(desired: RuntimeDesiredState): string | null {
+  if (desired.switch_values && desired.active !== null) {
+    return desired.active ? desired.switch_values.on : desired.switch_values.off;
+  }
+  return desired.value;
+}
+
 export async function applyRuntimeSelection(
   appId: number,
   desiredStates: readonly RuntimeDesiredState[],
@@ -643,13 +667,22 @@ export async function applyRuntimeSelection(
   const activatedHere = new Set<number>();
   const commandsFor = (desired: RuntimeDesiredState, observed: RuntimeResult): RuntimeCommandSpec[] => {
     const specs: RuntimeCommandSpec[] = [];
-    if (desired.value !== null && observed.value !== desired.value) {
-      specs.push({ kind: "set_value", record_id: desired.record_id, value: desired.value });
-    }
-    if (desired.active !== null && observed.active !== desired.active) {
-      specs.push({ kind: "set_active", record_id: desired.record_id, value: desired.active ? "1" : "0" });
-      if (desired.active) activatedHere.add(desired.record_id);
-    }
+    const wanted = wantedValue(desired);
+    const setValue: RuntimeCommandSpec[] = wanted !== null && observed.value !== wanted
+      ? [{ kind: "set_value", record_id: desired.record_id, value: wanted }]
+      : [];
+    const setActive: RuntimeCommandSpec[] = desired.active !== null && observed.active !== desired.active
+      ? [{ kind: "set_active", record_id: desired.record_id, value: desired.active ? "1" : "0" }]
+      : [];
+    // Only a record this call actually switched on counts as proof it did:
+    // one already on was not made to work here.
+    if (setActive.length > 0 && desired.active) activatedHere.add(desired.record_id);
+    // Switching a record off releases the freeze, and a value written after
+    // that is what the game keeps; written before it, Cheat Engine is still
+    // holding the record and the write is what the freeze is then released on.
+    // The end state is the same either way, and this order is the one where a
+    // failed release leaves nothing written.
+    specs.push(...(desired.active === false ? [...setActive, ...setValue] : [...setValue, ...setActive]));
     return specs;
   };
 
@@ -758,9 +791,12 @@ export async function applyRuntimeSelection(
         verified.envelope,
       );
     }
-    if (desired.value !== null && result.value !== desired.value) {
+    // Against what was actually asked for, which for a switch record is the key
+    // its toggle writes rather than whatever value was staged beside it.
+    const wanted = wantedValue(desired);
+    if (wanted !== null && result.value !== wanted) {
       throw new RuntimeOperationError(
-        `${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${desired.value}.`,
+        `${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${wanted}.`,
         verified.envelope,
       );
     }
@@ -790,9 +826,19 @@ export async function applyRuntimeSelection(
   return { envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged };
 }
 
+/**
+ * Switch off everything that is on, and leave every switch at its off key.
+ *
+ * `offValues` is that key per record. Releasing the freeze is not switching
+ * such a cheat off: the record keeps the value it was frozen at, so a table of
+ * `0:Disabled/1:Enabled` flags would report nothing active while every flag in
+ * the game stayed at 1. A comment inside the parameter list would land in the
+ * committed bundle as trailing whitespace, which is why this is here.
+ */
 export async function deactivateAllActiveControls(
   appId: number,
   recordIds: readonly number[],
+  offValues: ReadonlyMap<number, string> = new Map(),
 ): Promise<DeactivateAllResult> {
   const unique = [...new Set(recordIds)];
   if (unique.length > MAX_LIVE_CONTROLS) {
@@ -917,12 +963,49 @@ export async function deactivateAllActiveControls(
     }
     throw cause;
   }
+  // Every record that was switched off and declares an off key is put back to
+  // it, after the release rather than before it, so the value the game keeps is
+  // the one written last. A record that ceased to exist with its own script is
+  // skipped: it has no address to write to and its absence is the desired end.
+  let envelope = verified.envelope;
+  // The freshest answer per record, not the first: a record can be read several
+  // times in one verification and only the last one says whether it is still
+  // there to be written to.
+  const latest = new Map<number, RuntimeResult>();
+  for (const result of verified.results) {
+    if (result.record_id !== null) latest.set(result.record_id, result);
+  }
+  const restored = new Map<number, string>();
+  for (const recordId of activeIds) {
+    const value = offValues.get(recordId);
+    if (value !== undefined && latest.get(recordId)?.ok) restored.set(recordId, value);
+  }
+  if (restored.size > 0) {
+    const written = await runForRecordChunks(
+      appId,
+      [...restored.keys()],
+      (recordId) => ({ kind: "set_value", record_id: recordId, value: restored.get(recordId)! }),
+      (results, _completedBefore, batchEnvelope) => {
+        const failed = results.find((result) => !result.ok);
+        if (!failed) return;
+        throw new RuntimeOperationError(
+          leadWithCause(
+            failed.error ?? `MemoryRecord ${failed.record_id ?? "unknown"} refused the write`,
+            "Every cheat was switched off, but one could not be put back to its off value, so that cheat may still be running in the game.",
+          ),
+          batchEnvelope,
+        );
+      },
+      verified.envelope,
+    );
+    envelope = written.envelope;
+  }
   return {
     queried: unique.length,
     active: activeIds.length,
     deactivated: activeIds.length,
     deactivatedIds: activeIds,
-    envelope: verified.envelope,
+    envelope,
   };
 }
 

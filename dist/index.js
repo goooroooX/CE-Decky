@@ -3724,7 +3724,12 @@ function rememberedSelection(controls, states, previous, touchedActive, touchedV
             // back. An explicitly touched record therefore keeps its deliberate
             // inactive choice; an untouched one keeps whatever it had.
             if (touchedActive.has(recordId)) {
-                remembered.push({ record_id: recordId, active: false, value: prior?.value ?? null });
+                // A switch's value follows its toggle here too. The record is gone, so
+                // what is stored now is what the next session replays, and storing the
+                // on key beside "off" writes the cheat's own on value into the game and
+                // then releases it, which is the cheat on rather than off.
+                const value = controlIsSwitch(control) ? switchValueFor(control, false) : prior?.value ?? null;
+                remembered.push({ record_id: recordId, active: false, value });
             }
             else if (prior) {
                 remembered.push(prior);
@@ -3732,13 +3737,19 @@ function rememberedSelection(controls, states, previous, touchedActive, touchedV
             continue;
         }
         const active = touchedActive.has(recordId) ? state.active : prior?.active ?? null;
+        // A switch's toggle is its value, so touching the one touches the other.
+        // Remembering `active` alone would replay the activation next session with
+        // nothing written, and a flag frozen at whatever the game happens to hold
+        // is a cheat that reports itself on and is off.
+        const valueTouched = touchedValues.has(recordId)
+            || (controlIsSwitch(control) && touchedActive.has(recordId));
         // Cheat Engine reports `??` for a record it cannot read yet. Remembering
         // that would replay a meaningless write on the next session and would erase
         // the value the user actually chose, so keep the previous one instead.
-        const observed = touchedValues.has(recordId)
+        const observed = valueTouched
             ? (control.kind === "value" || control.kind === "dropdown" ? displayableControlValue(state.value) : null)
             : null;
-        const value = touchedValues.has(recordId) ? observed ?? prior?.value ?? null : prior?.value ?? null;
+        const value = valueTouched ? observed ?? prior?.value ?? null : prior?.value ?? null;
         if (active !== null || value !== null)
             remembered.push({ record_id: recordId, active, value });
     }
@@ -4621,8 +4632,55 @@ function controlRowLabel(control) {
 function controlRowContext(control) {
     return control.path.slice(0, -1).join(" \u203a ");
 }
+/**
+ * True when this record is drawn as a plain on/off switch.
+ *
+ * Its two list entries are an on/off pair, so the list and the field would both
+ * be asking the reader to say again what the toggle beside them already says.
+ * The backend decides this from the author's own labels; see `ct_inspector`.
+ */
+function controlIsSwitch(control) {
+    // A string, not merely "not null": a backend that predates this field sends
+    // no field at all, and reading that as a switch would take the list away from
+    // every two-entry record in the table.
+    return typeof control.switch_on_value === "string"
+        && control.switch_on_value !== ""
+        && control.dropdown_values.length === 2;
+}
+/** The key a switch record's toggle writes, or `null` when it is not one. */
+function switchValueFor(control, active) {
+    if (active === null || !controlIsSwitch(control))
+        return null;
+    const on = control.switch_on_value;
+    if (active)
+        return on;
+    // The off key is the other entry, whatever number the author gave it. It has
+    // to be written: a record left at its on value with the freeze released is a
+    // cheat still running under a switch that says it is off.
+    return control.dropdown_values.find(([value]) => value !== on)?.[0] ?? null;
+}
+/** Both keys of a switch record, for a desired state to carry, else undefined. */
+function switchValuesFor(control) {
+    const on = switchValueFor(control, true);
+    const off = switchValueFor(control, false);
+    return on !== null && off !== null ? { on, off } : undefined;
+}
+/** Every switch record's off key, for a call that only switches things off. */
+function switchOffValues(controls) {
+    const values = new Map();
+    for (const control of controls) {
+        if (control.id === null)
+            continue;
+        const off = switchValueFor(control, false);
+        if (off !== null)
+            values.set(control.id, off);
+    }
+    return values;
+}
 /** True when this exact control accepts a typed value. */
 function controlAcceptsTypedValue(control) {
+    if (controlIsSwitch(control))
+        return false;
     return control.kind === "value" || (control.kind === "dropdown" && !control.dropdown_read_only);
 }
 /**
@@ -4736,6 +4794,10 @@ function missingRequiredValueReason(missing) {
  * screen the moment the record is switched on rather than behind More.
  */
 function controlNeedsValueInput(control) {
+    // A switch carries a value by construction: its toggle writes one key or the
+    // other, so there is never a moment where it is on with nothing written.
+    if (controlIsSwitch(control))
+        return false;
     return controlAcceptsTypedValue(control)
         || (control.kind === "dropdown" && control.dropdown_values.length > 0);
 }
@@ -4824,7 +4886,9 @@ function pinnedCheatRows(controls, pinned, results, remembered = [], configured 
         // A value CE cannot read yet still has a confirmed choice behind it, so show
         // what this table was set to rather than nothing. Resolved once, where the
         // press on this row resolves it too.
-        const value = presentableControlValue(pinnedControlValue(latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
+        // A switch says what it is by being on or off, so `= 1` beside it is the
+        // same fact written twice in the row's own scarcest space.
+        const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
         rows.push({
             recordId: control.id,
             label: controlRowLabel(control),
@@ -7629,6 +7693,20 @@ function describeMutationFailure(failed, desiredById) {
     }
     return failed.error ?? `${subject} mutation failed.`;
 }
+/**
+ * The value this desired state asks for: the switch's key, or what was staged.
+ *
+ * A switch record's list is its control, so `active` decides what is written
+ * and any value staged beside it is ignored. Everything that acts on the value
+ * has to agree on this, the write and the verification alike, or a record is
+ * written with one and checked against the other.
+ */
+function wantedValue(desired) {
+    if (desired.switch_values && desired.active !== null) {
+        return desired.active ? desired.switch_values.on : desired.switch_values.off;
+    }
+    return desired.value;
+}
 async function applyRuntimeSelection(appId, desiredStates) {
     const byId = new Map();
     for (const state of desiredStates) {
@@ -7706,14 +7784,23 @@ async function applyRuntimeSelection(appId, desiredStates) {
     const activatedHere = new Set();
     const commandsFor = (desired, observed) => {
         const specs = [];
-        if (desired.value !== null && observed.value !== desired.value) {
-            specs.push({ kind: "set_value", record_id: desired.record_id, value: desired.value });
-        }
-        if (desired.active !== null && observed.active !== desired.active) {
-            specs.push({ kind: "set_active", record_id: desired.record_id, value: desired.active ? "1" : "0" });
-            if (desired.active)
-                activatedHere.add(desired.record_id);
-        }
+        const wanted = wantedValue(desired);
+        const setValue = wanted !== null && observed.value !== wanted
+            ? [{ kind: "set_value", record_id: desired.record_id, value: wanted }]
+            : [];
+        const setActive = desired.active !== null && observed.active !== desired.active
+            ? [{ kind: "set_active", record_id: desired.record_id, value: desired.active ? "1" : "0" }]
+            : [];
+        // Only a record this call actually switched on counts as proof it did:
+        // one already on was not made to work here.
+        if (setActive.length > 0 && desired.active)
+            activatedHere.add(desired.record_id);
+        // Switching a record off releases the freeze, and a value written after
+        // that is what the game keeps; written before it, Cheat Engine is still
+        // holding the record and the write is what the freeze is then released on.
+        // The end state is the same either way, and this order is the one where a
+        // failed release leaves nothing written.
+        specs.push(...(desired.active === false ? [...setActive, ...setValue] : [...setValue, ...setActive]));
         return specs;
     };
     const mutations = [];
@@ -7804,8 +7891,11 @@ async function applyRuntimeSelection(appId, desiredStates) {
         if (desired.active !== null && result.active !== desired.active) {
             throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${result.record_id}`} did not switch ${desired.active ? "on" : "off"}. Cheat Engine reported ${describeReadBack(result.active === null ? null : String(result.active))}.`, verified.envelope);
         }
-        if (desired.value !== null && result.value !== desired.value) {
-            throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${desired.value}.`, verified.envelope);
+        // Against what was actually asked for, which for a switch record is the key
+        // its toggle writes rather than whatever value was staged beside it.
+        const wanted = wantedValue(desired);
+        if (wanted !== null && result.value !== wanted) {
+            throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${wanted}.`, verified.envelope);
         }
     }
     const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) => other !== candidate && other.active === true && candidate.path && other.path
@@ -7831,7 +7921,16 @@ async function applyRuntimeSelection(appId, desiredStates) {
     }
     return { envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged };
 }
-async function deactivateAllActiveControls(appId, recordIds) {
+/**
+ * Switch off everything that is on, and leave every switch at its off key.
+ *
+ * `offValues` is that key per record. Releasing the freeze is not switching
+ * such a cheat off: the record keeps the value it was frozen at, so a table of
+ * `0:Disabled/1:Enabled` flags would report nothing active while every flag in
+ * the game stayed at 1. A comment inside the parameter list would land in the
+ * committed bundle as trailing whitespace, which is why this is here.
+ */
+async function deactivateAllActiveControls(appId, recordIds, offValues = new Map()) {
     const unique = [...new Set(recordIds)];
     if (unique.length > MAX_LIVE_CONTROLS) {
         throw new RuntimeOperationError(`This table has ${unique.length} controls CE Decky can act on; live control is limited to ${MAX_LIVE_CONTROLS}. Switch cheats off from the picker instead.`, null);
@@ -7925,12 +8024,40 @@ async function deactivateAllActiveControls(appId, recordIds) {
         }
         throw cause;
     }
+    // Every record that was switched off and declares an off key is put back to
+    // it, after the release rather than before it, so the value the game keeps is
+    // the one written last. A record that ceased to exist with its own script is
+    // skipped: it has no address to write to and its absence is the desired end.
+    let envelope = verified.envelope;
+    // The freshest answer per record, not the first: a record can be read several
+    // times in one verification and only the last one says whether it is still
+    // there to be written to.
+    const latest = new Map();
+    for (const result of verified.results) {
+        if (result.record_id !== null)
+            latest.set(result.record_id, result);
+    }
+    const restored = new Map();
+    for (const recordId of activeIds) {
+        const value = offValues.get(recordId);
+        if (value !== undefined && latest.get(recordId)?.ok)
+            restored.set(recordId, value);
+    }
+    if (restored.size > 0) {
+        const written = await runForRecordChunks(appId, [...restored.keys()], (recordId) => ({ kind: "set_value", record_id: recordId, value: restored.get(recordId) }), (results, _completedBefore, batchEnvelope) => {
+            const failed = results.find((result) => !result.ok);
+            if (!failed)
+                return;
+            throw new RuntimeOperationError(leadWithCause(failed.error ?? `MemoryRecord ${failed.record_id ?? "unknown"} refused the write`, "Every cheat was switched off, but one could not be put back to its off value, so that cheat may still be running in the game."), batchEnvelope);
+        }, verified.envelope);
+        envelope = written.envelope;
+    }
     return {
         queried: unique.length,
         active: activeIds.length,
         deactivated: activeIds.length,
         deactivatedIds: activeIds,
-        envelope: verified.envelope,
+        envelope,
     };
 }
 /** How Cheat Engine answered a read-back, in words a user can act on. */
@@ -10723,7 +10850,9 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 if (control.id === null)
                     return [];
                 const state = effective[control.id];
-                return state ? [{ record_id: control.id, active: state.active, value: state.value }] : [];
+                return state
+                    ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
+                    : [];
             });
             const prospectiveRemembered = rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged);
             const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
@@ -10948,7 +11077,9 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                             const context = controlRowContext(control);
                                             // The staged value is the semantic string; the row shows a
                                             // display copy so invisible/bidi characters cannot reorder it.
-                                            const value = presentableControlValue(state?.value);
+                                            // A switch carries its own answer in the toggle beside it, so
+                                            // `= 1` on the summary line is the same fact twice.
+                                            const value = controlIsSwitch(control) ? null : presentableControlValue(state?.value);
                                             // An active record whose value still has to be supplied always
                                             // shows its editor, even before the user opens the details.
                                             const valueRequired = state?.active === true && controlNeedsValueInput(control);
@@ -10961,8 +11092,11 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                             // search and no way to jump. Past a screenful, the list is
                                             // narrowed by typing and only what is offered is rendered.
                                             const searchable = control.kind === "dropdown"
+                                                && !controlIsSwitch(control)
                                                 && control.dropdown_values.length > DROPDOWN_SEARCH_THRESHOLD;
-                                            const choices = control.kind === "dropdown" && isExpanded
+                                            // A switch has no list to offer, so none is computed for it and
+                                            // the render below has one condition rather than two.
+                                            const choices = control.kind === "dropdown" && isExpanded && !controlIsSwitch(control)
                                                 ? matchingDropdownValues(control.dropdown_values, (searchable && valueQuery?.id === recordId ? valueQuery.text : ""), state?.value ?? null)
                                                 : null;
                                             const summary = [
@@ -10984,7 +11118,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                                     // switching the cheat off releases it.
                                                     SP_JSX.jsx(DFL.DialogButton, { style: cheatRowActionStyle, disabled: applying || valueRequired, onClick: traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId }), children: isExpanded ? "Less" : "More" })), body: isExpanded ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelNote, { children: control.path.join(" \u203a ") }), control.description.trim() && control.description.trim() !== controlRowLabel(control)
                                                                 ? SP_JSX.jsx(PanelNote, { children: control.description.trim() })
-                                                                : null, searchable && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), controlAcceptsTypedValue(control) && blockedBy(control) && (SP_JSX.jsx(PanelNote, { children: state?.active === true
+                                                                : null, searchable && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), blockedBy(control) && (controlAcceptsTypedValue(control) || (controlIsSwitch(control) && state?.active === true)) && (SP_JSX.jsx(PanelNote, { children: state?.active === true
                                                                     ? `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.`
                                                                     : `Value saved; written when \u201c${controlRowLabel(blockedBy(control))}\u201d is switched on.` })), controlAcceptsTypedValue(control) && (SP_JSX.jsx(DFL.TextField, { label: control.kind === "dropdown" ? "Custom value" : "Value", value: state?.value ?? "", onChange: traceUiEdit("cheat_selection_modal.edit_value", (event) => touchValue(recordId, String(event.target.value ?? "")), { record_id: recordId }), disabled: applying || pinning })), SP_JSX.jsx(DFL.ToggleField, { label: "Pinned", description: "Show this control directly on the CE Decky panel for this exact table.", checked: isPinned, onChange: traceUiAction("cheat_selection_modal.pinned", (checked) => void togglePin(recordId, checked), (pinned) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, pinned })), disabled: applying || pinning, bottomSeparator: "none" }), SP_JSX.jsx(DFL.Field, { label: "Record", description: `${control.kind} \u00b7 ID ${recordId}`, bottomSeparator: "none" })] })) : null }) }, recordId));
                                         }) }), matching.length === 0 && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "No controls", description: "No supported controls match this section/filter." }) })] }))] }) }), error && (SP_JSX.jsx("div", { style: bottomErrorStyle, children: SP_JSX.jsx(RefusalBlock, { testId: "cheat-apply-error", children: SP_JSX.jsx(DFL.Field, { label: errorTitle, description: error, bottomSeparator: "none" }) }) })), confirmingClose && (SP_JSX.jsxs("div", { style: bottomErrorStyle, "data-testid": "unsaved-prompt", children: [SP_JSX.jsx(DFL.Field, { label: unsavedCount > 0
@@ -15202,6 +15336,7 @@ function Content() {
                     record_id: recordId,
                     active,
                     value: active ? valueToApply : null,
+                    switch_values: switchValuesFor(control),
                     path: control.path,
                     label: controlRowLabel(control),
                 },
@@ -15311,7 +15446,7 @@ function Content() {
             .flatMap((control) => control.id === null ? [] : [control.id]);
         void runAction(async () => {
             dropLiveSnapshot();
-            const result = await deactivateAllActiveControls(game.appId, recordIds);
+            const result = await deactivateAllActiveControls(game.appId, recordIds, switchOffValues(controls));
             // A child destroyed by a parent this call switched off is the intended
             // outcome; the helper already accepted it and the caller must not undo
             // that by demanding the record still answer.
