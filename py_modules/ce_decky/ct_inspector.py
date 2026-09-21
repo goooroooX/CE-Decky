@@ -225,6 +225,13 @@ class TableInspection:
     # many there are and which of them a check could not find, and an absolute
     # sixty-byte pattern per record is not something the panel decides with.
     scans: tuple[TableScan, ...] = ()
+    # Symbols this table declares more than once, meaning different code each
+    # time. Two scripts of one table routinely scan under the same symbol - a
+    # build for one graphics backend and a build for another - and only the
+    # first of them is in `scans`, so an answer about that one is not an answer
+    # about the cheats the other owns. Named here so that what is said about
+    # them is that they could not be reduced to one answer.
+    repeated_scans: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -405,6 +412,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     dropped: list[str] = []
     unrecognised: list[tuple[str, str]] = []
     scans: dict[str, TableScan] = {}
+    repeated: set[str] = set()
     has_lua = False
     has_auto_assembler = False
     has_forms = False
@@ -438,7 +446,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     if top_entries is not None:
         for child in top_entries:
             if local_tag(child.tag) == "CheatEntry":
-                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped, unrecognised, None, scans)
+                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped, unrecognised, None, scans, repeated)
                 if total_entries > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
 
@@ -465,6 +473,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
         dropped_values=sum(1 for item in dropped if item != DROPPED_VALUE_LIST),
         dropped_value_lists=dropped.count(DROPPED_VALUE_LIST),
         scans=tuple(scans.values()),
+        repeated_scans=tuple(sorted(repeated)),
         # An Auto Assembler record with no script body is a control kind, not
         # something the table can execute, so the kind and the marker are
         # answered separately.
@@ -513,6 +522,7 @@ def _walk_entry(
     unrecognised: list[tuple[str, str]] | None = None,
     declared: dict[str, str] | None = None,
     scans: dict[str, TableScan] | None = None,
+    repeated: set[str] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -542,7 +552,18 @@ def _walk_entry(
         for scan in read_scans(assembler_text)[0]:
             if len(scans) >= MAX_TABLE_SCANS:
                 break
-            scans.setdefault(scan.name.casefold(), scan)
+            key = scan.name.casefold()
+            first = scans.get(key)
+            if first is None:
+                scans[key] = scan
+            elif repeated is not None and (
+                (first.directive, first.module, first.pattern) != (scan.directive, scan.module, scan.pattern)
+            ):
+                # The same symbol standing for different code. The one kept is
+                # the first the file happens to hold, so nothing said about it
+                # is an answer about the other, and the check is told to leave
+                # that symbol alone rather than answer for it by document order.
+                repeated.add(scan.name)
 
     dropdown = _parse_dropdown(_child_text(element, "DropDownList") or "", sanitized, dropped)
     dropdown_read_only = (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
@@ -606,7 +627,7 @@ def _walk_entry(
     if nested is not None:
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
-                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans)
+                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated)
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count

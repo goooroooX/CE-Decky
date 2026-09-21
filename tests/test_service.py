@@ -2654,3 +2654,106 @@ def test_a_pattern_the_game_holds_two_files_for_is_not_proved_absent(tmp_path: P
     # And the refusal does not answer for the pattern nobody looked for.
     with pytest.raises(ValueError, match="the rest could not be checked here"):
         service.prepare_table_copy(str(table["sha256"]), 4242)
+
+
+def test_a_stop_says_when_the_game_was_not_established_to_be_put_back(tmp_path: Path, monkeypatch):
+    """An answer is not the same as a game that was put back.
+
+    The bridge can answer that it could not read the address list, or that it
+    is not attached, and neither of those is a game with nothing left switched
+    on. Only a walk that finished with nothing on, or a game that has exited
+    and taken every patch with it, is a stop nobody has to be warned about.
+    """
+    from ce_decky.session_protocol import RuntimeResult
+
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("quiesce-confirmed"))
+    service.initialize()
+    service.save_profile(4242, "A game", False, None, "game.exe")
+    monkeypatch.setattr(service_module, "QUIESCE_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(service_module, "QUIESCE_POLL_SECONDS", 0.05)
+    prepared = Mock(session_id="6d6f9d2a-0000-4000-8000-000000000003")
+    running = True
+
+    def observe(app_id, process):
+        return "Z:\\game\\game.exe" if running else None
+
+    monkeypatch.setattr(service_module, "observe_game_executable_path", observe)
+
+    def answering(value: str, ok: bool, code: str | None):
+        class Store:
+            def load_current(self, app_id):
+                return prepared
+
+            def read_status(self, session):
+                return Mock(attached=True, results=(
+                    RuntimeResult(generation=9, record_id=None, ok=ok, active=None,
+                                  value=value, error=None if ok else "records did not settle", error_code=code),
+                ))
+
+            def next_generation(self, session):
+                return 9
+
+            def write_commands(self, session, commands):
+                return commands[-1].generation + 1
+        return Store()
+
+    # The address list could not be read, so nothing was even looked at.
+    service.session_store = answering("put_down=0;unsettled=", False, "address_list_unavailable")
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is False
+
+    # A walk that finished with nothing left on is the clean case.
+    service.session_store = answering("put_down=3;unsettled=", True, None)
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is True
+
+    # A bridge that is not answering at all, with the game still running.
+    class Silent:
+        def load_current(self, app_id):
+            return prepared
+
+        def read_status(self, session):
+            return None
+
+    service.session_store = Silent()
+    answer = service._quiesce_session(4242)
+    assert answer["asked"] is False and answer["cleanup_confirmed"] is False
+
+    # The same silence once the game itself is gone: it took every patch with
+    # it, so there is nothing to warn anybody about.
+    running = False
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is True
+
+
+def test_a_symbol_two_scripts_mean_differently_is_not_answered_for(tmp_path: Path, monkeypatch):
+    """Review may not call a symbol healthy, or broken, by document order.
+
+    One table can carry a build for one graphics backend and a build for
+    another, each scanning under the same symbol for its own pattern. The check
+    reads the first of them, so what it found says nothing about the cheats the
+    other owns.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-repeated"))
+    service.initialize()
+    source = tmp_path / "two-backends.CT"
+    source.write_text(
+        SCAN_FIXTURE.replace(
+            '</AssemblerScript></CheatEntry></CheatEntries>',
+            '</AssemblerScript></CheatEntry>'
+            '<CheatEntry><ID>2</ID><Description>"Vulkan"</Description>'
+            '<VariableType>Auto Assembler Script</VariableType>'
+            '<AssemblerScript>[ENABLE]\n'
+            'aobscanmodule(aobPresent,game.exe,F3 0F 59 F0 48 8B C3)\n'
+            '</AssemblerScript></CheatEntry></CheatEntries>',
+        ),
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+    program = _scan_program(tmp_path)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    # The first occurrence is in the program, and that is not an answer about
+    # the second, so nothing is claimed either way.
+    assert answer["present"] == [] and answer["missing"] == ["aobAbsent"]
+    repeated = [row for row in answer["not_checked"] if row["name"] == "aobPresent"]
+    assert repeated and "not the same pattern" in repeated[0]["reason"]

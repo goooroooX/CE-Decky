@@ -3551,3 +3551,104 @@ def test_work_that_never_settles_does_not_hold_the_answer_past_the_bound(tmp_pat
     # rather than waited for.
     assert "put_down=1" in value
     assert "unsettled=" in value and value.split("unsettled=")[1] != ""
+
+
+def test_an_activation_its_own_command_gave_up_on_is_still_the_stop_s_business(tmp_path: Path):
+    """A command that times out says this session stopped watching.
+
+    It does not say Cheat Engine stopped: the activation can still land, and a
+    walk that passed the record while it was off would report a game nobody had
+    put back. The record stays known until Cheat Engine is finished with it.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [6],
+            # Longer than the command waits, shorter than the stop does, and
+            # put down at once when the stop asks: an enable that compiles and
+            # allocates, a disable that writes the original bytes back.
+            "records": {6: {"active": False, "activation_async_ticks": 50, "disable_settles_at_once": True}},
+            "steps": [{"ticks": 80}],
+        },
+        controls={"control.txt": _control(
+            RuntimeCommand(1, "set_active", 6, "1"),
+            RuntimeCommand(2, "quiesce"),
+        )},
+    )
+    status = run.status()
+    timed_out = [item for item in status.results if item.generation == 1]
+    assert timed_out and timed_out[-1].ok is False
+    assert timed_out[-1].error == "activation timed out"
+    answered = [item for item in status.results if item.generation == 2]
+    # It came on after the command gave up, and the stop still put it down.
+    assert answered and answered[-1].ok is True
+    assert "put_down=1" in (answered[-1].value or "")
+    assert "active 6 false" in run.stdout.splitlines()
+
+
+def test_an_activation_that_never_finishes_is_named_rather_than_forgotten(tmp_path: Path):
+    """The other end of the same rule.
+
+    Cheat Engine never finishes with the record, so the stop cannot say what
+    the game was left holding. It says that, rather than reporting a clean
+    stop with an operation still running inside a Cheat Engine about to be
+    killed.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [6],
+            "records": {6: {"active": False, "activation_async_never_settles": True}},
+            "steps": [{"ticks": 120}],
+        },
+        controls={"control.txt": _control(
+            RuntimeCommand(1, "set_active", 6, "1"),
+            RuntimeCommand(2, "quiesce"),
+        )},
+    )
+    answered = [item for item in run.status().results if item.generation == 2]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    assert "unsettled=6" in (answered[-1].value or "")
+
+
+def test_a_table_that_keeps_switching_records_on_is_reported_not_declared_clean(tmp_path: Path):
+    """The sweep allowance running out is not the game being clean.
+
+    A table whose `[DISABLE]` switches the next record on is a real shape, and
+    a walk that spent its allowance on that chain has one cheat still running.
+    The stop finishes, bounded, and names it.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [1, 2, 3, 4, 5],
+            "records": {
+                1: {"active": True, "activates_on_disable": 2},
+                2: {"active": False, "activates_on_disable": 3},
+                3: {"active": False, "activates_on_disable": 4},
+                4: {"active": False, "activates_on_disable": 5},
+                5: {"active": False},
+            },
+            "steps": [{"ticks": 30}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    value = answered[-1].value or ""
+    assert "put_down=4" in value
+    assert "unsettled=5" in value
+    assert "active 5 true" in run.stdout.splitlines()

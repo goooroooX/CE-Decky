@@ -116,6 +116,17 @@ export interface StopQuiesce {
    * to restart the game exactly as they are when a cheat is named.
    */
   answered?: boolean | null;
+  /**
+   * Whether this game was established to have been put back.
+   *
+   * True for a walk that finished with nothing left switched on, and for a game
+   * that has exited, which took every patch with it. False is every other
+   * outcome alike: an answer that never came, an address list that could not be
+   * read, a bridge that stopped answering while the game is still running. The
+   * panel tells the user to restart the game for all of them, because what they
+   * have in common is that nobody can say what the game is holding.
+   */
+  cleanup_confirmed?: boolean | null;
   elapsed_ms?: number;
 }
 

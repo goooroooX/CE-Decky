@@ -92,6 +92,13 @@ local function record_proxy(definition)
       state.foreground_window = 1024
       state.foreground_window_pid = state.scenario.ce_process_id or 4242
     end
+    -- A table whose own `[DISABLE]` switches another record on. Real tables do
+    -- this: one hook's restore enables the record that carries the next one, so
+    -- a walk that put everything down once is not finished.
+    if not value and definition.activates_on_disable then
+      local other = state.records[definition.activates_on_disable]
+      if other then other.Active = true end
+    end
     -- Switching on a script is what creates the records inside it.
     if backing.Active then
       for id, pending in pairs(state.pending_records) do
@@ -132,7 +139,11 @@ local function record_proxy(definition)
         -- A record that never settles is a real Cheat Engine outcome: the
         -- bridge must report it as a failure, not as a successful write.
         if definition.activation_never_settles then return end
-        if definition.activation_async_ticks or definition.activation_async_never_settles then
+        -- A record Cheat Engine takes its time switching on and puts down at
+        -- once, which is an ordinary shape: the enable compiles and allocates,
+        -- the disable writes the original bytes back.
+        local slow = definition.activation_async_ticks or definition.activation_async_never_settles
+        if slow and not (value == false and definition.disable_settles_at_once) then
           backing.AsyncProcessing = true
           state.async_records[definition.id] = {
             ticks = definition.activation_async_ticks,

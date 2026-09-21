@@ -416,32 +416,41 @@ def program_in_tree(root: Path, basename: str) -> Path | None:
     The first one found, which is what proposing a program to attach to wants: a
     game ships one program under that name and the user confirms what this
     proposes. A caller deciding something a user cannot see wants
-    `programs_in_tree` instead, which says when there is more than one.
+    `programs_in_tree` instead, which says when there is more than one and when
+    it did not get to look everywhere.
     """
-    found = programs_in_tree(root, basename, limit=1)
+    found, _complete = programs_in_tree(root, basename, limit=1)
     return found[0] if found else None
 
 
-def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> list[Path]:
-    """Every file of that name under the directory, up to `limit` of them.
+def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> tuple[list[Path], bool]:
+    """Files of that name under the directory, and whether the walk finished.
 
-    Two is enough to answer the question a caller has when it matters: whether
-    the name picks out one file or several. A game that ships two copies of a
-    library under one name - one per architecture, one per plugin directory -
-    has two answers and no way here to say which one it loads, and a caller
-    about to decide something from the contents of a file it chose by guessing
-    has to know that.
+    Up to `limit` of them, because two is enough to answer the question a caller
+    has when it matters: whether the name picks out one file or several. A game
+    that ships two copies of a library under one name - one per architecture,
+    one per plugin directory - has two answers and no way here to say which one
+    it loads, and a caller about to decide something from the contents of a file
+    it chose by guessing has to know that.
 
-    Bounded exactly as the walk above it is, and a budget that ran out returns
-    nothing rather than the part it managed: a partial answer would read as a
-    file that is not there.
+    The second value is what makes one match usable as an identity. This walk is
+    bounded in depth and in entries, so `[one file]` can mean the only one there
+    is, or the only one it got to before the bound; a caller that removes code
+    on the strength of it needs those told apart. It is true when the walk ran
+    out of directories to look in, and when the limit was reached, because more
+    than one is more than one however the rest of the tree looks.
+
+    Deeper directories left unvisited, or the entry budget spent, is the whole
+    of what makes it false. The directory this searches is the one it was given:
+    a file the game loads from outside that tree is not something this can see
+    at all, which is the boundary the caller states rather than this.
     """
     if not basename or "/" in basename or "\\" in basename:
-        return []
+        return [], True
     try:
         anchor = root.resolve()
     except OSError:
-        return []
+        return [], False
     wanted = basename.casefold()
     found: list[Path] = []
     seen = 0
@@ -454,7 +463,7 @@ def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> list[Path]
                     for entry in entries:
                         seen += 1
                         if seen > MAX_ENTRIES:
-                            return []
+                            return [], False
                         try:
                             if entry.is_dir(follow_symlinks=False):
                                 following.append(Path(entry.path))
@@ -471,13 +480,15 @@ def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> list[Path]
                             continue
                         found.append(candidate)
                         if len(found) >= limit:
-                            return found
+                            return found, True
             except OSError:
                 continue
         if not following:
-            return found
+            return found, True
         level = following
-    return found
+    # Directories left to look in when the depth bound ran out: whatever was
+    # found is what this level of the tree holds, not what the tree holds.
+    return found, False
 
 
 def _walk(root: Path) -> tuple[list[GameExecutable], bool, bool]:

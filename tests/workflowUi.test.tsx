@@ -3616,7 +3616,8 @@ describe("Home panel and managed setup", () => {
     api.stopCEForGame.mockResolvedValue({
       stopped: true, operation: null, recovered: false,
       quiesce: {
-        asked: true, answered: false, reason: "the bridge did not answer before the stop had to proceed",
+        asked: true, answered: false, cleanup_confirmed: false,
+        reason: "the bridge did not answer before the stop had to proceed",
         records_put_down: null, records_unsettled: [], elapsed_ms: 15000,
       },
     });
@@ -3635,6 +3636,33 @@ describe("Home panel and managed setup", () => {
     const said = decky.toast.mock.calls.map((call: any[]) => String(call[0]?.body ?? ""));
     expect(said.some((line: string) => line.includes("before CE Decky could confirm your cheats were switched off"))).toBe(true);
     expect(said.some((line: string) => line.includes("restarting it clears that"))).toBe(true);
+  });
+
+  it("warns the same way when the bridge answered and confirmed nothing", async () => {
+    // An answer saying the address list could not be read is an answer, and it
+    // is not a game with nothing left switched on: zero records were looked at.
+    // Every way of not knowing reaches the user as the same sentence.
+    api.stopCEForGame.mockResolvedValue({
+      stopped: true, operation: null, recovered: false,
+      quiesce: {
+        asked: true, answered: true, cleanup_confirmed: false, reason: "AddressList unavailable",
+        records_put_down: 0, records_unsettled: [], elapsed_ms: 300,
+      },
+    });
+    api.getStatus.mockResolvedValue(status(true));
+    renderContent();
+    await screen.findByText("Game.CT");
+    fireEvent.click(screen.getByRole("button", { name: "Manage", exact: true }));
+    const manage = await waitFor(() => {
+      const node = modalState.nodes.find((item: any) => item.props.onRefreshHolders);
+      expect(node).toBeTruthy();
+      return node;
+    });
+    decky.toast.mockClear();
+    await act(async () => { await manage.props.onRevoke(SHA, [10]); });
+
+    const said = decky.toast.mock.calls.map((call: any[]) => String(call[0]?.body ?? ""));
+    expect(said.some((line: string) => line.includes("before CE Decky could confirm your cheats were switched off"))).toBe(true);
   });
 
   it("names the byte pattern this copy of the game does not hold", async () => {

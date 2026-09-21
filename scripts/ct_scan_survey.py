@@ -77,15 +77,29 @@ def _scripts(path: Path) -> list[str]:
 
 def _table_scans(path: Path) -> list:
     """The scans one whole table declares, with a name read once."""
+    return _table_scans_and_repeats(path)[0]
+
+
+def _table_scans_and_repeats(path: Path) -> tuple[list, list[str]]:
+    """The same list, and the symbols the table uses for more than one pattern.
+
+    The product reads a symbol once per table and answers for none that stands
+    for different code in different scripts, so which tables carry that shape is
+    a question a report has to be able to ask.
+    """
     found = []
-    seen: set[str] = set()
+    first: dict[str, object] = {}
+    repeated: set[str] = set()
     for script in _scripts(path):
         for scan in read_scans(script)[0]:
-            if scan.name.casefold() in seen:
-                continue
-            seen.add(scan.name.casefold())
-            found.append(scan)
-    return found
+            key = scan.name.casefold()
+            was = first.get(key)
+            if was is None:
+                first[key] = scan
+                found.append(scan)
+            elif (was.directive, was.module, was.pattern) != (scan.directive, scan.module, scan.pattern):
+                repeated.add(scan.name)
+    return found, sorted(repeated)
 
 
 def _example(script: str, reason: str) -> str:
@@ -118,6 +132,9 @@ def survey_tables(root: Path) -> dict[str, object]:
     # answer for, so how much of a corpus it covers is a number worth having
     # rather than assuming.
     directives: collections.Counter[str] = collections.Counter()
+    # Symbols one table uses for more than one pattern. The product answers for
+    # none of them, so how common that shape is decides what that costs.
+    repeated_symbols = repeated_tables = 0
     unreadable = 0
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() != ".ct":
@@ -145,6 +162,13 @@ def survey_tables(root: Path) -> dict[str, object]:
                 examples.setdefault(reason, _example(script, reason))
         if table_scans:
             with_scans += 1
+        try:
+            repeats = _table_scans_and_repeats(path)[1]
+        except (OSError, ValueError, ET.ParseError):
+            repeats = []
+        if repeats:
+            repeated_tables += 1
+            repeated_symbols += len(repeats)
     ordered = sorted(lengths.elements())
     return {
         "tables": tables,
@@ -154,6 +178,8 @@ def survey_tables(root: Path) -> dict[str, object]:
         "scans": scans,
         "scans_with_no_fast_path": no_fast_path,
         "scans_by_directive": dict(sorted(directives.items())),
+        "repeated_symbols": repeated_symbols,
+        "tables_with_a_repeated_symbol": repeated_tables,
         "scans_per_script": dict(sorted(per_script.items())),
         "pattern_bytes": {
             "min": ordered[0] if ordered else 0,
@@ -169,7 +195,7 @@ def survey_tables(root: Path) -> dict[str, object]:
 
 def check_one(table: Path, executable: Path, repeat: int) -> dict[str, object]:
     """The check the panel runs, on one table against one program."""
-    scans = _table_scans(table)
+    scans, repeated = _table_scans_and_repeats(table)
     runs = []
     result = None
     for _ in range(max(1, repeat)):
@@ -184,6 +210,10 @@ def check_one(table: Path, executable: Path, repeat: int) -> dict[str, object]:
         "executable_bytes": executable.stat().st_size,
         "wrapper": executable_is_packed(executable),
         "scans": len(scans),
+        # Symbols this table uses for more than one pattern. The product answers
+        # for none of them, because which occurrence a cheat uses is not
+        # something a name says.
+        "repeated_symbols": repeated,
         "seconds": runs,
         **result.as_dict(),
     }
@@ -327,6 +357,8 @@ def main() -> int:
               f"with scans {survey['tables_with_scans']}, scripts {survey['scripts']}, scans {survey['scans']}")
         print(f"  no fast path: {survey['scans_with_no_fast_path']}   pattern bytes: {survey['pattern_bytes']}")
         print(f"  by directive: {survey['scans_by_directive']}")
+        print(f"  symbols used for more than one pattern: {survey['repeated_symbols']} "
+              f"in {survey['tables_with_a_repeated_symbol']} tables")
         for row in survey["refused"]:
             print(f"  refused {row['count']:4}  {row['reason']}")
             print(f"           {row['example']}")
@@ -342,6 +374,7 @@ def main() -> int:
               f"{check['scans']} scans, wrapper {check['wrapper']}, on {check['host']}")
         print(f"  seconds {check['seconds']}")
         print(f"  present {len(check['present'])}  missing {check['missing']}")
+        print(f"  repeated symbols: {check['repeated_symbols'] or 'none'}")
         for row in check["not_checked"]:
             print(f"  not checked: {row['name']} - {row['reason']}")
         if check["reason"]:

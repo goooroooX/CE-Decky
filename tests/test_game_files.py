@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ce_decky.game_files import MAX_DEPTH, MAX_EXECUTABLES, game_executables
+from ce_decky.game_files import MAX_DEPTH, MAX_EXECUTABLES, game_executables, program_in_tree, programs_in_tree
 from tests.test_steam_launch import write_appinfo
 
 
@@ -406,3 +406,44 @@ def test_a_declared_path_may_not_leave_the_game_folder(tmp_path: Path):
     found = game_executables(home, 77)
     assert found["source"] == "files"
     assert [item["name"] for item in found["executables"]] == ["game.exe"]
+
+
+def test_a_walk_that_did_not_finish_says_so_rather_than_answering(tmp_path: Path):
+    """One file found is the only one there is, or the only one this got to.
+
+    The walk is bounded in depth and in entries, and a caller that removes code
+    from a table because a pattern is absent from the file it picked has to be
+    able to tell those apart. A name that picks out one file in a walk that
+    still had directories to look in is not an identity.
+    """
+    root = tmp_path / "game"
+    (root / "win64").mkdir(parents=True)
+    (root / "win64" / "engine.dll").write_bytes(b"\x00")
+
+    found, complete = programs_in_tree(root, "engine.dll")
+    assert [item.name for item in found] == ["engine.dll"] and complete is True
+
+    # A second copy deeper than the walk is allowed to go, and the walk says it
+    # did not finish rather than reporting the one it reached as the only one.
+    deep = root
+    for level in range(MAX_DEPTH + 2):
+        deep = deep / f"level{level}"
+    deep.mkdir(parents=True)
+    (deep / "engine.dll").write_bytes(b"\x11")
+
+    found, complete = programs_in_tree(root, "engine.dll")
+    assert [item.name for item in found] == ["engine.dll"] and complete is False
+    # And the first-match helper still answers what it always answered.
+    assert program_in_tree(root, "engine.dll") == root / "win64" / "engine.dll"
+
+
+def test_two_files_of_one_name_are_both_reported(tmp_path: Path):
+    """Which of them a game loads is not something a listing can say."""
+    root = tmp_path / "game"
+    (root / "x64").mkdir(parents=True)
+    (root / "x86").mkdir(parents=True)
+    (root / "x64" / "engine.dll").write_bytes(b"\x00")
+    (root / "x86" / "engine.dll").write_bytes(b"\x11")
+
+    found, complete = programs_in_tree(root, "engine.dll")
+    assert len(found) == 2 and complete is True

@@ -614,6 +614,12 @@ local state = {
   -- asks for one, and the stop kills Cheat Engine as soon as it answers, so
   -- this session accepts nothing that changes the game again.
   quiesced = false,
+  -- Mutations Cheat Engine was still performing when the command that asked for
+  -- them gave up waiting, by MemoryRecord ID. A command that times out is this
+  -- session saying it stopped watching, never that Cheat Engine stopped: the
+  -- activation can still land, and a stop that did not know about it would
+  -- report a game nobody had put back. Entries are dropped as they settle.
+  moving = {},
   -- How many times a Cheat Engine window had to be hidden again after the
   -- initial suppression. Anything above zero is CE mapping a window over the
   -- running game, which is the thing that takes its audio and controller input.
@@ -928,6 +934,30 @@ local function stopping()
   return state.quiesce ~= nil or state.quiesced == true
 end
 
+-- Remember a mutation Cheat Engine had not finished when its command gave up.
+local function rememberMoving(record, recordId)
+  if recordId == nil or record == nil then return end
+  state.moving[recordId] = record
+end
+
+-- Which of those Cheat Engine is still performing, the settled ones dropped.
+--
+-- Read rather than assumed: `AsyncProcessing` going false is the only thing
+-- that says the operation is over, and a record that cannot be read again says
+-- nothing more, so it is dropped rather than held forever.
+local function movingRecords()
+  local left = {}
+  for recordId, record in pairs(state.moving) do
+    local processing, asyncErr = recordAsyncProcessing(record)
+    if asyncErr or not processing then
+      state.moving[recordId] = nil
+    else
+      left[#left + 1] = recordId
+    end
+  end
+  return left
+end
+
 local function recordStartupTransition(recordId, wasInactive)
   -- The first eligible transition is kept, and the status payload stays one ID
   -- however large the plan is.
@@ -970,6 +1000,10 @@ local function applyStartup()
     if processing then
       pending.waits = pending.waits + 1
       if pending.waits <= MAX_ACTIVATION_WAIT_TICKS then return end
+      -- Cheat Engine is still performing it. Giving up on the wait is this
+      -- session's decision and not the operation's end, so the record stays
+      -- known until it settles.
+      rememberMoving(pending.record, pending.action.record_id)
       beginRollback(pending.index)
       result(0, pending.action.record_id, false, nil, nil, "activation timed out", "mutation_failed")
       state.startup_pending = nil
@@ -1286,6 +1320,7 @@ local function advanceQuiesce()
       markUnsettled(run, state.pending_command.command.record_id)
     end
     if state.rollback then markUnsettled(run, "rollback") end
+    for _, recordId in ipairs(movingRecords()) do markUnsettled(run, recordId) end
     finishQuiesce()
     return
   end
@@ -1319,28 +1354,43 @@ local function advanceQuiesce()
   -- under a budget of its own: two bounds that can disagree is how an answer
   -- gets published with something still moving behind it.
   if state.startup_pending or state.pending_command or state.rollback then return end
+  -- And for a mutation whose own command gave up waiting while Cheat Engine was
+  -- still performing it: the record can come on after this walk has passed it,
+  -- and the stop kills Cheat Engine on the answer.
+  if #movingRecords() > 0 then return end
   -- The list this started from was what was on when it started. Putting a
   -- script down runs the table's own `[DISABLE]`, and a record on its way on
   -- when the stop arrived settles while this walks, so what is switched on now
   -- is asked again rather than assumed. The next tick carries the new walk: a
   -- table that switches a flag back on forever costs a few ticks, not the stop.
-  if run.sweeps < MAX_QUIESCE_SWEEPS then
-    local again = activeRecordsToQuiesce()
-    if again then
-      -- Not one already reported as a record that will not come down: trying it
-      -- again costs the same wait it already spent, and three sweeps of that
-      -- would spend the whole stop on an answer this already has.
-      local left = {}
-      for _, entry in ipairs(again) do
-        if not run.named[tostring(entry.id or "?")] then left[#left + 1] = entry end
-      end
-      if #left > 0 then
-        run.sweeps = run.sweeps + 1
-        run.records = left
-        run.index = 0
-        return
-      end
+  --
+  -- The look happens whatever the allowance is, because the allowance running
+  -- out is not the game being clean: a table whose `[DISABLE]` keeps switching
+  -- another record on would otherwise be reported as put down with one of its
+  -- cheats still running. What is still on then is named instead.
+  local again = activeRecordsToQuiesce()
+  if not again then
+    -- Nothing can be verified at all, which is a failed quiesce rather than a
+    -- successful one: the address list is how this sees what is switched on.
+    markUnsettled(run, "address list")
+    finishQuiesce()
+    return
+  end
+  -- Not one already reported as a record that will not come down: trying it
+  -- again costs the same wait it already spent, and three sweeps of that would
+  -- spend the whole stop on an answer this already has.
+  local left = {}
+  for _, entry in ipairs(again) do
+    if not run.named[tostring(entry.id or "?")] then left[#left + 1] = entry end
+  end
+  if #left > 0 then
+    if run.sweeps < MAX_QUIESCE_SWEEPS then
+      run.sweeps = run.sweeps + 1
+      run.records = left
+      run.index = 0
+      return
     end
+    for _, entry in ipairs(left) do markUnsettled(run, entry.id) end
   end
   finishQuiesce()
 end
@@ -1467,6 +1517,9 @@ local function settlePendingCommand()
   if processing then
     pending.waits = pending.waits + 1
     if pending.waits <= MAX_ACTIVATION_WAIT_TICKS then return end
+    -- The same rule as startup's: the wait ended, the operation did not. The
+    -- panel is told it timed out, and the stop is still answerable for it.
+    rememberMoving(pending.record, command.record_id)
     result(command.generation, command.record_id, false, nil, nil, "activation timed out", "mutation_failed")
     state.pending_command = nil
     return

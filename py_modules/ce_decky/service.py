@@ -1736,7 +1736,36 @@ class PluginService:
         if program is None:
             return ScanCheck(source="file", reason="this device does not know which program this game runs"), None
         answer = check_executable(program, list(inspection.scans))
-        return self._with_other_modules(answer, program, list(inspection.scans)), found_by
+        answer = self._with_other_modules(answer, program, list(inspection.scans))
+        return self._without_repeated_scans(answer, inspection), found_by
+
+    def _without_repeated_scans(self, answer: ScanCheck, inspection) -> ScanCheck:
+        """The same answer, saying nothing about a symbol that means two things.
+
+        A table can declare one scan symbol in two scripts and mean different
+        code each time, which is how a table carrying a build for one graphics
+        backend and a build for another is written. The check was handed the
+        first of them, so what it found is an answer about that occurrence and
+        not about the cheats the other one owns: reporting it as the table's
+        answer would call a symbol healthy, or call it broken, by the order the
+        file happens to be in. It is reported as what it is instead, and the
+        repair refuses such a symbol outright.
+        """
+        repeated = {name for name in getattr(inspection, "repeated_scans", ())}
+        if not repeated or answer.reason is not None:
+            return answer
+        said = "this table looks for this in more than one place, and those are not the same pattern"
+        return replace(
+            answer,
+            present=tuple(name for name in answer.present if name not in repeated),
+            missing=tuple(name for name in answer.missing if name not in repeated),
+            proven_missing=tuple(name for name in answer.proven_missing if name not in repeated),
+            ambiguous=tuple(name for name in answer.ambiguous if name not in repeated),
+            not_checked=tuple(
+                [(name, reason) for name, reason in answer.not_checked if name not in repeated]
+                + [(name, said) for name in sorted(repeated)]
+            ),
+        )
 
     def _with_other_modules(self, answer: ScanCheck, program: Path, scans: list[TableScan]) -> ScanCheck:
         """The same answer, with the game's other files searched for what names them.
@@ -1796,13 +1825,21 @@ class PluginService:
             # not a pattern the game does not have. Reading one of them would
             # put a finding on screen about a file the game may never load, and
             # would let the repair cut the hook that needs it.
-            beside = programs_in_tree(program.parent, module)
-            if len(beside) != 1:
-                if len(beside) > 1:
+            beside, complete = programs_in_tree(program.parent, module)
+            if len(beside) != 1 or not complete:
+                # More than one, or a walk that did not get to look everywhere.
+                # Both are the same answer: which file the game loads under that
+                # name is not established, so nothing is claimed about the
+                # pattern and nothing may be removed for it. A file found in a
+                # walk that stopped at its own depth bound is the first one this
+                # reached rather than the only one there is.
+                if beside or not complete:
                     mine = {scan.name for scan in wanted[module]}
+                    said = (f"this game holds more than one {module}, so which one it loads is not known here"
+                            if len(beside) > 1 else
+                            f"this device could not establish which {module} this game loads")
                     not_checked = [
-                        (name, f"this game holds more than one {module}, so which one it loads is not known here"
-                         if name in mine else reason)
+                        (name, said if name in mine else reason)
                         for name, reason in not_checked
                     ]
                 continue
@@ -4440,12 +4477,20 @@ class PluginService:
         try:
             prepared = self.session_store.load_current(app_id)
             if prepared is None:
-                return {"asked": False, "reason": "no prepared session"}
+                # Nothing of this plugin's is prepared for that game, so there
+                # is nothing it could have left switched on.
+                return {"asked": False, "reason": "no prepared session", "cleanup_confirmed": True}
             status = self.session_store.read_status(prepared)
             if status is None or status.attached is not True:
-                # Nothing to ask: a bridge that is not answering, and a game
-                # that has already exited, are both this.
-                return {"asked": False, "reason": "the resident bridge is not attached"}
+                # Nothing to ask, and two very different reasons for it: the
+                # game has exited, or a bridge that should be answering is not.
+                # Only the first is a game nobody has to be warned about, and
+                # which one it is comes from the game's own processes rather
+                # than from the silence.
+                return {
+                    "asked": False, "reason": "the resident bridge is not attached",
+                    "cleanup_confirmed": self._game_is_gone(app_id),
+                }
             # The write only: a panel command landing between the read of the
             # next generation and the write would make this refuse a quiesce
             # the stop can perfectly well perform. The wait afterwards is
@@ -4464,18 +4509,46 @@ class PluginService:
                     prepared, [RuntimeCommand(generation=generation, kind="quiesce")],
                 )
         except (OSError, ValueError, DurabilityUnknownError) as exc:
-            return {"asked": False, "reason": str(exc)[:256]}
+            return {"asked": False, "reason": str(exc)[:256], "cleanup_confirmed": self._game_is_gone(app_id)}
         answer = self._await_quiesce(prepared, generation)
+        # What the stop may keep quiet about, stated rather than inferred from
+        # an empty list. A walk that finished with nothing left on is the one
+        # thing that says this game was put back; a quiesce that could not read
+        # the address list, one that was never answered and one nothing was
+        # asked of are all a game nobody can speak for. A game that has exited
+        # is the other clean answer, and it is read from its own processes.
+        confirmed = bool(answer.get("answered")) and answer.get("reason") is None
+        if not confirmed:
+            confirmed = self._game_is_gone(app_id)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         log_activity(
             self.logger, "info", "runtime.quiesce",
             app_id=app_id, session=prepared.session_id[:12],
             records_put_down=answer.get("records_put_down"),
             records_unsettled=",".join(answer.get("records_unsettled") or ()) or None,
-            answered=answer.get("answered"),
+            answered=answer.get("answered"), cleanup_confirmed=confirmed,
             elapsed_ms=elapsed_ms, reason=answer.get("reason"),
         )
-        return {**answer, "asked": True, "elapsed_ms": elapsed_ms}
+        return {**answer, "asked": True, "cleanup_confirmed": confirmed, "elapsed_ms": elapsed_ms}
+
+    def _game_is_gone(self, app_id: int) -> bool:
+        """Whether this game's own program is no longer running.
+
+        The one independent answer to what a silent bridge means. A game that
+        has exited took every patch with it, so nothing needs saying; a game
+        still running with a bridge that stopped answering is exactly the case
+        the user has to be told about. Unreadable is not gone: anything this
+        cannot establish counts as still running, because the warning it would
+        otherwise suppress is the only thing standing between the user and a
+        game quietly left changed.
+        """
+        try:
+            profile = self.profile_store.get(app_id)
+            if profile is None or not profile.target_process:
+                return False
+            return observe_game_executable_path(app_id, profile.target_process) is None
+        except (OSError, ValueError, RuntimeError):
+            return False
 
     def _await_quiesce(self, prepared, generation: int) -> dict[str, object]:
         """Wait for the bridge's own answer to one quiesce, or say it did not come.
