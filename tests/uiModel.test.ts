@@ -1215,6 +1215,31 @@ describe("a cheat switched on without the value it needs", () => {
     expect(pinnedMissingRequiredValue(controls, staged([[1, false, null]]), [])).toEqual([]);
   });
 
+  it("never asks for a value on a cheat whose toggle is the whole control", () => {
+    // A switch carries its value by construction: its toggle writes one key for
+    // on and the other for off, and the row has no field because there is
+    // nothing to type. Asking for one would refuse an Apply over a cheat the
+    // reader can do nothing about from either screen, and a build that had not
+    // yet drawn these as switches did exactly that - naming a flag on the quick
+    // access panel that nobody could give a value to.
+    const flag = control(1, "dropdown", {
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], switch_on_value: "1",
+    });
+    const controls = [flag];
+
+    // Switched on by this press with nothing staged beside it.
+    expect(controlsMissingRequiredValue(controls, staged([[1, true, null]]), new Set([1]))).toEqual([]);
+    // And pinned onto the panel with no value anywhere, which is the shape that
+    // refused every Apply until it was dealt with.
+    expect(pinnedMissingRequiredValue(controls, staged([[1, false, null]]), [1])).toEqual([]);
+    // The rule is the switch, not the two entries: a list of two named
+    // alternatives is a choice and still needs one.
+    const choice = control(2, "dropdown", {
+      dropdown_values: [["0", "Sword"], ["1", "Axe"]], dropdown_read_only: true,
+    });
+    expect(controlsMissingRequiredValue([choice], staged([[2, true, null]]), new Set([2])).map((item) => item.id)).toEqual([2]);
+  });
+
   it("counts what differs, not what was touched on the way there", () => {
     // Switching a cheat on and off again leaves it touched for the rest of the
     // screen's life, so a form returned to exactly the state it opened in still
