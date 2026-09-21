@@ -2,7 +2,7 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
-## 0.9.29 — 2026-09-20
+## 0.9.29 — 2026-09-21
 
 - [Fixed] Stopping Cheat Engine leaves the game as it was found. Your cheats are switched off first, innermost first, so a game no longer keeps running with changes a stopped Cheat Engine made and could not undo. It is bounded, so a stop cannot hang on it, and a cheat that will not come down is named, with restarting the game as what clears it.
 - [New] Review says what is wrong with a table before you use it. It names a signature this Cheat Engine will refuse, code the table looks for that your copy of the game does not have, and code it finds in more than one place, where Cheat Engine picks one of them at random. The game's other files are checked too, where they sit beside its program. This runs only where CE Decky already knows which program the game runs; otherwise the screen says nothing rather than guessing, and a program wrapped by a protector is reported as one that cannot be checked.
