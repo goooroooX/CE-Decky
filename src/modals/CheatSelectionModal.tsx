@@ -18,7 +18,7 @@ import { modalActionStyle } from "../components/ModalActions";
 import { CheatRow, cheatRowActionStyle, toggleBoxStyle } from "../components/CheatRow";
 import { ActionGroup, CONTENTS_ONLY, DensePanel, FilterField, PanelNote, PanelRow, RefusalBlock, SectionHeading, SideBySide, SmallButton, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
 import { PagerFooter } from "../components/PagerFooter";
-import { applyRuntimeSelection, queryRuntimeControlsPartial, RuntimeQueryAbortedError } from "../runtimeClient";
+import { applyRuntimeSelection, queryRuntimeControlsPartial, RuntimeQueryAbortedError, type RuntimeDesiredState } from "../runtimeClient";
 import {
   CONTROL_PAGE_SIZE,
   clampPage,
@@ -582,6 +582,14 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       const activeById = new Map<number, boolean | null>(
         safeControls.flatMap((control) => control.id === null ? [] : [[control.id, staged[control.id]?.active ?? null] as const]),
       );
+      // What is actually running, which is not what `staged` says: staged is
+      // this screen's pending state and already carries the reader's unapplied
+      // toggles. The difference between it and the state above is the set of
+      // scripts this press starts, which is the only set whose declared
+      // defaults arrive with it.
+      const activeBefore = new Map<number, boolean | null>(
+        safeControls.flatMap((control) => control.id === null ? [] : [[control.id, lastConfirmed[control.id]?.active ?? null] as const]),
+      );
       for (const recordId of [...touchedActive, ...touchedValues]) {
         if (effective[recordId]?.active !== true) continue;
         const control = controlById.get(recordId);
@@ -722,7 +730,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       }
 
       const touchedIds = new Set<number>([...effectiveTouchedActive, ...touchedValues]);
-      const desired = safeControls.flatMap((control) => {
+      const desired: RuntimeDesiredState[] = safeControls.flatMap((control) => {
         if (control.id === null || !touchedIds.has(control.id)) return [];
         const state = effective[control.id];
         if (!state) return [];
@@ -742,16 +750,29 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           label: controlRowLabel(control),
         }];
       });
-      // A script CE Decky switched on carries the table author's own defaults
-      // with it, so every switch under it that nobody asked for is written to
-      // its off key in the same call. Without this the panel counts the one
-      // cheat that was asked for while the game runs everything the script
-      // declared: one real table turns on 22 of its 24 flags this way.
+      // A script carries the table author's own defaults with it, so every
+      // switch under it that nobody asked for is written to its off key in the
+      // same call that starts it. Without this the panel counts the one cheat
+      // that was asked for while the game runs everything the script declared:
+      // one real table turns on 22 of its 24 flags this way.
+      //
+      // Exactly the scripts this press starts, which is neither more nor less
+      // than the set whose defaults arrive with it. `pluginManaged` was the
+      // wrong source in both directions: it carries every enclosing script in
+      // the table, because the startup profile is derived from it, so flags
+      // were written down under scripts that are not running - at addresses
+      // those scripts had not allocated yet, which read back as nothing and
+      // failed an Apply that switched nothing on, naming a flag the user had
+      // never touched. And it deliberately excludes a script the user switched
+      // on themselves, so doing that by hand brought the whole table's defaults
+      // with it and nothing held them off. A script that was already running
+      // is not here either: its defaults were dealt with when it started, and
+      // writing them again would undo a flag switched on since.
       const heldOff = switchesToHoldOff(
-        [...pluginManaged].flatMap((recordId) => {
-          const script = controlById.get(recordId);
-          return script ? [script] : [];
-        }),
+        safeControls.filter((control) => control.id !== null
+          && enclosingIds.has(control.id)
+          && activeById.get(control.id) === true
+          && activeBefore.get(control.id) !== true),
         safeControls,
         touchedIds,
       );
@@ -764,13 +785,21 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           switch_values: switchValuesFor(control),
           path: control.path,
           label: controlRowLabel(control),
+          held_off: true,
         });
       }
 
       // Any mutation/revalidation failure after this point makes the previous
       // Home snapshot stale. Successful final query below republishes a fresh one.
-      onSnapshotInvalidated?.();
-      mutatedRuntime = true;
+      //
+      // Both are claims about a write, so neither is made where there is
+      // nothing to write: a press that only stored a value for a script that is
+      // still off touches the game not at all, and saying it did is what puts
+      // "the game may have been changed" in front of somebody it was not.
+      if (desired.length > 0) {
+        onSnapshotInvalidated?.();
+        mutatedRuntime = true;
+      }
       const confirmed = await applyRuntimeSelection(appId, desired);
       if (confirmed.compatibilityMayHaveChanged) {
         await onCompatibilityConfirmed?.().catch((cause) => logUiFailure("cheats.compatibility_refresh_failed", cause, { appId }));
@@ -793,7 +822,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         const finalById = new Map(finalState.results.flatMap(
           (result) => result.record_id === null ? [] : [[result.record_id, result] as const],
         ));
-        for (const scriptId of pluginManaged) {
+        // Over the scripts that actually held something off, not over the ones
+        // this press manages: a script the reader switched on themselves holds
+        // its defaults off like any other and belongs in the record too.
+        for (const scriptId of new Set(heldOff.map((item) => item.script))) {
           const mine = heldOff.filter((item) => item.script === scriptId);
           if (mine.length === 0) continue;
           logUi("runtime.flags_held_off", {

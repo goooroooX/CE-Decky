@@ -4311,6 +4311,116 @@ describe("Cheat selection workflow", () => {
     expect(byId.get(402)).toMatchObject({ active: null, value: "0" });
   });
 
+  it("holds the same flags off when the reader switches the script on themselves", async () => {
+    // The defaults arrive with the script whoever started it. Holding them off
+    // only for a script CE Decky switched on meant doing it by hand brought the
+    // whole table's declarations with it, which is the thing this prevents.
+    const script = {
+      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    };
+    const unasked = {
+      id: 402, description: "bEnableOneHitKill", path: ["Enable", "bEnableOneHitKill"],
+      variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1",
+    };
+    const chosen = {
+      id: 401, description: "bEnableGodMode", path: ["Enable", "bEnableGodMode"],
+      variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1",
+    };
+    const live = liveRuntime();
+    live.status.results = [
+      { generation: 1, record_id: 400, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 401, ok: true, active: false, value: "0", error: null },
+      { generation: 1, record_id: 402, ok: true, active: false, value: "0", error: null },
+    ];
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: live, results: live.status.results, unavailable: [],
+    });
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 3, controls: [script, chosen, unasked] } as any,
+    });
+
+    // An enclosing script is listed with the machinery rather than the cheats,
+    // because it is not a choice most readers make. This is the one who does,
+    // and switches on a cheat under it in the same press.
+    const scripts = await screen.findByTestId("show-scripts");
+    fireEvent.click(within(scripts).getByTestId("toggle"));
+    const row = await screen.findByTestId("cheat-row-400");
+    fireEvent.click(within(row).getByTestId("toggle"));
+    fireEvent.click(within(await screen.findByTestId("cheat-row-401")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    const byId = new Map(sent.map((state: any) => [state.record_id, state]));
+    expect(byId.get(400)).toMatchObject({ active: true });
+    // Written to its off key, and marked as CE Decky's own ask so a read-back
+    // failure says whose it was.
+    expect(byId.get(402)).toMatchObject({ active: null, value: "0", held_off: true });
+  });
+
+  it("writes nothing into the game for a value stored against a script that is off", async () => {
+    // Measured on the device: the reader pinned two cheats, switched nothing on
+    // and typed a value, and Apply came back with an error naming a flag they
+    // had never seen. Every enclosing script in the table was treated as one
+    // this press manages, so the flags under all of them were written to their
+    // off keys - at addresses their scripts had not allocated yet. The value
+    // the reader did type is a pre-game setting and was already deferred; the
+    // press has nothing to send at all.
+    const script = {
+      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    };
+    const damage = {
+      id: 401, description: "fPlayerWeaponDamageMod", path: ["Enable", "fPlayerWeaponDamageMod"],
+      variable_type: "Float", kind: "value", group_header: false, has_assembler_script: false,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    };
+    const unasked = {
+      id: 402, description: "bEnableVitalsDrainRateMod", path: ["Enable", "bEnableVitalsDrainRateMod"],
+      variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1",
+    };
+    const live = liveRuntime();
+    live.status.results = [
+      { generation: 1, record_id: 400, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 401, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 402, ok: true, active: false, value: "0", error: null },
+    ];
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: live, results: live.status.results, unavailable: [],
+    });
+    const onSaveConfiguredValues = vi.fn().mockResolvedValue(undefined);
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 3, controls: [script, damage, unasked] } as any,
+      onSaveConfiguredValues,
+    });
+
+    const row = await screen.findByTestId("cheat-row-401");
+    fireEvent.click(within(row).getByRole("button", { name: "More" }));
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "4" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    // The value is kept for the next time this table is loaded, and the game is
+    // not touched: nothing is sent, so nothing can read back as missing.
+    await waitFor(() => expect(onSaveConfiguredValues).toHaveBeenCalledWith([{ record_id: 401, value: "4" }]));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1]).toEqual([]);
+  });
+
   it("leaves a value list that fits the panel exactly as it was", async () => {
     const picker = {
       id: 301, description: "Difficulty", path: ["Difficulty"], variable_type: "4 Bytes",

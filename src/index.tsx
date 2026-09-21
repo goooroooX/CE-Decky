@@ -3180,7 +3180,15 @@ function Content() {
     // under them that this press did not ask for is written to its off key in
     // the same call. Otherwise one pinned cheat switches on everything its
     // script declares, and the panel counts the one it was asked for.
-    const heldOff = active ? switchesToHoldOff(ancestors, controls, new Set([recordId])) : [];
+    // The scripts this press starts: the ones it has to switch on to reach the
+    // cheat, and the row itself when the row is a script somebody switched on
+    // by hand. Leaving the second one out meant switching a script on from the
+    // panel brought every default it declares with it, which is the whole thing
+    // holding them off exists to prevent.
+    const startedHere = active
+      ? [...ancestors, ...(control.id !== null && enclosingControlIds(controls).has(control.id) ? [control] : [])]
+      : [];
+    const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
     const desired = active
       ? [
           ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -3205,6 +3213,7 @@ function Content() {
             switch_values: switchValuesFor(held),
             path: held.path,
             label: controlRowLabel(held),
+            held_off: true,
           }]),
           ...releasedRows,
         ]

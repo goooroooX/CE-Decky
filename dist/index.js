@@ -8172,7 +8172,12 @@ async function applyRuntimeSelection(appId, desiredStates) {
             && deliberatelyOff.has(missing.record_id)
             && (alreadyAbsentOff.has(missing.record_id) || destroyedByAncestor(desired)))
             continue;
-        throw new RuntimeOperationError(missing.error ?? `MemoryRecord ${missing.record_id} query failed.`, verified.envelope);
+        // The name the reader saw on the row, where this call carried one. A bare
+        // A bare record number is the same non-information as no message at all:
+        // it is on no screen the reader has, and the record may be one CE Decky
+        // asked about rather than one they chose.
+        const named = desired?.label ?? `MemoryRecord ${missing.record_id}`;
+        throw new RuntimeOperationError(missing.error ?? `${named} could not be read back after the change.`, verified.envelope);
     }
     for (const result of verified.results) {
         if (result.record_id === null)
@@ -8187,7 +8192,13 @@ async function applyRuntimeSelection(appId, desiredStates) {
         // its toggle writes rather than whatever value was staged beside it.
         const wanted = wantedValue(desired);
         if (wanted !== null && result.value !== wanted) {
-            throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${wanted}.`, verified.envelope);
+            const name = desired.label ?? `MemoryRecord ${result.record_id}`;
+            throw new RuntimeOperationError(desired.held_off
+                // Whose ask it was, first. This record is not one the reader chose:
+                // the table's own script declares it on, and CE Decky writes it down
+                // so switching on one cheat does not switch on the rest of the table.
+                ? `${name} is switched on by this table's own script, and CE Decky could not switch it back off: it kept ${describeReadBack(result.value)} instead of ${wanted}. That cheat may be running in the game even though you did not ask for it.`
+                : `${name} kept ${describeReadBack(result.value)} instead of ${wanted}.`, verified.envelope);
         }
     }
     const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) => other !== candidate && other.active === true && candidate.path && other.path
@@ -11063,6 +11074,12 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // in the next session with every cheat under it off.
             const pluginManaged = new Set();
             const activeById = new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, staged[control.id]?.active ?? null]]));
+            // What is actually running, which is not what `staged` says: staged is
+            // this screen's pending state and already carries the reader's unapplied
+            // toggles. The difference between it and the state above is the set of
+            // scripts this press starts, which is the only set whose declared
+            // defaults arrive with it.
+            const activeBefore = new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, lastConfirmed[control.id]?.active ?? null]]));
             for (const recordId of [...touchedActive, ...touchedValues]) {
                 if (effective[recordId]?.active !== true)
                     continue;
@@ -11226,15 +11243,28 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                         label: controlRowLabel(control),
                     }];
             });
-            // A script CE Decky switched on carries the table author's own defaults
-            // with it, so every switch under it that nobody asked for is written to
-            // its off key in the same call. Without this the panel counts the one
-            // cheat that was asked for while the game runs everything the script
-            // declared: one real table turns on 22 of its 24 flags this way.
-            const heldOff = switchesToHoldOff([...pluginManaged].flatMap((recordId) => {
-                const script = controlById.get(recordId);
-                return script ? [script] : [];
-            }), safeControls, touchedIds);
+            // A script carries the table author's own defaults with it, so every
+            // switch under it that nobody asked for is written to its off key in the
+            // same call that starts it. Without this the panel counts the one cheat
+            // that was asked for while the game runs everything the script declared:
+            // one real table turns on 22 of its 24 flags this way.
+            //
+            // Exactly the scripts this press starts, which is neither more nor less
+            // than the set whose defaults arrive with it. `pluginManaged` was the
+            // wrong source in both directions: it carries every enclosing script in
+            // the table, because the startup profile is derived from it, so flags
+            // were written down under scripts that are not running - at addresses
+            // those scripts had not allocated yet, which read back as nothing and
+            // failed an Apply that switched nothing on, naming a flag the user had
+            // never touched. And it deliberately excludes a script the user switched
+            // on themselves, so doing that by hand brought the whole table's defaults
+            // with it and nothing held them off. A script that was already running
+            // is not here either: its defaults were dealt with when it started, and
+            // writing them again would undo a flag switched on since.
+            const heldOff = switchesToHoldOff(safeControls.filter((control) => control.id !== null
+                && enclosingIds.has(control.id)
+                && activeById.get(control.id) === true
+                && activeBefore.get(control.id) !== true), safeControls, touchedIds);
             for (const { control, value } of heldOff) {
                 if (control.id === null)
                     continue;
@@ -11245,12 +11275,20 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     switch_values: switchValuesFor(control),
                     path: control.path,
                     label: controlRowLabel(control),
+                    held_off: true,
                 });
             }
             // Any mutation/revalidation failure after this point makes the previous
             // Home snapshot stale. Successful final query below republishes a fresh one.
-            onSnapshotInvalidated?.();
-            mutatedRuntime = true;
+            //
+            // Both are claims about a write, so neither is made where there is
+            // nothing to write: a press that only stored a value for a script that is
+            // still off touches the game not at all, and saying it did is what puts
+            // "the game may have been changed" in front of somebody it was not.
+            if (desired.length > 0) {
+                onSnapshotInvalidated?.();
+                mutatedRuntime = true;
+            }
             const confirmed = await applyRuntimeSelection(appId, desired);
             if (confirmed.compatibilityMayHaveChanged) {
                 await onCompatibilityConfirmed?.().catch((cause) => logUiFailure("cheats.compatibility_refresh_failed", cause, { appId }));
@@ -11265,7 +11303,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // asked for, and it is the one thing a later report needs to see.
             if (heldOff.length > 0) {
                 const finalById = new Map(finalState.results.flatMap((result) => result.record_id === null ? [] : [[result.record_id, result]]));
-                for (const scriptId of pluginManaged) {
+                // Over the scripts that actually held something off, not over the ones
+                // this press manages: a script the reader switched on themselves holds
+                // its defaults off like any other and belongs in the record too.
+                for (const scriptId of new Set(heldOff.map((item) => item.script))) {
                     const mine = heldOff.filter((item) => item.script === scriptId);
                     if (mine.length === 0)
                         continue;
@@ -16030,7 +16071,15 @@ function Content() {
         // under them that this press did not ask for is written to its off key in
         // the same call. Otherwise one pinned cheat switches on everything its
         // script declares, and the panel counts the one it was asked for.
-        const heldOff = active ? switchesToHoldOff(ancestors, controls, new Set([recordId])) : [];
+        // The scripts this press starts: the ones it has to switch on to reach the
+        // cheat, and the row itself when the row is a script somebody switched on
+        // by hand. Leaving the second one out meant switching a script on from the
+        // panel brought every default it declares with it, which is the whole thing
+        // holding them off exists to prevent.
+        const startedHere = active
+            ? [...ancestors, ...(control.id !== null && enclosingControlIds(controls).has(control.id) ? [control] : [])]
+            : [];
+        const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
         const desired = active
             ? [
                 ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -16055,6 +16104,7 @@ function Content() {
                         switch_values: switchValuesFor(held),
                         path: held.path,
                         label: controlRowLabel(held),
+                        held_off: true,
                     }]),
                 ...releasedRows,
             ]

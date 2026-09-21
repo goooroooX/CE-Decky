@@ -43,6 +43,18 @@ export interface RuntimeDesiredState {
    * leaves the cheat running in the game under a switch that says it is off.
    */
   switch_values?: { on: string; off: string };
+  /**
+   * Whether CE Decky asked for this record rather than the user.
+   *
+   * A table's script declares its own flags as on, so switching the script on
+   * for one cheat brings the rest with it, and the press writes each of those
+   * to its off key. They are ordinary desired states and are held to the same
+   * read-back as everything else - a flag that would not go down is a cheat
+   * running that nobody asked for. What it changes is the sentence: a reader
+   * met a bare flag name they had never seen, reported as having kept no
+   * readable value, from a press where they switched nothing on.
+   */
+  held_off?: boolean;
 }
 
 export class RuntimeOperationError extends Error {
@@ -776,8 +788,13 @@ export async function applyRuntimeSelection(
       && deliberatelyOff.has(missing.record_id)
       && (alreadyAbsentOff.has(missing.record_id) || destroyedByAncestor(desired))
     ) continue;
+    // The name the reader saw on the row, where this call carried one. A bare
+    // A bare record number is the same non-information as no message at all:
+    // it is on no screen the reader has, and the record may be one CE Decky
+    // asked about rather than one they chose.
+    const named = desired?.label ?? `MemoryRecord ${missing.record_id}`;
     throw new RuntimeOperationError(
-      missing.error ?? `MemoryRecord ${missing.record_id} query failed.`,
+      missing.error ?? `${named} could not be read back after the change.`,
       verified.envelope,
     );
   }
@@ -795,8 +812,14 @@ export async function applyRuntimeSelection(
     // its toggle writes rather than whatever value was staged beside it.
     const wanted = wantedValue(desired);
     if (wanted !== null && result.value !== wanted) {
+      const name = desired.label ?? `MemoryRecord ${result.record_id}`;
       throw new RuntimeOperationError(
-        `${desired.label ?? `MemoryRecord ${result.record_id}`} kept ${describeReadBack(result.value)} instead of ${wanted}.`,
+        desired.held_off
+          // Whose ask it was, first. This record is not one the reader chose:
+          // the table's own script declares it on, and CE Decky writes it down
+          // so switching on one cheat does not switch on the rest of the table.
+          ? `${name} is switched on by this table's own script, and CE Decky could not switch it back off: it kept ${describeReadBack(result.value)} instead of ${wanted}. That cheat may be running in the game even though you did not ask for it.`
+          : `${name} kept ${describeReadBack(result.value)} instead of ${wanted}.`,
         verified.envelope,
       );
     }

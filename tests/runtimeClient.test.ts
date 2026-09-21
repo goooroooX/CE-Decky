@@ -729,6 +729,39 @@ describe("runtime ACK client", () => {
     ])).rejects.toThrow(/“Init -- ENABLE THIS FIRST” did not switch on.*different build of the game/s);
   });
 
+  it("says whose ask a flag was when the one CE Decky put down would not go", async () => {
+    // These records are not the reader's choice: the table's own script
+    // declares them on, and the press writes each down so switching on one
+    // cheat does not switch on the rest of the table. One that will not go down
+    // is worth an error - a cheat is running that nobody asked for - but a
+    // reader met it as a bare name they had never seen, from a press where they
+    // had switched nothing on.
+    // Read as the script left it, written down, and still reading as the script
+    // left it: the flag would not go.
+    const queried = [{ generation: 1, record_id: 9, ok: true, active: false, value: "1", error: null }];
+    const mutation = [{ generation: 2, record_id: 9, ok: true, active: false, value: "1", error: null }];
+    const verified = [{ generation: 3, record_id: 9, ok: true, active: false, value: "1", error: null }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(2, queried))
+      .mockResolvedValueOnce(envelope(2, queried))
+      .mockResolvedValueOnce(envelope(3, [...queried, ...mutation]))
+      .mockResolvedValueOnce(envelope(3, [...queried, ...mutation]))
+      .mockResolvedValue(envelope(4, [...queried, ...mutation, ...verified]));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 2 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 3 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 4 });
+
+    const failure = await applyRuntimeSelection(10, [
+      { record_id: 9, active: null, value: "0", label: "bEnableVitalsDrainRateMod", held_off: true },
+    ]).catch((cause) => cause);
+
+    expect(failure).toBeInstanceOf(RuntimeOperationError);
+    expect(failure.message).toMatch(/switched on by this table's own script/);
+    expect(failure.message).toMatch(/you did not ask for it/);
+  });
+
   it("does not call the table unusable when a cheat would not switch off", async () => {
     // The bridge reports one code for a `set_active` that settled wrong, in
     // either direction. A cheat that will not switch *off* is very likely still
