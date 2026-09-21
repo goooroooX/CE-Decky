@@ -968,6 +968,17 @@ function stub.report()
   for _, id in ipairs(state.deactivations or {}) do
     lines[#lines + 1] = "deactivated " .. tostring(id)
   end
+  -- What each record was left holding. Switching a frozen record off releases
+  -- the freeze and leaves the value it was frozen at, so what the game keeps is
+  -- the write that came after it rather than the release, and a test about a
+  -- cheat really being off has to be able to read that value.
+  for _, id in ipairs((state.scenario or {}).record_order or {}) do
+    local record = state.records[id]
+    if record then
+      local ok, value = pcall(function() return record.Value end)
+      lines[#lines + 1] = "value " .. tostring(id) .. " " .. tostring(ok and value or "unreadable")
+    end
+  end
   for _, message in ipairs(state.sent_messages) do
     lines[#lines + 1] = "#MESSAGE#\t" .. tostring(message.handle) .. "\t" ..
       tostring(message.message) .. "\t" .. tostring(message.wparam) .. "\t" ..

@@ -346,7 +346,7 @@ export interface RuntimeResult {
    * the record is still not in the requested state - for a script record, Cheat
    * Engine declining to run it.
    */
-  error_code?: "record_missing" | "target_detached" | "address_list_unavailable" | "record_read_failed" | "mutation_failed" | "attach_failed" | "activation_rejected" | null;
+  error_code?: "record_missing" | "target_detached" | "address_list_unavailable" | "record_read_failed" | "mutation_failed" | "attach_failed" | "activation_rejected" | "quiesce_in_progress" | null;
 }
 
 export interface RuntimeStatus {

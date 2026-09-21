@@ -274,8 +274,8 @@ def test_a_pattern_seen_twice_is_reported_and_one_seen_once_claims_nothing(tmp_p
     program.write_bytes(b"\x00" * 16 + twice + b"\x11" * 32 + twice + b"\x22" * 16 + once + b"\x33" * 16)
 
     answer = check_executable(program, [
-        TableScan(name="aobTwice", module=None, pattern="F3 0F 59 F0 48 8B C3"),
-        TableScan(name="aobOnce", module=None, pattern="48 8B 01 48 89 54 24"),
+        TableScan(name="aobTwice", module=None, pattern="F3 0F 59 F0 48 8B C3", directive="aobscan"),
+        TableScan(name="aobOnce", module=None, pattern="48 8B 01 48 89 54 24", directive="aobscan"),
     ])
 
     assert answer.present == ("aobTwice", "aobOnce")
@@ -698,3 +698,63 @@ def test_a_repair_that_changed_the_table_is_refused():
     both, _ = drop_unmatched_scans(blob, ["aobGone"])
     with pytest.raises(ScanRepairError, match="nobody asked"):
         assert_only_scans_dropped(blob, both, [])
+
+
+def test_which_scanner_the_script_asked_for_is_read_with_the_pattern():
+    """Where a pattern is looked for is part of what the directive says.
+
+    Cheat Engine has three of them, and only one names a file. The other two
+    search the whole of the running process, or a range of it, so what a file on
+    disk does not hold says nothing about either.
+    """
+    script = (
+        "aobscanmodule(aobInModule,Game.exe,48 8B 01)\n"
+        "aobscan(aobAnywhere,48 8B 02)\n"
+        "aobscanregion(aobInRange,start,stop,48 8B 03)\n"
+    )
+    assert [(scan.name, scan.directive, scan.module) for scan in extract_scans(script)] == [
+        ("aobInModule", "aobscanmodule", "Game.exe"),
+        ("aobAnywhere", "aobscan", None),
+        ("aobInRange", "aobscanregion", None),
+    ]
+
+
+def _one_pattern_program(path: Path, pattern: bytes) -> Path:
+    program = path / "game.exe"
+    program.write_bytes(b"\x00" * 64 + pattern + b"\x11" * 64)
+    return program
+
+
+def test_a_pattern_a_range_is_searched_for_is_not_answered_by_the_file(tmp_path: Path):
+    """`aobscanregion` searches between two addresses in the running game.
+
+    Nothing on disk says which bytes those addresses stand for. The same
+    pattern somewhere else in the file is not the pattern being in that range,
+    and not finding it is not the pattern being absent from it, so neither is
+    claimed.
+    """
+    program = _one_pattern_program(tmp_path, bytes.fromhex("488B01"))
+    answer = check_executable(program, [
+        TableScan(name="aobInRange", module=None, pattern="48 8B 01", directive="aobscanregion"),
+    ])
+    assert answer.present == () and answer.missing == () and answer.proven_missing == ()
+    assert [name for name, _ in answer.not_checked] == ["aobInRange"]
+
+
+def test_a_pattern_the_whole_process_is_searched_for_is_reported_and_not_removable(tmp_path: Path):
+    """A miss here is a sentence for the reader, never a licence to cut.
+
+    `aobscan` searches every module the game has loaded. A pattern this did not
+    find in the program can still be in one of the libraries beside it, so the
+    screen says what was searched and the repair leaves the hook alone.
+    """
+    program = _one_pattern_program(tmp_path, bytes.fromhex("488B01"))
+    answer = check_executable(program, [
+        TableScan(name="aobHere", module=None, pattern="48 8B 01", directive="aobscan"),
+        TableScan(name="aobAnywhere", module=None, pattern="F3 0F 59 F0", directive="aobscan"),
+        TableScan(name="aobInThisFile", module="game.exe", pattern="F3 0F 59 F1", directive="aobscanmodule"),
+    ])
+    assert answer.present == ("aobHere",)
+    assert answer.missing == ("aobAnywhere", "aobInThisFile")
+    # Only the one whose script names this file as the whole of where it looks.
+    assert answer.proven_missing == ("aobInThisFile",)

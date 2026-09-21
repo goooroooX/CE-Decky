@@ -23,6 +23,11 @@ STATUS_HEADER = "CEDECKY-STATUS-1"
 MAX_PROTOCOL_BYTES = 1024 * 1024
 MAX_COMMANDS = 2048
 MAX_STARTUP_ACTIONS = MAX_EFFECTIVE_STARTUP_ACTIONS
+# How many of a table's on/off records the descriptor carries an off key for.
+# A table with more than this keeps every one of them: what the ones past the
+# bound lose is the write after the release, which is what the stop did for
+# every record before this existed.
+MAX_SWITCH_OFF_VALUES = 2048
 MAX_STATUS_RESULTS = 256
 MAX_STATUS_PROCESSES = 1024
 MAX_STATUS_TEXT_BYTES = 4096
@@ -89,6 +94,18 @@ class SessionDescriptor:
     # reason instead of stopping inside a question nobody can reach. Absent in a
     # descriptor written before this contract, which reads as not known.
     table_has_lua: bool | None = False
+    # The key that switches each of this table's on/off records off, by
+    # MemoryRecord ID.
+    #
+    # Stopping Cheat Engine asks the bridge to put this session's records down
+    # first, and releasing a frozen record is not switching such a cheat off:
+    # the record keeps the value it was frozen at, so a table of
+    # `0:Disabled/1:Enabled` flags would come down with every flag still at 1 in
+    # the running game. The panel writes that key when a user switches one off
+    # and when it switches everything off; the bridge cannot work it out,
+    # because it reads a record and never the table's own labels, so it is
+    # carried from the same inspection the user reviewed.
+    switch_off: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,6 +311,7 @@ class SessionStore:
             status_path=wine_z_path(status_path),
             startup=tuple(_startup_actions(_effective_startup_preferences(profile), inspection)),
             is_shortcut=profile.is_shortcut,
+            switch_off=_switch_off_values(inspection),
             # From the same inspection the user reviewed and consented to, so
             # the bridge does not have to read the table again to know whether
             # Cheat Engine has a question to ask about it.
@@ -818,6 +836,17 @@ def render_descriptor(descriptor: SessionDescriptor) -> bytes:
             raise ValueError("startup proof eligibility requires an activation")
         lines.append("A\t{}\t{}\t{}\t{}".format(
             action.record_id, action.kind, percent_encode(action.value), "1" if action.proof else "0"))
+    if len(descriptor.switch_off) > MAX_SWITCH_OFF_VALUES:
+        raise ValueError("too many switch off values")
+    seen_switch: set[int] = set()
+    for record_id, value in descriptor.switch_off:
+        _record_id(record_id)
+        if record_id in seen_switch:
+            raise ValueError("duplicate switch off value for MemoryRecord")
+        seen_switch.add(record_id)
+        if not value or utf8_len(value) > MAX_RUNTIME_COMMAND_VALUE_BYTES:
+            raise ValueError("switch off value is empty or too large")
+        lines.append("S\t{}\t{}".format(record_id, percent_encode(value)))
     return _bounded_lines(lines)
 
 
@@ -825,7 +854,9 @@ def parse_descriptor(data: bytes) -> SessionDescriptor:
     lines = _decode_lines(data, DESCRIPTOR_HEADER)
     fields: dict[str, str] = {}
     startup: list[StartupAction] = []
+    switch_off: list[tuple[int, str]] = []
     seen_startup: set[tuple[int, str]] = set()
+    seen_switch: set[int] = set()
     for line in lines[1:]:
         parts = line.split("\t")
         if parts[0] == "F" and len(parts) == 3:
@@ -856,6 +887,17 @@ def parse_descriptor(data: bytes) -> SessionDescriptor:
             startup.append(StartupAction(rid, kind, value, (), proof))
             if len(startup) > MAX_STARTUP_ACTIONS:
                 raise ValueError("too many startup actions")
+        elif parts[0] == "S" and len(parts) == 3:
+            rid = _parse_int(parts[1], "MemoryRecord ID", allow_zero=True, max_value=0x7FFFFFFF)
+            value = percent_decode(parts[2])
+            if not value:
+                raise ValueError("switch off value is empty")
+            if rid in seen_switch:
+                raise ValueError("duplicate switch off value for MemoryRecord")
+            seen_switch.add(rid)
+            switch_off.append((rid, value))
+            if len(switch_off) > MAX_SWITCH_OFF_VALUES:
+                raise ValueError("too many switch off values")
         else:
             raise ValueError("invalid descriptor line")
     required = {"session_id", "app_id", "ce_sha256", "table_sha256", "table_path", "target_process", "control_path", "status_path"}
@@ -867,11 +909,22 @@ def parse_descriptor(data: bytes) -> SessionDescriptor:
     target_process = _process_name(fields["target_process"], "target process")
     for field_name in ("table_path", "control_path", "status_path"):
         _wine_z_protocol_path(fields[field_name], field_name)
+    # By name: this carries optional fields now, and a positional call here is
+    # one dataclass field away from handing a value to whatever was declared
+    # beside it.
     return SessionDescriptor(
-        fields["session_id"], app_id, _sha(fields["ce_sha256"]), _sha(fields["table_sha256"]), fields["table_path"], target_process,
-        fields["control_path"], fields["status_path"], tuple(startup),
-        None if "is_shortcut" not in fields else _parse_bool(fields["is_shortcut"], "is_shortcut"),
-        None if "table_has_lua" not in fields else _parse_bool(fields["table_has_lua"], "table_has_lua"),
+        session_id=fields["session_id"],
+        app_id=app_id,
+        ce_sha256=_sha(fields["ce_sha256"]),
+        table_sha256=_sha(fields["table_sha256"]),
+        table_path=fields["table_path"],
+        target_process=target_process,
+        control_path=fields["control_path"],
+        status_path=fields["status_path"],
+        startup=tuple(startup),
+        is_shortcut=None if "is_shortcut" not in fields else _parse_bool(fields["is_shortcut"], "is_shortcut"),
+        switch_off=tuple(switch_off),
+        table_has_lua=None if "table_has_lua" not in fields else _parse_bool(fields["table_has_lua"], "table_has_lua"),
     )
 
 
@@ -1180,6 +1233,11 @@ def _runtime_error_code(value: str) -> str:
         # either way, and this is the record of what was left switched on in a
         # game that is about to lose the Cheat Engine that could have undone it.
         "quiesce_unsettled",
+        # A record command that arrived while this session's own cheats were
+        # being switched off for a stop. Refused rather than performed: the
+        # stop kills Cheat Engine when the quiesce answers, so a cheat switched
+        # on behind it is one whose `[DISABLE]` never runs.
+        "quiesce_in_progress",
     }
     if value not in allowed:
         raise ValueError("runtime result error code is invalid")
@@ -1544,6 +1602,45 @@ def _held_off_switch_preferences(
             if off is not None:
                 held[record_id] = StartupPreference(record_id=record_id, active=None, value=off)
     return list(held.values())
+
+
+def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ...]:
+    """The key that switches each of this table's on/off records off.
+
+    Every record the panel would draw as a switch, whatever its script declares
+    and whoever switched it on: the stop has to put down what is on, not what
+    was planned. A script record is not one of these - switching it off runs the
+    table's own `[DISABLE]`, which is the restore, and writing a value at it
+    would be writing to the script's own line rather than to the game.
+
+    A MemoryRecord ID this table uses twice is left out entirely, counted over
+    every record rather than over the switches alone: the off key is looked up
+    by ID, so an ID shared with any other record means the key that came back
+    could belong to that one, and a stop that writes the wrong value into the
+    game is worse than one that only releases the freeze.
+
+    Bounded, and the bound drops the rest rather than refusing the session: what
+    a record past it loses is the write after the release, which is what every
+    record got before this existed.
+    """
+    seen: dict[int, int] = {}
+    for control in inspection.controls:
+        if control.id is not None:
+            seen[control.id] = seen.get(control.id, 0) + 1
+    found: dict[int, str] = {}
+    for control in inspection.controls:
+        record_id = control.id
+        if record_id is None or seen[record_id] > 1:
+            continue
+        if control.group_header or control.has_assembler_script:
+            continue
+        on = control.switch_on_value
+        if not isinstance(on, str) or not on or len(control.dropdown_values) != 2:
+            continue
+        off = next((value for value, _ in control.dropdown_values if value != on), None)
+        if off is not None:
+            found[record_id] = off
+    return tuple(sorted(found.items())[:MAX_SWITCH_OFF_VALUES])
 
 
 def _switch_off_value(control: object) -> str | None:

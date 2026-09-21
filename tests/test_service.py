@@ -2496,3 +2496,82 @@ def test_the_program_asked_about_is_the_one_review_proposes(tmp_path: Path, monk
     assert asked == ["proposed.exe"]
     # And a process name that is not one is refused rather than resolved.
     assert service._game_program_path(4242, "../../etc/passwd") == (None, None)
+
+
+def test_a_quiesce_waits_for_the_generation_it_issued(tmp_path: Path):
+    """The bridge answers under the generation the command was written at.
+
+    `write_commands` returns the next free generation rather than the one it
+    wrote, so a stop that took the answer's identity from it waited for a
+    result nothing publishes: every quiesce spent the whole bound and the
+    record of which cheats were left on was discarded with it.
+    """
+    from ce_decky.session_protocol import RuntimeCommand, RuntimeResult
+
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("quiesce-generation"))
+    service.initialize()
+    prepared = Mock(session_id="6d6f9d2a-0000-4000-8000-000000000001")
+    issued: list[RuntimeCommand] = []
+
+    class Store:
+        def load_current(self, app_id):
+            return prepared
+
+        def read_status(self, session):
+            return Mock(attached=True, results=(
+                RuntimeResult(generation=7, record_id=None, ok=False, active=None,
+                              value="put_down=2;unsettled=9", error="records did not settle",
+                              error_code="quiesce_unsettled"),
+            ))
+
+        def next_generation(self, session):
+            return 7
+
+        def write_commands(self, session, commands):
+            issued.extend(commands)
+            # What the real store returns: the generation after the one written.
+            return commands[-1].generation + 1
+
+    service.session_store = Store()
+    started = time.monotonic()
+    answer = service._quiesce_session(4242)
+    assert time.monotonic() - started < service_module.QUIESCE_WAIT_SECONDS / 2
+    assert [command.generation for command in issued] == [7]
+    assert answer["asked"] is True
+    assert answer["records_put_down"] == 2
+    assert answer["records_unsettled"] == ["9"]
+    assert answer["reason"] == "records did not settle"
+
+
+def test_a_pattern_the_whole_game_is_searched_for_is_reported_and_left_alone(tmp_path: Path, monkeypatch):
+    """The screen says what was searched; the repair only removes what it can prove.
+
+    A script that asks Cheat Engine to search the running process is looking in
+    every library the game has loaded, and this device read one file. So the
+    pattern is named to the reader and the hook that needs it stays in the
+    table: cutting it out would make the copy less of a table than the one it
+    was made from, on a question nobody answered.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-scope"))
+    service.initialize()
+    source = tmp_path / "process-wide.CT"
+    source.write_text(
+        SCAN_FIXTURE.replace(
+            "aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)",
+            "aobscan(aobAbsent,F3 0F 59 F0 48 8B C3)",
+        ),
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+    program = _scan_program(tmp_path)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+    assert answer["missing"] == ["aobAbsent"]
+    # Nothing to take out, so no press is offered for one.
+    assert answer["repairable"] is False
+
+    before = {row["sha256"] for row in service.get_status()["tables"]}
+    with pytest.raises(ValueError, match="more of the game than this device can read"):
+        service.prepare_table_copy(str(table["sha256"]), 4242)
+    assert {row["sha256"] for row in service.get_status()["tables"]} == before

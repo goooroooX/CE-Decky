@@ -13,6 +13,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --table <file.CT> --executable <game.exe>
     python3 scripts/ct_scan_survey.py --table <file.CT> --executable <game.exe> --repeat 3
     python3 scripts/ct_scan_survey.py --tables <dir> --json
+    python3 scripts/ct_scan_survey.py --tables <dir> --repair-coverage
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -112,6 +113,11 @@ def survey_tables(root: Path) -> dict[str, object]:
     examples: dict[str, str] = {}
     lengths: collections.Counter[int] = collections.Counter()
     per_script: collections.Counter[int] = collections.Counter()
+    # Which of Cheat Engine's three scanners each pattern is looked for with.
+    # Only one of them names a file, and that is the only one a file on disk can
+    # answer for, so how much of a corpus it covers is a number worth having
+    # rather than assuming.
+    directives: collections.Counter[str] = collections.Counter()
     unreadable = 0
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() != ".ct":
@@ -130,6 +136,7 @@ def survey_tables(root: Path) -> dict[str, object]:
             table_scans += len(found)
             for scan in found:
                 scans += 1
+                directives[scan.directive] += 1
                 lengths[len(scan.pattern.split())] += 1
                 if compile_pattern(scan.pattern) is None:
                     no_fast_path += 1
@@ -146,6 +153,7 @@ def survey_tables(root: Path) -> dict[str, object]:
         "scripts": scripts,
         "scans": scans,
         "scans_with_no_fast_path": no_fast_path,
+        "scans_by_directive": dict(sorted(directives.items())),
         "scans_per_script": dict(sorted(per_script.items())),
         "pattern_bytes": {
             "min": ordered[0] if ordered else 0,
@@ -181,6 +189,77 @@ def check_one(table: Path, executable: Path, repeat: int) -> dict[str, object]:
     }
 
 
+def repair_coverage(root: Path) -> dict[str, object]:
+    """How much of a corpus the repair could produce a proven table for.
+
+    One scan at a time, over every table: the transform runs, both proofs run,
+    and the bytes are thrown away. A scan counts as repairable when a table with
+    that one pattern missing is one this would store.
+
+    Counted by directive as well as in total, because only one of the three says
+    where it searches. `aobscan` and `aobscanregion` look in more of the running
+    game than any file on disk holds, so the product never removes one on the
+    strength of a file: what they contribute here is the difference between what
+    the transform can do and what a user can actually be offered.
+    """
+    tables = unreadable = scans = repairable = 0
+    tables_with_repair = tables_fully = 0
+    tables_with_offer = tables_fully_offered = 0
+    by_directive: collections.Counter[str] = collections.Counter()
+    repairable_by_directive: collections.Counter[str] = collections.Counter()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() != ".ct":
+            continue
+        tables += 1
+        try:
+            found = _table_scans(path)
+            blob = path.read_bytes()
+        except (OSError, ValueError, ET.ParseError):
+            unreadable += 1
+            continue
+        if not found:
+            continue
+        here = offered = 0
+        for scan in found:
+            scans += 1
+            by_directive[scan.directive] += 1
+            try:
+                derived, _repair = drop_unmatched_scans(blob, [scan.name])
+                assert_only_scans_dropped(blob, derived, [scan.name])
+            except (ValueError, ET.ParseError):
+                # A proof that refused, which is the ordinary answer and the
+                # reason this counts rather than lists.
+                continue
+            repairable += 1
+            repairable_by_directive[scan.directive] += 1
+            here += 1
+            if scan.directive == "aobscanmodule" and scan.module:
+                offered += 1
+        if here:
+            tables_with_repair += 1
+            if here == len(found):
+                tables_fully += 1
+        if offered:
+            tables_with_offer += 1
+            # Every scan this table makes, and every one of them looked for in a
+            # file this could read: the only shape where the whole table is
+            # something a user can be offered a working copy of.
+            if offered == len(found):
+                tables_fully_offered += 1
+    return {
+        "tables": tables,
+        "unreadable": unreadable,
+        "scans": scans,
+        "repairable": repairable,
+        "scans_by_directive": dict(sorted(by_directive.items())),
+        "repairable_by_directive": dict(sorted(repairable_by_directive.items())),
+        "tables_with_a_repairable_scan": tables_with_repair,
+        "tables_fully_repairable": tables_fully,
+        "tables_a_repair_can_be_offered_for": tables_with_offer,
+        "tables_fully_offerable": tables_fully_offered,
+    }
+
+
 def repair_one(table: Path, scans: list[str]) -> dict[str, object]:
     """What dropping those scans from one table would take out, proved.
 
@@ -205,6 +284,10 @@ def main() -> int:
         "--repair", metavar="SCAN", action="append", default=[],
         help="drop this scan from --table and report what it costs; repeat for several",
     )
+    parser.add_argument(
+        "--repair-coverage", action="store_true",
+        help="with --tables: how many of the corpus's scans the repair can produce a proven table for",
+    )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
 
@@ -212,7 +295,9 @@ def main() -> int:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if args.tables is not None:
+        if args.tables is not None and args.repair_coverage:
+            answer["repair_coverage"] = repair_coverage(args.tables)
+        elif args.tables is not None:
             answer["survey"] = survey_tables(args.tables)
         if args.table is not None and args.repair:
             answer["repair"] = repair_one(args.table, list(args.repair))
@@ -227,11 +312,21 @@ def main() -> int:
     if args.json:
         print(json.dumps(answer, indent=2, sort_keys=True))
         return 0
+    coverage = answer.get("repair_coverage")
+    if isinstance(coverage, dict):
+        print(f"tables {coverage['tables']} ({coverage['unreadable']} unreadable), scans {coverage['scans']}")
+        print(f"  repairable {coverage['repairable']}  by directive {coverage['repairable_by_directive']}")
+        print(f"  of {coverage['scans_by_directive']}")
+        print(f"  tables with one {coverage['tables_with_a_repairable_scan']}, "
+              f"fully {coverage['tables_fully_repairable']}")
+        print(f"  offerable: tables {coverage['tables_a_repair_can_be_offered_for']}, "
+              f"fully {coverage['tables_fully_offerable']}")
     survey = answer.get("survey")
     if isinstance(survey, dict):
         print(f"tables {survey['tables']} ({survey['unreadable']} unreadable), "
               f"with scans {survey['tables_with_scans']}, scripts {survey['scripts']}, scans {survey['scans']}")
         print(f"  no fast path: {survey['scans_with_no_fast_path']}   pattern bytes: {survey['pattern_bytes']}")
+        print(f"  by directive: {survey['scans_by_directive']}")
         for row in survey["refused"]:
             print(f"  refused {row['count']:4}  {row['reason']}")
             print(f"           {row['example']}")

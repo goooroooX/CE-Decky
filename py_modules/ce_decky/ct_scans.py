@@ -125,14 +125,24 @@ class ScanParseError(ValueError):
 
 @dataclass(frozen=True)
 class TableScan:
-    """One pattern a script scans for, and the symbol it registers it under."""
+    """One pattern a script scans for, and the symbol it registers it under.
+
+    `directive` is which of Cheat Engine's three scanners the script asked for,
+    and it is what says where the pattern is looked for: `aobscanmodule` names
+    one file, `aobscan` searches the whole of the running process, and
+    `aobscanregion` searches between two addresses that only exist once the game
+    is running. Two of those three are wider than any file on disk, which is why
+    the difference is carried rather than dropped: a pattern absent from one
+    file is only proof about a scan that was looking in that file.
+    """
 
     name: str
     module: str | None
     pattern: str
+    directive: str
 
     def as_dict(self) -> dict[str, object]:
-        return {"name": self.name, "module": self.module, "pattern": self.pattern}
+        return {"name": self.name, "module": self.module, "pattern": self.pattern, "directive": self.directive}
 
 
 @dataclass(frozen=True)
@@ -175,6 +185,18 @@ class ScanCheck:
     # against - so what is reported is a second match that was actually seen,
     # and a pattern absent from this list is one nothing is claimed about.
     ambiguous: tuple[str, ...] = ()
+    # The patterns in `missing` whose absence from what was searched is proof
+    # that the scan finds nothing, which is not every one of them. A script can
+    # ask Cheat Engine to search the whole running process, and a pattern this
+    # did not find in the game's program can still be in one of the libraries
+    # that program loads. Saying so on a screen is honest, because the sentence
+    # says what was searched; taking the code that needs it out of a table is
+    # not, which is why only these may be removed.
+    #
+    # Not on `as_dict`: nothing on screen decides anything with it, and the
+    # press that does is offered from `repairable`, which the backend answers by
+    # making the repair rather than by reading this.
+    proven_missing: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -249,7 +271,7 @@ def _scan_from_line(line: str) -> TableScan | None:
         raise ScanParseError("a scan's name has to be a symbol")
     pattern = normalized_pattern(arguments[-1])
     module = arguments[1].strip() if directive == "aobscanmodule" else None
-    return TableScan(name=name, module=module or None, pattern=pattern)
+    return TableScan(name=name, module=module or None, pattern=pattern, directive=directive)
 
 
 def _without_comment(line: str) -> str:
@@ -395,10 +417,11 @@ def _other_module(scan: TableScan, path: Path) -> str | None:
     A game routinely ships its code in more than one file, and a script that
     scans `GameAssembly.dll` is not making a claim about the program this was
     handed: searching this file for that pattern and reporting it absent would
-    be inventing a finding. `aobscan` and `aobscanregion` name no module and
-    are searched here, because a pattern found is found; a pattern they do not
-    find could in principle be in another module, which is why the sentence
-    this ends up in says what was searched rather than what the game holds.
+    be inventing a finding. `aobscan` names no module and is searched here,
+    because a pattern found is found; a pattern it does not find could be in
+    another module, which is why the sentence this ends up in says what was
+    searched rather than what the game holds, and why nothing is removed from a
+    table on the strength of it.
     """
     if scan.module is None:
         return None
@@ -440,12 +463,26 @@ def check_executable(
 
     not_checked: list[tuple[str, str]] = []
     wanted: list[tuple[str, re.Pattern[bytes]]] = []
+    # The scans this file is the whole of the place they are looked for. A
+    # directive that names the module says where it searches, and this is that
+    # file; the other two are wider than any file, so what they do not find here
+    # is not something this can call absent from the game.
+    scoped: set[str] = set()
     longest = 1
     for scan in scans:
+        if scan.directive == "aobscanregion":
+            # Two addresses in a process that is not running. Nothing on disk
+            # says which bytes they stand for, so the same pattern found
+            # somewhere else in this file would say nothing about the range the
+            # script actually searches, and neither would not finding it.
+            not_checked.append((scan.name, "this pattern is looked for between two addresses in the running game"))
+            continue
         elsewhere = _other_module(scan, path)
         if elsewhere is not None:
             not_checked.append((scan.name, f"this pattern is looked for in {elsewhere}, which is not this program"))
             continue
+        if scan.directive == "aobscanmodule" and scan.module:
+            scoped.add(scan.name)
         compiled = compile_pattern(scan.pattern)
         if compiled is None:
             not_checked.append((scan.name, "this pattern begins with a wildcard, so there is nothing to look for"))
@@ -516,12 +553,14 @@ def check_executable(
         wanted = []
     ordered = [scan.name for scan in scans]
     unreachable = {name for name, _ in not_checked}
+    missing = tuple(name for name in ordered if name not in found and name not in unreachable)
     return ScanCheck(
         source=source,
         present=tuple(name for name in ordered if name in found),
-        missing=tuple(name for name in ordered if name not in found and name not in unreachable),
+        missing=missing,
         not_checked=tuple(not_checked),
         ambiguous=tuple(name for name in ordered if name in twice),
+        proven_missing=tuple(name for name in missing if name in scoped),
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
 

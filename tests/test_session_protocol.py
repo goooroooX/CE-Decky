@@ -1219,3 +1219,58 @@ def test_startup_summary_is_bounded_unique_and_independent_of_runtime_results():
         render_status(replace(status, startup_active_ids=tuple(range(2049))))
     with pytest.raises(ValueError):
         parse_status(encoded.replace(b"focus_discovery_attempts\t20", b"focus_discovery_attempts\t21"))
+
+
+SWITCH_CT = b'''<CheatTable CheatEngineTableVersion="45"><CheatEntries>
+<CheatEntry><ID>2</ID><Description>"Godmode"</Description><VariableType>4 Bytes</VariableType><DropDownList>0:Disabled\n1:Enabled</DropDownList></CheatEntry>
+<CheatEntry><ID>3</ID><Description>"Ammo"</Description><VariableType>4 Bytes</VariableType><DropDownList>10:Ten\n20:Twenty\n30:Thirty</DropDownList></CheatEntry>
+<CheatEntry><ID>4</ID><Description>"Script"</Description><VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]
+</AssemblerScript></CheatEntry>
+</CheatEntries></CheatTable>'''
+
+
+def test_the_descriptor_carries_the_key_each_switch_is_off_at(tmp_path: Path):
+    """Releasing a frozen record leaves the value it was frozen at in the game.
+
+    The stop asks the bridge to put this session's records down, and the bridge
+    reads records rather than the table's own labels, so which key each switch
+    is off at travels with the session. Only the records the panel draws as
+    switches: a list of three things is a choice rather than a switch, and an
+    Auto Assembler record is switched off by running its own `[DISABLE]`.
+    """
+    source = tmp_path / "switches.CT"
+    source.write_bytes(SWITCH_CT)
+    tables = TableStore(tmp_path / "tables")
+    artifact = tables.import_ct(str(source))
+    blob = tables.verified_blob(artifact.sha256)
+    inspection = inspect_table(blob, artifact.sha256)
+
+    profiles = ProfileStore(tmp_path / "profiles.json")
+    profiles.upsert(app_id=42, name="Game", is_shortcut=False, table_sha256=artifact.sha256, target_process="game.exe")
+    profiles.set_execution_consent(app_id=42, table_sha256=artifact.sha256, consent=True)
+    profile = profiles.get(42)
+    assert profile is not None
+    prepared = SessionStore(tmp_path / "state", tmp_path).prepare(profile, blob, inspection, CE_SHA)
+
+    descriptor = parse_descriptor(Path(prepared.descriptor_path).read_bytes())
+    assert descriptor.switch_off == ((2, "0"),)
+
+
+def test_a_descriptor_states_one_off_value_per_record(tmp_path: Path):
+    """Two of them for one MemoryRecord is a descriptor nothing may act on."""
+    sid = str(uuid.uuid4())
+    rendered = render_descriptor(SessionDescriptor(
+        sid, 42, CE_SHA, "b" * 64, "Z:\\s\\table.ct", "game.exe",
+        "Z:\\s\\control.txt", "Z:\\s\\status.txt", (), False, False, ((2, "0"), (3, "10")),
+    ))
+    assert parse_descriptor(rendered).switch_off == ((2, "0"), (3, "10"))
+    with pytest.raises(ValueError, match="duplicate switch off value"):
+        parse_descriptor(rendered + b"S\t2\t1\n")
+    with pytest.raises(ValueError, match="duplicate switch off value"):
+        render_descriptor(SessionDescriptor(
+            sid, 42, CE_SHA, "b" * 64, "Z:\\s\\table.ct", "game.exe",
+            "Z:\\s\\control.txt", "Z:\\s\\status.txt", (), False, False, ((2, "0"), (2, "1")),
+        ))
+    # And a session prepared before this existed still parses, with none stated.
+    legacy = b"".join(line + b"\n" for line in rendered.split(b"\n") if line and not line.startswith(b"S\t"))
+    assert parse_descriptor(legacy).switch_off == ()

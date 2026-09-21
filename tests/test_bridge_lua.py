@@ -120,6 +120,7 @@ def _descriptor(
     control_path: str = "Z:\\control.txt",
     status_path: str = "Z:\\status.txt",
     table_has_lua: bool = False,
+    switch_off: tuple[tuple[int, str], ...] = (),
 ) -> bytes:
     return render_descriptor(
         SessionDescriptor(
@@ -134,6 +135,7 @@ def _descriptor(
             startup=startup,
             is_shortcut=False,
             table_has_lua=table_has_lua,
+            switch_off=switch_off,
         )
     )
 
@@ -3319,3 +3321,129 @@ def test_a_quiesce_with_nothing_switched_on_says_so_and_costs_nothing(tmp_path: 
     answered = [item for item in run.status().results if item.generation == 1]
     assert answered and answered[-1].ok is True
     assert "put_down=0" in (answered[-1].value or "")
+
+
+def test_a_quiesce_leaves_a_switch_at_its_off_value(tmp_path: Path):
+    """Releasing a frozen record is not switching that cheat off.
+
+    The record keeps the value it was frozen at, so a table of
+    `0:Disabled/1:Enabled` flags would come down with every flag still at 1 in
+    the running game: the panel would say nothing is active and the cheats would
+    all still be running. The key each switch is off at comes from the same
+    inspection the user reviewed, on the descriptor.
+    """
+    descriptor = _descriptor(switch_off=((6, "0"),))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True, "value": "7"},
+                6: {"active": True, "value": "1"},
+            },
+            "steps": [{"ticks": 8}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is True
+    assert "put_down=2" in (answered[-1].value or "")
+    left = [line for line in run.stdout.splitlines() if line.startswith("value ")]
+    # The switch is back at its off key; the record whose table declares none is
+    # released and not written to, which is what a value nobody named means.
+    assert left == ["value 5 7", "value 6 0"]
+
+
+def test_a_switch_that_will_not_take_its_off_value_is_named_rather_than_counted(tmp_path: Path):
+    """A cheat that is still running is what the user has to be told about.
+
+    The record came down, so the count alone would report a clean stop while the
+    value the game keeps is the one the cheat was frozen at.
+    """
+    descriptor = _descriptor(switch_off=((6, "0"),))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [6],
+            "records": {6: {"active": True, "value": "1", "value_error": True}},
+            "steps": [{"ticks": 8}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    assert "unsettled=6" in (answered[-1].value or "")
+    assert "put_down=0" in (answered[-1].value or "")
+
+
+def test_a_record_that_comes_on_while_the_quiesce_walks_is_still_put_down(tmp_path: Path):
+    """The list a quiesce starts from is what was on when it started.
+
+    A stop arriving moments after an auto-load leaves an activation Cheat Engine
+    has not finished, and that record comes on behind the walk. It is waited for
+    and then looked for again, because the stop kills Cheat Engine when this
+    answers and a record switched on afterwards keeps its patch in the game.
+    """
+    descriptor = _descriptor(startup=(StartupAction(6, "active", "1", ("Cheat",), False),))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True},
+                # Cheat Engine is still thinking about this one when the stop
+                # arrives, so it is not in the first look at what is switched on.
+                6: {"active": False, "activation_async_ticks": 3},
+            },
+            "steps": [{"ticks": 30}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is True
+    assert "put_down=2" in (answered[-1].value or "")
+    order = [line for line in run.stdout.splitlines() if line.startswith("deactivated ")]
+    assert order == ["deactivated 5", "deactivated 6"]
+
+
+def test_a_command_that_would_switch_a_cheat_on_during_a_quiesce_is_refused(tmp_path: Path):
+    """Nothing may switch a cheat on while this session's are being switched off.
+
+    The stop kills Cheat Engine when the quiesce answers, so a record activated
+    behind the walk is one whose `[DISABLE]` never runs: its patch and its
+    allocation stay in the running game and no later session can undo them.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {5: {"active": True}, 6: {"active": False}},
+            "steps": [{"ticks": 10}],
+        },
+        controls={"control.txt": _control(
+            RuntimeCommand(1, "quiesce"),
+            RuntimeCommand(2, "set_active", 6, "1"),
+        )},
+    )
+    status = run.status()
+    refused = [item for item in status.results if item.generation == 2]
+    assert refused and refused[-1].ok is False
+    assert refused[-1].error_code == "quiesce_in_progress"
+    quiesced = [item for item in status.results if item.generation == 1]
+    assert quiesced and "put_down=1" in (quiesced[-1].value or "")
+    # And the record the command named never came on.
+    assert [line for line in run.stdout.splitlines() if line.startswith("deactivated ")] == ["deactivated 5"]

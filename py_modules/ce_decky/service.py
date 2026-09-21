@@ -1689,9 +1689,13 @@ class PluginService:
         # only for a repair that exists, and the dialog that meets a table which
         # already failed offers it there for the same reason. Guessing from the
         # fact that something is missing would put a press on screen that
-        # refuses itself, which is the outcome an honest refusal replaces.
+        # refuses itself, which is the outcome an honest refusal replaces. It is
+        # asked about what may be taken out rather than about everything absent
+        # from the program: a pattern the script searches the whole running
+        # game for is not one this device can say the game does not hold, so it
+        # is reported to the reader and left in the table.
         if answer.missing:
-            answer = replace(answer, repairable=self._repair_is_provable(source, answer.missing))
+            answer = replace(answer, repairable=self._repair_is_provable(source, answer.proven_missing))
         # Every reason, not a count of them: `3 not checked` is the same
         # non-information an honest refusal exists to remove, and which of them
         # it was - another of the game's files, no first byte to find, a spent
@@ -1702,6 +1706,7 @@ class PluginService:
             self.logger, "info", "table.scan_check",
             table_sha=digest[:12], app_id=app_id, patterns=len(inspection.scans),
             missing=",".join(answer.missing) or None, source=answer.source,
+            proven_missing=",".join(answer.proven_missing) or None,
             ambiguous=",".join(answer.ambiguous) or None,
             not_checked=len(answer.not_checked) or None,
             not_checked_why=" | ".join(unreachable) or None,
@@ -1769,6 +1774,7 @@ class PluginService:
             return answer
         present = list(answer.present)
         missing = list(answer.missing)
+        proven = list(answer.proven_missing)
         ambiguous = list(answer.ambiguous)
         not_checked = [(name, reason) for name, reason in answer.not_checked]
         elapsed = answer.elapsed_ms
@@ -1802,6 +1808,10 @@ class PluginService:
             answered = set(found.present) | set(found.missing)
             present.extend(found.present)
             missing.extend(found.missing)
+            # A pattern the table names a file for, searched in that file: what
+            # it did not find there is absent from the whole of where the script
+            # looks, which is what makes it something a repair may remove.
+            proven.extend(found.proven_missing)
             ambiguous.extend(found.ambiguous)
             not_checked = [(name, reason) for name, reason in not_checked if name not in answered]
             not_checked.extend(found.not_checked)
@@ -1811,6 +1821,7 @@ class PluginService:
             answer,
             present=tuple(sorted(set(present), key=lambda name: rank.get(name, len(rank)))),
             missing=tuple(sorted(set(missing), key=lambda name: rank.get(name, len(rank)))),
+            proven_missing=tuple(sorted(set(proven), key=lambda name: rank.get(name, len(rank)))),
             ambiguous=tuple(sorted(set(ambiguous), key=lambda name: rank.get(name, len(rank)))),
             not_checked=tuple(not_checked),
             elapsed_ms=elapsed,
@@ -1824,7 +1835,13 @@ class PluginService:
         is available when it has been made and proven, not when something is
         missing. The result is bytes nobody sees, which is why this may run on a
         screen that is only reading.
+
+        Nothing to remove is no repair. A pattern this could not prove absent
+        stays in the table, so a table whose only missing patterns are of that
+        kind gets the sentence about them and no press.
         """
+        if not missing:
+            return False
         try:
             blob = read_regular_bytes(source, max_bytes=MAX_CT_BYTES)
             if not blob:
@@ -2007,7 +2024,13 @@ class PluginService:
             raise ValueError("the table to derive from is missing")
         inspection = self._inspect_table_blob(source, digest, app_id)
         answer, _found_by = self._scan_answer(inspection, app_id, target_process)
-        missing = list(answer.missing)
+        # What was searched in the whole of the place the script looks for it,
+        # and was not there. A script that searches the running process, or a
+        # range of it, is looking somewhere wider than the file this read: its
+        # pattern is reported to the reader and left in the table, because
+        # cutting a hook out on a pattern that may be in a library the game
+        # loads would make this copy less of a table than the one it came from.
+        missing = list(answer.proven_missing)
         transforms: list[str] = []
         if inspection.has_signature:
             transforms.append("remove-signature")
@@ -2020,6 +2043,14 @@ class PluginService:
             # when nobody asked it: a check that did not run is not a table
             # whose patterns are all there, and saying so would be the one claim
             # this has no evidence for.
+            if answer.missing:
+                # Searched, something is missing, and none of it is something
+                # this may act on: every one of those patterns is looked for
+                # somewhere wider than this game's own program.
+                raise ValueError(
+                    "the patterns this table cannot find are looked for in more of the game than this device can read, "
+                    "so there is nothing here it can safely take out"
+                )
             searched = bool(answer.present or answer.missing)
             raise ValueError(
                 "this table carries no signature, and every pattern it scans for is in this game's program"
@@ -4399,10 +4430,18 @@ class PluginService:
             # the stop can perfectly well perform. The wait afterwards is
             # deliberately outside the lock, because holding it for as long as
             # a table's own `[DISABLE]` takes would freeze the panel.
+            #
+            # The generation the command is issued under is the one the bridge
+            # answers under, and it is the one this waits for. `write_commands`
+            # returns the next free generation rather than the one it wrote, so
+            # taking the answer from it waited for a result nothing would ever
+            # publish: every quiesce then spent the whole bound and the record
+            # of what the game was left in was thrown away with it.
             with self._mutation_lock:
-                generation = self.session_store.write_commands(prepared, [RuntimeCommand(
-                    generation=self.session_store.next_generation(prepared), kind="quiesce",
-                )])
+                generation = self.session_store.next_generation(prepared)
+                self.session_store.write_commands(
+                    prepared, [RuntimeCommand(generation=generation, kind="quiesce")],
+                )
         except (OSError, ValueError, DurabilityUnknownError) as exc:
             return {"asked": False, "reason": str(exc)[:256]}
         answer = self._await_quiesce(prepared, generation)

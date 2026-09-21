@@ -47,6 +47,14 @@ local MAX_QUIESCE_DEPTH = 32
 -- own and proceeds regardless, so this is about the bridge staying answerable
 -- rather than about the stop.
 local MAX_QUIESCE_TOTAL_TICKS = 600
+-- How many times a quiesce looks again for records that are switched on.
+-- Putting a script down can create work: its `[DISABLE]` runs the table's own
+-- code, and a record that was off can come on again from it. The walk is
+-- therefore repeated until a look finds nothing, and bounded so that a table
+-- switching one of its flags back on forever cannot hold the stop.
+local MAX_QUIESCE_SWEEPS = 3
+-- How many of a table's on/off records the descriptor may carry an off key for.
+local MAX_SWITCH_OFF_VALUES = 2048
 -- Auto Assembler records may explicitly run asynchronously. Active is not a
 -- completed mutation while AsyncProcessing is true, so keep the command
 -- pending and poll from the timer instead of rejecting the first false read.
@@ -334,6 +342,8 @@ local function parseDescriptor(data)
   local fields = {}
   local startup = {}
   local startupSeen = {}
+  local switchOff = {}
+  local switchOffCount = 0
   local allowed = {
     session_id = true, app_id = true, is_shortcut = true, ce_sha256 = true, table_sha256 = true,
     table_path = true, target_process = true, control_path = true, status_path = true,
@@ -368,6 +378,19 @@ local function parseDescriptor(data)
       if startupSeen[startupKey] then return nil, "duplicate startup action" end
       startupSeen[startupKey] = true
       startup[#startup + 1] = { record_id = rid, kind = parts[3], value = decoded, proof = proof }
+    elseif parts[1] == "S" and #parts == 3 then
+      -- The key this record is switched off at. Releasing a frozen record
+      -- leaves the value it was frozen at in the game, so a quiesce that only
+      -- released them would report every flag down with every flag still on.
+      if switchOffCount >= MAX_SWITCH_OFF_VALUES then return nil, "too many switch off values" end
+      local rid = canonicalInteger(parts[2], true, MAX_RECORD_ID)
+      if not rid then return nil, "invalid switch off value" end
+      local decoded, err = percentDecode(parts[3])
+      if not decoded then return nil, err end
+      if decoded == "" or #decoded > MAX_COMMAND_VALUE_BYTES then return nil, "invalid switch off value" end
+      if switchOff[rid] ~= nil then return nil, "duplicate switch off value" end
+      switchOff[rid] = decoded
+      switchOffCount = switchOffCount + 1
     else
       return nil, "invalid descriptor line"
     end
@@ -407,6 +430,7 @@ local function parseDescriptor(data)
     if action.proof then fields.startup_proof_ids[action.record_id] = true end
   end
   fields.startup = startup
+  fields.switch_off = switchOff
   return fields
 end
 
@@ -576,6 +600,10 @@ local state = {
   -- way startup does, because deactivating a script runs the table's own
   -- `[DISABLE]` and Cheat Engine reports that asynchronously.
   quiesce = nil,
+  -- True from the moment a quiesce is asked for, and it stays true. Only a stop
+  -- asks for one, and the stop kills Cheat Engine as soon as it answers, so
+  -- this session accepts nothing that changes the game again.
+  quiesced = false,
   -- How many times a Cheat Engine window had to be hidden again after the
   -- initial suppression. Anything above zero is CE mapping a window over the
   -- running game, which is the thing that takes its audio and controller input.
@@ -879,6 +907,17 @@ local function advanceRollback()
   state.focus_pending_handle = nil
 end
 
+-- Whether this session has been asked to put its own cheats down.
+--
+-- True while the walk runs and true afterwards: a quiesce is only ever asked
+-- for by a stop, and the stop kills Cheat Engine as soon as this answers. A
+-- record switched on in between would be one whose `[DISABLE]` never runs, so
+-- the session stops accepting anything that changes the game the moment it is
+-- asked, not merely while it is busy.
+local function stopping()
+  return state.quiesce ~= nil or state.quiesced == true
+end
+
 local function recordStartupTransition(recordId, wasInactive)
   -- The first eligible transition is kept, and the status payload stays one ID
   -- however large the plan is.
@@ -896,6 +935,11 @@ local function applyStartup()
     return
   end
   if state.startup_applied or not state.attached then return end
+  -- A stop is putting this session's records down. What Cheat Engine is still
+  -- thinking about is let finish, so the quiesce can see that record and put it
+  -- down; nothing new is begun, because the stop kills Cheat Engine when the
+  -- quiesce answers and a record switched on now would keep its patch.
+  if stopping() and not state.startup_pending then return end
 
   if state.startup_pending then
     local pending = state.startup_pending
@@ -929,6 +973,7 @@ local function applyStartup()
     state.startup_index = pending.index
     state.startup_pending = nil
   end
+  if stopping() then return end
 
   -- Startup is resolved one action at a time, in descriptor order, because a
   -- nested control may not exist until the script that creates it has run. The
@@ -1098,6 +1143,59 @@ local function activeRecordsToQuiesce()
   return found
 end
 
+-- Name a record the stop could not put down, once however often it is met.
+--
+-- A record is looked at again on a later sweep, so without this a flag that
+-- will not come down would be named as many times as it was tried, and the
+-- sentence the user reads is a list of what is still running in their game.
+local function markUnsettled(run, id)
+  local key = tostring(id or "?")
+  if run.named[key] then return end
+  run.named[key] = true
+  run.unsettled[#run.unsettled + 1] = id or "?"
+end
+
+-- The key this record is switched off at, where its own table declares one.
+local function switchOffValue(id)
+  if id == nil then return nil end
+  local values = state.descriptor.switch_off
+  if not values then return nil end
+  return values[id]
+end
+
+-- Whether what was read back is the value that was written.
+--
+-- Compared as numbers where both are numbers: Cheat Engine returns a record's
+-- value formatted for the record's own type, so the key `00000000` written to a
+-- record shown as hex reads back as `0`, and comparing the two as text would
+-- report a cheat that was switched off perfectly well as one still running.
+local function sameValue(written, readBack)
+  if written == readBack then return true end
+  local a, b = tonumber(written), tonumber(readBack)
+  return a ~= nil and b ~= nil and a == b
+end
+
+-- Count one record as down, leaving it at its off key where it has one.
+--
+-- Releasing the freeze is not switching such a cheat off. The record keeps the
+-- value it was frozen at, so a table of `0:Disabled/1:Enabled` flags would come
+-- down with every flag still at 1 in the running game, which is the leak the
+-- whole quiesce exists to close. The write happens after the release, for the
+-- same reason the panel does it in that order: the value the game keeps is the
+-- one written last.
+local function countRecordDown(run, record, id)
+  local off = switchOffValue(id)
+  if off ~= nil then
+    local written = pcall(function() record.Value = off end)
+    local readOk, value = pcall(function() return record.Value end)
+    if not written or not readOk or not sameValue(off, tostring(value)) then
+      markUnsettled(run, id)
+      return
+    end
+  end
+  run.put_down = run.put_down + 1
+end
+
 -- Report what one quiesce managed, once, and let the stop proceed.
 local function finishQuiesce()
   local run = state.quiesce
@@ -1115,6 +1213,7 @@ local function finishQuiesce()
     result(run.generation, nil, false, nil, value, "records did not settle", "quiesce_unsettled")
   end
   state.quiesce = nil
+  state.quiesced = true
 end
 
 -- Switch one record off, and say whether Cheat Engine is still thinking about
@@ -1125,7 +1224,7 @@ local function putOneDown(run, entry)
   if not readOk or stillOn ~= true then return false end
   local ok = pcall(function() entry.record.Active = false end)
   if not ok then
-    run.unsettled[#run.unsettled + 1] = entry.id or "?"
+    markUnsettled(run, entry.id)
     return false
   end
   local processing, asyncErr = recordAsyncProcessing(entry.record)
@@ -1134,8 +1233,8 @@ local function putOneDown(run, entry)
     return true
   end
   local activeOk, active = pcall(function() return entry.record.Active end)
-  if activeOk and active == false then run.put_down = run.put_down + 1
-  else run.unsettled[#run.unsettled + 1] = entry.id or "?" end
+  if activeOk and active == false then countRecordDown(run, entry.record, entry.id)
+  else markUnsettled(run, entry.id) end
   return false
 end
 
@@ -1157,10 +1256,10 @@ local function advanceQuiesce()
     -- Everything not reached is named rather than counted, because what the
     -- reader of this needs is which cheats were left on in a game that is
     -- about to lose the Cheat Engine that could have switched them off.
-    if run.pending then run.unsettled[#run.unsettled + 1] = run.pending.id or "?" end
+    if run.pending then markUnsettled(run, run.pending.id) end
     while run.index < #run.records do
       run.index = run.index + 1
-      run.unsettled[#run.unsettled + 1] = run.records[run.index].id or "?"
+      markUnsettled(run, run.records[run.index].id)
     end
     finishQuiesce()
     return
@@ -1169,17 +1268,17 @@ local function advanceQuiesce()
     local pending = run.pending
     local processing, asyncErr = recordAsyncProcessing(pending.record)
     if asyncErr then
-      run.unsettled[#run.unsettled + 1] = pending.id or "?"
+      markUnsettled(run, pending.id)
       run.pending = nil
     elseif processing then
       pending.waits = pending.waits + 1
       if pending.waits <= MAX_ACTIVATION_WAIT_TICKS then return end
-      run.unsettled[#run.unsettled + 1] = pending.id or "?"
+      markUnsettled(run, pending.id)
       run.pending = nil
     else
       local activeOk, active = pcall(function() return pending.record.Active end)
-      if activeOk and active == false then run.put_down = run.put_down + 1
-      else run.unsettled[#run.unsettled + 1] = pending.id or "?" end
+      if activeOk and active == false then countRecordDown(run, pending.record, pending.id)
+      else markUnsettled(run, pending.id) end
       run.pending = nil
     end
   end
@@ -1187,12 +1286,56 @@ local function advanceQuiesce()
     run.index = run.index + 1
     if putOneDown(run, run.records[run.index]) then return end
   end
+  -- An activation Cheat Engine has not finished is a record that is about to be
+  -- switched on, so the walk waits for it before it can say there is nothing
+  -- left on. A startup that failed is rolling itself back, and a rollback puts
+  -- a record back the way it found it, which for one that was already on means
+  -- switching it on again. Bounded by the same number of ticks every other
+  -- activation here waits, and by the walk's own bound above it.
+  if (state.startup_pending or state.pending_command or state.rollback) and (run.waits or 0) < MAX_ACTIVATION_WAIT_TICKS then
+    run.waits = (run.waits or 0) + 1
+    return
+  end
+  -- The list this started from was what was on when it started. Putting a
+  -- script down runs the table's own `[DISABLE]`, and a record on its way on
+  -- when the stop arrived settles while this walks, so what is switched on now
+  -- is asked again rather than assumed. The next tick carries the new walk: a
+  -- table that switches a flag back on forever costs a few ticks, not the stop.
+  if run.sweeps < MAX_QUIESCE_SWEEPS then
+    local again = activeRecordsToQuiesce()
+    if again then
+      -- Not one already reported as a record that will not come down: trying it
+      -- again costs the same wait it already spent, and three sweeps of that
+      -- would spend the whole stop on an answer this already has.
+      local left = {}
+      for _, entry in ipairs(again) do
+        if not run.named[tostring(entry.id or "?")] then left[#left + 1] = entry end
+      end
+      if #left > 0 then
+        run.sweeps = run.sweeps + 1
+        run.records = left
+        run.index = 0
+        return
+      end
+    end
+  end
   finishQuiesce()
 end
 
 local function executeCommand(command)
   if command.generation <= state.last_generation then return end
   state.last_generation = command.generation
+  -- While this session's cheats are being switched off, nothing may switch one
+  -- back on. The stop that asked for the quiesce kills Cheat Engine when it
+  -- answers, so a record activated behind the walk is one whose `[DISABLE]`
+  -- never runs: the patch and the allocation stay in the running game and no
+  -- later session can undo them. Reads are left alone, because a panel asking
+  -- what is on is not changing anything.
+  if stopping() and (command.kind == "set_active" or command.kind == "set_value" or command.kind == "retry_attach") then
+    result(command.generation, command.record_id, false, nil, nil,
+      "this session is being stopped", "quiesce_in_progress")
+    return
+  end
   if command.kind == "retry_attach" then
     if command.value and command.value ~= "" then state.target_process = command.value end
     state.startup_applied = false
@@ -1239,7 +1382,10 @@ local function executeCommand(command)
       result(command.generation, nil, false, nil, "put_down=0;unsettled=", "AddressList unavailable", "address_list_unavailable")
       return
     end
-    state.quiesce = { generation = command.generation, records = records, index = 0, put_down = 0, unsettled = {}, pending = nil, ticks = 0 }
+    state.quiesce = {
+      generation = command.generation, records = records, index = 0, put_down = 0,
+      unsettled = {}, named = {}, pending = nil, ticks = 0, sweeps = 0, waits = 0,
+    }
     advanceQuiesce()
     return
   end
