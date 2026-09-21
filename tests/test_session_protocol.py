@@ -811,6 +811,25 @@ def test_a_session_names_every_executable_it_has_been_pointed_at(tmp_path: Path)
     assert store.session_targets(prepared) == ("game.exe", "alternate.exe")
 
 
+def test_a_session_says_which_executable_it_is_pointed_at_now(tmp_path: Path):
+    """What the launcher watches to know the game is still there.
+
+    Not the same question as which executables may have been left changed: a
+    retried attach moves the session, and the program it moved away from goes
+    on running without it. Watching the name the launch started with stops
+    Cheat Engine when that program exits, in the middle of the game.
+    """
+    store, prepared, *_ = _prepared_session_fixture(tmp_path)
+    assert store.session_target(prepared) == "game.exe"
+
+    store.write_commands(prepared, [RuntimeCommand(1, "retry_attach", None, "alternate.exe")])
+    assert store.session_target(prepared) == "alternate.exe"
+
+    # And back, which `session_targets` collapses and this must not.
+    store.write_commands(prepared, [RuntimeCommand(2, "retry_attach", None, "game.exe")])
+    assert store.session_target(prepared) == "game.exe"
+
+
 def test_runtime_status_cannot_claim_uncommanded_target_process(tmp_path: Path):
     store, prepared, artifact, *_ = _prepared_session_fixture(tmp_path)
     forged = RuntimeStatus(

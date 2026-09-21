@@ -2792,6 +2792,43 @@ def test_a_stop_asks_about_the_executable_this_session_was_moved_to(tmp_path: Pa
     assert service._quiesce_session(4242)["cleanup_confirmed"] is False
 
 
+def test_the_launcher_is_told_where_this_launch_s_own_session_points(tmp_path: Path):
+    """Which session is current is separate state from which launch is live.
+
+    So a name is answered for the launch that asked, and for nothing else: one
+    from somebody else's session would be worse than the name the launcher
+    already has, and it is the name an owned Cheat Engine ends itself by.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("session-target"))
+    service.initialize()
+    session = "6d6f9d2a-0000-4000-8000-000000000005"
+    prepared = Mock(session_id=session)
+
+    class Store:
+        def __init__(self, current):
+            self.current = current
+
+        def load_current(self, app_id):
+            return self.current
+
+        def session_target(self, item):
+            return "game.exe"
+
+    service.session_store = Store(prepared)
+    assert service._session_target(4242, session) == "game.exe"
+    # Another launch's session, and no session at all.
+    assert service._session_target(4242, "6d6f9d2a-0000-4000-8000-000000000006") == ""
+    service.session_store = Store(None)
+    assert service._session_target(4242, session) == ""
+
+    class Unreadable(Store):
+        def load_current(self, app_id):
+            raise ValueError("session pointer is unreadable")
+
+    service.session_store = Unreadable(None)
+    assert service._session_target(4242, session) == ""
+
+
 def test_a_stop_that_lost_its_session_does_not_call_the_game_put_back(tmp_path: Path, monkeypatch):
     """The stop only asks for a quiesce when it owns a live Cheat Engine.
 

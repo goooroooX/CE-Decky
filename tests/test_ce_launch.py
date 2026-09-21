@@ -1884,6 +1884,108 @@ def test_recovered_supervision_never_stops_a_target_it_has_not_seen_alive(tmp_pa
     assert terminated == []
 
 
+def test_supervision_watches_the_program_the_session_was_moved_to(tmp_path: Path):
+    """A retried attach moves the session and leaves the profile alone.
+
+    The launch was started for the program the profile names, and that is the
+    name both supervisors watch to know the game is still there. So a session
+    retried onto the game's own executable went on being judged by the launcher
+    it moved away from, and the launcher exiting - which is how an ordinary
+    handoff ends - stopped Cheat Engine in the middle of the game.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    supervisor = CELaunchSupervisor(
+        paths.user_home, paths.ce_root, paths.state_root, logging.getLogger("test"),
+        session_target=lambda app_id, session_id: "game.exe",
+    )
+    supervisor.launch_record_root.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema": 5, "app_id": 10, "session_id": "b0a3f2c1-1111-4222-8333-444455556666",
+        "pid": 4242, "pgid": 4242, "tool_id": "a" * 64, "executable": "/ce/cheatengine-x86_64.exe",
+        "descriptor_windows_path": DESCRIPTOR, "descriptor_sha256": DIGEST,
+        "baseline_game_pids": [351], "bridge_sha256": "e" * 64,
+        "target_process": "launcher.exe", "target_seen": True, "started_at": 1.0,
+    }
+    (supervisor.launch_record_root / "10.json").write_text(json.dumps(record), encoding="utf-8")
+
+    terminated: list[dict] = []
+    supervisor.recover_owned_launch = lambda app_id: {**record, "app_id": app_id}  # type: ignore[method-assign]
+    supervisor._terminate_recovered = lambda item: (terminated.append(item), True)[1]  # type: ignore[method-assign]
+    asked: list[str] = []
+
+    async def scenario() -> None:
+        import ce_decky.ce_launch as module
+        original_baseline = module.game_process_state
+        original_target = module.target_liveness
+        # The launcher this session was started for is already gone, which is
+        # what an ordinary handoff looks like.
+        answers = {"launcher.exe": "absent", "game.exe": "present"}
+
+        def target(app_id, target_process, **kwargs):
+            asked.append(target_process)
+            if len(asked) >= 4:
+                # And now the game itself exits, which is the real end.
+                answers["game.exe"] = "absent"
+            return (answers.get(target_process, "unknown"), None, False)
+
+        module.game_process_state = lambda pid, app_id, **kwargs: "gone_or_reused"
+        module.target_liveness = target
+        try:
+            assert await supervisor.resume_recovered_supervision(10) is True
+            for _ in range(200):
+                if terminated:
+                    break
+                await asyncio.sleep(SUPERVISION_TICK)
+        finally:
+            module.game_process_state = original_baseline
+            module.target_liveness = original_target
+        await supervisor.close()
+
+    asyncio.run(scenario())
+    # The launcher was never watched, so its absence ended nothing, and the
+    # program the session was moved to is what eventually did.
+    assert set(asked) == {"game.exe"}
+    assert [item["session_id"] for item in terminated] == ["b0a3f2c1-1111-4222-8333-444455556666"]
+
+
+def test_the_supervised_target_is_never_worse_than_the_name_already_watched(tmp_path: Path):
+    """Best effort, and every way of not knowing keeps what was there before.
+
+    The session is the authority on where it points, and it is read from files
+    that can be absent, retired or unreadable. None of those may leave a launch
+    watching nothing, because a launch that watches nothing outlives its game.
+    """
+    paths = PluginPaths.for_tests(tmp_path)
+    logger = logging.getLogger("test")
+    session = "b0a3f2c1-1111-4222-8333-444455556666"
+
+    def supervisor_with(session_target):
+        return CELaunchSupervisor(
+            paths.user_home, paths.ce_root, paths.state_root, logger, session_target=session_target,
+        )
+
+    def raising(app_id, session_id):
+        raise OSError("session state is unreadable")
+
+    def watched(session_target, app_id=10, watching="game.exe"):
+        return supervisor_with(session_target)._supervised_target(app_id, session, watching)
+
+    assert watched(None) == "game.exe"
+    assert watched(raising) == "game.exe"
+    # A session that has been retired or belongs to another launch, and an
+    # answer that is not a process name.
+    assert watched(lambda app_id, session_id: "") == "game.exe"
+    assert watched(lambda app_id, session_id: "../other.exe") == "game.exe"
+    assert watched(lambda app_id, session_id: None) == "game.exe"
+    # A self-test launch has no AppID to ask about.
+    assert watched(lambda app_id, session_id: "other.exe", app_id=None) == "game.exe"
+    assert watched(lambda app_id, session_id: "other.exe") == "other.exe"
+    # The session it asks about is this launch's own.
+    asked: list[str] = []
+    assert watched(lambda app_id, session_id: (asked.append(session_id), "other.exe")[1]) == "other.exe"
+    assert asked == [session]
+
+
 def test_recovered_supervision_stops_owned_ce_once_the_original_game_is_gone(tmp_path: Path):
     """A reload must not downgrade owned-and-supervised into owned-and-unsupervised."""
     paths = PluginPaths.for_tests(tmp_path)

@@ -626,13 +626,47 @@ class SessionStore:
         including it a name too many rather than a name too few - and the one
         direction this may be wrong in is the one that costs a warning instead
         of hiding one.
+
+        Bounded by what the log keeps. `write_commands` retains the latest
+        authorized retry and prunes the ones before it, so a session retried
+        more than once is known by where it started and where it is now, and
+        not by the executable it passed through in between.
         """
         descriptor = self._validate_prepared(prepared)
-        targets = [descriptor.target_process]
-        for command in self._read_control_file(Path(prepared.control_path)):
-            if command.kind == "retry_attach" and command.value:
-                targets.append(command.value)
-        return tuple(dict.fromkeys(targets))
+        retries = self._retry_commands(Path(prepared.control_path))
+        return tuple(dict.fromkeys([descriptor.target_process, *(command.value for command in retries)]))
+
+    def session_target(self, prepared: PreparedSession) -> str:
+        """The one executable this session is pointed at now.
+
+        Which is the descriptor's until a retried attach moves it, and the last
+        retry in the log afterwards, answered or not: the bridge takes the name
+        from the command whether the attach that follows succeeds or fails, so
+        that is where the session is pointed either way.
+
+        Not the same question as `session_targets`. What the session may have
+        left changed is every name it has held; what is worth watching to know
+        the game is still there is the one it holds now.
+        """
+        descriptor = self._validate_prepared(prepared)
+        retries = self._retry_commands(Path(prepared.control_path))
+        return retries[-1].value if retries else descriptor.target_process
+
+    def _retry_commands(self, control_path: Path) -> list[RuntimeCommand]:
+        """Every target-setting retry in the log, oldest generation first.
+
+        Ordered by the generation rather than by where the line sits, because
+        which retry is the latest is the whole of what a caller asks this, and
+        the file's order is a property of how the log was last merged.
+        """
+        return sorted(
+            (
+                command
+                for command in self._read_control_file(control_path)
+                if command.kind == "retry_attach" and command.value
+            ),
+            key=lambda command: command.generation,
+        )
 
     def status_mtime_ns(self, prepared: PreparedSession) -> int | None:
         """Return the heartbeat's write time without parsing or trusting its bytes.

@@ -1949,6 +1949,7 @@ class CELaunchSupervisor:
         *,
         display_resolver=resolve_game_mode_display,
         quiesce=None,
+        session_target=None,
     ) -> None:
         self.user_home = user_home
         self.ce_root = ce_root
@@ -1964,6 +1965,16 @@ class CELaunchSupervisor:
         # happened to remember. Absent in a launcher built without one, and the
         # stop is then exactly the stop it always was.
         self._quiesce = quiesce
+        # Asked which executable the session is pointed at now, for the same
+        # reason and from the same owner. A launch is started for the program
+        # the profile names and both supervisors watch that program to know the
+        # game is still there, but a retried attach moves the session to another
+        # one and deliberately leaves the profile alone. Watching the name the
+        # launch started with then stops Cheat Engine when the program the user
+        # moved away from exits, in the middle of the game they moved to. Absent
+        # in a launcher built without one, and the launch name is then all there
+        # is, exactly as before.
+        self._session_target = session_target
         self._operations: dict[str, dict[str, object]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
@@ -2736,6 +2747,19 @@ class CELaunchSupervisor:
                     baseline_was_gone = baseline_gone
                     if not due:
                         continue
+                    watched = await asyncio.to_thread(
+                        self._supervised_target, app_id, str(record.get("session_id") or ""), target_process,
+                    )
+                    if watched != target_process:
+                        # The same rule as the attached loop, and the reload is
+                        # where it is most easily got wrong: the record names
+                        # the program the launch started with, and a retried
+                        # attach after that never touched it.
+                        target_process, target_seen, identity, logged_target = watched, False, None, None
+                        log_activity(
+                            self.logger, "info", "ce_launch.supervised_target_changed",
+                            app_id=app_id, session=str(record.get("session_id") or "")[:12],
+                        )
                     state, identity, container_gone = await asyncio.to_thread(
                         target_liveness, app_id, target_process, known=identity,
                     )
@@ -2984,6 +3008,26 @@ class CELaunchSupervisor:
             target_unreadable=state != "present" and identity is not None,
         )
         return current
+
+    def _supervised_target(self, app_id: int | None, session_id: str, watching: str) -> str:
+        """The executable to watch this tick: where this session points now.
+
+        Best effort, and never worse than what it replaces. A launcher with no
+        session knowledge, a session that has been retired, one that belongs to
+        another launch, state this could not read and an answer that is not a
+        process name all keep the name already being watched, which is what
+        both loops watched before this existed.
+        """
+        if app_id is None or self._session_target is None:
+            return watching
+        try:
+            current = self._session_target(app_id, session_id)
+        except Exception as exc:  # noqa: BLE001 - supervision is never ended by this
+            log_failure(self.logger, "ce_launch.session_target_unreadable", exc, expected=True, app_id=app_id)
+            return watching
+        if isinstance(current, str) and _process_basename(current):
+            return current
+        return watching
 
     def _mark_target_seen(self, app_id: int | None, session_id: str) -> None:
         """Record durably that this exact session's target was observed alive.
@@ -3434,6 +3478,21 @@ class CELaunchSupervisor:
                         baseline_was_gone = baseline_gone
                         if not due:
                             continue
+                        watched = await asyncio.to_thread(
+                            self._supervised_target, plan.app_id, plan.session_id, target_process,
+                        )
+                        if watched != target_process:
+                            # The session was pointed at another program. What
+                            # was learned about the one before it belongs to
+                            # that one: the proof that a target was seen alive
+                            # is what allows an absence to end the launch, so
+                            # carrying it over would let the new name be proved
+                            # gone before anything had looked for it once.
+                            target_process, target_seen, identity, logged_target = watched, False, None, None
+                            log_activity(
+                                self.logger, "info", "ce_launch.supervised_target_changed",
+                                app_id=plan.app_id, session=plan.session_id[:12],
+                            )
                         state, identity, container_gone = await asyncio.to_thread(
                             target_liveness, plan.app_id, target_process, known=identity,
                         )

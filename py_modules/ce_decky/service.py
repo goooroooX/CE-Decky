@@ -343,6 +343,11 @@ class PluginService:
             # than the launcher's. Handed over here so every route to a stop
             # gets it, rather than the one route that remembered to.
             quiesce=self._quiesce_session,
+            # And which program to watch to know the game is still there. Same
+            # ownership: a retried attach is a command in this store's control
+            # log, and the launcher supervises against a name it was handed
+            # once, at launch.
+            session_target=self._session_target,
         )
         # Updating this plugin shares the transport the providers use and
         # nothing else with them: its own record, its own host policy, and a
@@ -4545,6 +4550,24 @@ class PluginService:
             elapsed_ms=elapsed_ms, reason=answer.get("reason"),
         )
         return {**answer, "asked": True, "cleanup_confirmed": confirmed, "elapsed_ms": elapsed_ms}
+
+    def _session_target(self, app_id: int, session_id: str) -> str:
+        """The executable that exact session is pointed at now.
+
+        The launcher's question rather than the stop's: it watches one program
+        to know the game is still there, and a retried attach moves the session
+        to another one. Answered for the launch's own session only, because the
+        current session is separate state from which launch is live, and a name
+        from somebody else's session is worse than the one the launcher already
+        has. Nothing is the answer wherever there is no such session to read.
+        """
+        try:
+            prepared = self.session_store.load_current(app_id)
+            if prepared is None or prepared.session_id != session_id:
+                return ""
+            return self.session_store.session_target(prepared)
+        except (OSError, ValueError):
+            return ""
 
     def _session_targets(self, prepared) -> tuple[str, ...]:
         """The executables this session has been pointed at, or nothing.
