@@ -125,6 +125,14 @@ export interface TableScanCheck {
   source: string;
   present: string[];
   missing: string[];
+  /**
+   * Patterns the check saw match in more than one place.
+   *
+   * A floor and never a ceiling: proving a pattern unique costs a read of the
+   * whole program for every pattern, so a name that is absent from this list is
+   * one nothing is claimed about.
+   */
+  ambiguous: string[];
   not_checked: Array<{ name: string; reason: string }>;
   elapsed_ms: number;
   reason: string | null;

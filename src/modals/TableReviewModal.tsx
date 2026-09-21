@@ -3,7 +3,7 @@ import { traceUiAction, traceUiEdit, startUiOperation } from "../uiActions";
 import { DialogButton, Dropdown, Field, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
-import { antiCheatBlockedReason, canPrepareCopy, defaultTargetProcess, derivedChangeSentence, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
+import { ambiguousScanFinding, antiCheatBlockedReason, canPrepareCopy, defaultTargetProcess, derivedChangeSentence, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
 import type { GameExecutableListing, TableInspection, TableScanCheck, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
@@ -255,6 +255,10 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     // because it is a table that will not work rather than one that will work
     // more than the reader asked for.
     missingScanFinding(scanAnswer, inspection.scan_count),
+    // Below the missing pattern and above the defaults: a table whose hook may
+    // land in the wrong code is worse than one that switches on more than was
+    // asked, and better than one that will not run at all.
+    ambiguousScanFinding(scanAnswer),
     defaults
       ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
       : null,

@@ -1970,6 +1970,31 @@ export function missingScanFinding(
 }
 
 /**
+ * A pattern that matches in more than one place, as the one sentence about it.
+ *
+ * Cheat Engine's own documentation of its scanner says it "will return any
+ * random match", so making a pattern unique is the table author's job and one
+ * that is not unique here is a hook that may land in unrelated code. That is
+ * worth a sentence because the table otherwise looks healthy: every pattern is
+ * present, and the reader would have no reason to doubt it.
+ *
+ * Said as what was seen rather than as a count of the table: the check stops
+ * looking once it has found a second place, so `3 of 28 are not unique` would
+ * be claiming the other 25 are. And said of the game rather than of its
+ * program, because a pattern the table names a file for was looked for in that
+ * file: naming the program would be putting the finding on the wrong one.
+ */
+export function ambiguousScanFinding(check: TableScanCheck | null | undefined): string | null {
+  const ambiguous = check?.ambiguous ?? [];
+  if (!check || ambiguous.length === 0) return null;
+  const named = ambiguous.slice(0, 2).join(", ");
+  const rest = ambiguous.length - Math.min(2, ambiguous.length);
+  const which = rest > 0 ? `${named} and ${rest} more` : named;
+  return `${ambiguous.length === 1 ? "One of this table's byte patterns matches" : `${ambiguous.length} of this table's byte patterns match`} more than one place in this copy of the game: ${which}.`
+    + " Cheat Engine takes any one of the places it matches, so a cheat built on one of those may change code it was not written for.";
+}
+
+/**
  * What this table does on its own, for the one sentence Review says about it.
  *
  * A script's declarations are the author's preset rather than the user's

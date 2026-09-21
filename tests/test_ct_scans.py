@@ -18,6 +18,7 @@ from ce_decky.ct_scans import (
     DEFAULT_BUDGET_SECONDS,
     ScanParseError,
     ScanRepairError,
+    TableScan,
     assert_only_scans_dropped,
     assert_repair_closed,
     drop_unmatched_scans,
@@ -255,6 +256,40 @@ def test_a_compiled_pattern_matches_what_cheat_engine_would():
     # and half of one is not one: the cost of this check is finding that byte.
     assert compile_pattern("?? 8B 01") is None
     assert compile_pattern("4? 8B 01") is None
+
+
+def test_a_pattern_seen_twice_is_reported_and_one_seen_once_claims_nothing(tmp_path: Path):
+    """Cheat Engine takes any one of the places a pattern matches.
+
+    Its own documentation says the scanner "will return any random match", so
+    making a pattern unique is the table author's job, and one that is not
+    unique in this build is a hook that may land in unrelated code. What this
+    reports is a second place it actually saw: proving uniqueness means reading
+    the whole program for every pattern instead of stopping at the first match,
+    which was six times the cost on the program this was built against.
+    """
+    program = tmp_path / "game.exe"
+    twice = bytes.fromhex("F30F59F0488BC3")
+    once = bytes.fromhex("488B0148895424")
+    program.write_bytes(b"\x00" * 16 + twice + b"\x11" * 32 + twice + b"\x22" * 16 + once + b"\x33" * 16)
+
+    answer = check_executable(program, [
+        TableScan(name="aobTwice", module=None, pattern="F3 0F 59 F0 48 8B C3"),
+        TableScan(name="aobOnce", module=None, pattern="48 8B 01 48 89 54 24"),
+    ])
+
+    assert answer.present == ("aobTwice", "aobOnce")
+    assert answer.ambiguous == ("aobTwice",)
+
+
+def test_a_pattern_that_overlaps_itself_is_still_two_places():
+    """A second place is a second address, not a second run of bytes."""
+    program_bytes = bytes.fromhex("AAAAAA")
+    pattern = compile_pattern("AA AA")
+    assert pattern is not None
+    first = pattern.search(program_bytes)
+    assert first is not None
+    assert pattern.search(program_bytes, first.start() + 1) is not None
 
 
 def test_the_default_budget_is_a_bound_rather_than_an_expectation():

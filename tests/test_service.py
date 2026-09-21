@@ -2184,6 +2184,72 @@ def test_the_scan_check_names_the_pattern_this_copy_of_the_game_does_not_hold(tm
     assert service.inspect_table_sha(str(table["sha256"]))["scan_count"] == 2
 
 
+MODULE_SCAN_FIXTURE = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Health"</Description>'
+    '<VariableType>Auto Assembler Script</VariableType>'
+    '<AssemblerScript>[ENABLE]\n'
+    'aobscanmodule(aobPresent,game.exe,48 8B 01 48 89 54 24)\n'
+    'aobscanmodule(aobInEngine,engine.dll,C3 90 41 57 48 83 EC)\n'
+    'aobscanmodule(aobElsewhere,other.dll,F3 0F 59 F0 48 8B C3)\n'
+    '</AssemblerScript></CheatEntry></CheatEntries>\n'
+    '</CheatTable>\n'
+)
+
+
+def test_the_check_reads_the_game_s_other_files_for_the_patterns_that_name_them(tmp_path: Path, monkeypatch):
+    """A game ships its code in more than one file.
+
+    A script scanning the engine's own library is making a claim about that
+    library, so reporting the pattern absent from the program would be inventing
+    a finding - and saying nothing has read half the table and shown the reader
+    the healthy half. The file is beside the program, so it is looked for there
+    and searched in turn.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-modules"))
+    service.initialize()
+    source = tmp_path / "modules.CT"
+    source.write_text(MODULE_SCAN_FIXTURE, encoding="utf-8")
+    table = service.import_table(str(source))
+    game = tmp_path / "game"
+    game.mkdir()
+    program = game / "game.exe"
+    program.write_bytes(b"\x00" * 64 + bytes.fromhex("488B0148895424") + b"\x11" * 64)
+    (game / "engine.dll").write_bytes(b"\x22" * 32 + bytes.fromhex("C39041574883EC") + b"\x33" * 32)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    # The program's own pattern, and the engine's, each answered from the file
+    # that was supposed to hold it.
+    assert answer["present"] == ["aobPresent", "aobInEngine"]
+    assert answer["missing"] == []
+    # And the one whose file this device does not have stays exactly as
+    # unchecked as it was, with the reason it already carried.
+    assert [row["name"] for row in answer["not_checked"]] == ["aobElsewhere"]
+    assert "other.dll" in answer["not_checked"][0]["reason"]
+
+
+def test_a_pattern_absent_from_the_file_that_names_it_is_missing_rather_than_unchecked(tmp_path: Path, monkeypatch):
+    """The file was read, so the answer is about the file rather than about not looking."""
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-module-miss"))
+    service.initialize()
+    source = tmp_path / "modules.CT"
+    source.write_text(MODULE_SCAN_FIXTURE, encoding="utf-8")
+    table = service.import_table(str(source))
+    game = tmp_path / "game"
+    game.mkdir()
+    program = game / "game.exe"
+    program.write_bytes(b"\x00" * 64 + bytes.fromhex("488B0148895424") + b"\x11" * 64)
+    (game / "engine.dll").write_bytes(b"\x44" * 128)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    assert answer["missing"] == ["aobInEngine"]
+    assert answer["present"] == ["aobPresent"]
+
+
 def test_a_game_whose_program_this_device_does_not_know_is_not_checked(tmp_path: Path):
     """Guessing a path here is the invariant this project is most careful about.
 

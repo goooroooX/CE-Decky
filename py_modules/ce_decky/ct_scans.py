@@ -163,12 +163,25 @@ class ScanCheck:
     # third state and means nobody asked - nothing is missing, or nothing was
     # searched - and a screen may not read it as a repair that was refused.
     repairable: bool | None = None
+    # Patterns this saw match in more than one place. Cheat Engine's own words
+    # about its scanner are that it "will return any random match", so the
+    # author of a table is the one who has to make a pattern unique, and one
+    # that is not unique in the build in front of the reader is a hook that may
+    # land in unrelated code.
+    #
+    # A floor and never a ceiling. Proving a pattern unique means reading the
+    # whole program for every pattern rather than stopping at the first match,
+    # which was measured at six times the cost on the program this was built
+    # against - so what is reported is a second match that was actually seen,
+    # and a pattern absent from this list is one nothing is claimed about.
+    ambiguous: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
             "source": self.source,
             "present": list(self.present),
             "missing": list(self.missing),
+            "ambiguous": list(self.ambiguous),
             "not_checked": [{"name": name, "reason": reason} for name, reason in self.not_checked],
             "elapsed_ms": self.elapsed_ms,
             "reason": self.reason,
@@ -363,6 +376,19 @@ def executable_is_packed(path: Path) -> str | None:
     return None
 
 
+def other_module(scan: TableScan, path: Path) -> str | None:
+    """The module this scan looks in, where it is not the file being searched.
+
+    Public because the caller is the one that can do anything about it: a game
+    ships its code in more than one file, and the file next to the program is
+    something this device can look for and search in turn. Reporting the pattern
+    as absent from a program that was never supposed to hold it would be
+    inventing a finding; leaving it unchecked when the file is right there is
+    leaving a table half read.
+    """
+    return _other_module(scan, path)
+
+
 def _other_module(scan: TableScan, path: Path) -> str | None:
     """The module this scan looks in, where that is not the file being searched.
 
@@ -428,6 +454,7 @@ def check_executable(
         longest = max(longest, len(scan.pattern.split()))
 
     found: set[str] = set()
+    twice: set[str] = set()
     ran_out = False
     identity: tuple[int, ...] | None = None
     try:
@@ -459,10 +486,20 @@ def check_executable(
                 break
             still: list[tuple[str, re.Pattern[bytes]]] = []
             for name, compiled in wanted:
-                if compiled.search(data) is not None:
-                    found.add(name)
-                else:
+                hit = compiled.search(data)
+                if hit is None:
                     still.append((name, compiled))
+                    continue
+                found.add(name)
+                # One more look, in the span already read and from one byte on,
+                # so an occurrence overlapping the first is still a second
+                # place. It costs the rest of one chunk rather than the rest of
+                # the program, which is what makes it affordable at all: a
+                # pattern is dropped once it has matched, so this span is the
+                # only one it is ever looked at twice in, and nothing here says
+                # a pattern is unique.
+                if compiled.search(data, hit.start() + 1) is not None:
+                    twice.add(name)
             wanted = still
             if offset + len(data) >= info.st_size:
                 break
@@ -484,6 +521,7 @@ def check_executable(
         present=tuple(name for name in ordered if name in found),
         missing=tuple(name for name in ordered if name not in found and name not in unreachable),
         not_checked=tuple(not_checked),
+        ambiguous=tuple(name for name in ordered if name in twice),
         elapsed_ms=int((time.monotonic() - started) * 1000),
     )
 

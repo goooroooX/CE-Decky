@@ -15,7 +15,7 @@ const api = vi.hoisted(() => ({
   // has never launched gets, which is the ordinary one: nothing was checked, so
   // Review is the screen it always was.
   checkTableScans: vi.fn().mockResolvedValue({
-    source: "file", present: [], missing: [], not_checked: [], elapsed_ms: 0,
+    source: "file", present: [], missing: [], ambiguous: [], not_checked: [], elapsed_ms: 0,
     reason: "this device does not know which program this game runs",
   }),
   // What a game's own installed folder holds, read while Review is being
@@ -1008,7 +1008,7 @@ describe("Home panel and managed setup", () => {
     // it is switched on and comes straight back off.
     api.checkTableScans.mockResolvedValueOnce({
       source: "file", present: ["aobHealth"], missing: ["aobSpeed"], not_checked: [],
-      elapsed_ms: 690, reason: null, repairable: true,
+      elapsed_ms: 690, reason: null, repairable: true, ambiguous: [],
     });
     api.prepareTableCopy.mockResolvedValue({ ...table, sha256: "f".repeat(64) });
     renderContent();
@@ -1042,7 +1042,7 @@ describe("Home panel and managed setup", () => {
     // that refuses itself.
     api.checkTableScans.mockResolvedValueOnce({
       source: "file", present: [], missing: ["aobSpeed"], not_checked: [],
-      elapsed_ms: 12, reason: null, repairable: false,
+      elapsed_ms: 12, reason: null, repairable: false, ambiguous: [],
     });
     renderContent();
     const picker = await openPicker();
@@ -3505,7 +3505,7 @@ describe("Home panel and managed setup", () => {
     render(<TableReviewModal
       table={table as any}
       inspection={{ ...inspect, has_signature: false, scan_count: 28 } as any}
-      scanCheck={{ source: "file", present: [], missing: ["aobSpeed"], not_checked: [], elapsed_ms: 12, reason: null, repairable: true } as any}
+      scanCheck={{ source: "file", present: [], missing: ["aobSpeed"], not_checked: [], elapsed_ms: 12, reason: null, repairable: true, ambiguous: [] } as any}
       scanCheckedProcess="game.exe"
       onUse={vi.fn()}
       onPrepareCopy={onPrepareCopy}
@@ -3521,7 +3521,7 @@ describe("Home panel and managed setup", () => {
     render(<TableReviewModal
       table={table as any}
       inspection={{ ...inspect, has_signature: false, scan_count: 28 } as any}
-      scanCheck={{ source: "file", present: [], missing: ["aobSpeed"], not_checked: [], elapsed_ms: 12, reason: null, repairable: false } as any}
+      scanCheck={{ source: "file", present: [], missing: ["aobSpeed"], not_checked: [], elapsed_ms: 12, reason: null, repairable: false, ambiguous: [] } as any}
       scanCheckedProcess="game.exe"
       onUse={vi.fn()}
       onPrepareCopy={vi.fn()}
@@ -3629,6 +3629,32 @@ describe("Home panel and managed setup", () => {
     // The limit that has to be in the wording: Cheat Engine searches the
     // running game, and this searched the program on disk.
     expect(block.textContent).toContain("not always what Cheat Engine sees in the running game");
+  });
+
+  it("says when a pattern matches more than one place, and never that one is unique", async () => {
+    // Cheat Engine's own documentation of its scanner says it "will return any
+    // random match", so a pattern that is not unique in this build is a hook
+    // that may land in unrelated code - on a table that otherwise looks
+    // perfectly healthy, every pattern present.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, scan_count: 28 } as any}
+      scanCheck={{
+        source: "file", present: ["aobHealth", "aobSpeed"], missing: [], ambiguous: ["aobSpeed"],
+        not_checked: [], elapsed_ms: 700, reason: null, repairable: null,
+      } as any}
+      scanCheckedProcess="game.exe"
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("aobSpeed");
+    expect(block.textContent).toContain("matches more than one place");
+    expect(block.textContent).toContain("takes any one of the places it matches");
+    // What it may not say is anything about the ones it stopped looking at.
+    expect(block.textContent).not.toContain("of 28");
+    expect(block.textContent).not.toContain("unique");
   });
 
   it("says nothing about a scan check that could not answer", async () => {

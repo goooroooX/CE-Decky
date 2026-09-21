@@ -4881,6 +4881,31 @@ function missingScanFinding(check, scanCount) {
         + " This was read from the program on disk, which is not always what Cheat Engine sees in the running game.";
 }
 /**
+ * A pattern that matches in more than one place, as the one sentence about it.
+ *
+ * Cheat Engine's own documentation of its scanner says it "will return any
+ * random match", so making a pattern unique is the table author's job and one
+ * that is not unique here is a hook that may land in unrelated code. That is
+ * worth a sentence because the table otherwise looks healthy: every pattern is
+ * present, and the reader would have no reason to doubt it.
+ *
+ * Said as what was seen rather than as a count of the table: the check stops
+ * looking once it has found a second place, so `3 of 28 are not unique` would
+ * be claiming the other 25 are. And said of the game rather than of its
+ * program, because a pattern the table names a file for was looked for in that
+ * file: naming the program would be putting the finding on the wrong one.
+ */
+function ambiguousScanFinding(check) {
+    const ambiguous = check?.ambiguous ?? [];
+    if (!check || ambiguous.length === 0)
+        return null;
+    const named = ambiguous.slice(0, 2).join(", ");
+    const rest = ambiguous.length - Math.min(2, ambiguous.length);
+    const which = rest > 0 ? `${named} and ${rest} more` : named;
+    return `${ambiguous.length === 1 ? "One of this table's byte patterns matches" : `${ambiguous.length} of this table's byte patterns match`} more than one place in this copy of the game: ${which}.`
+        + " Cheat Engine takes any one of the places it matches, so a cheat built on one of those may change code it was not written for.";
+}
+/**
  * What this table does on its own, for the one sentence Review says about it.
  *
  * A script's declarations are the author's preset rather than the user's
@@ -12290,6 +12315,10 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         // because it is a table that will not work rather than one that will work
         // more than the reader asked for.
         missingScanFinding(scanAnswer, inspection.scan_count),
+        // Below the missing pattern and above the defaults: a table whose hook may
+        // land in the wrong code is worse than one that switches on more than was
+        // asked, and better than one that will not run at all.
+        ambiguousScanFinding(scanAnswer),
         defaults
             ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
             : null,
@@ -15622,7 +15651,12 @@ function Content() {
             // check was handed: what it found, what it did not, and what it could not
             // look for.
             const scanned = scan ? scan.present.length + scan.missing.length + scan.not_checked.length : 0;
-            const scanSentence = missingScanFinding(scan, scanned) ?? "";
+            // What was missing, and what matched in more than one place. The second
+            // matters most exactly here: a table that failed with every pattern
+            // present says nothing at all otherwise, and a hook Cheat Engine put at
+            // any one of several places is the likeliest reason it did nothing.
+            const scanSentence = [missingScanFinding(scan, scanned), ambiguousScanFinding(scan)]
+                .filter((item) => item !== null).join(" ");
             // Said where it applies: a pattern is missing and the script's remaining
             // code still needs what taking it out would remove, so there is nothing
             // to offer and the reason is not a mystery.

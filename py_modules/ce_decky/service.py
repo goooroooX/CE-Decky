@@ -62,11 +62,14 @@ from .operations import drained_to_thread
 from .catalog import CatalogService
 from .artifact_resolutions import ArtifactResolutions
 from .ct_scans import (
+    DEFAULT_BUDGET_SECONDS,
     ScanCheck,
     ScanRepairError,
     assert_only_scans_dropped,
     check_executable,
     drop_unmatched_scans,
+    TableScan,
+    other_module,
     scans_in_table,
 )
 from .table_compatibility import TableCompatibility, compatibility_state, steam_build_id
@@ -240,6 +243,11 @@ def _disconnected_bridge_reason(runtime: dict[str, object]) -> str:
 # patience with a stop that appears to have hung.
 QUIESCE_WAIT_SECONDS = 15.0
 QUIESCE_POLL_SECONDS = 0.25
+
+# How many of a game's other files one scan check may open. A table naming its
+# engine's library is ordinary; one naming a dozen files is a table this device
+# would spend a reader's Review reading, and each file is another whole pass.
+MAX_SCANNED_MODULES = 3
 
 
 def _quiesce_counts(value: object) -> tuple[int | None, list[str]]:
@@ -1694,6 +1702,7 @@ class PluginService:
             self.logger, "info", "table.scan_check",
             table_sha=digest[:12], app_id=app_id, patterns=len(inspection.scans),
             missing=",".join(answer.missing) or None, source=answer.source,
+            ambiguous=",".join(answer.ambiguous) or None,
             not_checked=len(answer.not_checked) or None,
             not_checked_why=" | ".join(unreachable) or None,
             # Which program this is about and how this device came to know
@@ -1721,7 +1730,91 @@ class PluginService:
         program, found_by = self._game_program_path(app_id, target_process)
         if program is None:
             return ScanCheck(source="file", reason="this device does not know which program this game runs"), None
-        return check_executable(program, list(inspection.scans)), found_by
+        answer = check_executable(program, list(inspection.scans))
+        return self._with_other_modules(answer, program, list(inspection.scans)), found_by
+
+    def _with_other_modules(self, answer: ScanCheck, program: Path, scans: list[TableScan]) -> ScanCheck:
+        """The same answer, with the game's other files searched for what names them.
+
+        A game ships its code in more than one file, and a script that scans
+        `GameAssembly.dll` is making a claim about that file rather than about
+        the program. Reporting the pattern absent from the program would be
+        inventing a finding, so the first pass leaves it unchecked - and a
+        screen that then says nothing has read half the table and shown the
+        reader the healthy half.
+
+        So each module the table names is looked for beside the program, in the
+        game's own directory and nowhere else, and searched in turn. A module
+        this device cannot find stays exactly as unchecked as it was, with the
+        reason it already had: the one thing this may not do is decide anything
+        from a path it assembled itself.
+
+        A pass that answered nothing at all ends it. The program being wrapped,
+        unreadable or larger than this reads is a statement about this game
+        rather than about one of its files, and answering half a table under it
+        would put a finding on screen beside a check that did not run.
+        """
+        if answer.reason is not None:
+            return answer
+        # What the first pass did not answer, decided from what it answered
+        # rather than from the words of the reason it gave: a message is for a
+        # reader, and reading one back is how a rule stops working silently.
+        answered = set(answer.present) | set(answer.missing)
+        wanted: dict[str, list[TableScan]] = {}
+        for scan in scans:
+            module = other_module(scan, program)
+            if module is not None and scan.name not in answered:
+                wanted.setdefault(module, []).append(scan)
+        if not wanted:
+            return answer
+        present = list(answer.present)
+        missing = list(answer.missing)
+        ambiguous = list(answer.ambiguous)
+        not_checked = [(name, reason) for name, reason in answer.not_checked]
+        elapsed = answer.elapsed_ms
+        # Bounded twice over, because each one is another pass over another whole
+        # file while a reader waits for Review to open: at most a few files, and
+        # never past the budget the whole check has. The bound is shared rather
+        # than given to each file, or a table naming three of them would be
+        # three times as long as the one bound this promises.
+        for module in sorted(wanted)[:MAX_SCANNED_MODULES]:
+            left = DEFAULT_BUDGET_SECONDS - elapsed / 1000
+            if left <= 0:
+                not_checked = [(name, "the check ran out of time" if name in {scan.name for scan in wanted[module]} else reason)
+                               for name, reason in not_checked]
+                continue
+            beside = program_in_tree(program.parent, module)
+            if beside is None:
+                continue
+            found = check_executable(beside, wanted[module], budget_seconds=left)
+            elapsed += found.elapsed_ms
+            if found.reason is not None:
+                # The file was found and says nothing: unreadable, wrapped, or
+                # bigger than this reads. That is about this file, so what those
+                # patterns carry says so rather than repeating a sentence about
+                # the program, which was read perfectly well.
+                mine = {scan.name for scan in wanted[module]}
+                not_checked = [
+                    (name, f"this pattern is looked for in {module}, which this device could not read" if name in mine else reason)
+                    for name, reason in not_checked
+                ]
+                continue
+            answered = set(found.present) | set(found.missing)
+            present.extend(found.present)
+            missing.extend(found.missing)
+            ambiguous.extend(found.ambiguous)
+            not_checked = [(name, reason) for name, reason in not_checked if name not in answered]
+            not_checked.extend(found.not_checked)
+        ordered = [scan.name for scan in scans]
+        rank = {name: index for index, name in enumerate(ordered)}
+        return replace(
+            answer,
+            present=tuple(sorted(set(present), key=lambda name: rank.get(name, len(rank)))),
+            missing=tuple(sorted(set(missing), key=lambda name: rank.get(name, len(rank)))),
+            ambiguous=tuple(sorted(set(ambiguous), key=lambda name: rank.get(name, len(rank)))),
+            not_checked=tuple(not_checked),
+            elapsed_ms=elapsed,
+        )
 
     def _repair_is_provable(self, source: Path, missing: tuple[str, ...]) -> bool:
         """Whether dropping those scans produces a table this would store.

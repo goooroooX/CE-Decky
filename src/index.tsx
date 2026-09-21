@@ -87,7 +87,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -2698,7 +2698,12 @@ function Content() {
       // check was handed: what it found, what it did not, and what it could not
       // look for.
       const scanned = scan ? scan.present.length + scan.missing.length + scan.not_checked.length : 0;
-      const scanSentence = missingScanFinding(scan, scanned) ?? "";
+      // What was missing, and what matched in more than one place. The second
+      // matters most exactly here: a table that failed with every pattern
+      // present says nothing at all otherwise, and a hook Cheat Engine put at
+      // any one of several places is the likeliest reason it did nothing.
+      const scanSentence = [missingScanFinding(scan, scanned), ambiguousScanFinding(scan)]
+        .filter((item): item is string => item !== null).join(" ");
       // Said where it applies: a pattern is missing and the script's remaining
       // code still needs what taking it out would remove, so there is nothing
       // to offer and the reason is not a mystery.
