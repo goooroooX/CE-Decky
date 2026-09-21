@@ -4762,6 +4762,31 @@ function switchValuesFor(control) {
  * waits out.
  */
 function switchesToHoldOff(scripts, controls, requested) {
+    // Only a flag whose own code was read and found to survive being written off.
+    // A table's hook can turn a pointer into an offset, test the flag and, on the
+    // branch taken when it is off, hand the game back the offset: the game then
+    // reads it as an address and dies minutes later, with nothing to say a cheat
+    // table was involved. What was not established stays on, and `switchesLeftOn`
+    // is what names it.
+    return switchCandidates(scripts, controls, requested)
+        .filter(({ control }) => control.switch_off_is_safe === true);
+}
+/**
+ * The cheats a script switches on that CE Decky has to leave on.
+ *
+ * The other half of the same rule, from the same candidates, so the two cannot
+ * drift apart. A user who asked for one cheat and got three is owed the list,
+ * because those three are running in their game and the panel's own count does
+ * not show them: they are values in the game rather than records Cheat Engine
+ * has activated.
+ */
+function switchesLeftOn(scripts, controls, requested) {
+    return switchCandidates(scripts, controls, requested)
+        .filter(({ control }) => control.switch_off_is_safe !== true)
+        .map(({ control }) => control);
+}
+/** Every switch a script this press starts declares on and nobody asked for. */
+function switchCandidates(scripts, controls, requested) {
     const held = new Map();
     for (const script of scripts) {
         if (script.id === null)
@@ -4788,6 +4813,22 @@ function switchesToHoldOff(scripts, controls, requested) {
         }
     }
     return [...held.values()];
+}
+/**
+ * The one sentence about the cheats that stayed on, or nothing where none did.
+ *
+ * Named rather than counted: these are cheats running in somebody's game that
+ * they did not ask for, and a number would leave them looking for which.
+ */
+function leftOnSentence(left) {
+    if (left.length === 0)
+        return null;
+    const named = left.slice(0, 3).map((control) => controlRowLabel(control)).join(", ");
+    const rest = left.length - Math.min(3, left.length);
+    const which = rest > 0 ? `${named} and ${rest} more` : named;
+    return `${left.length === 1 ? "One more cheat from this table is on" : `${left.length} more cheats from this table are on`}: ${which}.`
+        + " CE Decky leaves those on because switching them off makes the table's own code hand the game a wrong address,"
+        + " or because it could not read that code. Switching them off yourself can stop the game.";
 }
 /**
  * Whether a listed table's bytes carry the signature this Cheat Engine refuses.
@@ -10812,6 +10853,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const [unavailableRecords, setUnavailableRecords] = SP_REACT.useState(new Set());
     const [applying, setApplying] = SP_REACT.useState(false);
     const applyingRef = SP_REACT.useRef(false);
+    // What the last Apply left switched on because the table's own code was not
+    // read as surviving those cheats being switched off. Handed to the caller,
+    // which is what puts it in front of the user.
+    const leftOnRef = SP_REACT.useRef([]);
     const [error, setError] = SP_REACT.useState(null);
     const [errorTitle, setErrorTitle] = SP_REACT.useState("Cannot apply");
     SP_REACT.useEffect(() => {
@@ -11347,10 +11392,16 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // with it and nothing held them off. A script that was already running
             // is not here either: its defaults were dealt with when it started, and
             // writing them again would undo a flag switched on since.
-            const heldOff = switchesToHoldOff(safeControls.filter((control) => control.id !== null
+            const startedHere = safeControls.filter((control) => control.id !== null
                 && enclosingIds.has(control.id)
                 && activeById.get(control.id) === true
-                && activeBefore.get(control.id) !== true), safeControls, touchedIds);
+                && activeBefore.get(control.id) !== true);
+            const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds);
+            // What the same rule refuses to write: cheats that are on in the game
+            // because this table's own code was not read as surviving them being
+            // switched off. Only this press knows which scripts it started, so this
+            // is where that list comes from.
+            leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds);
             for (const { control, value } of heldOff) {
                 if (control.id === null)
                     continue;
@@ -11439,7 +11490,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // before that returned meant a failed persistence left CE changed while
             // the modal no longer knew it owed a write, so the next session restored
             // the old selection. Stay dirty until the durable half commits.
-            await onApplied(remembered, finalState.envelope ?? confirmed.envelope);
+            await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current);
             setLastConfirmed(confirmedState);
             setTouchedActive(new Set());
             setTouchedValues(new Set());
@@ -11582,6 +11633,13 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                                 blockedByParent ? "its script has not run yet" : null,
                                                 value ? `= ${value}` : null,
                                                 isPinned ? "pinned" : null,
+                                                // Said on the row, before anything is pressed: a cheat this
+                                                // table switches on by itself and that CE Decky may not
+                                                // switch off is one the reader is about to wonder about.
+                                                control.declared_default !== null
+                                                    && control.declared_default === control.switch_on_value
+                                                    && control.switch_off_is_safe !== true
+                                                    ? "not safe to switch off" : null,
                                             ].filter(Boolean).join(" \u00b7 ");
                                             return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { testId: `cheat-row-${recordId}`, label: controlRowLabel(control), summary: summary, active: state?.active ?? null, disabled: applying || pinning, highlighted: isExpanded, onActiveChange: traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active })), actions: (
                                                     // An active cheat that takes a value keeps its editor
@@ -16021,7 +16079,7 @@ function Content() {
                     await refreshStatus().catch(() => undefined);
                 }, onValidateStartupPlan: (remembered, values) => validateEffectiveStartupPlan(game.appId, current.table_sha256, remembered, values), onSnapshot: recordLiveSnapshot, onSnapshotInvalidated: () => dropLiveSnapshot(), autoloadEnabled: Boolean(current.autoload_enabled), onCompatibilityConfirmed: async () => {
                     await refreshStatus().catch((cause) => logUiFailure("picker.compatibility_refresh_failed", cause, { app_id: game.appId }));
-                }, onApplied: async (remembered, envelope) => {
+                }, onApplied: async (remembered, envelope, leftOn) => {
                     // A selection made with nothing running is only ever going to reach
                     // Cheat Engine through auto-load, so switching cheats on there means
                     // asking for them - turning auto-load on is what the user just asked
@@ -16088,6 +16146,14 @@ function Content() {
                                     ? "Every cheat is off for this table, so auto-load was switched off too."
                                     : "Cheats saved for this exact table; they are switched on when it is next loaded.",
                     });
+                    // And what this press left switched on because the table's own code
+                    // was not read as surviving those cheats being switched off. Said
+                    // after the press, because it is about cheats running now that the
+                    // panel's own count does not show: they are values in the game rather
+                    // than records Cheat Engine has activated.
+                    const alsoOn = leftOnSentence(leftOn ?? []);
+                    if (alsoOn)
+                        toaster.toast({ title: "CE Decky", body: alsoOn });
                 }, onCancel: close }));
         });
     };
@@ -16212,6 +16278,9 @@ function Content() {
             ? [...ancestors, ...(control.id !== null && enclosingControlIds(controls).has(control.id) ? [control] : [])]
             : [];
         const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
+        // The other half of the same rule: what it refuses to write, which is a
+        // cheat running in somebody's game that they did not ask for.
+        const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]));
         const desired = active
             ? [
                 ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -16272,6 +16341,11 @@ function Content() {
                         });
                     }
                 }
+                // Said after the press rather than before it: what this is about is a
+                // cheat that is on now, and the sentence names them.
+                const alsoOn = leftOnSentence(leftOn);
+                if (alsoOn)
+                    toaster.toast({ title: "CE Decky", body: alsoOn });
                 const touched = new Set([recordId]);
                 // The scripts around this cheat are CE Decky's own bookkeeping, so they
                 // are sent to Cheat Engine but never written into the profile as a

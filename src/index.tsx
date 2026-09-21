@@ -87,7 +87,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -113,6 +113,7 @@ import type {
   RuntimeResult,
   SelfTestResult,
   StartupPreference,
+  TableControl,
   TableInspection,
   TableScanCheck,
   TableStatus,
@@ -3012,7 +3013,7 @@ function Content() {
         onCompatibilityConfirmed={async () => {
           await refreshStatus().catch((cause) => logUiFailure("picker.compatibility_refresh_failed", cause, { app_id: game.appId }));
         }}
-        onApplied={async (remembered: StartupPreference[], envelope) => {
+        onApplied={async (remembered: StartupPreference[], envelope: RuntimeEnvelope | null, leftOn?: readonly TableControl[]) => {
           // A selection made with nothing running is only ever going to reach
           // Cheat Engine through auto-load, so switching cheats on there means
           // asking for them - turning auto-load on is what the user just asked
@@ -3079,6 +3080,13 @@ function Content() {
                   ? "Every cheat is off for this table, so auto-load was switched off too."
                   : "Cheats saved for this exact table; they are switched on when it is next loaded.",
           });
+          // And what this press left switched on because the table's own code
+          // was not read as surviving those cheats being switched off. Said
+          // after the press, because it is about cheats running now that the
+          // panel's own count does not show: they are values in the game rather
+          // than records Cheat Engine has activated.
+          const alsoOn = leftOnSentence(leftOn ?? []);
+          if (alsoOn) toaster.toast({ title: "CE Decky", body: alsoOn });
         }}
         onCancel={close}
       />
@@ -3205,6 +3213,9 @@ function Content() {
       ? [...ancestors, ...(control.id !== null && enclosingControlIds(controls).has(control.id) ? [control] : [])]
       : [];
     const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
+    // The other half of the same rule: what it refuses to write, which is a
+    // cheat running in somebody's game that they did not ask for.
+    const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]));
     const desired = active
       ? [
           ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -3270,6 +3281,10 @@ function Content() {
             });
           }
         }
+        // Said after the press rather than before it: what this is about is a
+        // cheat that is on now, and the sentence names them.
+        const alsoOn = leftOnSentence(leftOn);
+        if (alsoOn) toaster.toast({ title: "CE Decky", body: alsoOn });
         const touched = new Set<number>([recordId]);
         // The scripts around this cheat are CE Decky's own bookkeeping, so they
         // are sent to Cheat Engine but never written into the profile as a

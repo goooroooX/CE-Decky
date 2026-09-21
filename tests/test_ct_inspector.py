@@ -505,3 +505,117 @@ def test_a_tampered_derivation_is_refused_rather_than_produced(tmp_path):
     ):
         with pytest.raises(TableTransformError, match=reason):
             assert_only_signature_removed(SIGNED_TABLE, broken)
+
+
+CT_WITH_A_HOOK_THAT_MUST_STAY_ON = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Script"</Description>'
+    '<VariableType>Auto Assembler Script</VariableType>'
+    '<AssemblerScript>[ENABLE]\n'
+    'label(bEnablePlain)\n'
+    'label(bEnableVitals)\n'
+    'lblPlain:\n'
+    'cmp dword ptr [bEnablePlain],1\n'
+    'jne short lblPlainSkip\n'
+    'mulss xmm0,[fPlainMod]\n'
+    'lblPlainSkip:\n'
+    'readmem(aobPlain,7)\n'
+    'jmp lblPlainRet\n'
+    'lblVitals:\n'
+    'sub rcx,rsi\n'
+    'cmp dword ptr [bEnableVitals],1\n'
+    'jne lblVitalsSkip\n'
+    'add rcx,rsi\n'
+    'lblVitalsSkip:\n'
+    'readmem(aobVitals,3)\n'
+    'jmp lblVitalsRet\n'
+    'bEnablePlain:\n'
+    'dd 1\n'
+    'bEnableVitals:\n'
+    'dd 1\n'
+    '[DISABLE]\n'
+    '</AssemblerScript>'
+    '<CheatEntries>'
+    '<CheatEntry><ID>2</ID><Description>"Plain"</Description><VariableType>4 Bytes</VariableType>'
+    '<Address>bEnablePlain</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>'
+    '<CheatEntry><ID>3</ID><Description>"Vitals"</Description><VariableType>4 Bytes</VariableType>'
+    '<Address>bEnableVitals</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>'
+    '</CheatEntries></CheatEntry></CheatEntries>\n</CheatTable>\n'
+).encode("utf-8")
+
+
+def test_a_record_says_whether_its_own_code_survives_being_switched_off(tmp_path: Path):
+    """Switching a cheat off is writing the flag its script gates the patch on.
+
+    One real table's hook turns a pointer into an offset, tests the flag, and on
+    the branch taken when the flag is off hands the game back the offset: the
+    game reads it as an address and dies. The record carries that answer, so
+    nothing writes such a flag on the user's behalf.
+    """
+    from hashlib import sha256
+    from ce_decky.ct_inspector import inspect_table
+    path = tmp_path / "hooks.CT"
+    path.write_bytes(CT_WITH_A_HOOK_THAT_MUST_STAY_ON)
+    found = inspect_table(path, sha256(CT_WITH_A_HOOK_THAT_MUST_STAY_ON).hexdigest())
+    safety = {control.description: control.switch_off_is_safe for control in found.controls if control.id in (2, 3)}
+
+    assert safety == {"Plain": True, "Vitals": False}
+
+
+def test_a_nested_script_answers_for_its_own_symbols(tmp_path: Path):
+    """The nearest script wins, exactly as it does for declarations.
+
+    A symbol a script allocates is read by that script's hooks, so an answer
+    another script gave for the same name is not about this one - and taking the
+    outer answer would let a parent's `safe` stand for a child's unsafe hook.
+    """
+    from hashlib import sha256
+    from ce_decky.ct_inspector import inspect_table
+    outer_safe = (
+        '[ENABLE]\n'
+        'label(bEnableShared)\n'
+        'lblOuter:\n'
+        'cmp dword ptr [bEnableShared],1\n'
+        'jne short lblOuterSkip\n'
+        'mulss xmm0,[fOuterMod]\n'
+        'lblOuterSkip:\n'
+        'readmem(aobOuter,7)\n'
+        'jmp lblOuterRet\n'
+        'bEnableShared:\n'
+        'dd 1\n'
+        '[DISABLE]\n'
+    )
+    inner_unsafe = (
+        '[ENABLE]\n'
+        'label(bEnableShared)\n'
+        'lblInner:\n'
+        'sub rcx,rsi\n'
+        'cmp dword ptr [bEnableShared],1\n'
+        'jne lblInnerSkip\n'
+        'add rcx,rsi\n'
+        'lblInnerSkip:\n'
+        'readmem(aobInner,3)\n'
+        'jmp lblInnerRet\n'
+        'bEnableShared:\n'
+        'dd 1\n'
+        '[DISABLE]\n'
+    )
+    data = (
+        '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+        '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Outer"</Description>'
+        '<VariableType>Auto Assembler Script</VariableType>'
+        f'<AssemblerScript>{outer_safe}</AssemblerScript>'
+        '<CheatEntries><CheatEntry><ID>2</ID><Description>"Inner"</Description>'
+        '<VariableType>Auto Assembler Script</VariableType>'
+        f'<AssemblerScript>{inner_unsafe}</AssemblerScript>'
+        '<CheatEntries><CheatEntry><ID>3</ID><Description>"Shared"</Description>'
+        '<VariableType>4 Bytes</VariableType><Address>bEnableShared</Address>'
+        '<DropDownList>0:Off\n1:On</DropDownList></CheatEntry>'
+        '</CheatEntries></CheatEntry></CheatEntries></CheatEntry></CheatEntries>\n</CheatTable>\n'
+    ).encode("utf-8")
+    path = tmp_path / "nested.CT"
+    path.write_bytes(data)
+
+    found = inspect_table(path, sha256(data).hexdigest())
+    shared = next(control for control in found.controls if control.id == 3)
+    assert shared.switch_off_is_safe is False

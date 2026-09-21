@@ -4391,8 +4391,12 @@ describe("Cheat selection workflow", () => {
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1",
       // What the script declares for its own symbol: this is the flag it
-      // switches on by itself, which is the whole reason to hold it off.
+      // switches on by itself, which is the whole reason to hold it off. And
+      // the backend read this script's own code and found that writing the flag
+      // off is something its hooks survive, which is what allows the write at
+      // all: a table whose code was not read leaves its cheats on.
       declared_default: "1",
+      switch_off_is_safe: true,
     });
     const chosen = flag(401, "bEnableGodMode");
     const unasked = flag(402, "bEnableOneHitKill");
@@ -4427,6 +4431,63 @@ describe("Cheat selection workflow", () => {
     expect(byId.get(402)).toMatchObject({ active: null, value: "0" });
   });
 
+  it("leaves on a cheat whose code was not read as surviving it, and hands the list up", async () => {
+    // Writing that flag off is what killed a real game two minutes later: the
+    // hook that reads it turns a pointer into an offset and, on the branch
+    // taken when the flag is off, hands the game back the offset. So it stays
+    // on, and the press that started the script says so, because the panel's
+    // own count cannot show it: it is a value in the game rather than a record
+    // Cheat Engine has activated.
+    const script = {
+      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    };
+    const flag = (id: number, name: string, safe: boolean) => ({
+      id, description: name, path: ["Enable", name], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1", switch_off_is_safe: safe,
+    });
+    const chosen = flag(401, "bEnableGodMode", true);
+    const safe = flag(402, "bEnableOneHitKill", true);
+    const unsafe = flag(403, "bEnableVitalsDrain", false);
+    const live = liveRuntime();
+    live.status.results = [
+      { generation: 1, record_id: 400, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 401, ok: true, active: false, value: "0", error: null },
+      { generation: 1, record_id: 402, ok: true, active: false, value: "0", error: null },
+      { generation: 1, record_id: 403, ok: true, active: false, value: "1", error: null },
+    ];
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: live, results: live.status.results, unavailable: [],
+    });
+    const applied = vi.fn().mockResolvedValue(undefined);
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 4, controls: [script, chosen, safe, unsafe] } as any,
+      onApplied: applied,
+    });
+
+    const row = await screen.findByTestId("cheat-row-401");
+    fireEvent.click(within(row).getByTestId("toggle"));
+    // The row says it before anything is pressed, too.
+    expect((await screen.findByTestId("cheat-row-403")).textContent).toContain("not safe to switch off");
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    const byId = new Map(sent.map((state: any) => [state.record_id, state]));
+    // The one that was read and found safe is written off; the one that was not
+    // is not written at all.
+    expect(byId.get(402)).toMatchObject({ active: null, value: "0" });
+    expect(byId.get(403)).toBeUndefined();
+    await waitFor(() => expect(applied).toHaveBeenCalled());
+    expect((applied.mock.calls.at(-1)![2] ?? []).map((control: any) => control.id)).toEqual([403]);
+  });
+
   it("holds the same flags off when the reader switches the script on themselves", async () => {
     // The defaults arrive with the script whoever started it. Holding them off
     // only for a script CE Decky switched on meant doing it by hand brought the
@@ -4440,7 +4501,7 @@ describe("Cheat selection workflow", () => {
       id: 402, description: "bEnableOneHitKill", path: ["Enable", "bEnableOneHitKill"],
       variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
-      switch_on_value: "1", declared_default: "1",
+      switch_on_value: "1", declared_default: "1", switch_off_is_safe: true,
     };
     const chosen = {
       id: 401, description: "bEnableGodMode", path: ["Enable", "bEnableGodMode"],
@@ -7304,6 +7365,59 @@ describe("Selection and staged-change persistence", () => {
     expect(desired.find((item: any) => item.record_id === 20)).toMatchObject({ active: false });
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(onApplied.mock.calls[0][0].map((item: any) => item.record_id)).toEqual([21]);
+  });
+
+  it("takes a cheat it could not switch off down with the script that made it", async () => {
+    // A cheat CE Decky leaves on, because the table's own code was not read as
+    // surviving it being switched off, must not be left running for ever. It is
+    // not switched off either - that write is the thing that kills the game -
+    // so what ends it is the script going down: the allocation the flag lives
+    // in goes with it, and the game is back to what it was.
+    const inspection = {
+      ...nestedInspection,
+      controls: [
+        ...nestedInspection.controls,
+        {
+          id: 22, description: "bEnableVitalsDrain", path: ["Party Damage Reduction", "bEnableVitalsDrain"],
+          variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
+          dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false,
+          switch_on_value: "1", declared_default: "1", switch_off_is_safe: false,
+        },
+      ],
+    };
+    const results = [
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: true, value: "95", error: null },
+      { generation: 1, record_id: 22, ok: true, active: false, value: "1", error: null },
+    ];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results });
+    render(<CheatSelectionModal
+      appId={10}
+      inspection={inspection as any}
+      live
+      pinned={[]}
+      startupPreferences={[]}
+      rememberedPreferences={[]}
+      configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])}
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onCancel={vi.fn()}
+    />);
+
+    const child = await screen.findByTestId("cheat-row-21");
+    fireEvent.click(within(child).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    // The script goes down, which is what takes the flag with it...
+    expect(desired.find((item: any) => item.record_id === 20)).toMatchObject({ active: false });
+    // ...and nothing is written to the flag itself.
+    expect(desired.find((item: any) => item.record_id === 22)).toBeUndefined();
   });
 
   it("drops a script an older build left in the profile even when it stays on", async () => {

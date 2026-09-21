@@ -1820,6 +1820,41 @@ export function switchesToHoldOff(
   controls: readonly TableControl[],
   requested: ReadonlySet<number>,
 ): { control: TableControl; value: string; script: number }[] {
+  // Only a flag whose own code was read and found to survive being written off.
+  // A table's hook can turn a pointer into an offset, test the flag and, on the
+  // branch taken when it is off, hand the game back the offset: the game then
+  // reads it as an address and dies minutes later, with nothing to say a cheat
+  // table was involved. What was not established stays on, and `switchesLeftOn`
+  // is what names it.
+  return switchCandidates(scripts, controls, requested)
+    .filter(({ control }) => control.switch_off_is_safe === true);
+}
+
+/**
+ * The cheats a script switches on that CE Decky has to leave on.
+ *
+ * The other half of the same rule, from the same candidates, so the two cannot
+ * drift apart. A user who asked for one cheat and got three is owed the list,
+ * because those three are running in their game and the panel's own count does
+ * not show them: they are values in the game rather than records Cheat Engine
+ * has activated.
+ */
+export function switchesLeftOn(
+  scripts: readonly TableControl[],
+  controls: readonly TableControl[],
+  requested: ReadonlySet<number>,
+): TableControl[] {
+  return switchCandidates(scripts, controls, requested)
+    .filter(({ control }) => control.switch_off_is_safe !== true)
+    .map(({ control }) => control);
+}
+
+/** Every switch a script this press starts declares on and nobody asked for. */
+function switchCandidates(
+  scripts: readonly TableControl[],
+  controls: readonly TableControl[],
+  requested: ReadonlySet<number>,
+): { control: TableControl; value: string; script: number }[] {
   const held = new Map<number, { control: TableControl; value: string; script: number }>();
   for (const script of scripts) {
     if (script.id === null) continue;
@@ -1840,6 +1875,22 @@ export function switchesToHoldOff(
     }
   }
   return [...held.values()];
+}
+
+/**
+ * The one sentence about the cheats that stayed on, or nothing where none did.
+ *
+ * Named rather than counted: these are cheats running in somebody's game that
+ * they did not ask for, and a number would leave them looking for which.
+ */
+export function leftOnSentence(left: readonly TableControl[]): string | null {
+  if (left.length === 0) return null;
+  const named = left.slice(0, 3).map((control) => controlRowLabel(control)).join(", ");
+  const rest = left.length - Math.min(3, left.length);
+  const which = rest > 0 ? `${named} and ${rest} more` : named;
+  return `${left.length === 1 ? "One more cheat from this table is on" : `${left.length} more cheats from this table are on`}: ${which}.`
+    + " CE Decky leaves those on because switching them off makes the table's own code hand the game a wrong address,"
+    + " or because it could not read that code. Switching them off yourself can stop the game.";
 }
 
 /**

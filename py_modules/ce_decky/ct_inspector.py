@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 import unicodedata
 
 from .atomic import read_regular_bytes
+from .ct_hooks import flags_safe_to_switch_off
 from .ct_scans import TableScan, read_scans
 from .table_markers import is_auto_assembler_marker, is_embedded_file, is_form_marker, is_lua_marker, local_tag
 from .table_store import MAX_CT_BYTES, MAX_XML_ELEMENTS, TableContentError, _FORBIDDEN_XML_MARKERS
@@ -163,6 +164,18 @@ class TableControl:
     declared_default: str | None = None
     # This record only attaches Cheat Engine to the game; it is not a cheat.
     attach_only: bool = False
+    # Whether writing this record's off value is something the table's own code
+    # was read and found to survive.
+    #
+    # A script gates each of its patches behind a flag of its own, and switching
+    # a cheat off is writing that flag. One real table's hook turns a pointer
+    # into an offset, tests the flag, and on the branch taken when the flag is
+    # off returns to the game without turning it back: the game then reads an
+    # offset as an address and dies. `ct_hooks` reads the script's own code and
+    # answers in one direction only, so `false` here means anything from "this
+    # cheat cannot be switched off safely" to "this was not something the reader
+    # could follow" - and either way nothing writes it on the user's behalf.
+    switch_off_is_safe: bool = False
 
     def as_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -523,6 +536,7 @@ def _walk_entry(
     declared: dict[str, str] | None = None,
     scans: dict[str, TableScan] | None = None,
     repeated: set[str] | None = None,
+    safe: frozenset[str] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -594,6 +608,11 @@ def _walk_entry(
     # symbol that script allocates, so this is read from the enclosing script
     # rather than from this record's own.
     declared_default = (declared or {}).get(address.strip()) if address.strip() else None
+    # Whether this record's own flag was read and found safe to write off, asked
+    # of the enclosing script for the same reason `declared_default` is: the
+    # address is a symbol that script allocates and the code that reads it is
+    # that script's.
+    switch_off_is_safe = bool(address.strip()) and address.strip() in (safe or frozenset())
     if unrecognised_pair is not None and unrecognised is not None and unrecognised_pair not in unrecognised:
         if len(unrecognised) < MAX_UNRECOGNISED_PAIRS:
             unrecognised.append(unrecognised_pair)
@@ -611,6 +630,7 @@ def _walk_entry(
             dropdown_read_only=dropdown_read_only,
             switch_on_value=switch_on_value,
             declared_default=declared_default,
+            switch_off_is_safe=switch_off_is_safe,
         )
     )
 
@@ -619,15 +639,26 @@ def _walk_entry(
     # well as those of the scripts above it; the nearest one wins, because that
     # is the one that allocated the symbol last.
     nested_declared = declared
+    nested_safe = safe
     if assembler_text:
         own = _declared_defaults(assembler_text)
         if own:
             nested_declared = {**(declared or {}), **own}
+        # Read once per script, beside its declarations, and handed down to the
+        # records it holds: the answer is about this script's own code.
+        #
+        # The nearest script wins here exactly as it does for declarations, and
+        # for the same reason: a symbol this script allocates is read by this
+        # script's hooks, so an answer another script gave for the same name is
+        # not about this one. Union alone would let a parent's `safe` stand for
+        # a child's unsafe hook, which is the one direction this may not err in.
+        own_safe = flags_safe_to_switch_off(assembler_text)
+        nested_safe = ((safe or frozenset()) - set(own)) | own_safe
     nested = _first_child(element, "CheatEntries")
     if nested is not None:
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
-                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated)
+                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated, nested_safe)
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count

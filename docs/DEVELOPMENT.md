@@ -147,7 +147,7 @@ python3 scripts/target_panel_read.py --json
 python3 scripts/target_panel_read.py --reopen --press 'Advanced…' --metrics
 python3 scripts/target_panel_read.py --press 'imported-table-33a60e6b:Use'   # reported, and it writes
 python3 scripts/target_panel_read.py --press 'cheat-row-1337099264:active'   # a switch, by the name of the control
-python3 scripts/target_panel_read.py --choose 'Atomic Heart · non-Steam'     # one option of a dropdown, through Steam's menu
+python3 scripts/target_panel_read.py --choose '<game name> · non-Steam'      # one option of a dropdown, through Steam's menu
 python3 scripts/target_panel_read.py --describe review-findings             # one row's whole text and every control in it
 python3 scripts/target_panel_read.py --wait-for 'runtime-row:Connected' --wait-seconds 60
 ```

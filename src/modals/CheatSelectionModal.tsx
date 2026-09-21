@@ -50,6 +50,7 @@ import {
   rememberedSelectionBudgetError,
   safeActionableControls,
   switchValuesFor,
+  switchesLeftOn,
   switchesToHoldOff,
   unusedActiveScripts,
 } from "../uiModel";
@@ -116,7 +117,16 @@ interface Props {
   rememberedPreferences: StartupPreference[];
   configuredValues: ConfiguredValue[];
   onCompatibilityConfirmed?: () => Promise<void>;
-  onApplied: (remembered: StartupPreference[], envelope: RuntimeEnvelope | null) => Promise<void> | void;
+  /**
+   * `leftOn` is what this press left switched on because the table's own code
+   * was not read as surviving those cheats being switched off. Only this screen
+   * knows which scripts a press started, so the list comes from here.
+   */
+  onApplied: (
+    remembered: StartupPreference[],
+    envelope: RuntimeEnvelope | null,
+    leftOn?: readonly TableControl[],
+  ) => Promise<void> | void;
   /** Whether this game already starts Cheat Engine by itself for this table, which decides what Apply has to disclose. */
   autoloadEnabled: boolean;
   /** Persist one pin/unpin for this exact table and resolve the confirmed pinned IDs. */
@@ -232,6 +242,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   const [unavailableRecords, setUnavailableRecords] = useState<Set<number>>(new Set());
   const [applying, setApplying] = useState(false);
   const applyingRef = useRef(false);
+  // What the last Apply left switched on because the table's own code was not
+  // read as surviving those cheats being switched off. Handed to the caller,
+  // which is what puts it in front of the user.
+  const leftOnRef = useRef<readonly TableControl[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [errorTitle, setErrorTitle] = useState("Cannot apply");
 
@@ -773,14 +787,16 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // with it and nothing held them off. A script that was already running
       // is not here either: its defaults were dealt with when it started, and
       // writing them again would undo a flag switched on since.
-      const heldOff = switchesToHoldOff(
-        safeControls.filter((control) => control.id !== null
-          && enclosingIds.has(control.id)
-          && activeById.get(control.id) === true
-          && activeBefore.get(control.id) !== true),
-        safeControls,
-        touchedIds,
-      );
+      const startedHere = safeControls.filter((control) => control.id !== null
+        && enclosingIds.has(control.id)
+        && activeById.get(control.id) === true
+        && activeBefore.get(control.id) !== true);
+      const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds);
+      // What the same rule refuses to write: cheats that are on in the game
+      // because this table's own code was not read as surviving them being
+      // switched off. Only this press knows which scripts it started, so this
+      // is where that list comes from.
+      leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds);
       for (const { control, value } of heldOff) {
         if (control.id === null) continue;
         desired.push({
@@ -876,7 +892,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // before that returned meant a failed persistence left CE changed while
       // the modal no longer knew it owed a write, so the next session restored
       // the old selection. Stay dirty until the durable half commits.
-      await onApplied(remembered, finalState.envelope ?? confirmed.envelope);
+      await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current);
       setLastConfirmed(confirmedState);
       setTouchedActive(new Set<number>());
       setTouchedValues(new Set<number>());
@@ -1145,6 +1161,13 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   blockedByParent ? "its script has not run yet" : null,
                   value ? `= ${value}` : null,
                   isPinned ? "pinned" : null,
+                  // Said on the row, before anything is pressed: a cheat this
+                  // table switches on by itself and that CE Decky may not
+                  // switch off is one the reader is about to wonder about.
+                  control.declared_default !== null
+                    && control.declared_default === control.switch_on_value
+                    && control.switch_off_is_safe !== true
+                    ? "not safe to switch off" : null,
                 ].filter(Boolean).join(" \u00b7 ");
                 return (
                   <PanelSectionRow key={recordId}>

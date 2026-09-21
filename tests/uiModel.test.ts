@@ -42,6 +42,8 @@ import {
   pinnedCheatRows,
   pinnedControlValue,
   providerDisplayName,
+  leftOnSentence,
+  switchesLeftOn,
   tableSourceLabel,
   providerShortName,
   controlSections,
@@ -923,7 +925,7 @@ describe("compact cheat rows", () => {
     const flag = (id: number, name: string) => ({
       ...base, id, path: ["Enable", name], kind: "dropdown" as const,
       dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][], switch_on_value: "1",
-      declared_default: "1",
+      declared_default: "1", switch_off_is_safe: true,
     });
     const chosen = flag(11, "God mode");
     const unasked = flag(12, "One hit kill");
@@ -940,6 +942,38 @@ describe("compact cheat rows", () => {
     expect(switchesToHoldOff([script], [script, leftOff, unreadable], new Set())).toEqual([]);
     // A script with nothing under it asks for nothing.
     expect(switchesToHoldOff([{ ...base, id: 20, path: ["Alone"], kind: "script" as const }], [script, chosen], new Set())).toEqual([]);
+  });
+
+  it("leaves on a cheat whose own code was not read as surviving being switched off", () => {
+    // A table's hook can turn a pointer into an offset, test its own flag and,
+    // on the branch taken when the flag is off, hand the game back the offset:
+    // the game reads it as an address and dies, minutes later, with nothing to
+    // say a cheat table was involved. So the write only happens where the
+    // backend read that code and found it survives, and what stays on is named
+    // rather than counted.
+    const script = { ...base, id: 10, path: ["Enable"], kind: "script" as const, has_assembler_script: true };
+    const flag = (id: number, name: string, safe: boolean) => ({
+      ...base, id, path: ["Enable", name], kind: "dropdown" as const,
+      dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][], switch_on_value: "1",
+      declared_default: "1", switch_off_is_safe: safe,
+    });
+    const safe = flag(11, "One hit kill", true);
+    const unsafe = flag(12, "Vitals drain", false);
+    // A backend that does not answer the question at all holds nothing off.
+    const { switch_off_is_safe: _unused, ...unanswered } = flag(13, "Ability cooldown", true);
+    const controls = [script, safe, unsafe, unanswered as typeof safe];
+
+    const held = switchesToHoldOff([script], controls, new Set());
+    expect(held.map((item) => item.control.id)).toEqual([11]);
+
+    const left = switchesLeftOn([script], controls, new Set());
+    expect(left.map((control) => control.id)).toEqual([12, 13]);
+    const said = leftOnSentence(left);
+    expect(said).toContain("Vitals drain");
+    expect(said).toContain("Ability cooldown");
+    expect(said).toContain("2 more cheats from this table are on");
+    // And where everything could be held off, there is nothing to say.
+    expect(leftOnSentence(switchesLeftOn([script], [script, safe], new Set()))).toBeNull();
   });
 
   it("counts what a table switches on by itself, and says nothing when it does not", () => {

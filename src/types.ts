@@ -260,6 +260,18 @@ export interface TableControl {
    */
   declared_default: string | null;
   /**
+   * Whether writing this cheat's off value is something the table's own code
+   * was read and found to survive.
+   *
+   * A script gates each patch behind a flag of its own, and switching a cheat
+   * off is writing that flag. One real table's hook turns a pointer into an
+   * offset, tests the flag, and on the branch taken when the flag is off hands
+   * the game back the offset, which kills it minutes later. False covers both
+   * "this cannot be switched off safely" and "the reader could not follow that
+   * code", and nothing is written on the user's behalf for either.
+   */
+  switch_off_is_safe?: boolean;
+  /**
    * The record only attaches Cheat Engine to the game and changes nothing in
    * it. Table machinery rather than a cheat, so it is listed with the scripts.
    * Absent from an inspection made before this was recognised.
