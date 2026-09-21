@@ -436,6 +436,7 @@ def check_executable(
     *,
     budget_seconds: float = DEFAULT_BUDGET_SECONDS,
     source: str = "file",
+    provable: bool = True,
 ) -> ScanCheck:
     """Look for each of a table's patterns in one executable, once through it.
 
@@ -448,6 +449,14 @@ def check_executable(
     The budget is a bound rather than an expectation. What it has not answered
     when the budget is spent is reported as not checked, which is a different
     statement from a pattern that was looked for and was not there.
+
+    `provable` is whether this file is the one the scan actually searches. It is
+    true for the program this device knows the game runs, and false for a file
+    of the right name found beside it: `aobscanmodule` searches the module the
+    running process loaded, and a file picked out of the game's directory by
+    name is not established to be that module. Such a pattern is still looked
+    for and still reported - not finding it is worth saying - but nothing is
+    removed from a table on the strength of it.
     """
     started = time.monotonic()
     if not scans:
@@ -462,10 +471,11 @@ def check_executable(
 
     not_checked: list[tuple[str, str]] = []
     wanted: list[tuple[str, re.Pattern[bytes]]] = []
-    # The scans this file is the whole of the place they are looked for. A
-    # directive that names the module says where it searches, and this is that
-    # file; the other two are wider than any file, so what they do not find here
-    # is not something this can call absent from the game.
+    # The scans this file is the whole of the place they are looked for: the
+    # directive names the module, and this file is the program the game runs.
+    # The other two directives are wider than any file, and a file merely named
+    # like the module is not established to be the one the process loaded, so
+    # what is not found in either is not something this can call absent.
     scoped: set[str] = set()
     longest = 1
     for scan in scans:
@@ -480,7 +490,7 @@ def check_executable(
         if elsewhere is not None:
             not_checked.append((scan.name, f"this pattern is looked for in {elsewhere}, which is not this program"))
             continue
-        if scan.directive == "aobscanmodule" and scan.module:
+        if provable and scan.directive == "aobscanmodule" and scan.module:
             scoped.add(scan.name)
         compiled = compile_pattern(scan.pattern)
         if compiled is None:

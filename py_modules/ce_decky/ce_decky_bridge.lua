@@ -620,6 +620,13 @@ local state = {
   -- activation can still land, and a stop that did not know about it would
   -- report a game nobody had put back. Entries are dropped as they settle.
   moving = {},
+  -- Records a rollback could not prove it put back the way it found them, by
+  -- MemoryRecord ID. A startup that failed changed the game before it failed,
+  -- and a restore that was refused, that read back wrong, or that Cheat Engine
+  -- never finished is a record still holding whatever startup left in it. The
+  -- stop may not report such a game as put back, so these are named in its
+  -- answer however the walk itself went.
+  unrestored = {},
   -- How many times a Cheat Engine window had to be hidden again after the
   -- initial suppression. Anything above zero is CE mapping a window over the
   -- running game, which is the thing that takes its audio and controller input.
@@ -847,6 +854,35 @@ local function recordAsyncProcessing(record)
   return processing == true, nil
 end
 
+-- Remember a mutation Cheat Engine had not finished when its command gave up.
+local function rememberMoving(record, recordId)
+  if recordId == nil or record == nil then return end
+  state.moving[recordId] = record
+end
+
+-- Which of those Cheat Engine is still performing, and which cannot be read.
+--
+-- Two answers because two things follow. A record still processing is worth
+-- waiting for, and the walk does. A record that cannot be read says nothing
+-- about whether Cheat Engine is finished with it: waiting is waiting for an
+-- answer that will not come, and dropping it silently is how a mutation leaves
+-- the stop's accounting, so it is named instead. Only a reading that said the
+-- operation is over drops one.
+local function movingRecords()
+  local moving, unreadable = {}, {}
+  for recordId, record in pairs(state.moving) do
+    local processing, asyncErr = recordAsyncProcessing(record)
+    if asyncErr then
+      unreadable[#unreadable + 1] = recordId
+    elseif processing then
+      moving[#moving + 1] = recordId
+    else
+      state.moving[recordId] = nil
+    end
+  end
+  return moving, unreadable
+end
+
 -- Rollback is driven by the same timer and held to the same standard as the
 -- forward path. Assigning the recorded value back and hoping used to be enough
 -- to report an undifferentiated "failed" while an Auto Assembler script from an
@@ -891,8 +927,14 @@ local function advanceRollback()
     if settled == nil then
       rollback.waits = rollback.waits + 1
       if rollback.waits <= MAX_ACTIVATION_WAIT_TICKS then return end
+      -- Cheat Engine is still performing the restore. Giving up waiting is this
+      -- session's decision and not the operation's end, exactly as it is for an
+      -- activation, so the record stays known until it settles.
+      rememberMoving(pending.record, pending.action.record_id)
+      state.unrestored[pending.action.record_id] = true
       rollback.proven = false
     elseif settled == false then
+      state.unrestored[pending.action.record_id] = true
       rollback.proven = false
     end
     rollback.pending = nil
@@ -905,6 +947,7 @@ local function advanceRollback()
     local action = state.descriptor.startup[index]
     if record and snapshot and action then
       if not restoreStarted(record, action, snapshot) then
+        state.unrestored[action.record_id] = true
         rollback.proven = false
       else
         local settled = restoreSettled(record, action, snapshot)
@@ -913,7 +956,10 @@ local function advanceRollback()
           rollback.waits = 0
           return
         end
-        if settled == false then rollback.proven = false end
+        if settled == false then
+          state.unrestored[action.record_id] = true
+          rollback.proven = false
+        end
       end
     end
   end
@@ -932,30 +978,6 @@ end
 -- asked, not merely while it is busy.
 local function stopping()
   return state.quiesce ~= nil or state.quiesced == true
-end
-
--- Remember a mutation Cheat Engine had not finished when its command gave up.
-local function rememberMoving(record, recordId)
-  if recordId == nil or record == nil then return end
-  state.moving[recordId] = record
-end
-
--- Which of those Cheat Engine is still performing, the settled ones dropped.
---
--- Read rather than assumed: `AsyncProcessing` going false is the only thing
--- that says the operation is over, and a record that cannot be read again says
--- nothing more, so it is dropped rather than held forever.
-local function movingRecords()
-  local left = {}
-  for recordId, record in pairs(state.moving) do
-    local processing, asyncErr = recordAsyncProcessing(record)
-    if asyncErr or not processing then
-      state.moving[recordId] = nil
-    else
-      left[#left + 1] = recordId
-    end
-  end
-  return left
 end
 
 local function recordStartupTransition(recordId, wasInactive)
@@ -1172,11 +1194,21 @@ local function activeRecordsToQuiesce()
   if not count then return nil end
   local found = {}
   local limit = math.min(count, MAX_QUIESCE_RECORDS)
+  -- Whether every record of the table was actually looked at. A record this
+  -- could not fetch, or whose `Active` could not be read, says nothing about
+  -- itself: counting it as `not active` is the difference between a list of
+  -- what is switched on and a list of what this managed to ask about, and the
+  -- stop reports the game as put back on the strength of that list.
+  local complete = count <= MAX_QUIESCE_RECORDS
   for index = 0, limit - 1 do
     local ok, record = pcall(function() return AddressList.getMemoryRecord(index) end)
-    if ok and record ~= nil then
+    if not ok or record == nil then
+      complete = false
+    else
       local activeOk, active = pcall(function() return record.Active end)
-      if activeOk and active == true then
+      if not activeOk then
+        complete = false
+      elseif active == true then
         local idOk, id = pcall(function() return record.ID end)
         found[#found + 1] = {
           record = record, id = idOk and tonumber(id) or nil,
@@ -1190,7 +1222,7 @@ local function activeRecordsToQuiesce()
     if a.script ~= b.script then return b.script end
     return (a.id or 0) < (b.id or 0)
   end)
-  return found
+  return found, complete
 end
 
 -- Name a record the stop could not put down, once however often it is met.
@@ -1250,6 +1282,14 @@ end
 local function finishQuiesce()
   local run = state.quiesce
   if not run then return end
+  -- What a failed startup could not put back is part of this answer whatever
+  -- the walk did: those records are not switched on, so no walk will ever find
+  -- them, and they are still holding what startup left in them. A mutation
+  -- whose record cannot be read is the same kind of answer: nothing will ever
+  -- say whether Cheat Engine finished it.
+  for recordId in pairs(state.unrestored) do markUnsettled(run, recordId) end
+  local _moving, unreadable = movingRecords()
+  for _, recordId in ipairs(unreadable) do markUnsettled(run, recordId) end
   local unsettled = {}
   for _, entry in ipairs(run.unsettled) do
     unsettled[#unsettled + 1] = tostring(entry)
@@ -1354,9 +1394,10 @@ local function advanceQuiesce()
   -- under a budget of its own: two bounds that can disagree is how an answer
   -- gets published with something still moving behind it.
   if state.startup_pending or state.pending_command or state.rollback then return end
-  -- And for a mutation whose own command gave up waiting while Cheat Engine was
+  -- And for a mutation whose own command gave up waiting while Cheat Engine is
   -- still performing it: the record can come on after this walk has passed it,
-  -- and the stop kills Cheat Engine on the answer.
+  -- and the stop kills Cheat Engine on the answer. One that cannot be read is
+  -- not waited for - no reading will ever come - and is named by the answer.
   if #movingRecords() > 0 then return end
   -- The list this started from was what was on when it started. Putting a
   -- script down runs the table's own `[DISABLE]`, and a record on its way on
@@ -1368,7 +1409,8 @@ local function advanceQuiesce()
   -- out is not the game being clean: a table whose `[DISABLE]` keeps switching
   -- another record on would otherwise be reported as put down with one of its
   -- cheats still running. What is still on then is named instead.
-  local again = activeRecordsToQuiesce()
+  local again, complete = activeRecordsToQuiesce()
+  if again and not complete then markUnsettled(run, "a record that could not be read") end
   if not again then
     -- Nothing can be verified at all, which is a failed quiesce rather than a
     -- successful one: the address list is how this sees what is switched on.
@@ -1450,7 +1492,7 @@ local function executeCommand(command)
       result(command.generation, nil, false, nil, "put_down=0;unsettled=", "a quiesce is already running", "quiesce_unsettled")
       return
     end
-    local records = activeRecordsToQuiesce()
+    local records, complete = activeRecordsToQuiesce()
     if not records then
       result(command.generation, nil, false, nil, "put_down=0;unsettled=", "AddressList unavailable", "address_list_unavailable")
       return
@@ -1459,6 +1501,10 @@ local function executeCommand(command)
       generation = command.generation, records = records, index = 0, put_down = 0,
       unsettled = {}, named = {}, pending = nil, ticks = 0, sweeps = 0,
     }
+    -- A list that is what this managed to ask about rather than what the table
+    -- holds. Named now, because the walk that follows it cannot discover what
+    -- it never saw.
+    if not complete then markUnsettled(state.quiesce, "a record that could not be read") end
     advanceQuiesce()
     return
   end

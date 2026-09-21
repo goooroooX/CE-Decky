@@ -3603,4 +3603,8 @@ def test_a_stop_proceeds_when_the_quiesce_cannot_be_asked_or_answered(tmp_path: 
 
     assert asked == [220]
     assert result["stopped"] is True
-    assert result["quiesce"] == {"asked": False, "reason": "the resident bridge is not attached"}
+    # And nothing was established about the game, which the answer says rather
+    # than leaving the panel to read a verdict-free outcome as a clean stop.
+    assert result["quiesce"] == {
+        "asked": False, "reason": "the resident bridge is not attached", "cleanup_confirmed": False,
+    }

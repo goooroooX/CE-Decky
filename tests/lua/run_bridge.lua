@@ -44,6 +44,7 @@ for _, step in ipairs(scenario.steps or {}) do
     stub.show_window(step.show_window == true and nil or step.show_window)
   end
   if step.rename_failures ~= nil then stub.set("rename_failures", step.rename_failures) end
+  if step.unreadable_records ~= nil then stub.set_unreadable(step.unreadable_records) end
   if step.unhidable_script_forms ~= nil then stub.set_unhidable_script_forms(step.unhidable_script_forms) end
   if step.game_windows ~= nil then stub.set_game_windows(step.game_windows) end
   if step.system_windows ~= nil then stub.set_system_windows(step.system_windows) end

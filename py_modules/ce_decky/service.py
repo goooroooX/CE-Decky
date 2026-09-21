@@ -31,6 +31,7 @@ from .ce_archive_import import (
 )
 from .ce_launch import (
     CELaunchSupervisor,
+    game_target_state,
     match_observed_proton,
     observe_game_container,
     observe_game_executable_path,
@@ -1843,7 +1844,12 @@ class PluginService:
                         for name, reason in not_checked
                     ]
                 continue
-            found = check_executable(beside[0], wanted[module], budget_seconds=left)
+            # Searched, reported, and never removed for: `aobscanmodule` looks
+            # in the module the running process loaded, and this is a file of
+            # that name in the game's own directory. Those are the same file in
+            # the ordinary case and this device cannot show that they are, so
+            # the finding is the reader's and the repair leaves it alone.
+            found = check_executable(beside[0], wanted[module], budget_seconds=left, provable=False)
             elapsed += found.elapsed_ms
             if found.reason is not None:
                 # The file was found and says nothing: unreadable, wrapped, or
@@ -1859,10 +1865,9 @@ class PluginService:
             answered = set(found.present) | set(found.missing)
             present.extend(found.present)
             missing.extend(found.missing)
-            # A pattern the table names a file for, searched in that file: what
-            # it did not find there is absent from the whole of where the script
-            # looks, which is what makes it something a repair may remove.
-            proven.extend(found.proven_missing)
+            # Nothing from this pass may be removed, which `provable=False`
+            # already settles; extending the list would be the one way to lose
+            # that, so it is stated here rather than assumed.
             ambiguous.extend(found.ambiguous)
             not_checked = [(name, reason) for name, reason in not_checked if name not in answered]
             not_checked.extend(found.not_checked)
@@ -4532,21 +4537,28 @@ class PluginService:
         return {**answer, "asked": True, "cleanup_confirmed": confirmed, "elapsed_ms": elapsed_ms}
 
     def _game_is_gone(self, app_id: int) -> bool:
-        """Whether this game's own program is no longer running.
+        """Whether this game's own program is proven to be no longer running.
 
         The one independent answer to what a silent bridge means. A game that
         has exited took every patch with it, so nothing needs saying; a game
         still running with a bridge that stopped answering is exactly the case
-        the user has to be told about. Unreadable is not gone: anything this
-        cannot establish counts as still running, because the warning it would
-        otherwise suppress is the only thing standing between the user and a
-        game quietly left changed.
+        the user has to be told about.
+
+        Asked of the answer that has three values rather than of a path that is
+        `None` for every reason at once. A scan whose budget ran out, a `/proc`
+        entry it could not read, a command line it could not convert and a game
+        that has genuinely exited all produce no path, and this project has
+        already recorded that an unreadable process of the same user must be
+        treated as ambiguous rather than as gone. Only `absent` is gone here;
+        `present` and `unknown` alike leave the stop unconfirmed, because the
+        warning that suppresses is the only thing standing between the user and
+        a game quietly left changed.
         """
         try:
             profile = self.profile_store.get(app_id)
             if profile is None or not profile.target_process:
                 return False
-            return observe_game_executable_path(app_id, profile.target_process) is None
+            return game_target_state(app_id, profile.target_process) == "absent"
         except (OSError, ValueError, RuntimeError):
             return False
 

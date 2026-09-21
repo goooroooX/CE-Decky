@@ -3652,3 +3652,69 @@ def test_a_table_that_keeps_switching_records_on_is_reported_not_declared_clean(
     assert "put_down=4" in value
     assert "unsettled=5" in value
     assert "active 5 true" in run.stdout.splitlines()
+
+
+def test_a_startup_that_could_not_put_the_game_back_is_not_a_clean_stop(tmp_path: Path):
+    """A failed startup changed the game before it failed.
+
+    Its rollback is what puts that back, and a restore that was refused or read
+    back wrong leaves a record holding whatever startup wrote. No walk will ever
+    find it, because it is not switched on: the stop names it or reports a game
+    as put back that nobody put back.
+    """
+    descriptor = _descriptor(startup=(
+        StartupAction(7, "value", "5", ("Damage",), False),
+        StartupAction(8, "active", "1", ("Cheat",), False),
+    ))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [7, 8],
+            "records": {
+                # Whatever is written to it, it holds something else: the
+                # startup write fails on read-back, and so does the restore.
+                7: {"active": False, "value": "1", "clamp_value": "3"},
+                8: {"active": False},
+            },
+            "steps": [{"ticks": 20}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    assert "unsettled=7" in (answered[-1].value or "")
+
+
+def test_a_record_the_address_list_cannot_read_is_not_a_record_that_is_off(tmp_path: Path):
+    """The walk's list is what it managed to ask about, not what the table holds.
+
+    A record Cheat Engine will not answer for says nothing about itself, and
+    counting it as `not active` is how a cheat leaves the stop's accounting: the
+    answer would be a clean game with a record nobody looked at.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {5: {"active": True}, 6: {"active": False}},
+            # Unreadable before the quiesce is read from the control file.
+            "steps": [{"unreadable_records": [6], "ticks": 12}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    value = answered[-1].value or ""
+    # The one it could read came down; the one it could not is named rather
+    # than counted as off.
+    assert "put_down=1" in value
+    assert "could not be read" in value

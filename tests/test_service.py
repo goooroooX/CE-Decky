@@ -2672,12 +2672,11 @@ def test_a_stop_says_when_the_game_was_not_established_to_be_put_back(tmp_path: 
     monkeypatch.setattr(service_module, "QUIESCE_WAIT_SECONDS", 0.3)
     monkeypatch.setattr(service_module, "QUIESCE_POLL_SECONDS", 0.05)
     prepared = Mock(session_id="6d6f9d2a-0000-4000-8000-000000000003")
-    running = True
-
-    def observe(app_id, process):
-        return "Z:\\game\\game.exe" if running else None
-
-    monkeypatch.setattr(service_module, "observe_game_executable_path", observe)
+    # The answer with three values, not a path that is absent for every reason
+    # at once: a scan that ran out of budget, a process this cannot read and a
+    # game that has exited are different things, and only the last is clean.
+    target_state = "present"
+    monkeypatch.setattr(service_module, "game_target_state", lambda app_id, process: target_state)
 
     def answering(value: str, ok: bool, code: str | None):
         class Store:
@@ -2717,9 +2716,15 @@ def test_a_stop_says_when_the_game_was_not_established_to_be_put_back(tmp_path: 
     answer = service._quiesce_session(4242)
     assert answer["asked"] is False and answer["cleanup_confirmed"] is False
 
-    # The same silence once the game itself is gone: it took every patch with
-    # it, so there is nothing to warn anybody about.
-    running = False
+    # A scan that established nothing is not a game that exited, and it is the
+    # answer this gets exactly when the device is under load or the process
+    # cannot be read.
+    target_state = "unknown"
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is False
+
+    # The same silence once the game itself is proven gone: it took every patch
+    # with it, so there is nothing to warn anybody about.
+    target_state = "absent"
     assert service._quiesce_session(4242)["cleanup_confirmed"] is True
 
 
@@ -2757,3 +2762,38 @@ def test_a_symbol_two_scripts_mean_differently_is_not_answered_for(tmp_path: Pat
     assert answer["present"] == [] and answer["missing"] == ["aobAbsent"]
     repeated = [row for row in answer["not_checked"] if row["name"] == "aobPresent"]
     assert repeated and "not the same pattern" in repeated[0]["reason"]
+
+
+def test_a_pattern_missing_from_a_file_beside_the_program_is_reported_not_removed(tmp_path: Path, monkeypatch):
+    """`aobscanmodule` searches the module the running process loaded.
+
+    A file of that name in the game's own directory is very probably that
+    module and is not established to be it: this device reads files and the
+    process's own module list is not one of them. So the reader is told the
+    pattern was not found there, and the repair leaves the hook alone.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-sibling-module"))
+    service.initialize()
+    source = tmp_path / "engine-scanner.CT"
+    source.write_text(
+        SCAN_FIXTURE.replace(
+            "aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)",
+            "aobscanmodule(aobAbsent,engine.dll,F3 0F 59 F0 48 8B C3)",
+        ),
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+    game = tmp_path / "game"
+    game.mkdir()
+    program = _scan_program(game)
+    # The only file of that name, and it does not hold the pattern.
+    (game / "engine.dll").write_bytes(b"\x00" * 128)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    # Said to the reader...
+    assert answer["missing"] == ["aobAbsent"]
+    # ...and not something a copy may be made by taking out.
+    assert answer["proven_missing"] == []
+    assert answer["repairable"] is False

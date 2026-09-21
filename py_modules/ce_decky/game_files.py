@@ -440,8 +440,10 @@ def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> tuple[list
     out of directories to look in, and when the limit was reached, because more
     than one is more than one however the rest of the tree looks.
 
-    Deeper directories left unvisited, or the entry budget spent, is the whole
-    of what makes it false. The directory this searches is the one it was given:
+    Deeper directories left unvisited, the entry budget spent, and a directory
+    or a file this could not read are what make it false: a subtree it was
+    refused could hold the second file of that name, and a walk that says it
+    finished has to have finished. The directory this searches is the one it was given:
     a file the game loads from outside that tree is not something this can see
     at all, which is the boundary the caller states rather than this.
     """
@@ -453,6 +455,7 @@ def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> tuple[list
         return [], False
     wanted = basename.casefold()
     found: list[Path] = []
+    complete = True
     seen = 0
     level = [anchor]
     for _ in range(MAX_DEPTH + 1):
@@ -471,23 +474,31 @@ def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> tuple[list
                             if not entry.is_file(follow_symlinks=False) or entry.name.casefold() != wanted:
                                 continue
                         except OSError:
+                            # An entry this could not classify may be the second
+                            # file of that name, so the walk no longer speaks
+                            # for the whole tree.
+                            complete = False
                             continue
                         candidate = Path(entry.path)
                         try:
                             if not candidate.resolve().is_relative_to(anchor):
                                 continue
                         except (OSError, ValueError):
+                            complete = False
                             continue
                         found.append(candidate)
                         if len(found) >= limit:
                             return found, True
             except OSError:
+                # A directory that could not be listed is a part of the tree
+                # nobody looked in.
+                complete = False
                 continue
         if not following:
-            return found, True
+            return found, complete
         level = following
     # Directories left to look in when the depth bound ran out: whatever was
-    # found is what this level of the tree holds, not what the tree holds.
+    # found is what these levels of the tree hold, not what the tree holds.
     return found, False
 
 

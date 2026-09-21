@@ -447,3 +447,25 @@ def test_two_files_of_one_name_are_both_reported(tmp_path: Path):
 
     found, complete = programs_in_tree(root, "engine.dll")
     assert len(found) == 2 and complete is True
+
+
+def test_a_subtree_this_could_not_read_is_not_a_finished_walk(tmp_path: Path):
+    """A directory nobody could list may hold the second file of that name.
+
+    The answer is used to decide whether one file is the only one there is, and
+    a walk that says it finished has to have finished.
+    """
+    root = tmp_path / "game"
+    (root / "win64").mkdir(parents=True)
+    (root / "win64" / "engine.dll").write_bytes(b"\x00")
+    refused = root / "refused"
+    refused.mkdir()
+    (refused / "engine.dll").write_bytes(b"\x11")
+    refused.chmod(0o000)
+    try:
+        found, complete = programs_in_tree(root, "engine.dll")
+    finally:
+        refused.chmod(0o755)
+
+    assert [item.name for item in found] == ["engine.dll"]
+    assert complete is False

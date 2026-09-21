@@ -2539,7 +2539,11 @@ class CELaunchSupervisor:
             return await drained_to_thread(self._quiesce, app_id)
         except Exception as exc:  # noqa: BLE001 - a stop is never blocked by this
             log_failure(self.logger, "runtime.quiesce_failed", exc, expected=True, app_id=app_id)
-            return {"asked": False, "reason": str(exc)[:256]}
+            # Nothing was established about the game, which is the one thing
+            # this has to say: a stop that fell through here is exactly as
+            # unknown as one whose answer never came, and an outcome carrying no
+            # verdict at all reads on the panel as a clean stop.
+            return {"asked": False, "reason": str(exc)[:256], "cleanup_confirmed": False}
 
     def _terminate_recovered(self, record: dict[str, object]) -> bool:
         """Stop an owned Cheat Engine and prove by descriptor that it is gone.

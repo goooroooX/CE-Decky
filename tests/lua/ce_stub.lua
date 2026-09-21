@@ -233,8 +233,15 @@ function stub.install(scenario)
   state.deactivations = {}
   state.pending_records = {}
   state.async_records = {}
+  state.definitions = {}
   for id, definition in pairs(scenario.records or {}) do
     definition.id = id
+    -- Kept so a step can make a record unreadable part way through a run. Cheat
+    -- Engine does that on its own: a record an enclosing script destroyed, or
+    -- one whose address stopped resolving, throws on every read from then on,
+    -- and what a stop does about that is exactly what a test has to be able to
+    -- ask.
+    state.definitions[id] = definition
     if definition.missing then
       -- A record Cheat Engine only creates once an enclosing script runs. The
       -- scenario names that script in `created_by`; activating it materializes
@@ -843,6 +850,14 @@ function stub.install(scenario)
   end
 
   return state
+end
+
+-- Make these records throw on every read from now on.
+function stub.set_unreadable(ids)
+  for _, id in ipairs(ids or {}) do
+    local definition = (state.definitions or {})[id]
+    if definition then definition.read_error = true end
+  end
 end
 
 function stub.tick()
