@@ -1955,16 +1955,30 @@ export function missingScanFinding(
   const missing = check?.missing ?? [];
   if (!check || missing.length === 0) return null;
   const total = scanCount && scanCount > 0 ? scanCount : missing.length;
-  const named = missing.slice(0, 2).join(", ");
-  const rest = missing.length - Math.min(2, missing.length);
-  const which = rest > 0 ? `${named} and ${rest} more` : named;
-  const count = missing.length === 1 ? "one is" : `${missing.length} are`;
+  // Proved absent from the whole of where its script looks, or merely not found
+  // in the file this could read. The second is what a script searching the
+  // running game for its pattern produces, and telling a reader their cheats
+  // will do nothing on the strength of it sends them away from a table that
+  // works.
+  const proven = check.proven_missing ?? [];
+  const which = (names: string[]): string => {
+    const named = names.slice(0, 2).join(", ");
+    const rest = names.length - Math.min(2, names.length);
+    return rest > 0 ? `${named} and ${rest} more` : named;
+  };
+  if (proven.length === 0) {
+    const found = missing.length === 1 ? "one was" : `${missing.length} were`;
+    return `Of this table's ${total} byte patterns, ${found} not found in this game's main program: ${which(missing)}.`
+      + " This table looks for those anywhere in the running game, so they may be in another file it loads."
+      + " CE Decky reads the files on disk and cannot settle that here.";
+  }
+  const count = proven.length === 1 ? "one is" : `${proven.length} are`;
   // Three short sentences rather than two long ones, because this wraps on a
   // handheld. The last of them is not a hedge: Cheat Engine searches the
   // running game and this searched the program on disk, and a reader deciding
   // whether to keep looking for a different table is entitled to know that the
   // two can differ.
-  return `Of this table's ${total} byte patterns, ${count} not in this copy of the game's program: ${which}.`
+  return `Of this table's ${total} byte patterns, ${count} not in this copy of the game's program: ${which(proven)}.`
     + " Cheat Engine finds the game's code with those, so every cheat that needs one will do nothing."
     + " This was read from the program on disk, which is not always what Cheat Engine sees in the running game.";
 }

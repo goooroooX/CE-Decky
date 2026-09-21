@@ -3447,3 +3447,107 @@ def test_a_command_that_would_switch_a_cheat_on_during_a_quiesce_is_refused(tmp_
     assert quiesced and "put_down=1" in (quiesced[-1].value or "")
     # And the record the command named never came on.
     assert [line for line in run.stdout.splitlines() if line.startswith("deactivated ")] == ["deactivated 5"]
+
+
+def test_a_rollback_cannot_switch_a_cheat_on_after_the_quiesce_answered(tmp_path: Path):
+    """A failed startup rolls itself back, and a rollback can switch a record on.
+
+    It puts each record back the way it found it, so one that was on before
+    startup switched it off comes back on. That may not happen after the stop
+    has been told the game was put back: the stop kills Cheat Engine on that
+    answer, and the record would keep whatever the table did to the game.
+    """
+    descriptor = _descriptor(startup=(
+        StartupAction(7, "active", "0", ("Held",), False),
+        StartupAction(8, "active", "1", ("Cheat",), False),
+    ))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [7, 8],
+            "records": {
+                # On before startup, switched off by the plan: the rollback's
+                # own snapshot therefore says this one was on.
+                7: {"active": True},
+                # The action that fails, which is what begins the rollback.
+                8: {"active": False, "activation_never_settles": True},
+            },
+            "steps": [{"ticks": 30}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is True
+    # The record the rollback switched back on was seen and put down, rather
+    # than left on behind an answer that said the game was clean.
+    assert "put_down=1" in (answered[-1].value or "")
+    assert "active 7 false" in run.stdout.splitlines()
+
+
+def test_a_quiesce_answers_inside_the_bound_the_stop_waits_under(tmp_path: Path):
+    """The backend waits 15 seconds and then stops Cheat Engine regardless.
+
+    Two records Cheat Engine never finishes thinking about would each take the
+    per-record wait, and an answer after the stop is an answer nobody reads. The
+    walk has a deadline of its own inside that bound, and what it had not
+    reached is named rather than waited for.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True, "activation_async_never_settles": True},
+                6: {"active": True, "activation_async_never_settles": True},
+            },
+            # Fewer ticks than two per-record waits would need, and more than
+            # the walk's own deadline.
+            "steps": [{"ticks": 55}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    value = answered[-1].value or ""
+    assert "unsettled=5,6" in value and "put_down=0" in value
+
+
+def test_work_that_never_settles_does_not_hold_the_answer_past_the_bound(tmp_path: Path):
+    """The walk waits for what can still change the game, and not forever.
+
+    A startup activation Cheat Engine never finishes with keeps this session
+    able to switch a record on, so the walk cannot answer over it; the stop
+    waits 15 seconds and no longer. The deadline is what turns that into an
+    answer the stop can read, naming what nothing will now finish.
+    """
+    descriptor = _descriptor(startup=(StartupAction(6, "active", "1", ("Cheat",), False),))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True},
+                6: {"active": False, "activation_async_never_settles": True},
+            },
+            "steps": [{"ticks": 70}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    value = answered[-1].value or ""
+    # The record that could come down did; what was still moving is named
+    # rather than waited for.
+    assert "put_down=1" in value
+    assert "unsettled=" in value and value.split("unsettled=")[1] != ""

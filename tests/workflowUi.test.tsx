@@ -3608,6 +3608,35 @@ describe("Home panel and managed setup", () => {
     expect(said.some((line: string) => line.includes("Restart the game"))).toBe(true);
   });
 
+  it("says so when it could not confirm the cheats came down at all", async () => {
+    // The stop proceeds without the bridge's answer, so whatever was still on
+    // stays on in a game that has just lost the Cheat Engine which could have
+    // switched it off. An empty list of cheats is not the same news as no
+    // answer, and reporting the second as the first read as a clean stop.
+    api.stopCEForGame.mockResolvedValue({
+      stopped: true, operation: null, recovered: false,
+      quiesce: {
+        asked: true, answered: false, reason: "the bridge did not answer before the stop had to proceed",
+        records_put_down: null, records_unsettled: [], elapsed_ms: 15000,
+      },
+    });
+    api.getStatus.mockResolvedValue(status(true));
+    renderContent();
+    await screen.findByText("Game.CT");
+    fireEvent.click(screen.getByRole("button", { name: "Manage", exact: true }));
+    const manage = await waitFor(() => {
+      const node = modalState.nodes.find((item: any) => item.props.onRefreshHolders);
+      expect(node).toBeTruthy();
+      return node;
+    });
+    decky.toast.mockClear();
+    await act(async () => { await manage.props.onRevoke(SHA, [10]); });
+
+    const said = decky.toast.mock.calls.map((call: any[]) => String(call[0]?.body ?? ""));
+    expect(said.some((line: string) => line.includes("before CE Decky could confirm your cheats were switched off"))).toBe(true);
+    expect(said.some((line: string) => line.includes("restarting it clears that"))).toBe(true);
+  });
+
   it("names the byte pattern this copy of the game does not hold", async () => {
     // A script finds the game's code by scanning for one. Absent, every cheat
     // that script owns is dead at once and Cheat Engine says nothing, so the
@@ -3617,6 +3646,7 @@ describe("Home panel and managed setup", () => {
       inspection={{ ...inspect, scan_count: 28 } as any}
       scanCheck={{
         source: "file", present: [], missing: ["aobAccelerationRateCalc"],
+        proven_missing: ["aobAccelerationRateCalc"],
         not_checked: [], elapsed_ms: 690, reason: null,
       } as any}
       onUse={vi.fn()}
@@ -3629,6 +3659,29 @@ describe("Home panel and managed setup", () => {
     // The limit that has to be in the wording: Cheat Engine searches the
     // running game, and this searched the program on disk.
     expect(block.textContent).toContain("not always what Cheat Engine sees in the running game");
+  });
+
+  it("does not call a cheat broken over a pattern searched for in the whole game", async () => {
+    // A script can ask Cheat Engine to search the running game rather than one
+    // named file, and this reads files. Not finding such a pattern in the
+    // program is worth saying and is not proof: it can be in a library the game
+    // loads, and telling the reader their cheats will do nothing would send
+    // them away from a table that works.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, scan_count: 4 } as any}
+      scanCheck={{
+        source: "file", present: ["aobHealth"], missing: ["aobAmmo"], proven_missing: [],
+        not_checked: [], elapsed_ms: 40, reason: null, repairable: false,
+      } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const block = await screen.findByTestId("review-findings");
+    expect(block.textContent).toContain("aobAmmo");
+    expect(block.textContent).toContain("not found in this game's main program");
+    expect(block.textContent).toContain("may be in another file it loads");
+    expect(block.textContent).not.toContain("will do nothing");
   });
 
   it("says when a pattern matches more than one place, and never that one is unique", async () => {
@@ -3726,6 +3779,7 @@ describe("Home panel and managed setup", () => {
       inspection={{ ...inspect, has_signature: true, scan_count: 9, controls: [flag(1), flag(2)] } as any}
       scanCheck={{
         source: "file", present: [], missing: ["aobOne", "aobTwo", "aobThree"],
+        proven_missing: ["aobOne", "aobTwo", "aobThree"],
         not_checked: [], elapsed_ms: 12, reason: null,
       } as any}
       onUse={vi.fn()}

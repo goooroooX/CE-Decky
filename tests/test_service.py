@@ -2575,3 +2575,82 @@ def test_a_pattern_the_whole_game_is_searched_for_is_reported_and_left_alone(tmp
     with pytest.raises(ValueError, match="more of the game than this device can read"):
         service.prepare_table_copy(str(table["sha256"]), 4242)
     assert {row["sha256"] for row in service.get_status()["tables"]} == before
+
+
+def test_a_quiesce_nobody_answered_is_not_an_empty_list_of_cheats(tmp_path: Path, monkeypatch):
+    """Not knowing and nothing left on are different answers to the stop.
+
+    The stop proceeds without the bridge's answer, so whatever was still on
+    stays on in a game that has just lost the Cheat Engine which could have
+    switched it off. Reporting that as an empty list read on screen as a clean
+    stop, and the user was told nothing at all.
+    """
+    from ce_decky.session_protocol import RuntimeCommand
+
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("quiesce-unanswered"))
+    service.initialize()
+    monkeypatch.setattr(service_module, "QUIESCE_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(service_module, "QUIESCE_POLL_SECONDS", 0.05)
+    prepared = Mock(session_id="6d6f9d2a-0000-4000-8000-000000000002")
+
+    class Store:
+        def load_current(self, app_id):
+            return prepared
+
+        def read_status(self, session):
+            # Attached, alive, and saying nothing about this command.
+            return Mock(attached=True, results=())
+
+        def next_generation(self, session):
+            return 3
+
+        def write_commands(self, session, commands):
+            return commands[-1].generation + 1
+
+    service.session_store = Store()
+    answer = service._quiesce_session(4242)
+
+    assert answer["asked"] is True
+    assert answer["answered"] is False
+    assert answer["records_unsettled"] == []
+    assert answer["reason"] == "the bridge did not answer before the stop had to proceed"
+    assert RuntimeCommand  # the command type is what the store above was handed
+
+
+def test_a_pattern_the_game_holds_two_files_for_is_not_proved_absent(tmp_path: Path, monkeypatch):
+    """Which of them the game loads is not something a file listing can say.
+
+    A game can ship two files under one module name - one per architecture, one
+    per plugin directory - and reading whichever the walk reached first would
+    put a finding on screen about a file the game may never load, and let the
+    repair cut the hook that needs it.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("scan-two-modules"))
+    service.initialize()
+    source = tmp_path / "engine-scanner.CT"
+    source.write_text(
+        SCAN_FIXTURE.replace(
+            "aobscanmodule(aobAbsent,game.exe,F3 0F 59 F0 48 8B C3)",
+            "aobscanmodule(aobAbsent,engine.dll,F3 0F 59 F0 48 8B C3)",
+        ),
+        encoding="utf-8",
+    )
+    table = service.import_table(str(source))
+    game = tmp_path / "game"
+    (game / "win64").mkdir(parents=True)
+    (game / "plugins").mkdir(parents=True)
+    program = _scan_program(game)
+    # Two files of that name, neither of them holding the pattern.
+    (game / "win64" / "engine.dll").write_bytes(b"\x00" * 128)
+    (game / "plugins" / "engine.dll").write_bytes(b"\x00" * 128)
+    monkeypatch.setattr(service, "_game_program_path", lambda app_id, target=None: (program, "running"))
+
+    answer = service.check_table_scans(str(table["sha256"]), 4242)
+
+    assert answer["missing"] == [] and answer["proven_missing"] == []
+    assert [row["name"] for row in answer["not_checked"]] == ["aobAbsent"]
+    assert "more than one engine.dll" in answer["not_checked"][0]["reason"]
+    assert answer["repairable"] is None
+    # And the refusal does not answer for the pattern nobody looked for.
+    with pytest.raises(ValueError, match="the rest could not be checked here"):
+        service.prepare_table_copy(str(table["sha256"]), 4242)

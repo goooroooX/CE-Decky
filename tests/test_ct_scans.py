@@ -758,3 +758,55 @@ def test_a_pattern_the_whole_process_is_searched_for_is_reported_and_not_removab
     assert answer.missing == ("aobAnywhere", "aobInThisFile")
     # Only the one whose script names this file as the whole of where it looks.
     assert answer.proven_missing == ("aobInThisFile",)
+
+
+TWO_SCRIPT_TABLE = (
+    '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+    '  <CheatEntries><CheatEntry><ID>1</ID><Description>"DX12"</Description>'
+    '<VariableType>Auto Assembler Script</VariableType>'
+    '<AssemblerScript>[ENABLE]\n'
+    'aobscanmodule(INJECT,game.exe,48 8B 01 48 89 54 24)\n'
+    'registersymbol(INJECT)\n'
+    '[DISABLE]\n'
+    'unregistersymbol(INJECT)\n'
+    '</AssemblerScript></CheatEntry>'
+    '<CheatEntry><ID>2</ID><Description>"Vulkan"</Description>'
+    '<VariableType>Auto Assembler Script</VariableType>'
+    '<AssemblerScript>[ENABLE]\n'
+    'aobscan(INJECT,F3 0F 59 F0 48 8B C3)\n'
+    'registersymbol(INJECT)\n'
+    '[DISABLE]\n'
+    'unregistersymbol(INJECT)\n'
+    '</AssemblerScript></CheatEntry>'
+    '</CheatEntries>\n</CheatTable>\n'
+).encode("utf-8")
+
+
+def test_a_symbol_this_table_declares_twice_is_never_repaired():
+    """Two scripts can look for the same symbol and mean different code.
+
+    A build for one graphics backend and a build for another, side by side,
+    each with its own pattern. One of them was proved absent; the other was
+    not, and a removal that goes by name takes both. Which is which is not
+    something this can tell apart, so it removes nothing.
+    """
+    with pytest.raises(ScanRepairError, match="in more than one place"):
+        drop_unmatched_scans(TWO_SCRIPT_TABLE, ["INJECT"])
+
+
+def test_a_proof_compares_each_scan_the_table_still_makes(tmp_path: Path):
+    """A surviving scan is the scan it was, or the repair is refused.
+
+    Comparing one pattern per symbol could not see a scan rewritten to search
+    somewhere else: the same name and the same bytes, looked for in another
+    place, is a different table wearing the same list of symbols.
+    """
+    original = TWO_SCRIPT_TABLE.replace(b"aobscan(INJECT,", b"aobscan(OTHER,")
+    moved = original.replace(
+        b"aobscanmodule(INJECT,game.exe,48 8B 01 48 89 54 24)",
+        b"aobscan(INJECT,48 8B 01 48 89 54 24)",
+    )
+    # Nothing was asked to go, and every symbol is still there: only where it is
+    # looked for changed.
+    with pytest.raises(ScanRepairError, match="changed the scan INJECT"):
+        assert_only_scans_dropped(original, moved, [])

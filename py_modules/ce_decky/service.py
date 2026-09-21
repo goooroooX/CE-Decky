@@ -52,7 +52,7 @@ from .ct_inspector import (
     strip_signature,
 )
 from .table_code import list_table_code as read_code_index, read_table_code as read_code_section
-from .game_files import game_executables, program_in_tree
+from .game_files import game_executables, program_in_tree, programs_in_tree
 from .steam_library import local_library, shortcut_program
 from .game_identity import Candidate, aliases as game_aliases, decide_match, query_plan
 from .managed_ce import discover_steam_library_roots, ManagedCEManager, discover_proton_tools, read_managed_provenance, validate_managed_installation
@@ -1789,10 +1789,24 @@ class PluginService:
                 not_checked = [(name, "the check ran out of time" if name in {scan.name for scan in wanted[module]} else reason)
                                for name, reason in not_checked]
                 continue
-            beside = program_in_tree(program.parent, module)
-            if beside is None:
+            # The one file of that name, or none of them. A game that ships two
+            # copies under one name - one per architecture, one per plugin
+            # directory - gives no way here to say which one it loads, and a
+            # pattern absent from the copy this happened to walk into first is
+            # not a pattern the game does not have. Reading one of them would
+            # put a finding on screen about a file the game may never load, and
+            # would let the repair cut the hook that needs it.
+            beside = programs_in_tree(program.parent, module)
+            if len(beside) != 1:
+                if len(beside) > 1:
+                    mine = {scan.name for scan in wanted[module]}
+                    not_checked = [
+                        (name, f"this game holds more than one {module}, so which one it loads is not known here"
+                         if name in mine else reason)
+                        for name, reason in not_checked
+                    ]
                 continue
-            found = check_executable(beside, wanted[module], budget_seconds=left)
+            found = check_executable(beside[0], wanted[module], budget_seconds=left)
             elapsed += found.elapsed_ms
             if found.reason is not None:
                 # The file was found and says nothing: unreadable, wrapped, or
@@ -2051,11 +2065,18 @@ class PluginService:
                     "the patterns this table cannot find are looked for in more of the game than this device can read, "
                     "so there is nothing here it can safely take out"
                 )
-            searched = bool(answer.present or answer.missing)
+            if not answer.present:
+                raise ValueError(
+                    "this table carries no signature, and this device could not check its patterns "
+                    "against the game's program"
+                )
+            # Some were looked for and found. Saying `every pattern` here would
+            # be answering for the ones nothing was looked for in: a pattern in
+            # a file this could not tell apart from another of the same name, or
+            # one searched for in more of the game than a file holds.
             raise ValueError(
-                "this table carries no signature, and every pattern it scans for is in this game's program"
-                if searched else
-                "this table carries no signature, and this device could not check its patterns against the game's program"
+                "this table carries no signature, and every pattern this device could check is in this game's program"
+                + (", while the rest could not be checked here" if answer.not_checked else "")
             )
         log_activity(
             self.logger, "info", "table.derive_started",
@@ -4451,12 +4472,20 @@ class PluginService:
             app_id=app_id, session=prepared.session_id[:12],
             records_put_down=answer.get("records_put_down"),
             records_unsettled=",".join(answer.get("records_unsettled") or ()) or None,
+            answered=answer.get("answered"),
             elapsed_ms=elapsed_ms, reason=answer.get("reason"),
         )
         return {**answer, "asked": True, "elapsed_ms": elapsed_ms}
 
     def _await_quiesce(self, prepared, generation: int) -> dict[str, object]:
-        """Wait for the bridge's own answer to one quiesce, or say it did not come."""
+        """Wait for the bridge's own answer to one quiesce, or say it did not come.
+
+        `answered` is the difference between a game that was put back and a game
+        nobody can speak for. An answer that did not arrive is not an empty list
+        of cheats left on: it is not knowing, and the screen has to say so,
+        because the stop goes ahead either way and what is still patched into
+        the game outlives the Cheat Engine that could have undone it.
+        """
         deadline = time.monotonic() + QUIESCE_WAIT_SECONDS
         while time.monotonic() < deadline:
             try:
@@ -4469,13 +4498,21 @@ class PluginService:
                         continue
                     put_down, unsettled = _quiesce_counts(item.value)
                     return {
-                        "records_put_down": put_down, "records_unsettled": unsettled,
+                        "records_put_down": put_down, "records_unsettled": unsettled, "answered": True,
                         "reason": None if item.ok else (item.error or "records did not settle"),
                     }
                 if status.attached is not True:
-                    return {"records_put_down": None, "records_unsettled": [], "reason": "the game exited while its cheats were being switched off"}
+                    # The game is gone, so there is nothing left running to be
+                    # left patched: this is an answer rather than an absence.
+                    return {
+                        "records_put_down": None, "records_unsettled": [], "answered": True,
+                        "reason": "the game exited while its cheats were being switched off",
+                    }
             time.sleep(QUIESCE_POLL_SECONDS)
-        return {"records_put_down": None, "records_unsettled": [], "reason": "the bridge did not answer before the stop had to proceed"}
+        return {
+            "records_put_down": None, "records_unsettled": [], "answered": False,
+            "reason": "the bridge did not answer before the stop had to proceed",
+        }
 
     async def stop_ce_for_game(self, app_id: int, table_sha256: str | None = None) -> dict[str, object]:
         """A Revoke stop carries exact table and captured owned session authority."""

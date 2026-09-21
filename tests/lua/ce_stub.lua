@@ -976,7 +976,19 @@ function stub.report()
     local record = state.records[id]
     if record then
       local ok, value = pcall(function() return record.Value end)
-      lines[#lines + 1] = "value " .. tostring(id) .. " " .. tostring(ok and value or "unreadable")
+      if ok then
+        lines[#lines + 1] = "value " .. tostring(id) .. " " .. tostring(value)
+      else
+        lines[#lines + 1] = "value " .. tostring(id) .. " unreadable"
+      end
+      -- Explicit branches: `ok and value or fallback` reports a readable
+      -- `false` as the fallback, which is this file's own trap written down.
+      local activeOk, active = pcall(function() return record.Active end)
+      if activeOk then
+        lines[#lines + 1] = "active " .. tostring(id) .. " " .. tostring(active)
+      else
+        lines[#lines + 1] = "active " .. tostring(id) .. " unreadable"
+      end
     end
   end
   for _, message in ipairs(state.sent_messages) do

@@ -412,14 +412,38 @@ def program_in_tree(root: Path, basename: str) -> Path | None:
     Bounded exactly as the listing is - the same depth, the same entry budget -
     and it never leaves the directory it was given, so a link pointing out of
     the game's folder resolves to no answer rather than to somebody else's file.
+
+    The first one found, which is what proposing a program to attach to wants: a
+    game ships one program under that name and the user confirms what this
+    proposes. A caller deciding something a user cannot see wants
+    `programs_in_tree` instead, which says when there is more than one.
+    """
+    found = programs_in_tree(root, basename, limit=1)
+    return found[0] if found else None
+
+
+def programs_in_tree(root: Path, basename: str, *, limit: int = 2) -> list[Path]:
+    """Every file of that name under the directory, up to `limit` of them.
+
+    Two is enough to answer the question a caller has when it matters: whether
+    the name picks out one file or several. A game that ships two copies of a
+    library under one name - one per architecture, one per plugin directory -
+    has two answers and no way here to say which one it loads, and a caller
+    about to decide something from the contents of a file it chose by guessing
+    has to know that.
+
+    Bounded exactly as the walk above it is, and a budget that ran out returns
+    nothing rather than the part it managed: a partial answer would read as a
+    file that is not there.
     """
     if not basename or "/" in basename or "\\" in basename:
-        return None
+        return []
     try:
         anchor = root.resolve()
     except OSError:
-        return None
+        return []
     wanted = basename.casefold()
+    found: list[Path] = []
     seen = 0
     level = [anchor]
     for _ in range(MAX_DEPTH + 1):
@@ -430,7 +454,7 @@ def program_in_tree(root: Path, basename: str) -> Path | None:
                     for entry in entries:
                         seen += 1
                         if seen > MAX_ENTRIES:
-                            return None
+                            return []
                         try:
                             if entry.is_dir(follow_symlinks=False):
                                 following.append(Path(entry.path))
@@ -439,18 +463,21 @@ def program_in_tree(root: Path, basename: str) -> Path | None:
                                 continue
                         except OSError:
                             continue
-                        found = Path(entry.path)
+                        candidate = Path(entry.path)
                         try:
-                            if found.resolve().is_relative_to(anchor):
-                                return found
+                            if not candidate.resolve().is_relative_to(anchor):
+                                continue
                         except (OSError, ValueError):
                             continue
+                        found.append(candidate)
+                        if len(found) >= limit:
+                            return found
             except OSError:
                 continue
         if not following:
-            return None
+            return found
         level = following
-    return None
+    return found
 
 
 def _walk(root: Path) -> tuple[list[GameExecutable], bool, bool]:

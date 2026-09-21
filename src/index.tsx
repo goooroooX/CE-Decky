@@ -1823,6 +1823,7 @@ function Content() {
     logUi("panel.stop_requested", {
       app_id: appId, stopped: result.stopped, recovered: result.recovered,
       quiesce_asked: quiesce?.asked ?? null, quiesce_reason: quiesce?.reason ?? null,
+      quiesce_answered: quiesce?.answered ?? null,
       put_down: quiesce?.records_put_down ?? null,
       unsettled: (quiesce?.records_unsettled ?? []).join(",") || null,
     });
@@ -1835,6 +1836,15 @@ function Content() {
       toaster.toast({
         title: "CE Decky",
         body: `${left.length === 1 ? "One cheat" : `${left.length} cheats`} could not be switched off before Cheat Engine stopped. Restart the game to clear what they changed.`,
+      });
+    } else if (quiesce?.asked === true && quiesce.answered === false) {
+      // Not knowing is the same news as a named cheat, and for the same reason:
+      // the stop went ahead without the answer, so whatever was still on is
+      // still on, and the Cheat Engine that could have switched it off is gone.
+      // Saying nothing here reported an unread answer as a clean stop.
+      toaster.toast({
+        title: "CE Decky",
+        body: "Cheat Engine stopped before CE Decky could confirm your cheats were switched off. If anything is still changed in the game, restarting it clears that.",
       });
     }
     if (result.recovered && !result.stopped) {

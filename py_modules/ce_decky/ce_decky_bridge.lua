@@ -40,19 +40,29 @@ local MAX_STARTUP_WAIT_TICKS = 40
 -- and a walk that meets either stops rather than running the timer out.
 local MAX_QUIESCE_RECORDS = 4096
 local MAX_QUIESCE_DEPTH = 32
--- What the whole walk may spend, as against what one record may. Per record the
--- bound is the same one every activation here uses; without one over the walk,
--- a table whose records all refuse to come down would hold the timer for that
--- bound times the number of them. The stop this belongs to has a bound of its
--- own and proceeds regardless, so this is about the bridge staying answerable
--- rather than about the stop.
-local MAX_QUIESCE_TOTAL_TICKS = 600
+-- What the whole walk may spend, from the command to the answer.
+--
+-- It is sized against the backend's own bound rather than against what a table
+-- might want: the stop waits 15 seconds for this answer and then proceeds
+-- without one, and an answer that arrives after the stop has killed Cheat
+-- Engine is an answer nobody reads. At 250 ms a tick this is 12 seconds, which
+-- leaves the backend time to read the result it asked for. What the walk has
+-- not reached by then is named as unsettled rather than left running, because
+-- the user's question is which cheats are still on in their game.
+local MAX_QUIESCE_TOTAL_TICKS = 48
 -- How many times a quiesce looks again for records that are switched on.
 -- Putting a script down can create work: its `[DISABLE]` runs the table's own
 -- code, and a record that was off can come on again from it. The walk is
 -- therefore repeated until a look finds nothing, and bounded so that a table
 -- switching one of its flags back on forever cannot hold the stop.
 local MAX_QUIESCE_SWEEPS = 3
+-- What one record may spend of that deadline while Cheat Engine finishes with
+-- it. The bound every other activation here uses is 40 ticks, which is most of
+-- the walk: one record Cheat Engine never finishes with would spend the stop on
+-- itself and leave the rest of the table switched on. Three seconds is well
+-- past what an ordinary `[DISABLE]` takes, and what does not settle in it is
+-- named while the walk carries on to the records that will.
+local MAX_QUIESCE_RECORD_TICKS = 12
 -- How many of a table's on/off records the descriptor may carry an off key for.
 local MAX_SWITCH_OFF_VALUES = 2048
 -- Auto Assembler records may explicitly run asynchronously. Active is not a
@@ -927,6 +937,12 @@ local function recordStartupTransition(recordId, wasInactive)
 end
 
 local function applyStartup()
+  -- Once the quiesce has answered, nothing here may touch the game again. The
+  -- stop kills Cheat Engine on that answer, so a record a rollback switched
+  -- back on afterwards is one whose `[DISABLE]` never runs - and the answer the
+  -- user was given said the game was put back. A rollback that had not finished
+  -- by then is named in that answer instead.
+  if state.quiesced then return end
   -- A rollback in flight is the only startup work left once the forward path
   -- has failed, and it needs the timer to advance exactly as the forward path
   -- did while it waited for an async activation to settle.
@@ -1247,7 +1263,7 @@ local function advanceQuiesce()
   local run = state.quiesce
   if not run then return end
   if not state.attached then
-    run.unsettled[#run.unsettled + 1] = "detached"
+    markUnsettled(run, "detached")
     finishQuiesce()
     return
   end
@@ -1255,12 +1271,21 @@ local function advanceQuiesce()
   if run.ticks > MAX_QUIESCE_TOTAL_TICKS then
     -- Everything not reached is named rather than counted, because what the
     -- reader of this needs is which cheats were left on in a game that is
-    -- about to lose the Cheat Engine that could have switched them off.
+    -- about to lose the Cheat Engine that could have switched them off. Work
+    -- this was waiting on is named too: it is about to be made inert by the
+    -- answer, so what it had not finished is exactly what nothing will finish.
     if run.pending then markUnsettled(run, run.pending.id) end
     while run.index < #run.records do
       run.index = run.index + 1
       markUnsettled(run, run.records[run.index].id)
     end
+    if state.startup_pending and state.startup_pending.action then
+      markUnsettled(run, state.startup_pending.action.record_id)
+    end
+    if state.pending_command and state.pending_command.command then
+      markUnsettled(run, state.pending_command.command.record_id)
+    end
+    if state.rollback then markUnsettled(run, "rollback") end
     finishQuiesce()
     return
   end
@@ -1272,7 +1297,7 @@ local function advanceQuiesce()
       run.pending = nil
     elseif processing then
       pending.waits = pending.waits + 1
-      if pending.waits <= MAX_ACTIVATION_WAIT_TICKS then return end
+      if pending.waits <= MAX_QUIESCE_RECORD_TICKS then return end
       markUnsettled(run, pending.id)
       run.pending = nil
     else
@@ -1286,16 +1311,14 @@ local function advanceQuiesce()
     run.index = run.index + 1
     if putOneDown(run, run.records[run.index]) then return end
   end
-  -- An activation Cheat Engine has not finished is a record that is about to be
-  -- switched on, so the walk waits for it before it can say there is nothing
-  -- left on. A startup that failed is rolling itself back, and a rollback puts
-  -- a record back the way it found it, which for one that was already on means
-  -- switching it on again. Bounded by the same number of ticks every other
-  -- activation here waits, and by the walk's own bound above it.
-  if (state.startup_pending or state.pending_command or state.rollback) and (run.waits or 0) < MAX_ACTIVATION_WAIT_TICKS then
-    run.waits = (run.waits or 0) + 1
-    return
-  end
+  -- Work that can still change the game is work this cannot answer over. An
+  -- activation Cheat Engine has not finished is a record about to come on; a
+  -- rollback puts a record back the way it found it, which for one that was
+  -- already on means switching it on again; a command of its own is either.
+  -- The walk waits for all three under its own deadline above, rather than
+  -- under a budget of its own: two bounds that can disagree is how an answer
+  -- gets published with something still moving behind it.
+  if state.startup_pending or state.pending_command or state.rollback then return end
   -- The list this started from was what was on when it started. Putting a
   -- script down runs the table's own `[DISABLE]`, and a record on its way on
   -- when the stop arrived settles while this walks, so what is switched on now
@@ -1384,7 +1407,7 @@ local function executeCommand(command)
     end
     state.quiesce = {
       generation = command.generation, records = records, index = 0, put_down = 0,
-      unsettled = {}, named = {}, pending = nil, ticks = 0, sweeps = 0, waits = 0,
+      unsettled = {}, named = {}, pending = nil, ticks = 0, sweeps = 0,
     }
     advanceQuiesce()
     return

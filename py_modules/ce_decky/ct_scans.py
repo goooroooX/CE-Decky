@@ -189,13 +189,11 @@ class ScanCheck:
     # that the scan finds nothing, which is not every one of them. A script can
     # ask Cheat Engine to search the whole running process, and a pattern this
     # did not find in the game's program can still be in one of the libraries
-    # that program loads. Saying so on a screen is honest, because the sentence
-    # says what was searched; taking the code that needs it out of a table is
-    # not, which is why only these may be removed.
-    #
-    # Not on `as_dict`: nothing on screen decides anything with it, and the
-    # press that does is offered from `repairable`, which the backend answers by
-    # making the repair rather than by reading this.
+    # that program loads. Taking the code that needs it out of a table is
+    # something only these may be done for, and the screen tells the two apart
+    # in what it says: a pattern proved absent from the whole of where its
+    # script looks is a cheat that will not work, and one absent from the file
+    # this could read is a pattern that was not found here.
     proven_missing: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
@@ -203,6 +201,7 @@ class ScanCheck:
             "source": self.source,
             "present": list(self.present),
             "missing": list(self.missing),
+            "proven_missing": list(self.proven_missing),
             "ambiguous": list(self.ambiguous),
             "not_checked": [{"name": name, "reason": reason} for name, reason in self.not_checked],
             "elapsed_ms": self.elapsed_ms,
@@ -897,6 +896,29 @@ def assert_sections_kept(original: str, repaired: str) -> None:
         f"the repaired script no longer has its [{missing_section}] section, which is what Cheat Engine runs")
 
 
+def _declarations_of(blob: bytes, name: str) -> int:
+    """How many scan directives in this table declare that symbol.
+
+    Counted over the script text as the file stores it rather than through the
+    parser, because the parser reads a name once per script by design and the
+    question here is exactly how many times it was written.
+    """
+    declaration = re.compile(
+        r"^[^\S\n]*(?:" + "|".join(SCAN_DIRECTIVES) + r")[^\S\n]*\([^\S\n]*" + re.escape(name) + r"[^\S\n]*,",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    seen = 0
+    for match in _SCRIPT_BYTES_RE.finditer(blob):
+        try:
+            text = match.group(2).decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        seen += sum(1 for line in text.splitlines() if declaration.match(_without_comment(line)))
+        if seen > 1:
+            return seen
+    return seen
+
+
 def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, ScanRepair]:
     """The same table with the hooks of a failing scan removed, and nothing else.
 
@@ -918,6 +940,22 @@ def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, Sc
     wanted = [name for name in dict.fromkeys(missing) if name]
     if not wanted:
         raise ScanRepairError("no scan was named to drop")
+    # One symbol, one scan, or nothing is removed for it.
+    #
+    # A table can declare the same scan symbol twice - a build for one graphics
+    # backend and a build for another, side by side, each with its own pattern
+    # and sometimes its own module. What was proved absent was one of them, and
+    # a removal that goes by name would take the other with it, silently, while
+    # every proof after the edit still passed: the second occurrence's pattern
+    # is not what the check looked for and not what the proof compares. Which
+    # of them is the one that is missing is not something this can tell apart,
+    # so it removes nothing at all.
+    for name in wanted:
+        if _declarations_of(blob, name) > 1:
+            raise ScanRepairError(
+                f"this table looks for {name} in more than one place, and which of them is the one "
+                "this game's program does not hold is not something this can tell apart"
+            )
     edited = bytearray()
     at = 0
     blocks = lines_removed = 0
@@ -1118,19 +1156,41 @@ def assert_only_scans_dropped(original: bytes, derived: bytes, dropped: Sequence
     if records(before) != records(after):
         raise ScanRepairError("the repair changed the table's records, not only its scripts")
 
-    def scans_of(root: ET.Element) -> dict[str, str]:
-        found: dict[str, str] = {}
+    def scans_of(root: ET.Element) -> list[tuple[str, str, str, str]]:
+        """Every scan the table makes, in the order it makes them.
+
+        Each one whole: the symbol, which scanner is asked for it, the module
+        named if one is, and the pattern. A dictionary of one pattern per name
+        was what this used to compare, and it could not see a script whose scan
+        was rewritten to search somewhere else - same name, same bytes, another
+        place - which is a different table wearing the same list of symbols.
+        """
+        found: list[tuple[str, str, str, str]] = []
         for element in root.iter():
             if local_tag(element.tag) != "AssemblerScript" or not element.text:
                 continue
             for scan in read_scans(element.text)[0]:
-                found.setdefault(scan.name, scan.pattern)
+                found.append((scan.name, scan.directive, scan.module or "", scan.pattern))
         return found
 
     was, now = scans_of(before), scans_of(after)
-    gone = set(was) - set(now)
-    if gone != {name for name in dropped if name in was}:
-        raise ScanRepairError(f"the repair removed scans nobody asked it to: {sorted(gone)}")
-    for name, pattern in now.items():
-        if was.get(name) != pattern:
-            raise ScanRepairError(f"the repair changed the pattern {name} scans for")
+    named_before = {item[0] for item in was}
+    gone = named_before - {item[0] for item in now}
+    asked = {name for name in dropped if name in named_before}
+    # Said apart, because they are different failures and the reader of a
+    # refusal is deciding what to do about it: one took away code nobody named,
+    # the other left behind what it was asked to take.
+    if gone - asked:
+        raise ScanRepairError(f"the repair removed scans nobody asked it to: {sorted(gone - asked)}")
+    if asked - gone:
+        raise ScanRepairError(f"the repair left the scans it was asked to remove: {sorted(asked - gone)}")
+    kept = [item for item in was if item[0] not in gone]
+    if kept != now:
+        changed = next(
+            (before_item[0] for before_item, after_item in zip(kept, now) if before_item != after_item),
+            None,
+        )
+        raise ScanRepairError(
+            f"the repair changed the scan {changed} the table still makes"
+            if changed else "the repair changed how many scans the table makes"
+        )

@@ -107,24 +107,45 @@ export interface StopQuiesce {
    * worth telling the user about: only restarting the game clears them.
    */
   records_unsettled?: string[];
+  /**
+   * Whether the bridge answered this quiesce at all.
+   *
+   * False is not an empty list of cheats left on: it is not knowing. The stop
+   * goes ahead without the answer, so what is still patched into the game
+   * outlives the Cheat Engine that could have undone it, and the user is told
+   * to restart the game exactly as they are when a cheat is named.
+   */
+  answered?: boolean | null;
   elapsed_ms?: number;
 }
 
 /**
  * Whether a game's own program holds the byte patterns one table scans for.
  *
- * Three answers rather than two. `missing` is a pattern that was looked for and
- * is not there, which is what kills the cheats that need it. `not_checked` is a
- * pattern nothing was established about - one looked for in another of the
- * game's files, one with no literal first byte to find, one a spent budget did
- * not reach - and it is deliberately not `present`. `reason` is set where the
- * check did not run at all, and then nothing else here says anything.
+ * More answers than two. `missing` is a pattern that was looked for and was not
+ * found, and `proven_missing` is the part of that which is proof rather than an
+ * absence from the one file this could read. `not_checked` is a pattern nothing
+ * was established about - one looked for in another of the game's files, one
+ * looked for between two addresses in the running game, one with no literal
+ * first byte to find, one a spent budget did not reach - and it is deliberately
+ * not `present`. `reason` is set where the check did not run at all, and then
+ * nothing else here says anything.
  */
 export interface TableScanCheck {
   /** What was searched. `file` is the game's program on disk. */
   source: string;
   present: string[];
   missing: string[];
+  /**
+   * The subset of `missing` whose absence was proved, rather than not found.
+   *
+   * A script can ask Cheat Engine to search the whole running game, and this
+   * check reads files: a pattern it did not find in the program can still be in
+   * something the game loads. Those stay in `missing`, because not finding a
+   * pattern is worth saying, and out of this, because only this may be called a
+   * cheat that will not work, and only this may have code removed for it.
+   */
+  proven_missing?: string[];
   /**
    * Patterns the check saw match in more than one place.
    *
