@@ -39,6 +39,96 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_INCOMPLETE = 2
 FAILURE_TAIL = 1600
+# What a failing stage prints of the runner's own account of the failure. Two
+# thousand characters is the first assertion with its diff and the file and line
+# it is on, which is what a reader acts on; everything after it is the same
+# thing again for the next test, and the log holds all of it.
+FAILURE_EXCERPT = 2000
+# How many failing test names one stage prints before it says how many more.
+FAILURE_NAMES = 12
+# What `pytest` exits with when its selection collected no test at all. It says
+# nothing else: with `-q` and nothing to run, both streams are empty.
+PYTEST_NOTHING_COLLECTED = 5
+
+def _ran_no_cases(text: str) -> bool:
+    """Whether a narrowed run matched nothing, in each runner's own words.
+
+    Read from what they say rather than from what they do not: `pytest` prints
+    `no tests ran`, and `vitest` reports every test in the file as skipped,
+    which is what a `-t` nothing matched looks like. Anything else counts as a
+    run, because a wrong refusal here stops a green selection for no reason.
+    """
+    lowered = text.lower()
+    if "no tests ran" in lowered or "no test files found" in lowered:
+        return True
+    for line in text.splitlines():
+        stripped = line.strip()
+        # `vitest`'s own summary line, which carries a count in brackets. The
+        # brackets are what keeps a test that prints a line beginning `Tests `
+        # from being read as the runner's verdict about itself.
+        if stripped.startswith("Tests ") and "(" in stripped:
+            return "skipped" in stripped and "passed" not in stripped and "failed" not in stripped
+    return False
+
+# Where each runner starts saying why, in its own words.
+#
+# A tail is the wrong end of a test run. `pytest` ends with a summary a tail
+# does show; `vitest` ends with a count and a footer, while the assertion, its
+# diff and its file and line are hundreds of lines earlier - so every frontend
+# failure in this repository was read by running the same selection a second
+# time with a filter on the output, which costs exactly as long as the run did.
+# These are the runners' own banners, matched as text because that is what they
+# are: a marker that stops matching prints the tail instead, which is what this
+# did before.
+_FAILURE_BANNERS = (
+    "Failed Tests",          # vitest, above the assertion and its diff
+    "=== FAILURES ===",      # pytest, above the traceback
+    "=== ERRORS ===",        # pytest, a collection error rather than a test
+)
+
+
+def _failure_digest(text: str) -> dict[str, object]:
+    """Which tests failed, and the first thing the runner said about one.
+
+    Both halves are the runner's own output rather than this file's reading of
+    it: the names come from the lines each runner prints as its own list, and
+    the excerpt begins at its own banner. Where neither is there - a stage that
+    is not a test run, or one that died before it could report - the caller
+    falls back to the tail, which is the right answer for a command that failed
+    rather than a test that did.
+    """
+    names: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        # `pytest` short summary: `FAILED path::test - AssertionError: ...`.
+        # The word is dropped for a failure, because the line above already says
+        # these are failures, and kept for an error, because a test that could
+        # not be collected is a different thing to go and look at.
+        if stripped.startswith("FAILED "):
+            names.append(stripped[len("FAILED "):].split(" - ", 1)[0])
+        elif stripped.startswith("ERROR "):
+            names.append(stripped.split(" - ", 1)[0])
+        # `vitest`: ` FAIL  tests/x.test.tsx > describe > name`
+        elif stripped.startswith("FAIL "):
+            names.append(stripped[len("FAIL "):].strip())
+    seen: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    at = min(
+        (found for found in (text.find(banner) for banner in _FAILURE_BANNERS) if found >= 0),
+        default=-1,
+    )
+    excerpt = ""
+    if at >= 0:
+        start = text.rfind("\n", 0, at) + 1
+        excerpt = text[start:start + FAILURE_EXCERPT]
+        # On a whole line: the bound is arbitrary and half an assertion reads
+        # like a different one.
+        if len(excerpt) == FAILURE_EXCERPT and "\n" in excerpt:
+            excerpt = excerpt[:excerpt.rfind("\n")]
+        excerpt = excerpt.strip()
+    return {"failed_tests": seen, "excerpt": excerpt}
 
 
 @dataclass
@@ -55,6 +145,11 @@ class Stage:
     # is going to be judged on. Everything after one is reported as not run
     # rather than silently dropped.
     precondition: bool = False
+    # Whether this stage was narrowed to named cases, and therefore has to have
+    # run at least one. A filter that matches nothing is the failure mode of
+    # narrowing: `vitest -t` skips every test and reports a green run, so a
+    # reader who mistyped a name is told their case passes when it never ran.
+    named_cases: bool = False
 
 
 LINUX_ONLY_TEST_FILES = {
@@ -520,7 +615,7 @@ def _frontend_stage(key: str, relative_module: str, *arguments: str) -> Stage:
     return Stage(key, (node, str(module), *arguments), timeout=1200.0)
 
 
-def _explicit_vitest_stages(selections: list[str]) -> list[Stage]:
+def _explicit_vitest_stages(selections: list[str], name: str | None = None) -> list[Stage]:
     """One focused component run, the frontend counterpart of `--pytest`.
 
     The whole component stage is half a minute and covers eighteen files, so
@@ -532,7 +627,12 @@ def _explicit_vitest_stages(selections: list[str]) -> list[Stage]:
     """
     if not selections:
         return []
-    return [_frontend_stage("frontend-explicit", "vitest/vitest.mjs", "run", "--reporter=dot", *selections)]
+    # `-t` is vitest's own, for the same reason: the component suite is 45
+    # seconds and one case of it is under two.
+    narrowed = (*selections, "-t", name) if name else tuple(selections)
+    stage = _frontend_stage("frontend-explicit", "vitest/vitest.mjs", "run", "--reporter=dot", *narrowed)
+    stage.named_cases = bool(name)
+    return [stage]
 
 
 def _frontend_stages(*, component: bool = True, core: bool = True, build: bool = True) -> list[Stage]:
@@ -635,22 +735,54 @@ def _backend_focused_stages(tests: list[str]) -> list[Stage]:
     return stages
 
 
-def _explicit_pytest_stages(tests: list[str]) -> list[Stage]:
+# What `-k` reads as an operator rather than as part of a name.
+_PYTEST_FILTER_SYNTAX = (" and ", " or ", " not ", "(", ")")
+
+
+def _pytest_filter(name: str) -> str:
+    """One `--name` in the syntax `-k` actually parses.
+
+    `pytest` reads `-k` as an expression, so a phrase such as `holds off the
+    flags` is a syntax error rather than a filter, while `vitest -t` takes the
+    same phrase as text. The words are joined into the expression that means
+    what the phrase meant - every one of them is in the name - so one `--name`
+    works for both runners. An expression somebody wrote on purpose is passed
+    through untouched.
+    """
+    if any(token in name for token in _PYTEST_FILTER_SYNTAX):
+        return name
+    return " and ".join(name.split()) or name
+
+
+def _explicit_pytest_stages(tests: list[str], name: str | None = None) -> list[Stage]:
     if not tests:
         return []
+    # `-k` is pytest's own narrowing, passed through rather than reimplemented:
+    # a file of a hundred cases is one run either way, and reading one failure
+    # by running all of them is the cost this exists to remove. It is added to
+    # each command rather than to the selection, because the selection is split
+    # by which tests need Linux and a flag is not a test.
+    narrow = ("-k", _pytest_filter(name)) if name else ()
     if os.name != "nt":
-        stage = _backend_focused_stage(tests, key="backend-explicit")
+        stage = _backend_focused_stage([*tests, *narrow], key="backend-explicit")
+        if stage:
+            stage.named_cases = bool(name)
         return [stage] if stage else []
     safe = [item for item in tests if not _linux_test_selection(item)]
     linux = [item for item in tests if _linux_test_selection(item)]
     stages: list[Stage] = []
     if safe:
-        stage = _backend_focused_stage(safe, key="backend-explicit")
+        stage = _backend_focused_stage([*safe, *narrow], key="backend-explicit")
         if stage:
+            stage.named_cases = bool(name)
             stages.append(stage)
     if linux:
-        command, reason = _wsl_backend_command(("-m", "pytest", "-q", "--tb=short", "--disable-warnings", *linux))
-        stages.append(Stage("backend-linux-explicit", command or (), timeout=1200.0, incomplete_reason=reason))
+        command, reason = _wsl_backend_command(
+            ("-m", "pytest", "-q", "--tb=short", "--disable-warnings", *linux, *narrow))
+        stages.append(Stage(
+            "backend-linux-explicit", command or (), timeout=1200.0,
+            incomplete_reason=reason, named_cases=bool(name),
+        ))
     return stages
 
 
@@ -725,15 +857,16 @@ def _store_artifact_stage() -> Stage:
 
 
 def _profile_stages(
-    profile: str, changed: list[str], explicit_pytest: list[str], explicit_vitest: list[str] | None = None,
+    profile: str, changed: list[str], explicit_pytest: list[str],
+    explicit_vitest: list[str] | None = None, name: str | None = None,
 ) -> list[Stage]:
     python = str(_development_python())
     explicit_vitest = explicit_vitest or []
     if explicit_pytest or explicit_vitest:
         return [
             *_repo_preflight_stages(),
-            *_explicit_pytest_stages(explicit_pytest),
-            *_explicit_vitest_stages(explicit_vitest),
+            *_explicit_pytest_stages(explicit_pytest, name),
+            *_explicit_vitest_stages(explicit_vitest, name),
             *_repo_final_stages(),
         ]
     if profile == "auto":
@@ -785,13 +918,16 @@ def _command_text(command: tuple[str, ...]) -> str:
 
 
 def _qa_rerun_command(
-    profile: str, explicit_pytest: list[str], stage: Stage, explicit_vitest: list[str] | None = None,
+    profile: str, explicit_pytest: list[str], stage: Stage,
+    explicit_vitest: list[str] | None = None, name: str | None = None,
 ) -> str:
     command: list[str] = ["python", "scripts/qa.py", "--profile", profile]
     for node in explicit_pytest:
         command.extend(("--pytest", node))
     for node in explicit_vitest or []:
         command.extend(("--vitest", node))
+    if name:
+        command.extend(("--name", name))
     if stage.incomplete_reason and "rerun with --bootstrap" in stage.incomplete_reason:
         command.append("--bootstrap")
     command.extend(("--stage", stage.key))
@@ -799,11 +935,12 @@ def _qa_rerun_command(
 
 
 def _with_rerun_commands(
-    profile: str, explicit_pytest: list[str], stages: list[Stage], explicit_vitest: list[str] | None = None,
+    profile: str, explicit_pytest: list[str], stages: list[Stage],
+    explicit_vitest: list[str] | None = None, name: str | None = None,
 ) -> list[Stage]:
     for stage in stages:
         if stage.rerun_command is None:
-            stage.rerun_command = _qa_rerun_command(profile, explicit_pytest, stage, explicit_vitest)
+            stage.rerun_command = _qa_rerun_command(profile, explicit_pytest, stage, explicit_vitest, name)
     return stages
 
 
@@ -998,6 +1135,17 @@ def _run_stage(stage: Stage, run_root: Path) -> dict[str, object]:
     stdout_path.write_text(stdout, encoding="utf-8")
     stderr_path.write_text(stderr, encoding="utf-8")
     combined = (stdout + "\n" + stderr).strip()
+    # A narrowed run that ran nothing is not a run that passed. `vitest -t` with
+    # a name nothing matches skips every test in the file and reports a green
+    # run, which tells a reader who mistyped a name that their case is fine.
+    # A narrowed run that matched nothing, whichever way its runner reported it:
+    # `vitest` skips every test and exits green, `pytest` collects none, prints
+    # not one character and exits 5. One sentence for both, because what a
+    # reader does about them is the same.
+    collected_nothing = completed is not None and completed.returncode == PYTEST_NOTHING_COLLECTED
+    if stage.named_cases and (_ran_no_cases(combined) or collected_nothing):
+        status = "failed"
+        reason = "--name matched no test, so nothing ran"
     return {
         "key": stage.key,
         "status": status,
@@ -1009,6 +1157,7 @@ def _run_stage(stage: Stage, run_root: Path) -> dict[str, object]:
         "stderr_log": str(stderr_path.relative_to(ROOT)),
         "output_tail": combined[-4000:] if status != "passed" else "",
         "exit_code": completed.returncode if completed else None,
+        **({} if status == "passed" else _failure_digest(combined)),
     }
 
 
@@ -1097,10 +1246,23 @@ def _write_results(profile: str, source: str, changed: list[str], results: list[
     # only other copy of that output is `qa-failures.json` in a run directory
     # the runner throws away. Naming the stage matters for the same reason.
     for actionable in failed[:1] + incomplete[:1]:
-        tail = str(actionable.get("output_tail") or "")[-FAILURE_TAIL:].strip()
-        if tail:
-            print(f"  {actionable['key']} tail:")
-            for line in tail.splitlines():
+        # What failed, by the names the runner itself printed. A stage that
+        # failed a dozen tests used to print whichever of them the tail happened
+        # to reach, so the first thing a reader did was run it again to find out
+        # what to look at.
+        names = [str(name) for name in (actionable.get("failed_tests") or [])]
+        if names:
+            shown = ", ".join(names[:FAILURE_NAMES])
+            more = f" and {len(names) - FAILURE_NAMES} more" if len(names) > FAILURE_NAMES else ""
+            print(f"  {actionable['key']} failed: {shown}{more}")
+        # And why, from where the runner started saying it. The tail is kept for
+        # a stage that is not a test run and for one that died before it could
+        # report: there the last thing said is the whole of what happened.
+        excerpt = str(actionable.get("excerpt") or "")
+        body = excerpt or str(actionable.get("output_tail") or "")[-FAILURE_TAIL:].strip()
+        if body:
+            print(f"  {actionable['key']} {'why' if excerpt else 'tail'}:")
+            for line in body.splitlines():
                 print(f"    {line}")
         if actionable.get("rerun_command"):
             print(f"  rerun: {actionable['rerun_command']}")
@@ -1174,6 +1336,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pytest", action="append", default=[], metavar="NODE_OR_PATH", help="run an explicit focused pytest selection")
     parser.add_argument("--vitest", action="append", default=[], metavar="PATH_OR_PATTERN", help="run an explicit focused vitest selection")
     parser.add_argument(
+        "--name", metavar="EXPR",
+        help="narrow a --pytest or --vitest selection to the cases whose name matches,"
+             " through the runner's own -k and -t",
+    )
+    parser.add_argument(
         "--stage", action="append", default=[], metavar="STAGE",
         help="run only this stage of the profile; repeat it to name several (used by bounded reruns)",
     )
@@ -1188,7 +1355,11 @@ def main(argv: list[str] | None = None) -> int:
         return _check_environment()
 
     changed, source = _changed_files()
-    preliminary = _profile_stages(args.profile, changed, args.pytest, args.vitest)
+    if args.name and not (args.pytest or args.vitest):
+        # It narrows a selection, so without one it would quietly narrow
+        # nothing: a run that looks focused and is the whole gate.
+        parser.error("--name narrows --pytest or --vitest; name one of those too")
+    preliminary = _profile_stages(args.profile, changed, args.pytest, args.vitest, args.name)
     try:
         preliminary = _select_stage(preliminary, args.stage)
     except ValueError as exc:
@@ -1207,8 +1378,8 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_INCOMPLETE
         _development_python.cache_clear()
 
-    stages = _profile_stages(args.profile, changed, args.pytest, args.vitest)
-    stages = _with_rerun_commands(args.profile, args.pytest, stages, args.vitest)
+    stages = _profile_stages(args.profile, changed, args.pytest, args.vitest, args.name)
+    stages = _with_rerun_commands(args.profile, args.pytest, stages, args.vitest, args.name)
     try:
         stages = _select_stage(stages, args.stage)
     except ValueError as exc:

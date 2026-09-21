@@ -888,3 +888,156 @@ def test_changing_a_fixture_runs_the_tests_that_read_it():
         assert selected, f"changing {fixture.name} selects no test"
         for name in selected:
             assert fixture.name in (root / name).read_text(encoding="utf-8")
+
+
+VITEST_FAILURE = """
+ ✓ tests/other.test.ts (4 tests) 12ms
+ ❯ tests/uiModel.test.ts (2 tests | 1 failed) 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/uiModel.test.ts > controller UI model > calls a copy Fixed
+AssertionError: expected 'Fixed' to be 'Repaired' // Object.is equality
+
+Expected: "Repaired"
+Received: "Fixed"
+
+ ❯ tests/uiModel.test.ts:164:46
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 5 passed (6)
+   Duration  0.80s
+"""
+
+PYTEST_FAILURE = """
+........F                                                                [100%]
+=================================== FAILURES ===================================
+_______________________ test_a_flag_is_not_safe ________________________
+tests/test_ct_hooks.py:58: in test_a_flag_is_not_safe
+    assert "bEnableVitals" in safe
+E   AssertionError: assert 'bEnableVitals' in frozenset({'bEnablePlain'})
+=========================== short test summary info ============================
+FAILED tests/test_ct_hooks.py::test_a_flag_is_not_safe - AssertionError: assert
+"""
+
+
+def test_a_failing_run_says_what_failed_and_why_without_being_run_again():
+    """A tail is the wrong end of a test run.
+
+    `pytest` ends with a summary a tail reaches; `vitest` ends with a count and
+    a footer while the assertion, its diff and its line are hundreds of lines
+    earlier, so reading a frontend failure meant running the same selection a
+    second time with a filter on the output - which costs exactly as long as the
+    run did.
+    """
+    vitest = qa._failure_digest(VITEST_FAILURE)
+    assert vitest["failed_tests"] == ["tests/uiModel.test.ts > controller UI model > calls a copy Fixed"]
+    assert "expected 'Fixed' to be 'Repaired'" in str(vitest["excerpt"])
+    assert 'Expected: "Repaired"' in str(vitest["excerpt"])
+    assert "tests/uiModel.test.ts:164:46" in str(vitest["excerpt"])
+
+    backend = qa._failure_digest(PYTEST_FAILURE)
+    # Named the way the runner names it, without repeating the word the line
+    # above already said.
+    assert backend["failed_tests"] == ["tests/test_ct_hooks.py::test_a_flag_is_not_safe"]
+    assert "assert 'bEnableVitals' in frozenset" in str(backend["excerpt"])
+
+
+def test_a_stage_that_is_not_a_test_run_keeps_its_tail(tmp_path, capsys, monkeypatch):
+    """The last thing a command said is the whole of what happened to it.
+
+    Only a test run has a banner to start reading from; a packaging step that
+    died has one message, and cutting it for a banner it never printed would
+    leave the reader with nothing.
+    """
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    digest = qa._failure_digest("rollup: could not resolve ./missing\n")
+    assert digest == {"failed_tests": [], "excerpt": ""}
+
+    qa._write_results("release", "working tree", [], [{
+        "key": "frontend-build", "status": "failed", "duration_seconds": 0.2,
+        "output_tail": "rollup: could not resolve ./missing", **digest,
+    }], tmp_path)
+    printed = capsys.readouterr().out
+    assert "frontend-build tail:" in printed
+    assert "could not resolve ./missing" in printed
+
+
+def test_a_failing_stage_prints_the_names_and_the_first_reason(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    qa._write_results("auto", "working tree", [], [{
+        "key": "frontend-explicit", "status": "failed", "duration_seconds": 0.8,
+        "output_tail": VITEST_FAILURE[-1600:], **qa._failure_digest(VITEST_FAILURE),
+    }], tmp_path)
+    printed = capsys.readouterr().out
+
+    assert "frontend-explicit failed: tests/uiModel.test.ts > controller UI model > calls a copy Fixed" in printed
+    assert "frontend-explicit why:" in printed
+    assert 'Received: "Fixed"' in printed
+
+
+def test_narrowing_a_selection_uses_each_runner_s_own_filter():
+    """One case of the component suite is under two seconds; the file is 45."""
+    [backend] = qa._explicit_pytest_stages(["tests/test_qa.py"], "says what failed")
+    # In the syntax `-k` parses: `pytest` reads it as an expression, so the
+    # words of a phrase are joined into the one that means the same thing.
+    assert backend.command[-2:] == ("-k", "says and what and failed")
+    [frontend] = qa._explicit_vitest_stages(["tests/uiModel.test.ts"], "Fixed rather than Local")
+    assert frontend.command[-2:] == ("-t", "Fixed rather than Local")
+    # And a selection nobody narrowed is the selection itself.
+    [plain] = qa._explicit_vitest_stages(["tests/uiModel.test.ts"])
+    assert plain.command[-1] == "tests/uiModel.test.ts"
+
+
+def test_a_narrowed_run_that_matched_nothing_is_not_a_run_that_passed():
+    """`vitest -t` skips every test in the file and exits green.
+
+    A reader who mistyped a name would be told their case passes when it never
+    ran, which is the failure mode of narrowing and the reason this is checked
+    rather than trusted.
+    """
+    assert qa._ran_no_cases(" Test Files  1 skipped (1)\n      Tests  126 skipped (126)\n")
+    # `pytest` says it in words and in an exit code; the words are enough.
+    assert qa._ran_no_cases("no tests ran in 0.01s\n")
+    # And a run that did something is left alone, including one that only
+    # failed, and one whose runner prints no summary line at all.
+    assert not qa._ran_no_cases(" Test Files  1 failed (1)\n      Tests  1 failed | 5 passed (6)\n")
+    assert not qa._ran_no_cases(".                                            [100%]\n")
+    # And a test that prints a line of its own beginning `Tests ` is not the
+    # runner's verdict about the run it is part of.
+    assert not qa._ran_no_cases("Tests were skipped by the code under test\n")
+
+
+def test_a_phrase_is_narrowed_the_way_each_runner_reads_it():
+    """`-k` is an expression and `-t` is text, so the same `--name` is both.
+
+    A phrase passed to `-k` unchanged is a syntax error rather than a filter,
+    which is a run nobody gets an answer from.
+    """
+    assert qa._pytest_filter("holds off the flags") == "holds and off and the and flags"
+    # An expression somebody wrote on purpose is theirs.
+    assert qa._pytest_filter("quiesce and not stop") == "quiesce and not stop"
+    assert qa._pytest_filter("quiesce") == "quiesce"
+
+
+def test_a_pytest_selection_that_collected_nothing_says_so_rather_than_a_number(tmp_path, monkeypatch):
+    """`pytest` prints not one character when its `-k` matched nothing.
+
+    Both streams are empty and the only signal is the exit code, so a narrowed
+    stage that ends that way is named rather than reported as `exit 5`.
+    """
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+
+    class Completed:
+        returncode = qa.PYTEST_NOTHING_COLLECTED
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(qa.subprocess, "run", lambda *args, **kwargs: Completed())
+    stage = qa.Stage("backend-explicit", ("python", "-m", "pytest"), named_cases=True)
+    result = qa._run_stage(stage, tmp_path)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "--name matched no test, so nothing ran"

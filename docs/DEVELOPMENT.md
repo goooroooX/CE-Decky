@@ -79,6 +79,8 @@ python scripts/qa.py --pytest tests/test_profiles.py
 python scripts/qa.py --pytest tests/test_network_prod.py::test_partial_stream_failure_removes_download_staging
 python scripts/qa.py --vitest tests/uiModel.test.ts
 python scripts/qa.py --pytest tests/test_profiles.py --vitest tests/providerCatalog.test.tsx
+python scripts/qa.py --vitest tests/workflowUi.test.tsx --name "holds off the flags"
+python scripts/qa.py --pytest tests/test_service.py --name "quiesce"
 ```
 
 `pytest.ini` supplies the production Python path, so commands are the same on PowerShell and POSIX shells.
@@ -91,7 +93,7 @@ python scripts/qa.py --pytest tests/test_profiles.py --vitest tests/providerCata
 
 Run it from the repository root. `pytest.ini` puts both the root and `py_modules` on the path, so a test importing release tooling from `scripts` resolves the same way a test importing `ce_decky` does.
 
-`--vitest` takes a path or a vitest filename pattern and runs the component stage against that alone, which is seconds against the half a minute the whole stage costs. It type-checks nothing, because vitest compiles through esbuild: `--profile frontend` remains the gate for a frontend change, exactly as the backend profile is after a focused `--pytest`. A pattern that matches no file fails the stage rather than passing empty.
+`--name` narrows either selection to the cases whose name matches, through each runner's own filter - `-k` for pytest, `-t` for vitest - because one case of the component suite is under two seconds against the file's forty-five. It needs a `--pytest` or a `--vitest` beside it: on its own it would narrow nothing and leave a run that looks focused and is the whole gate. A name that matches nothing fails the stage and says so, because both runners report it as a success otherwise: `vitest` skips every test in the file and exits green, and `pytest` collects nothing, prints not one character and exits 5. The two runners read the expression differently - `-k` is an expression and `-t` is text - so a phrase is joined into the expression that means the same thing, and one somebody wrote with `and`, `or` or brackets is passed through as theirs. `--vitest` takes a path or a vitest filename pattern and runs the component stage against that alone, which is seconds against the half a minute the whole stage costs. It type-checks nothing, because vitest compiles through esbuild: `--profile frontend` remains the gate for a frontend change, exactly as the backend profile is after a focused `--pytest`. A pattern that matches no file fails the stage rather than passing empty.
 
 `dist/index.js` is built rather than written, and a failed frontend build removes it. The next run's first stage is the repository check, which then reports it as a missing required file: read that as the build having failed, rebuild with `--profile frontend --stage frontend-build`, and read the failure that stage prints rather than the one the repository check printed. The check names this itself when the bundle is the file that is missing.
 
@@ -246,7 +248,7 @@ for; `grep` without `-q` is what puts it on the screen. Five rows rather than
 one because a run started after this one, for a head that is not this one,
 would otherwise hide it forever.
 
-The runner prints a bounded tail for the first stage that failed and for the first stage that could not run, each headed by its own stage key and followed by its own rerun command. Both are needed here: a stage that could not run is what a collection error looks like, its cause is nowhere else in a CI log, and the run directory holding `qa-failures.json` is thrown away with the runner. Reproduce the exact selection through `scripts/qa.py` before editing; do not replace a red required gate with a narrower one. If `gh` is unavailable, use the repository's existing Git credential for read-only GitHub REST calls and never print the token. Documentation-only changes need repository QA, not a CI wait.
+The runner prints, for the first stage that failed and for the first stage that could not run, the names of the cases that failed and the runner's own account of the first of them - the assertion, its diff and the file and line it is on - each headed by its stage key and followed by its rerun command. It reads from each runner's own banner rather than from the end of the log: `pytest` finishes with a summary a tail reaches, `vitest` finishes with a count and a footer while the assertion is hundreds of lines earlier, and reading a frontend failure used to mean running the same selection a second time with a filter on the output. A stage that is not a test run, or one that died before it could report, keeps its tail, because there the last thing said is the whole of what happened. Both are needed here: a stage that could not run is what a collection error looks like, its cause is nowhere else in a CI log, and the run directory holding `qa-failures.json` is thrown away with the runner. Reproduce the exact selection through `scripts/qa.py` before editing; do not replace a red required gate with a narrower one. If `gh` is unavailable, use the repository's existing Git credential for read-only GitHub REST calls and never print the token. Documentation-only changes need repository QA, not a CI wait.
 
 ## UI test strategy
 
