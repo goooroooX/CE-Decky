@@ -1210,8 +1210,19 @@ local function activeRecordsToQuiesce()
         complete = false
       elseif active == true then
         local idOk, id = pcall(function() return record.ID end)
+        local numeric = idOk and tonumber(id) or nil
         found[#found + 1] = {
-          record = record, id = idOk and tonumber(id) or nil,
+          record = record, id = numeric,
+          -- Whether this record has an identity, answered once here rather
+          -- than by every later reader of the entry. A table declares the key
+          -- a cheat is switched off at by record ID, so a record whose own ID
+          -- could not be read has no key to be left at, no way to say it was
+          -- left at one, and no number to be reported under. It is still put
+          -- down - that is the part that can be done - and named rather than
+          -- counted, because "switched off" here means the game was left at
+          -- the value the table calls off.
+          identified = numeric ~= nil,
+          name = numeric or ("the record at position " .. tostring(index)),
           depth = recordDepth(record), script = isScriptRecord(record),
         }
       end
@@ -1265,13 +1276,22 @@ end
 -- whole quiesce exists to close. The write happens after the release, for the
 -- same reason the panel does it in that order: the value the game keeps is the
 -- one written last.
-local function countRecordDown(run, record, id)
-  local off = switchOffValue(id)
+--
+-- Nothing is counted until every check it needed has passed. A record with no
+-- identity cannot be looked up in that list of keys at all, so it leaves here
+-- named rather than counted: it was deactivated, and whether the game kept a
+-- flag of its own is exactly what nobody can say.
+local function countRecordDown(run, entry)
+  if not entry.identified then
+    markUnsettled(run, entry.name)
+    return
+  end
+  local off = switchOffValue(entry.id)
   if off ~= nil then
-    local written = pcall(function() record.Value = off end)
-    local readOk, value = pcall(function() return record.Value end)
+    local written = pcall(function() entry.record.Value = off end)
+    local readOk, value = pcall(function() return entry.record.Value end)
     if not written or not readOk or not sameValue(off, tostring(value)) then
-      markUnsettled(run, id)
+      markUnsettled(run, entry.name)
       return
     end
   end
@@ -1310,21 +1330,32 @@ end
 -- it. `true` means the walk stops here and the timer comes back for it.
 local function putOneDown(run, entry)
   local readOk, stillOn = pcall(function() return entry.record.Active end)
+  if not readOk then
+    -- This record was switched on when the walk started, so a state that
+    -- cannot be read now is not one that came down with its script: nothing
+    -- will ever say which it was, and the stop is about to make sure nothing
+    -- can. Nothing is written to it either. A record a script's `[DISABLE]`
+    -- destroyed is one of the few things that reads this way, and the one
+    -- thing that must not then be written to, so the failed reading is taken
+    -- as the answer rather than as a reason to touch it again.
+    markUnsettled(run, entry.name)
+    return false
+  end
   -- Already off, because a script going down took its children with it.
-  if not readOk or stillOn ~= true then return false end
+  if stillOn ~= true then return false end
   local ok = pcall(function() entry.record.Active = false end)
   if not ok then
-    markUnsettled(run, entry.id)
+    markUnsettled(run, entry.name)
     return false
   end
   local processing, asyncErr = recordAsyncProcessing(entry.record)
   if not asyncErr and processing then
-    run.pending = { record = entry.record, id = entry.id, waits = 0 }
+    run.pending = { entry = entry, waits = 0 }
     return true
   end
   local activeOk, active = pcall(function() return entry.record.Active end)
-  if activeOk and active == false then countRecordDown(run, entry.record, entry.id)
-  else markUnsettled(run, entry.id) end
+  if activeOk and active == false then countRecordDown(run, entry)
+  else markUnsettled(run, entry.name) end
   return false
 end
 
@@ -1348,10 +1379,10 @@ local function advanceQuiesce()
     -- about to lose the Cheat Engine that could have switched them off. Work
     -- this was waiting on is named too: it is about to be made inert by the
     -- answer, so what it had not finished is exactly what nothing will finish.
-    if run.pending then markUnsettled(run, run.pending.id) end
+    if run.pending then markUnsettled(run, run.pending.entry.name) end
     while run.index < #run.records do
       run.index = run.index + 1
-      markUnsettled(run, run.records[run.index].id)
+      markUnsettled(run, run.records[run.index].name)
     end
     if state.startup_pending and state.startup_pending.action then
       markUnsettled(run, state.startup_pending.action.record_id)
@@ -1366,19 +1397,19 @@ local function advanceQuiesce()
   end
   if run.pending then
     local pending = run.pending
-    local processing, asyncErr = recordAsyncProcessing(pending.record)
+    local processing, asyncErr = recordAsyncProcessing(pending.entry.record)
     if asyncErr then
-      markUnsettled(run, pending.id)
+      markUnsettled(run, pending.entry.name)
       run.pending = nil
     elseif processing then
       pending.waits = pending.waits + 1
       if pending.waits <= MAX_QUIESCE_RECORD_TICKS then return end
-      markUnsettled(run, pending.id)
+      markUnsettled(run, pending.entry.name)
       run.pending = nil
     else
-      local activeOk, active = pcall(function() return pending.record.Active end)
-      if activeOk and active == false then countRecordDown(run, pending.record, pending.id)
-      else markUnsettled(run, pending.id) end
+      local activeOk, active = pcall(function() return pending.entry.record.Active end)
+      if activeOk and active == false then countRecordDown(run, pending.entry)
+      else markUnsettled(run, pending.entry.name) end
       run.pending = nil
     end
   end
@@ -1423,7 +1454,7 @@ local function advanceQuiesce()
   -- spend the whole stop on an answer this already has.
   local left = {}
   for _, entry in ipairs(again) do
-    if not run.named[tostring(entry.id or "?")] then left[#left + 1] = entry end
+    if not run.named[tostring(entry.name)] then left[#left + 1] = entry end
   end
   if #left > 0 then
     if run.sweeps < MAX_QUIESCE_SWEEPS then
@@ -1432,7 +1463,7 @@ local function advanceQuiesce()
       run.index = 0
       return
     end
-    for _, entry in ipairs(left) do markUnsettled(run, entry.id) end
+    for _, entry in ipairs(left) do markUnsettled(run, entry.name) end
   end
   finishQuiesce()
 end

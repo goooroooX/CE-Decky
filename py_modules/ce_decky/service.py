@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
+from typing import Sequence
 import asyncio
 import os
 import re
@@ -31,7 +32,7 @@ from .ce_archive_import import (
 )
 from .ce_launch import (
     CELaunchSupervisor,
-    game_target_state,
+    game_target_states,
     match_observed_proton,
     observe_game_container,
     observe_game_executable_path,
@@ -4479,12 +4480,21 @@ class PluginService:
         a user would decide the stop had hung.
         """
         started = time.monotonic()
+        targets: tuple[str, ...] = ()
         try:
             prepared = self.session_store.load_current(app_id)
             if prepared is None:
-                # Nothing of this plugin's is prepared for that game, so there
-                # is nothing it could have left switched on.
-                return {"asked": False, "reason": "no prepared session", "cleanup_confirmed": True}
+                # Not a game with nothing of this plugin's in it. The stop only
+                # asks for a quiesce when it owns a live Cheat Engine, and the
+                # pointer to the session is separate state from that ownership:
+                # what is missing here is the one thing that could have said
+                # what was left switched on, and a game that was never asked is
+                # not a game that answered. What it is in comes from the game.
+                return {
+                    "asked": False, "reason": "no prepared session",
+                    "cleanup_confirmed": self._game_is_gone(app_id, ()),
+                }
+            targets = self._session_targets(prepared)
             status = self.session_store.read_status(prepared)
             if status is None or status.attached is not True:
                 # Nothing to ask, and two very different reasons for it: the
@@ -4494,7 +4504,7 @@ class PluginService:
                 # than from the silence.
                 return {
                     "asked": False, "reason": "the resident bridge is not attached",
-                    "cleanup_confirmed": self._game_is_gone(app_id),
+                    "cleanup_confirmed": self._game_is_gone(app_id, targets),
                 }
             # The write only: a panel command landing between the read of the
             # next generation and the write would make this refuse a quiesce
@@ -4514,7 +4524,7 @@ class PluginService:
                     prepared, [RuntimeCommand(generation=generation, kind="quiesce")],
                 )
         except (OSError, ValueError, DurabilityUnknownError) as exc:
-            return {"asked": False, "reason": str(exc)[:256], "cleanup_confirmed": self._game_is_gone(app_id)}
+            return {"asked": False, "reason": str(exc)[:256], "cleanup_confirmed": self._game_is_gone(app_id, targets)}
         answer = self._await_quiesce(prepared, generation)
         # What the stop may keep quiet about, stated rather than inferred from
         # an empty list. A walk that finished with nothing left on is the one
@@ -4524,7 +4534,7 @@ class PluginService:
         # is the other clean answer, and it is read from its own processes.
         confirmed = bool(answer.get("answered")) and answer.get("reason") is None
         if not confirmed:
-            confirmed = self._game_is_gone(app_id)
+            confirmed = self._game_is_gone(app_id, targets)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         log_activity(
             self.logger, "info", "runtime.quiesce",
@@ -4536,7 +4546,20 @@ class PluginService:
         )
         return {**answer, "asked": True, "cleanup_confirmed": confirmed, "elapsed_ms": elapsed_ms}
 
-    def _game_is_gone(self, app_id: int) -> bool:
+    def _session_targets(self, prepared) -> tuple[str, ...]:
+        """The executables this session has been pointed at, or nothing.
+
+        Nothing is the honest answer to state this could not read, and the
+        caller treats it as such: it falls back to the executable the profile
+        names, which is where a session with no retried attach behind it starts
+        and ends anyway.
+        """
+        try:
+            return self.session_store.session_targets(prepared)
+        except (OSError, ValueError):
+            return ()
+
+    def _game_is_gone(self, app_id: int, targets: Sequence[str] = ()) -> bool:
         """Whether this game's own program is proven to be no longer running.
 
         The one independent answer to what a silent bridge means. A game that
@@ -4553,12 +4576,27 @@ class PluginService:
         `present` and `unknown` alike leave the stop unconfirmed, because the
         warning that suppresses is the only thing standing between the user and
         a game quietly left changed.
+
+        Asked of every executable this session was pointed at, not of the one
+        the profile names. A retried attach moves the bridge to another program
+        and leaves the profile alone deliberately - it is an override for this
+        session, not a new answer to what the game is - so a session that took
+        that route wrote its patches into a program the profile has never heard
+        of. Proving the profile's own executable gone then proves nothing about
+        the game that is still running with those patches in it, which is the
+        one path where this would suppress the warning that matters most. The
+        profile's executable is the fallback for a session with no override
+        behind it, and for a stop with no session left to read.
         """
         try:
-            profile = self.profile_store.get(app_id)
-            if profile is None or not profile.target_process:
-                return False
-            return game_target_state(app_id, profile.target_process) == "absent"
+            names = tuple(name for name in targets if name)
+            if not names:
+                profile = self.profile_store.get(app_id)
+                if profile is None or not profile.target_process:
+                    return False
+                names = (profile.target_process,)
+            states = game_target_states(app_id, names)
+            return all(states.get(name) == "absent" for name in names)
         except (OSError, ValueError, RuntimeError):
             return False
 

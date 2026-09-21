@@ -26,6 +26,7 @@ from ce_decky.ce_launch import (
     _read_bridge_status,
     game_process_state,
     game_target_state,
+    game_target_states,
     target_exit_is_proved,
     launch_environment,
     match_observed_proton,
@@ -1549,6 +1550,28 @@ def test_the_game_leaving_is_visible_while_cheat_engine_still_holds_its_wine_ses
     assert game_target_state(220, "Game-Win64-Shipping.exe", proc_root=proc) == "present"
     # Wine's own system processes never stand in for the game.
     assert game_target_state(220, "winedevice.exe", proc_root=proc) == "absent"
+
+
+def test_several_targets_are_answered_for_from_one_walk(tmp_path: Path):
+    """A session pointed at two executables asks about both at once.
+
+    Two walks taken a moment apart can disagree, and a caller that needs every
+    name gone at the same time would be reading a coincidence rather than an
+    answer. Each name is still answered for itself.
+    """
+    proc = tmp_path / "proc"
+    environ = {"SteamAppId": "220", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/220"}
+    _proc(proc, 10, environ, argv=["Z:\\games\\Demo\\Game-Win64-Shipping.exe"])
+
+    states = game_target_states(220, ("launcher.exe", "Game-Win64-Shipping.exe"), proc_root=proc)
+    assert states == {"launcher.exe": "absent", "Game-Win64-Shipping.exe": "present"}
+    assert game_target_states(220, ()) == {}
+    # A name that is not an executable is unknown, and says nothing about the
+    # one beside it.
+    assert game_target_states(220, ("launcher.exe", "not-an-executable"), proc_root=proc) == {
+        "launcher.exe": "absent", "not-an-executable": "unknown",
+    }
+    assert game_target_states(220, ("not-an-executable",), proc_root=proc) == {"not-an-executable": "unknown"}
 
 
 def test_game_target_state_never_reports_absent_from_a_scan_that_could_not_answer(tmp_path: Path):

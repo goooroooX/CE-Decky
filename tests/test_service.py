@@ -2517,6 +2517,9 @@ def test_a_quiesce_waits_for_the_generation_it_issued(tmp_path: Path):
         def load_current(self, app_id):
             return prepared
 
+        def session_targets(self, session):
+            return ("game.exe",)
+
         def read_status(self, session):
             return Mock(attached=True, results=(
                 RuntimeResult(generation=7, record_id=None, ok=False, active=None,
@@ -2597,6 +2600,9 @@ def test_a_quiesce_nobody_answered_is_not_an_empty_list_of_cheats(tmp_path: Path
         def load_current(self, app_id):
             return prepared
 
+        def session_targets(self, session):
+            return ("game.exe",)
+
         def read_status(self, session):
             # Attached, alive, and saying nothing about this command.
             return Mock(attached=True, results=())
@@ -2676,12 +2682,17 @@ def test_a_stop_says_when_the_game_was_not_established_to_be_put_back(tmp_path: 
     # at once: a scan that ran out of budget, a process this cannot read and a
     # game that has exited are different things, and only the last is clean.
     target_state = "present"
-    monkeypatch.setattr(service_module, "game_target_state", lambda app_id, process: target_state)
+    monkeypatch.setattr(
+        service_module, "game_target_states", lambda app_id, names: {name: target_state for name in names}
+    )
 
     def answering(value: str, ok: bool, code: str | None):
         class Store:
             def load_current(self, app_id):
                 return prepared
+
+            def session_targets(self, session):
+                return ("game.exe",)
 
             def read_status(self, session):
                 return Mock(attached=True, results=(
@@ -2709,6 +2720,9 @@ def test_a_stop_says_when_the_game_was_not_established_to_be_put_back(tmp_path: 
         def load_current(self, app_id):
             return prepared
 
+        def session_targets(self, session):
+            return ("game.exe",)
+
         def read_status(self, session):
             return None
 
@@ -2724,6 +2738,86 @@ def test_a_stop_says_when_the_game_was_not_established_to_be_put_back(tmp_path: 
 
     # The same silence once the game itself is proven gone: it took every patch
     # with it, so there is nothing to warn anybody about.
+    target_state = "absent"
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is True
+
+
+def test_a_stop_asks_about_the_executable_this_session_was_moved_to(tmp_path: Path, monkeypatch):
+    """A retried attach moves the bridge, and the profile stays where it was.
+
+    That is deliberate: the override belongs to this session rather than to the
+    game. So the patches this session wrote are in the program it was moved to,
+    and proving the profile's own executable gone proves nothing about the game
+    that is still running with them in it - which is the one path where a stop
+    would suppress exactly the warning the user needs.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("quiesce-target"))
+    service.initialize()
+    service.save_profile(4242, "A game", False, None, "launcher.exe")
+    prepared = Mock(session_id="6d6f9d2a-0000-4000-8000-000000000004")
+    states = {"launcher.exe": "absent", "game.exe": "present"}
+    asked: list[tuple[str, ...]] = []
+
+    def observe(app_id, names):
+        asked.append(tuple(names))
+        return {name: states.get(name, "unknown") for name in names}
+
+    monkeypatch.setattr(service_module, "game_target_states", observe)
+
+    class Store:
+        def load_current(self, app_id):
+            return prepared
+
+        def session_targets(self, session):
+            return ("launcher.exe", "game.exe")
+
+        def read_status(self, session):
+            return None
+
+    service.session_store = Store()
+
+    answer = service._quiesce_session(4242)
+    assert answer["asked"] is False
+    # Both were asked about, from the one walk, and the one it was moved to is
+    # still running.
+    assert asked == [("launcher.exe", "game.exe")]
+    assert answer["cleanup_confirmed"] is False
+
+    # The same stop once that program has gone as well.
+    states["game.exe"] = "absent"
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is True
+
+    # And a scan that established nothing about one of them is not an exit.
+    states["game.exe"] = "unknown"
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is False
+
+
+def test_a_stop_that_lost_its_session_does_not_call_the_game_put_back(tmp_path: Path, monkeypatch):
+    """The stop only asks for a quiesce when it owns a live Cheat Engine.
+
+    Which session is current is separate state from that ownership, so a
+    pointer that is not there is the one thing that could have said what was
+    left switched on, missing - not a game with nothing of ours in it.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("quiesce-lost"))
+    service.initialize()
+    service.save_profile(4242, "A game", False, None, "game.exe")
+    target_state = "present"
+    monkeypatch.setattr(
+        service_module, "game_target_states", lambda app_id, names: {name: target_state for name in names}
+    )
+
+    class Lost:
+        def load_current(self, app_id):
+            return None
+
+    service.session_store = Lost()
+
+    answer = service._quiesce_session(4242)
+    assert answer["asked"] is False and answer["reason"] == "no prepared session"
+    assert answer["cleanup_confirmed"] is False
+
+    # The game itself is the only thing left that can answer, and it does.
     target_state = "absent"
     assert service._quiesce_session(4242)["cleanup_confirmed"] is True
 

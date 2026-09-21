@@ -3718,3 +3718,78 @@ def test_a_record_the_address_list_cannot_read_is_not_a_record_that_is_off(tmp_p
     # than counted as off.
     assert "put_down=1" in value
     assert "could not be read" in value
+
+
+def test_a_record_that_will_not_say_which_one_it_is_is_not_counted_as_off(tmp_path: Path):
+    """A table declares the key a cheat is switched off at by record ID.
+
+    So a record whose own ID cannot be read has no key to be left at: releasing
+    it leaves the value it was frozen at in the running game, and counting it as
+    put down is the same leak the off keys exist to close, reported as clean.
+    """
+    descriptor = _descriptor(switch_off=((5, "0"), (6, "0")))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True, "value": "1"},
+                6: {"active": True, "value": "1", "id_error": True},
+            },
+            "steps": [{"ticks": 8}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    value = answered[-1].value or ""
+    assert "put_down=1" in value
+    # Named by where it sits, because the number it would be named by is the
+    # one thing it would not answer for.
+    assert "the record at position 1" in value
+    left = [line for line in run.stdout.splitlines() if line.startswith("value ")]
+    # The one with an identity is left at its off key. The other was switched
+    # off and never written to, which is exactly what the answer says.
+    assert left == ["value 5 0", "value 6 1"]
+
+
+def test_a_record_that_becomes_unreadable_mid_quiesce_is_not_already_off(tmp_path: Path):
+    """It was switched on when the walk started, and nothing says it came down.
+
+    A state that cannot be read reads the same as a child a script took down
+    with it, and treating the two alike is how a cheat leaves the accounting:
+    the stop kills the Cheat Engine that could have answered moments later.
+
+    Nothing is written to it on the strength of that either. A record a
+    script's `[DISABLE]` destroyed is one of the few things that reads this
+    way, and the one thing that must not then be written to.
+    """
+    descriptor = _descriptor()
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "record_order": [5, 6],
+            "records": {
+                5: {"active": True},
+                # Readable for the walk's own list, unreadable by the time the
+                # walk reaches it.
+                6: {"active": True, "active_reads_before_error": 1},
+            },
+            "steps": [{"ticks": 8}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "quiesce"))},
+    )
+    answered = [item for item in run.status().results if item.generation == 1]
+    assert answered and answered[-1].ok is False
+    assert answered[-1].error_code == "quiesce_unsettled"
+    value = answered[-1].value or ""
+    assert "put_down=1" in value
+    assert "unsettled=6" in value
+    assert "deactivated 6" not in run.stdout

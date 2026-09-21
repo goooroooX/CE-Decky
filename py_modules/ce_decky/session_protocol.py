@@ -612,6 +612,28 @@ class SessionStore:
     def read_status(self, prepared: PreparedSession) -> RuntimeStatus | None:
         return self.read_status_observation(prepared)[0]
 
+    def session_targets(self, prepared: PreparedSession) -> tuple[str, ...]:
+        """Every executable this session has been pointed at, first one first.
+
+        The descriptor names the one it started with, and each retried attach
+        names another. A caller that has to prove the game this session changed
+        is gone has to prove it of all of them: the patches written before a
+        retry moved the bridge are still in the executable it moved away from,
+        and that program keeps running perfectly well without a bridge in it.
+
+        Every retry in the log counts, answered or not. One the bridge never
+        reached moved nothing and so had nothing patched into it, which makes
+        including it a name too many rather than a name too few - and the one
+        direction this may be wrong in is the one that costs a warning instead
+        of hiding one.
+        """
+        descriptor = self._validate_prepared(prepared)
+        targets = [descriptor.target_process]
+        for command in self._read_control_file(Path(prepared.control_path)):
+            if command.kind == "retry_attach" and command.value:
+                targets.append(command.value)
+        return tuple(dict.fromkeys(targets))
+
     def status_mtime_ns(self, prepared: PreparedSession) -> int | None:
         """Return the heartbeat's write time without parsing or trusting its bytes.
 

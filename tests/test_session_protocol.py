@@ -791,6 +791,26 @@ def test_runtime_target_switch_is_authorized_by_retained_retry_attach_command(tm
     assert [(c.generation, c.kind) for c in parse_control(Path(prepared.control_path).read_bytes())] == [(1, "retry_attach"), (3, "query")]
 
 
+def test_a_session_names_every_executable_it_has_been_pointed_at(tmp_path: Path):
+    """A stop has to prove the game this session changed is gone, not a game.
+
+    The descriptor names the executable the session started with, and a retried
+    attach names another. What was patched before that retry is still in the
+    program the bridge moved away from, and that program goes on running with
+    no bridge in it, so both names are the question and neither is the answer
+    on its own.
+    """
+    store, prepared, *_ = _prepared_session_fixture(tmp_path)
+    assert store.session_targets(prepared) == ("game.exe",)
+
+    store.write_commands(prepared, [RuntimeCommand(1, "retry_attach", None, "alternate.exe")])
+    assert store.session_targets(prepared) == ("game.exe", "alternate.exe")
+
+    # A retry back to where it started adds no second name.
+    store.write_commands(prepared, [RuntimeCommand(2, "retry_attach", None, "game.exe")])
+    assert store.session_targets(prepared) == ("game.exe", "alternate.exe")
+
+
 def test_runtime_status_cannot_claim_uncommanded_target_process(tmp_path: Path):
     store, prepared, artifact, *_ = _prepared_session_fixture(tmp_path)
     forged = RuntimeStatus(

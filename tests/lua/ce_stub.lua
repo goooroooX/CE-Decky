@@ -112,6 +112,16 @@ local function record_proxy(definition)
   return setmetatable({}, {
     __index = function(_, key)
       if definition.read_error then error("record read failed", 0) end
+      -- A record that answers for its state but not for its own identity.
+      if key == "ID" and definition.id_error then error("record identity unavailable", 0) end
+      -- A record that becomes unreadable part way through one quiesce: the
+      -- first reads answer, the ones after the count do not.
+      if key == "Active" and definition.active_reads_before_error then
+        definition.active_reads = (definition.active_reads or 0) + 1
+        if definition.active_reads > definition.active_reads_before_error then
+          error("record state unavailable", 0)
+        end
+      end
       -- `Child[index]`, zero based, the way Cheat Engine indexes it.
       if key == "Child" then
         return setmetatable({}, {__index = function(_, index)

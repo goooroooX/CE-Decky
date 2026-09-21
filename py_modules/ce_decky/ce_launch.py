@@ -56,7 +56,7 @@ import stat
 import threading
 import time
 import uuid
-from typing import Collection, Iterable
+from typing import Collection, Iterable, Sequence
 
 from . import poll_counters
 from .activity_log import log_activity, log_failure
@@ -1159,6 +1159,44 @@ def game_target_state(
     """
     with poll_counters.timed(poll_counters.SUPERVISOR_TARGET_SCAN):
         return _game_target_state(app_id, target_process, proc_root=proc_root, max_processes=max_processes)
+
+
+def game_target_states(
+    app_id: int,
+    target_processes: Sequence[str],
+    *,
+    proc_root: Path = Path("/proc"),
+    max_processes: int = MAX_SCANNED_PROCESSES,
+) -> dict[str, str]:
+    """The state of several executables, read from one walk.
+
+    A session is not pointed at one executable for its whole life. A retried
+    attach moves the bridge to another program, and whatever was patched before
+    that move is still in the one it left, so a caller asking whether the game
+    this session changed has exited has as many questions as there are names.
+
+    One observation answers all of them. Taking it once per name would pay the
+    most expensive thing this backend does as many times over, and two walks
+    taken a moment apart can disagree with each other - which for a caller that
+    needs every name absent at once is the difference between an answer and a
+    coincidence.
+    """
+    wanted = tuple(dict.fromkeys(target_processes))
+    if not wanted:
+        return {}
+    with poll_counters.timed(poll_counters.SUPERVISOR_TARGET_SCAN):
+        app_id = _app_id(app_id)
+        # Each name is answered for itself, the same as it would be alone: a
+        # name that is not an executable is unknown, and says nothing about the
+        # others. A caller that needs them all gone reads that as not knowing,
+        # which is what it is.
+        if not any(_process_basename(name) for name in wanted):
+            return {name: "unknown" for name in wanted}
+        observation = observe_game_container(app_id, proc_root=proc_root, max_processes=max_processes)
+        return {
+            name: (_target_state_of(observation, name, proc_root) if _process_basename(name) else "unknown")
+            for name in wanted
+        }
 
 
 def _game_target_state(
