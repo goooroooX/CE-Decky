@@ -216,6 +216,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   // Kept with the record rather than beside it so that opening another row
   // starts empty, and closing this one forgets a query that named nothing.
   const [valueQuery, setValueQuery] = useState<{ id: number; text: string } | null>(null);
+  // The one record whose free field the reader asked for. A table never says its
+  // list is exhaustive - not one of the 1414 list records in the corpus declares
+  // `DropDownReadOnly` - so the field has to stay reachable, and putting it
+  // beside every list put two controls in front of a reader who needed one.
+  const [typedValue, setTypedValue] = useState<number | null>(null);
   const [lastConfirmed, setLastConfirmed] = useState<Record<number, StagedState>>({});
   const [confirmingClose, setConfirmingClose] = useState(false);
   const [staged, setStaged] = useState<Record<number, StagedState>>({});
@@ -1106,13 +1111,26 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   && control.dropdown_values.length > DROPDOWN_SEARCH_THRESHOLD;
                 // A switch has no list to offer, so none is computed for it and
                 // the render below has one condition rather than two.
-                const choices = control.kind === "dropdown" && isExpanded && !controlIsSwitch(control)
+                // A list of one is a list with nothing to choose from, and the
+                // corpus holds 332 of them. What that record has is a value, so
+                // it gets the field and no list.
+                const listed = control.kind === "dropdown" && !controlIsSwitch(control) && control.dropdown_values.length > 1;
+                const choices = listed && isExpanded
                   ? matchingDropdownValues(
                     control.dropdown_values,
                     (searchable && valueQuery?.id === recordId ? valueQuery.text : ""),
                     state?.value ?? null,
                   )
                   : null;
+                // The field is drawn for a record that has no list to choose
+                // from, for one the reader asked to type into, and for one
+                // already holding a value the list does not offer - which is
+                // what a record that allows free entry is for, and hiding it
+                // would hide the reader's own answer behind a press.
+                const offList = Boolean(state?.value)
+                  && !control.dropdown_values.some(([value]) => value === state?.value);
+                const typing = controlAcceptsTypedValue(control)
+                  && (!listed || typedValue === recordId || offList);
                 const summary = [
                   // The group, cut to fit, while the row is closed. An open row
                   // states the whole path at the top of its own block, so
@@ -1170,7 +1188,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                           {control.description.trim() && control.description.trim() !== controlRowLabel(control)
                             ? <PanelNote>{control.description.trim()}</PanelNote>
                             : null}
-                          {searchable && (
+                          {searchable && listed && (
                             <TextField
                               label="Find a value"
                               value={valueQuery?.id === recordId ? valueQuery.text : ""}
@@ -1210,9 +1228,20 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                                 : `Value saved; written when \u201c${controlRowLabel(blockedBy(control)!)}\u201d is switched on.`}
                             </PanelNote>
                           )}
-                          {controlAcceptsTypedValue(control) && (
+                          {/* One press for the field the ordinary path does not
+                              need. The list is the answer for a record that has
+                              one, and the value a record can only reach by
+                              typing is one press away rather than a second
+                              control on every row. */}
+                          {controlAcceptsTypedValue(control) && listed && !typing && (
+                            <SmallButton
+                              disabled={applying || pinning}
+                              onClick={traceUiAction("cheat_selection_modal.type_a_value", () => setTypedValue(recordId), { record_id: recordId })}
+                            >Type a value instead</SmallButton>
+                          )}
+                          {typing && (
                             <TextField
-                              label={control.kind === "dropdown" ? "Custom value" : "Value"}
+                              label={listed ? "Custom value" : "Value"}
                               value={state?.value ?? ""}
                               onChange={traceUiEdit("cheat_selection_modal.edit_value", (event: any) => touchValue(recordId, String(event.target.value ?? "")), { record_id: recordId })}
                               disabled={applying || pinning}

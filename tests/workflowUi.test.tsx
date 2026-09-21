@@ -4447,6 +4447,71 @@ describe("Cheat selection workflow", () => {
     expect(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1]).toEqual([]);
   });
 
+  it("offers the list alone, and the free field behind one press", async () => {
+    // A table never says its list is exhaustive - not one of the corpus's 1414
+    // list records declares `DropDownReadOnly` - so the field has to stay
+    // reachable. Beside every list it was a second control on a row that needed
+    // one, which is the clutter drawing switches as switches exists to remove.
+    const picker = {
+      id: 305, description: "Weapon", path: ["Weapon"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Pistol"], ["1", "Rifle"]], dropdown_read_only: false,
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 305, ok: true, active: false, value: "0" }], unavailable: [],
+    });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 1, controls: [picker] } as any });
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    expect(screen.getByLabelText("Value")).toBeTruthy();
+    expect(screen.queryByLabelText("Custom value")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Type a value instead" }));
+
+    // And the press is gone with it: the field it opens is the answer.
+    expect(screen.getByLabelText("Custom value")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Type a value instead" })).toBeNull();
+  });
+
+  it("shows the field and no list for a list with one entry", async () => {
+    // 332 records in the corpus declare a single value. That is a control with
+    // nothing to choose from, and what the record actually has is a value.
+    const single = {
+      id: 306, description: "Item", path: ["Item"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["7", "Medkit"]], dropdown_read_only: false,
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 306, ok: true, active: false, value: "7" }], unavailable: [],
+    });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 1, controls: [single] } as any });
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    // The field, labelled as a value rather than as a custom one: there is no
+    // list beside it for it to be custom to.
+    const field = screen.getByLabelText("Value");
+    expect(field.tagName).toBe("INPUT");
+    expect(screen.queryByLabelText("Custom value")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Type a value instead" })).toBeNull();
+  });
+
+  it("keeps a value the list does not offer in front of the reader", async () => {
+    // A record that allows free entry is for exactly this, and hiding what the
+    // reader already set behind a press would hide their own answer.
+    const picker = {
+      id: 307, description: "Ammo", path: ["Ammo"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Empty"], ["1", "Full"]], dropdown_read_only: false,
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 307, ok: true, active: false, value: "999" }], unavailable: [],
+    });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 1, controls: [picker] } as any });
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    expect((screen.getByLabelText("Custom value") as HTMLInputElement).value).toBe("999");
+  });
+
   it("leaves a value list that fits the panel exactly as it was", async () => {
     const picker = {
       id: 301, description: "Difficulty", path: ["Difficulty"], variable_type: "4 Bytes",

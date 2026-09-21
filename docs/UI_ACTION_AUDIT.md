@@ -146,6 +146,7 @@ Each identifier below names one owned callback location, even when several rows 
 | `cheat_selection_modal.request_close` | `src/modals/CheatSelectionModal.tsx` | `requestClose` |
 | `cheat_selection_modal.section` | `src/modals/CheatSelectionModal.tsx` | `(option) => { setSectionKey(String(option.data)); setSearch(""); setPage(0); setExpanded(null); }` |
 | `cheat_selection_modal.show_scripts` | `src/modals/CheatSelectionModal.tsx` | `(checked) => { setShowScripts(checked); setPage(0); setExpanded(null); }` |
+| `cheat_selection_modal.type_a_value` | `src/modals/CheatSelectionModal.tsx` | `() => setTypedValue(recordId)`, which opens the free field for that one record |
 | `cheat_selection_modal.value` | `src/modals/CheatSelectionModal.tsx` | `(option) => touchValue(recordId, String(option.data))` |
 | `debug_details.back` | `src/components/DebugDetails.tsx` | `onBack` |
 | `debug_details.refresh` | `src/components/DebugDetails.tsx` | `onRefresh` |
