@@ -4495,6 +4495,25 @@ describe("Cheat selection workflow", () => {
     expect(screen.queryByRole("button", { name: "Type a value instead" })).toBeNull();
   });
 
+  it("keeps the one entry a read-only list declares, which is all that record may be", async () => {
+    // The field is what replaces a list of one, and a read-only record has no
+    // field: taking its list away left the row with no control at all.
+    const single = {
+      id: 308, description: "Mode", path: ["Mode"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["3", "Hardcore"]], dropdown_read_only: true,
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 308, ok: true, active: false, value: "3" }], unavailable: [],
+    });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 1, controls: [single] } as any });
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    const list = screen.getByLabelText("Value");
+    expect(list.tagName).toBe("SELECT");
+    expect(screen.queryByRole("button", { name: "Type a value instead" })).toBeNull();
+  });
+
   it("keeps a value the list does not offer in front of the reader", async () => {
     // A record that allows free entry is for exactly this, and hiding what the
     // reader already set behind a press would hide their own answer.
@@ -4510,6 +4529,13 @@ describe("Cheat selection workflow", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "More" }));
     expect((screen.getByLabelText("Custom value") as HTMLInputElement).value).toBe("999");
+
+    // And clearing it does not take the field away mid-edit: the reader is
+    // typing in it, which is the same as having asked for it.
+    fireEvent.change(screen.getByLabelText("Custom value"), { target: { value: "" } });
+    expect(screen.getByLabelText("Custom value")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Custom value"), { target: { value: "5" } });
+    expect((screen.getByLabelText("Custom value") as HTMLInputElement).value).toBe("5");
   });
 
   it("leaves a value list that fits the panel exactly as it was", async () => {

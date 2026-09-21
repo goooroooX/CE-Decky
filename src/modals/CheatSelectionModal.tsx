@@ -1113,8 +1113,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 // the render below has one condition rather than two.
                 // A list of one is a list with nothing to choose from, and the
                 // corpus holds 332 of them. What that record has is a value, so
-                // it gets the field and no list.
-                const listed = control.kind === "dropdown" && !controlIsSwitch(control) && control.dropdown_values.length > 1;
+                // it gets the field and no list - unless the author declared the
+                // list read-only, because then that one entry is the only value
+                // the record may take and there is no field to offer instead.
+                const listed = control.kind === "dropdown" && !controlIsSwitch(control)
+                  && (control.dropdown_values.length > 1 || !controlAcceptsTypedValue(control));
                 const choices = listed && isExpanded
                   ? matchingDropdownValues(
                     control.dropdown_values,
@@ -1243,7 +1246,16 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                             <TextField
                               label={listed ? "Custom value" : "Value"}
                               value={state?.value ?? ""}
-                              onChange={traceUiEdit("cheat_selection_modal.edit_value", (event: any) => touchValue(recordId, String(event.target.value ?? "")), { record_id: recordId })}
+                              onChange={traceUiEdit("cheat_selection_modal.edit_value", (event: any) => {
+                                // Typing in it is asking for it, which is what
+                                // keeps it open: a field shown because the
+                                // record held a value its list does not offer
+                                // would otherwise vanish the moment the reader
+                                // cleared that value, mid-edit and with the
+                                // press they need back behind where it was.
+                                setTypedValue(recordId);
+                                touchValue(recordId, String(event.target.value ?? ""));
+                              }, { record_id: recordId })}
                               disabled={applying || pinning}
                             />
                           )}
