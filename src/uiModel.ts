@@ -2431,6 +2431,18 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
  * A table's origin records the provider identifier, which is a lookup key and
  * not something to show a user: "fearless" is not what that site calls itself.
  */
+export function tableSourceLabel(
+  table: Pick<TableStatus, "origins" | "derived_from"> | null | undefined,
+): string {
+  const origins = table?.origins ?? [];
+  if (origins.length > 0) return origins[origins.length - 1].provider;
+  // A copy CE Decky made came from no site, and calling it `Local` said only
+  // where the file is - which is true of every table the panel can show. What
+  // the reader needs to know about this one is that it is not the table they
+  // downloaded: it is that table with what stopped it working taken out.
+  return table?.derived_from ? "Fixed" : "Local";
+}
+
 export function providerDisplayName(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 }

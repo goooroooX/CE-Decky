@@ -42,6 +42,7 @@ import {
   pinnedCheatRows,
   pinnedControlValue,
   providerDisplayName,
+  tableSourceLabel,
   providerShortName,
   controlSections,
   sharedSectionDepth,
@@ -150,6 +151,21 @@ describe("controller UI model", () => {
     // serves may be committed in a tree rather than published as a release.
     expect(providerShortName("github")).toBe("GitHub");
     expect(providerDisplayName("github")).toBe("GitHub");
+  });
+
+  it("calls a copy CE Decky made Fixed rather than Local", () => {
+    // `Local` says where the file is, which is true of every table the panel
+    // can show. What the reader needs to know about this one is that it is not
+    // the table they downloaded: it is that table with what stopped it working
+    // taken out, and it came from no site at all.
+    const derived = { origins: [], derived_from: { sha256: "a".repeat(64), transforms: ["remove-signature"] } };
+    expect(tableSourceLabel(derived as any)).toBe("Fixed");
+    // A table the device holds and nobody changed keeps the answer it had.
+    expect(tableSourceLabel({ origins: [], derived_from: null } as any)).toBe("Local");
+    // And one that came from a source is still named by that source, whether
+    // or not anything was done to it afterwards.
+    expect(tableSourceLabel({ origins: [{ provider: "vgtimes" }], derived_from: null } as any)).toBe("vgtimes");
+    expect(tableSourceLabel(null)).toBe("Local");
   });
 
   it("requires prepared/status exact identity before Home treats runtime as attached", () => {

@@ -16,7 +16,7 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { modalActionStyle } from "../components/ModalActions";
 import { CheatRow, cheatRowActionStyle, toggleBoxStyle } from "../components/CheatRow";
-import { ActionGroup, CONTENTS_ONLY, DensePanel, FilterField, PanelNote, PanelRow, RefusalBlock, SectionHeading, SideBySide, SmallButton, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
+import { ActionGroup, CONTENTS_ONLY, DensePanel, FilterField, PanelNote, PanelRow, RefusalBlock, SectionHeading, SideBySide, SmallButton, SwitchBox, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
 import { PagerFooter } from "../components/PagerFooter";
 import { applyRuntimeSelection, queryRuntimeControlsPartial, RuntimeQueryAbortedError, type RuntimeDesiredState } from "../runtimeClient";
 import {
@@ -996,11 +996,13 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                     box while the knob keeps its geometry and the switch is
                     painted clipped against the row's right edge. */}
                 <div style={toggleBoxStyle}>
-                  <Toggle
-                    value={showScripts}
-                    disabled={applying}
-                    onChange={traceUiAction("cheat_selection_modal.show_scripts", (checked) => { clearError(); setShowScripts(checked); setPage(0); setExpanded(null); }, (shown) => ({ shown }))}
-                  />
+                  <SwitchBox name="scripts" checked={showScripts} style={CONTENTS_ONLY}>
+                    <Toggle
+                      value={showScripts}
+                      disabled={applying}
+                      onChange={traceUiAction("cheat_selection_modal.show_scripts", (checked) => { clearError(); setShowScripts(checked); setPage(0); setExpanded(null); }, (shown) => ({ shown }))}
+                    />
+                  </SwitchBox>
                 </div>
               </div>
             </div>
@@ -1259,14 +1261,14 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                               disabled={applying || pinning}
                             />
                           )}
-                          <ToggleField
+                          <SwitchBox name="pinned" checked={isPinned} style={CONTENTS_ONLY}><ToggleField
                             label="Pinned"
                             description="Show this control directly on the CE Decky panel for this exact table."
                             checked={isPinned}
                             onChange={traceUiAction("cheat_selection_modal.pinned", (checked) => void togglePin(recordId, checked), (pinned) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, pinned }))}
                             disabled={applying || pinning}
                             bottomSeparator="none"
-                          />
+                          /></SwitchBox>
                           {/* The control's own kind was the row's heading, so
                               this line alone read as a lowercase "value" or
                               "script" among properly cased labels. It is what

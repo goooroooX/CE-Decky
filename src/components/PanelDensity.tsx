@@ -138,6 +138,45 @@ const NOTE_CLASS = "ce-decky-note";
 export const UPDATE_ACTION_CLASS = "ce-decky-update";
 /** Marks the press that prepares a copy of a table, drawn in its own green. */
 export const PREPARE_ACTION_CLASS = "ce-decky-prepare";
+
+/**
+ * A description that holds its own floated action.
+ *
+ * `flow-root` rather than a clearfix: the block has to contain the float, or
+ * the button hangs out of the row and over whatever is drawn under it.
+ */
+const floatRowStyle: CSSProperties = { display: "flow-root" };
+const floatActionStyle: CSSProperties = { float: "right", marginLeft: 12, marginBottom: 4 };
+
+/**
+ * A Steam switch, marked so a probe on a device can name, read and press it.
+ *
+ * Steam draws a toggle as a div: it is neither a button nor an input, it
+ * carries no name, and `scripts/target_panel_read.py` could therefore report
+ * every row of a screen and reach none of its switches - which is most of what
+ * this product is. The mark is the contract between the two: `data-switch`
+ * names the control within its row, and `data-checked` says what it is showing,
+ * so a device session presses `<row test id>:<name>` like any button.
+ *
+ * It changes nothing about how the switch is drawn or reached by a controller:
+ * where the mark is a box that was already there it keeps that box, and where
+ * it is new it is given `display: contents`, so the row is laid out exactly as
+ * it was and only the attributes are added.
+ */
+export function SwitchBox(
+  { name, checked, testId, style, children }:
+  { name: string; checked: boolean | null; testId?: string; style?: CSSProperties; children: ReactNode },
+) {
+  return (
+    <div
+      data-testid={testId}
+      data-switch={name}
+      data-checked={checked === null ? "unknown" : String(checked)}
+      style={style}
+    >{children}</div>
+  );
+}
+
 /** Marks a row that is currently showing its revealed block. */
 export const OPEN_ROW_CLASS = "ce-decky-open";
 
@@ -1235,6 +1274,20 @@ interface RowProps {
   /** Small controls placed on the row itself instead of below it. */
   actions?: ReactNode;
   /**
+   * Draw this row's action inside its text rather than in a column beside it.
+   *
+   * Steam gives a field's children a column of their own, so the row's text
+   * gets whatever is left: a paragraph beside one button was a narrow strip
+   * down the left of the window with half the width unused, and the longer the
+   * finding the worse it read. Floated, the button keeps its place at the top
+   * right and the text runs under it, which is what the space is for.
+   *
+   * The action is still the `actions` prop, so a row carrying one is still a
+   * row with a control: what it changes is where the control is drawn, never
+   * whether the controller can reach it.
+   */
+  floatActions?: boolean;
+  /**
    * What this row is for, in plain language, behind a `?` button.
    *
    * A diagnostics screen is full of controls whose purpose is obvious only to
@@ -1340,7 +1393,7 @@ function readable(text: ReactNode, clip: boolean, open: boolean, status?: boolea
 }
 
 /** One status line with its own secondary actions on the same row. */
-export function PanelRow({ label, description, trailing, mark, leadingMark, actions, help, truncate, scroll, tone, status, testId, fillWithActions }: RowProps) {
+export function PanelRow({ label, description, trailing, mark, leadingMark, actions, floatActions, help, truncate, scroll, tone, status, testId, fillWithActions }: RowProps) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const header = tone === "header";
@@ -1369,29 +1422,40 @@ export function PanelRow({ label, description, trailing, mark, leadingMark, acti
   // separator with it, because it renders its own underneath; wrapping renders
   // nothing, so suppressing it there merged the row with the one below.
   const open = helpOpen || expanded;
+  // The float only applies where there is something to float and somewhere for
+  // it to go: a row with no description would put the button in an empty block.
+  const floating = Boolean(floatActions && actions && description);
+  const shown = floating
+    ? (
+      <div style={floatRowStyle}>
+        <div style={floatActionStyle}>{actions}</div>
+        {description}
+      </div>
+    )
+    : description;
   const body = (
     <>
       <Field
         label={leadingMark
           ? <span style={leadingMarkRowStyle}>{leadingMark}{readable(label, clip, open, status, scroll)}</span>
           : readable(label, clip, open, status, scroll)}
-        description={description ? readable(description, clip, open, status, scroll) : undefined}
+        description={shown ? readable(shown, clip, open, status, scroll) : undefined}
         bottomSeparator={helpOpen || header ? "none" : "standard"}
         childrenLayout="inline"
         childrenContainerWidth={fillWithActions ? "max" : "min"}
         verticalAlignment="center"
       >
-        {trailing || mark || actions || help ? (
+        {trailing || mark || (actions && !floating) || help ? (
           <div style={fillWithActions ? trailingRowFillStyle : trailingRowStyle}>
             {trailing ? <div style={trailingTextStyle}>{trailing}</div> : null}
             {mark ? <div style={markStyle}>{mark}</div> : null}
-            {actions || help ? (
+            {(actions && !floating) || help ? (
               // The smallest gap that still reads as two controls rather than
               // one wide one. Every pixel here is a pixel the row's own text
               // does not get, and these rows are named by something the reader
               // has to finish reading.
               <ActionGroup style={fillWithActions ? rowActionGroupFillStyle : rowActionGroupStyle}>
-                {actions}
+                {floating ? null : actions}
                 {help ? (
                   <SmallButton onClick={traceUiAction("panel_row.help", () => setHelpOpen((isOpen) => !isOpen), { row: typeof label === "string" ? label.slice(0, 80) : testId, open: !helpOpen })}>{helpOpen ? "\u00d7" : "?"}</SmallButton>
                 ) : null}

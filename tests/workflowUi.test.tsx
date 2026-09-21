@@ -3480,6 +3480,14 @@ describe("Home panel and managed setup", () => {
     // this press is an offer rather than another step. The colour is a class on
     // the box around it, so losing the box loses the colour silently.
     expect(prepare.closest(".ce-decky-prepare")).toBeTruthy();
+    // And it sits inside the finding's own text rather than in a column beside
+    // it: Steam gives a field's children a column of their own, so a paragraph
+    // next to one button was a narrow strip down the left of the window with
+    // half the width unused. Floated, the text runs under the button.
+    const flowed = block.querySelector('div[style*="flow-root"]');
+    expect(flowed).toBeTruthy();
+    expect(flowed!.contains(prepare)).toBe(true);
+    expect((flowed!.textContent || "")).toContain("This table is signed");
     fireEvent.click(prepare);
     expect(onPrepareCopy).toHaveBeenCalled();
 

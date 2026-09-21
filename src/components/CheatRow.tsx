@@ -1,6 +1,6 @@
 import { Field, Toggle } from "@decky/ui";
 import type { CSSProperties, ReactNode } from "react";
-import { ActionGroup, CHEAT_ROW_CLASS, FOCUS_SCROLL_CLASS, FocusScrollText, OPEN_ROW_CLASS, REVEAL_CLASS, WrapText } from "./PanelDensity";
+import { ActionGroup, CHEAT_ROW_CLASS, FOCUS_SCROLL_CLASS, FocusScrollText, OPEN_ROW_CLASS, REVEAL_CLASS, SwitchBox, WrapText } from "./PanelDensity";
 
 interface Props {
   /** Leaf name of the control; the part a user actually recognises. */
@@ -73,9 +73,9 @@ export function CheatRow({
     // absolutely positioned inside a fixed 38x22 box, and scaling the box is
     // the only way to shrink it without the knob keeping its own geometry.
     return (
-      <div style={panel ? panelToggleBoxStyle : toggleBoxStyle}>
+      <SwitchBox name="active" checked={active} style={panel ? panelToggleBoxStyle : toggleBoxStyle}>
         {panel ? <div style={panelToggleScaleStyle}>{control}</div> : control}
-      </div>
+      </SwitchBox>
     );
   })();
   return (

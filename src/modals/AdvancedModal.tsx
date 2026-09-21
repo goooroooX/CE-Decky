@@ -13,7 +13,7 @@ import {
   showModal,
 } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ActionGroup, ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, UPDATE_ACTION_CLASS, focusFirstEnabled } from "../components/PanelDensity";
+import { ActionGroup, ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, SwitchBox, UPDATE_ACTION_CLASS, focusFirstEnabled } from "../components/PanelDensity";
 import { DestructiveAction, ModalActions, modalActionStyle } from "../components/ModalActions";
 import { DebugDetails } from "../components/DebugDetails";
 import { describeError, leadWithCause } from "../errors";
@@ -1448,7 +1448,7 @@ export function AdvancedModal(props: Props) {
           )}
           {onSetUpdateAutoCheck && (
             <PanelSectionRow>
-              <ToggleField
+              <SwitchBox name="auto-check" testId="update-auto-check" checked={Boolean(updateView?.auto_check)} style={CONTENTS_ONLY}><ToggleField
                 label="Check for updates automatically"
                 description="Only after you search for a table, and at most once every few hours. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed."
                 checked={Boolean(updateView?.auto_check)}
@@ -1458,7 +1458,7 @@ export function AdvancedModal(props: Props) {
                   void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
                 }, (enabled: boolean) => ({ enabled }))}
                 bottomSeparator="none"
-              />
+              /></SwitchBox>
             </PanelSectionRow>
           )}
           {/* What the last update did, which is news and says itself once. */}
@@ -1517,7 +1517,7 @@ export function AdvancedModal(props: Props) {
           <SectionHeading>Panel appearance</SectionHeading>
           {onSetMascotVisible && (
             <PanelSectionRow>
-              <ToggleField
+              <SwitchBox name="mascot" testId="panel-mascot" checked={mascotVisible} style={CONTENTS_ONLY}><ToggleField
                 label="Show the mascot"
                 description="HexPaw, above the first section of the CE Decky panel. Switching it off gives that height back to the cheats."
                 checked={mascotVisible}
@@ -1529,7 +1529,7 @@ export function AdvancedModal(props: Props) {
                   );
                 }, (visible: boolean) => ({ visible }))}
                 bottomSeparator="none"
-              />
+              /></SwitchBox>
             </PanelSectionRow>
           )}
         </PanelSection>

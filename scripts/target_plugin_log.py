@@ -26,6 +26,8 @@ from pathlib import Path
 import re
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 if __package__:
     from . import host_platform
 else:
@@ -73,9 +75,32 @@ def _directory(raw: Path, label: str) -> Path:
     return path
 
 
+def _recorded_plugin_root() -> Path | None:
+    """Where the installer says this plugin is, without being told again.
+
+    The same authority `target_plugin_install.py authority` prints, read here
+    rather than typed on the command line: every reader of a log on this device
+    has to name the root first, and the one fact nobody should have to supply is
+    the one another helper already recorded. A device that has never held an
+    install of ours has no answer, and then this asks for one.
+    """
+    try:
+        from target_plugin_install import latest_install_authority
+    except ImportError:
+        return None
+    try:
+        recorded = latest_install_authority()
+    except Exception:  # noqa: BLE001 - no authority is an answer, not a failure
+        return None
+    root = recorded.get("plugin_root") if isinstance(recorded, dict) else None
+    return Path(str(root)) if isinstance(root, str) and root else None
+
+
 def log_directory(plugin_root: Path | None, log_dir: Path | None) -> Path:
     if log_dir is not None:
         return _directory(log_dir, "log directory")
+    if plugin_root is None:
+        plugin_root = _recorded_plugin_root()
     if plugin_root is None:
         raise ValueError("pass --plugin-root, which target_plugin_install.py authority reports, or --log-dir")
     root = _directory(plugin_root, "plugin root")

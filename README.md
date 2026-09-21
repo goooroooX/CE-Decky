@@ -166,7 +166,7 @@ A few things about that copy, because it is your table that is being changed:
 - it is a new table, not an edit of the one you downloaded. The original is untouched and stays in your library;
 - it opens its own review screen, which says what was removed and what it cost you, including any cheat that is gone with it. You authorize it there, the same as any other table;
 - nothing is done silently, and nothing is guessed. The copy is only made if the rest of the table can be shown to still hold together: every other cheat still there, nothing left pointing at what was taken out, and every other piece of code the table looks for still found in your game. If that cannot be shown, the press refuses and says why, instead of handing you a table nobody can stand behind;
-- the copy did not come from any site, so it carries none of the marks a download does. Its review screen names the table it was made from.
+- the copy did not come from any site, so it carries none of the marks a download does. The panel calls it **Fixed** where a downloaded table names its source, and its review screen names the table it was made from.
 
 ## Where your data lives
 

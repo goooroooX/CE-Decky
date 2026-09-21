@@ -36,9 +36,29 @@ def test_the_log_directory_is_derived_from_the_plugin_root(tmp_path: Path):
     assert target_plugin_log.log_directory(home / "plugins" / "CE-Decky", None) == logs.resolve()
 
 
-def test_neither_a_plugin_root_nor_a_log_directory_is_refused_by_name(tmp_path: Path):
+def test_neither_a_plugin_root_nor_a_log_directory_is_refused_by_name(tmp_path: Path, monkeypatch):
+    # On a device that holds an install, the root comes from what the installer
+    # recorded; the refusal is for a machine that has neither. Which of those
+    # this test is about is stated rather than left to the host it runs on.
+    monkeypatch.setattr(target_plugin_log, "_recorded_plugin_root", lambda: None)
     with pytest.raises(ValueError, match="authority reports"):
         target_plugin_log.log_directory(None, None)
+
+
+def test_the_root_the_installer_recorded_is_used_without_being_named_again(tmp_path: Path, monkeypatch):
+    """Every reader of a log on a device had to be told where the plugin is.
+
+    The installer already recorded that, and its own authority is what
+    `target_plugin_install.py authority` prints, so asking for it again was one
+    more thing to get wrong in the middle of an incident.
+    """
+    root = tmp_path / "homebrew" / "plugins" / "CE-Decky"
+    root.mkdir(parents=True)
+    logs = tmp_path / "homebrew" / "logs" / "CE-Decky"
+    logs.mkdir(parents=True)
+    monkeypatch.setattr(target_plugin_log, "_recorded_plugin_root", lambda: root)
+
+    assert target_plugin_log.log_directory(None, None) == logs.resolve()
 
 
 def test_the_newest_file_is_the_one_written_last_not_the_one_named_last(tmp_path: Path):

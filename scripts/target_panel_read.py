@@ -102,7 +102,20 @@ _READ = """
 (() => {
   const MAX_DEPTH = %(depth)d;
   const text = (node) => (node.textContent || "").replace(/\\s+/g, " ").trim();
-  const controls = (row) => Array.from(row.querySelectorAll("button, input, select")).map((el) => {
+  // A switch Steam draws is a div: not a button, not an input, and with no name
+  // on it at all. This plugin marks its own with `data-switch`, which is what
+  // lets one be reported and pressed by the name of the control rather than by
+  // where it happens to sit in the row. The row itself counts, because a switch
+  // that is the whole row carries both marks on the one element.
+  const switchNodes = (row) => (row.getAttribute("data-switch") ? [row] : [])
+    .concat(Array.from(row.querySelectorAll("[data-switch]")));
+  const switches = (row) => switchNodes(row).map((el) => ({
+    kind: "switch",
+    label: el.getAttribute("data-switch") || "switch",
+    checked: el.getAttribute("data-checked") === "true",
+    unknown: el.getAttribute("data-checked") === "unknown" ? true : undefined,
+  }));
+  const controls = (row) => switches(row).concat(Array.from(row.querySelectorAll("button, input, select")).map((el) => {
     const tag = el.tagName.toLowerCase();
     const label = tag === "button" ? text(el) : (el.getAttribute("aria-label") || el.getAttribute("placeholder") || "");
     const item = { kind: tag, label };
@@ -119,7 +132,7 @@ _READ = """
     }
     if (el === document.activeElement) item.focused = true;
     return item;
-  });
+  }));
   // How far down the page a window may actually be seen. Steam paints its own
   // bar along the bottom, over whatever is behind it, so a window that fits the
   // page is still cut when it reaches past this. Asked of the page rather than
@@ -147,6 +160,32 @@ _READ = """
         controls: controls(row),
         clipped: row.querySelectorAll(".ce-decky-marquee[data-clipped]").length,
       });
+    }
+    // A modal's own footer, which is outside the dense block on purpose: it is
+    // the decision the window exists for, and a reader that could see every row
+    // of a window and not its `Use this table` could open a screen and never
+    // answer it. Found from the window rather than from the block, and reported
+    // as a row of this surface so it is pressed by name like any other.
+    let footerHost = panel.parentElement;
+    for (let hop = 0; footerHost && hop < MAX_DEPTH; hop++) {
+      // Any of this plugin's own action groups, which all end in `-actions`:
+      // the shared modal footer, and the ones a screen names for itself.
+      const footer = footerHost.querySelector('[data-testid$="-actions"]');
+      // One inside the block is already one of its rows: a panel's own action
+      // row would otherwise be reported twice, once as itself and once as this
+      // screen's footer.
+      if (footer && !panel.contains(footer)) {
+        const box = footer.getBoundingClientRect();
+        rows.push({
+          testid: footer.dataset.testid,
+          text: text(footer).slice(0, 300),
+          height: Math.round(box.height),
+          controls: controls(footer),
+          clipped: footer.querySelectorAll(".ce-decky-marquee[data-clipped]").length,
+        });
+        break;
+      }
+      footerHost = footerHost.parentElement;
     }
     // The window this surface is drawn in, rather than the surface itself.
     // What a modal here puts below its dense block - the footer, a refusal, the
@@ -239,10 +278,42 @@ _READ = """
 # up after it has actually gone away. Without a way to close it, no probe here
 # can produce that transition, and a reader that can only ever open the panel
 # reports a stale panel as the panel.
+# The window that holds Steam's own menus, which is not always the focused one.
+#
+# With a game running the focused window instance is the game, and it carries no
+# `MenuStore` at all: a probe that only ever asked the focused window reported
+# the quick access panel as unopenable exactly when a device session is most
+# worth having. The main Steam UI window is what has the menus, so it is looked
+# for by that rather than by focus.
+_MENU_WINDOW = """
+  function menuWindow() {
+    const store = window.SteamUIStore;
+    if (!store) return null;
+    const candidates = [];
+    try {
+      if (typeof store.GetFocusedWindowInstance === "function") candidates.push(store.GetFocusedWindowInstance());
+    } catch (error) { /* a focused window this build will not hand over is not an answer */ }
+    const windows = store.WindowStore;
+    if (windows) {
+      for (const name of ["GamepadUIMainWindowInstance", "MainWindowInstance", "SteamUIWindowInstance"]) {
+        try { if (windows[name]) candidates.push(windows[name]); } catch (error) { /* same */ }
+      }
+      try {
+        const all = windows.SteamUIWindows || windows.m_rgSteamUIWindows || [];
+        for (const item of all) candidates.push(item);
+      } catch (error) { /* same */ }
+    }
+    for (const candidate of candidates) {
+      if (candidate && candidate.MenuStore) return candidate;
+    }
+    return null;
+  }
+"""
+
 _CLOSE = """
 (() => {
-  const store = window.SteamUIStore;
-  const win = store && store.GetFocusedWindowInstance ? store.GetFocusedWindowInstance() : null;
+""" + _MENU_WINDOW + """
+  const win = menuWindow();
   const menus = win && win.MenuStore;
   if (!menus) {
     return JSON.stringify({ closed: false, reason: "this page has no Steam menu store to close" });
@@ -259,8 +330,8 @@ _CLOSE = """
 
 _OPEN = """
 (() => {
-  const store = window.SteamUIStore;
-  const win = store && store.GetFocusedWindowInstance ? store.GetFocusedWindowInstance() : null;
+""" + _MENU_WINDOW + """
+  const win = menuWindow();
   if (!win || !win.MenuStore || typeof win.MenuStore.OpenQuickAccessMenu !== "function") {
     return JSON.stringify({ opened: false, reason: "this page has no Steam menu store to open" });
   }
@@ -320,13 +391,43 @@ _PRESS = r"""
   // wrapper that holds it, because that is the screen it belongs to: taking
   // the first would file a modal's own button under the panel behind it.
   const byButton = new Map();
-  const panels = Array.from(document.querySelectorAll(".ce-decky-dense"));
+  // A screen is its dense block and, for a modal, the footer beside it: the
+  // footer holds the decision the window exists for, and it sits outside the
+  // block by design. Both are the same screen, so they share its depth.
+  const panels = Array.from(document.querySelectorAll(".ce-decky-dense")).map((panel) => {
+    const boxes = [panel];
+    for (let host = panel.parentElement, hop = 0; host && hop < 6; host = host.parentElement, hop++) {
+      const footer = host.querySelector('[data-testid$="-actions"]');
+      if (footer && !panel.contains(footer)) { boxes.push(footer); break; }
+    }
+    return boxes;
+  });
   for (let depth = 0; depth < panels.length; depth += 1) {
-    const panel = panels[depth];
-    const within = scope === null ? [panel] : Array.from(panel.querySelectorAll('[data-testid="' + scope + '"]'));
+    const boxes = panels[depth];
+    const within = [];
+    for (const box of boxes) {
+      if (scope === null) { within.push(box); continue; }
+      if (box.getAttribute && box.getAttribute("data-testid") === scope) within.push(box);
+      for (const inner of Array.from(box.querySelectorAll('[data-testid="' + scope + '"]'))) within.push(inner);
+    }
     for (const box of within) {
-      for (const button of Array.from(box.querySelectorAll("button"))) {
-        const label = (button.textContent || "").replace(/\s+/g, " ").trim();
+      const pressable = Array.from(box.querySelectorAll("button"))
+        .map((node) => ({ node, label: (node.textContent || "").replace(/\s+/g, " ").trim() }))
+        // This plugin's own switches, by the name it marked them with. Steam
+        // draws one as a div, so it is neither a button nor an input and has no
+        // name to match: without the mark a reader could see every row of a
+        // screen and reach none of the switches, which is most of what this
+        // product is.
+        .concat(((box.getAttribute && box.getAttribute("data-switch") ? [box] : [])
+          .concat(Array.from(box.querySelectorAll("[data-switch]")))).map((node) => ({
+          // The switch itself, which Steam draws as a checkbox, rather than
+          // whatever else the marked box happens to hold: a mark that wraps a
+          // whole labelled row has more inside it than the control.
+          node: node.querySelector('[role="checkbox"], [role="switch"]')
+            || node.querySelector('[role], [tabindex], button') || node,
+          label: node.getAttribute("data-switch") || "",
+        })));
+      for (const { node: button, label } of pressable) {
         if (label !== wanted) continue;
         // Only what is actually drawn. A modal Steam has closed can stay in the
         // document with no box at all, and its buttons still carry their
@@ -361,6 +462,139 @@ _PRESS = r"""
   }
   only.button.click();
   return JSON.stringify({ pressed: true, label: wanted, where: only.where });
+})()
+"""
+
+
+# What one row is made of, for a question the summary cannot answer.
+#
+# Two of them keep coming up on a device. A row's text is cut to fit a report,
+# so a finding block several sentences long can only be read in part - and
+# whether it says a third thing is exactly what a screen that promises at most
+# two findings has to be checked for. And a control this reader cannot name,
+# such as one of Steam's own switches, is invisible in the summary: what it is
+# made of is what says how to reach it.
+#
+# It reads and presses nothing.
+_DESCRIBE = r"""
+(() => {
+  const wanted = %(testid)s;
+  const text = (node) => (node.textContent || "").replace(/\s+/g, " ").trim();
+  const seen = [];
+  const rows = wanted === null
+    ? Array.from(document.querySelectorAll(".ce-decky-dense [data-testid]"))
+    : Array.from(document.querySelectorAll('[data-testid="' + wanted + '"]'));
+  for (const row of rows) {
+    if (row.getClientRects().length === 0) continue;
+    const parts = [];
+    const candidates = row.querySelectorAll(
+      'button, input, select, [role], [tabindex], [class*="Toggle"], [class*="toggle"],'
+      + ' [class*="Dropdown"], [class*="dropdown"], [data-switch], [data-dropdown]');
+    for (const node of Array.from(candidates).slice(0, 24)) {
+      const box = node.getBoundingClientRect();
+      const data = {};
+      for (const name of Array.from(node.attributes || [])) {
+        if (name.name.startsWith("data-")) data[name.name] = String(name.value).slice(0, 80);
+      }
+      parts.push({
+        tag: node.tagName.toLowerCase(),
+        role: node.getAttribute("role") || null,
+        name: text(node).slice(0, 60) || node.getAttribute("aria-label") || null,
+        classes: String(node.className || "").split(/\s+/).filter(Boolean).slice(0, 4),
+        data: Object.keys(data).length ? data : undefined,
+        drawn: box.width > 0 && box.height > 0,
+      });
+    }
+    seen.push({ testid: row.dataset.testid, text: text(row).slice(0, 4000), parts });
+    if (seen.length >= 40) break;
+  }
+  return JSON.stringify({ rows: seen });
+})()
+"""
+
+
+# Choosing one option of a dropdown, which is Steam's own menu rather than this
+# plugin's own control.
+#
+# A `DropdownItem` draws a control here and opens its options somewhere else:
+# the list is Steam's context menu, in Steam's own markup, and nothing this
+# plugin drew is in it. A reader that stopped at the plugin's own controls could
+# therefore open **Choose game** and not choose a game, which is the first step
+# of the workflow this exists to walk. So the control is opened, the menu is
+# waited for, the option is matched by the text a user would read, and what it
+# did is reported; a menu that did not appear, or an option that is not in it,
+# closes the menu again and names what was there instead.
+_CHOOSE = r"""
+(async () => {
+  const wanted = %(option)s;
+  const scope = %(scope)s;
+  const drawn = (node) => node.getClientRects().length > 0;
+  const text = (node) => (node.textContent || "").replace(/\s+/g, " ").trim();
+  const panels = Array.from(document.querySelectorAll(".ce-decky-dense")).filter(drawn);
+  const roots = scope === null
+    ? (panels.length ? [panels[panels.length - 1]] : [])
+    : Array.from(document.querySelectorAll('[data-testid="' + scope + '"]')).filter(drawn);
+  const found = [];
+  for (const root of roots) {
+    for (const node of Array.from(root.querySelectorAll('[class*="dropdown" i], [data-dropdown]'))) {
+      if (!drawn(node)) continue;
+      // The control, not the label inside it: the outermost match wins and
+      // anything it contains is the same control seen again.
+      if (found.some((held) => held.contains(node))) continue;
+      found.push(node);
+    }
+  }
+  if (found.length === 0) return JSON.stringify({ chosen: false, reason: "no dropdown is on the screen in front" });
+  if (found.length > 1) {
+    return JSON.stringify({
+      chosen: false,
+      reason: "the screen in front has " + found.length + " dropdowns; name the row as <data-testid>:<option>",
+      showing: found.map((node) => text(node).slice(0, 60)),
+    });
+  }
+  const control = found[0];
+  const before = text(control);
+  control.click();
+  const items = async () => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const shown = Array.from(document.querySelectorAll(
+        '[class*="contextmenu" i] [class*="item" i], [role="menuitem"], [class*="ContextMenuItem" i]')).filter(drawn);
+      if (shown.length > 0) return shown;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return [];
+  };
+  const shown = await items();
+  if (shown.length === 0) {
+    return JSON.stringify({ chosen: false, reason: "the dropdown was opened and no menu appeared", showing: before });
+  }
+  const labels = shown.map(text);
+  let at = labels.findIndex((label) => label === wanted);
+  if (at < 0) {
+    // A shorter name is allowed to stand for one option and never for a choice
+    // between two: `Atomic Heart` is the whole of what a caller wants to write,
+    // and `Atomic Heart 2` beside it is exactly the pick nobody asked for.
+    const starting = labels.map((label, index) => ({ label, index })).filter((item) => item.label.startsWith(wanted));
+    if (starting.length > 1) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return JSON.stringify({
+        chosen: false, reason: "that name is the start of " + starting.length + " of this dropdown's options",
+        options: starting.map((item) => item.label).slice(0, 40),
+      });
+    }
+    if (starting.length === 1) at = starting[0].index;
+  }
+  if (at < 0) {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return JSON.stringify({
+      chosen: false, reason: "that option is not in this dropdown",
+      options: labels.slice(0, 40),
+    });
+  }
+  shown[at].click();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  return JSON.stringify({ chosen: true, option: labels[at], was: before, showing: text(control) });
 })()
 """
 
@@ -432,6 +666,96 @@ def press(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, 
         if _refusal_rank(answer) >= _refusal_rank(last):
             last = answer
     return last
+
+
+def _row_text(answer: dict[str, Any], testid: str) -> str | None:
+    """What one row of a read says, wherever in the answer that row is."""
+    for surface in answer.get("surfaces") or []:
+        for row in surface.get("rows") or []:
+            if row.get("testid") == testid:
+                return str(row.get("text") or "")
+        deeper = _row_text(surface, testid)
+        if deeper is not None:
+            return deeper
+    return None
+
+
+def choose(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, Any]:
+    """Pick one option of a dropdown, through Steam's own menu.
+
+    A write like any press: what a dropdown chooses is the game a profile is
+    for, the process Cheat Engine attaches to, or which cheats a screen lists.
+    The caller names it in its report exactly as it names a press.
+    """
+    scope, option = press_target(label)
+    expression = _CHOOSE % {"option": json.dumps(option), "scope": json.dumps(scope or None)}
+    last: dict[str, Any] = {"chosen": False, "reason": "no page answered"}
+    for page in pages:
+        url = str(page.get("webSocketDebuggerUrl", ""))
+        if not url:
+            continue
+        connection = DevToolsSocket(url, timeout)
+        try:
+            request = connection.send("Runtime.evaluate", {
+                "expression": expression, "returnByValue": True, "awaitPromise": True,
+                "timeout": int(timeout * 1000),
+            })
+            reply = connection.await_reply(request, time.monotonic() + timeout)
+        except (ProbeError, TimeoutError, OSError):
+            continue
+        finally:
+            connection.close()
+        value = ((reply.get("result") or {}).get("result") or {}).get("value")
+        if not isinstance(value, str):
+            continue
+        try:
+            answer = json.loads(value)
+        except ValueError:
+            continue
+        if answer.get("chosen"):
+            return answer
+        # A page that saw a dropdown says more than one that saw none.
+        if answer.get("options") or answer.get("showing"):
+            last = answer
+        elif last.get("reason") == "no page answered":
+            last = answer
+    return last
+
+
+def describe(pages: list[dict[str, Any]], testid: str | None, timeout: float) -> dict[str, Any]:
+    """What one row is made of: its whole text, and every control inside it.
+
+    For the two questions the summary cannot answer - what a long row actually
+    says, and how to reach a control this reader cannot name. Read only.
+    """
+    expression = _DESCRIBE % {"testid": json.dumps(testid)}
+    best: dict[str, Any] = {"rows": []}
+    for page in pages:
+        url = str(page.get("webSocketDebuggerUrl", ""))
+        if not url:
+            continue
+        connection = DevToolsSocket(url, timeout)
+        try:
+            request = connection.send("Runtime.evaluate", {
+                "expression": expression, "returnByValue": True, "timeout": int(timeout * 1000),
+            })
+            reply = connection.await_reply(request, time.monotonic() + timeout)
+        except (ProbeError, TimeoutError, OSError):
+            continue
+        finally:
+            connection.close()
+        value = ((reply.get("result") or {}).get("result") or {}).get("value")
+        if not isinstance(value, str):
+            continue
+        try:
+            answer = json.loads(value)
+        except ValueError:
+            continue
+        # The page that is actually drawing the screen is the one with rows on
+        # it; the others answer with none and must not bury it.
+        if len(answer.get("rows") or []) > len(best.get("rows") or []):
+            best = answer
+    return best
 
 
 def open_panel(pages: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
@@ -634,7 +958,24 @@ def main() -> int:
         "--press", action="append", default=[], metavar="LABEL",
         help="open one of this plugin's screens by the name on its control; repeat to go deeper",
     )
+    parser.add_argument(
+        "--choose", action="append", default=[], metavar="OPTION",
+        help="pick one option of a dropdown on the screen in front, by the text a reader sees;"
+             " write <data-testid>:<option> where the screen has more than one",
+    )
+    parser.add_argument(
+        "--wait-for", metavar="TESTID:TEXT",
+        help="wait until that row says that, then stop; for a screen that is still doing something",
+    )
+    parser.add_argument(
+        "--wait-seconds", type=float, default=30.0,
+        help="how long --wait-for may wait, at most 300",
+    )
     parser.add_argument("--testid", help="report only the rows carrying this test id")
+    parser.add_argument(
+        "--describe", nargs="?", const="", metavar="TESTID",
+        help="print one row's whole text and every control inside it, or every row of the screen in front",
+    )
     parser.add_argument("--metrics", action="store_true", help="report the height of each row and surface")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Steam's CEF debugging endpoint")
     parser.add_argument("--timeout", type=float, default=10.0, help="seconds this will not run past")
@@ -644,6 +985,8 @@ def main() -> int:
     host_platform.require("The panel reader", needs_procfs=False)
     if args.timeout < 1 or args.timeout > 120:
         parser.error("--timeout must be between 1 and 120 seconds")
+    if args.wait_seconds < 1 or args.wait_seconds > 300:
+        parser.error("--wait-seconds must be between 1 and 300 seconds")
 
     try:
         pages = _pages(args.endpoint, args.timeout)
@@ -680,6 +1023,24 @@ def main() -> int:
     # press lands and again at the end, because a press that writes is the one
     # thing a reader of this output must not have to infer.
     made: list[str] = []
+    for label in args.choose:
+        picked = choose(pages, label, args.timeout)
+        if not picked.get("chosen"):
+            print(f"panel read: could not choose {label!r}: {picked.get('reason')}", file=sys.stderr)
+            for name in (picked.get("options") or [])[:40]:
+                print(f"  option: {name}", file=sys.stderr)
+            if made:
+                print(f"presses made before that: {', '.join(made)}", file=sys.stderr)
+            return 1
+        made.append(f"chose {picked.get('option')}")
+        print(f"{made[-1]} (was {picked.get('was') or 'nothing'})")
+        # The screen re-renders on the choice, exactly as it does on a press.
+        time.sleep(1.5)
+        try:
+            pages = _pages(args.endpoint, args.timeout)
+        except ProbeError as exc:
+            print(f"panel read: {exc}", file=sys.stderr)
+            return 1
     for label in args.press:
         pressed = press(pages, label, args.timeout)
         if not pressed.get("pressed"):
@@ -701,6 +1062,61 @@ def main() -> int:
         except ProbeError as exc:
             print(f"panel read: {exc}", file=sys.stderr)
             return 1
+
+    if args.describe is not None:
+        answer = describe(pages, args.describe or None, args.timeout)
+        if args.json:
+            print(json.dumps(answer, indent=2, sort_keys=True))
+            return 0
+        rows = answer.get("rows") or []
+        if not rows:
+            print("panel read: no row of that name is on screen", file=sys.stderr)
+            return 1
+        for row in rows:
+            print(f"{row.get('testid')}:")
+            print(f"  text: {row.get('text')}")
+            for part in row.get("parts") or []:
+                bits = [part.get("tag")]
+                if part.get("role"):
+                    bits.append(f"role={part['role']}")
+                if part.get("name"):
+                    bits.append(f"name={part['name']!r}")
+                if part.get("classes"):
+                    bits.append("class=" + ".".join(part["classes"]))
+                if part.get("data"):
+                    bits.append(str(part["data"]))
+                if not part.get("drawn"):
+                    bits.append("not drawn")
+                print("   - " + " ".join(str(bit) for bit in bits))
+        return 0
+
+    if args.wait_for:
+        scope, wanted = press_target(args.wait_for)
+        if scope is None:
+            parser.error("--wait-for is written <data-testid>:<text the row has to carry>")
+        deadline = time.monotonic() + args.wait_seconds
+        while True:
+            saw = None
+            for page in pages:
+                try:
+                    answer = read_page(args.endpoint, page, args.timeout)
+                except (ProbeError, TimeoutError, OSError):
+                    continue
+                if answer and _row_text(answer, scope) is not None:
+                    saw = _row_text(answer, scope)
+                    if wanted in saw:
+                        print(f"{scope} says {saw!r}")
+                        return 0
+            if time.monotonic() >= deadline:
+                print(
+                    f"panel read: {scope} did not say {wanted!r} within {args.wait_seconds:.0f}s"
+                    + (f"; it says {saw!r}" if saw is not None else "; that row is not on screen"),
+                    file=sys.stderr,
+                )
+                return 1
+            # Long enough that this is not a busy loop on the device, short
+            # enough that a state it is waiting for is not sat on.
+            time.sleep(1.0)
 
     found: list[dict[str, Any]] = []
     # A page that could not be read at all is kept, because "no surface here" and

@@ -1088,4 +1088,21 @@ describe("controller focus targets", () => {
     fireEvent.click(screen.getByTestId("toggle"));
     expect(onActiveChange).toHaveBeenCalledWith(true);
   });
+
+  it("marks a cheat's switch so a probe on a device can name and read it", () => {
+    // Steam draws a toggle as a div: not a button, not an input, and with no
+    // name on it. `scripts/target_panel_read.py` could report every row of a
+    // screen and reach none of the switches, which is most of what this product
+    // is, so the mark is the contract between the two.
+    const { container, rerender } = render(<CheatRow label="Health" active={false} onActiveChange={vi.fn()} />);
+    const box = container.querySelector('[data-switch="active"]');
+    expect(box).toBeTruthy();
+    expect(box!.getAttribute("data-checked")).toBe("false");
+    rerender(<CheatRow label="Health" active onActiveChange={vi.fn()} />);
+    expect(container.querySelector('[data-switch="active"]')!.getAttribute("data-checked")).toBe("true");
+    // A record with no active state of its own draws no switch, so there is
+    // nothing to mark and nothing for a probe to press.
+    rerender(<CheatRow label="Health" active={null} onActiveChange={vi.fn()} />);
+    expect(container.querySelector('[data-switch="active"]')).toBeNull();
+  });
 });

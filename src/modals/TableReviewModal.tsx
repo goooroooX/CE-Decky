@@ -671,6 +671,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
                 status
                 label="What CE Decky found"
                 description={findings.join(" ")}
+                floatActions
                 actions={canPrepare ? (
                   <div className={PREPARE_ACTION_CLASS} style={CONTENTS_ONLY}>
                     <SmallButton
