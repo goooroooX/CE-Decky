@@ -493,6 +493,16 @@ def check_executable(
 # scan owns, never because it mentions it, or removing one block would take out
 # everything that reads the same flag.
 _DEFINES_RE = re.compile(r"^\s*(?:label|registersymbol|define|alloc)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+# A whole line that says one thing about symbols and nothing else: it declares
+# them, registers them, labels them or gives their memory back. Where every name
+# on such a line is one the repair took away, the line is the removal's own
+# leftover rather than anybody's code - it is what a script with several hooks in
+# one block leaves behind, because the block cannot go without taking the other
+# hooks with it. Anchored at both ends and with no second argument allowed
+# through unowned, so `define(speed, 10)` and anything carrying an expression
+# stay exactly where the author put them.
+_OWNED_LINE_RE = re.compile(
+    r"^\s*(?:unregistersymbol|dealloc|registersymbol|label|define)\s*\(([^()]*)\)\s*$", re.IGNORECASE)
 _LABEL_AT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # One `<AssemblerScript>` element's bytes, so a script can be edited where it
@@ -577,7 +587,7 @@ def _defined_in(lines: list[str], block: tuple[int, int]) -> set[str]:
 
 
 def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int]:
-    """One script with the blocks a failing scan owns removed, and nothing else.
+    """One script with what a failing scan owns removed, and nothing else.
 
     What a scan owns is found rather than assumed. Start from the scan's own
     name and the two symbols a script conventionally derives from it, take every
@@ -589,6 +599,14 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
     Only definitions pull a block in. A block that merely reads a flag the
     removed code also read is somebody else's hook and stays, which is the
     difference between repairing a table and gutting it.
+
+    Then the residue, because a block rule cannot reach all of it: a script's
+    `[DISABLE]` run declares nothing, so the pass above never sees one, and the
+    lines undoing a hook that has gone stay behind naming symbols that are not
+    there. A whole line that is one statement about symbols the removal took and
+    nothing else goes with them. A line naming a value, an expression or a
+    symbol that survived is the author's code and stays, which is what keeps
+    this the same transform rather than a licence to edit.
 
     Returns the repaired text, the symbols that went with it, and how many
     blocks were taken out. It proves nothing: `assert_repair_closed` does that,
@@ -642,6 +660,32 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
         # empty lines where its hooks were.
         if block[1] < len(lines) and not lines[block[1]].strip():
             drop.add(block[1])
+    # And the leftovers no block rule can reach. The pass above takes a block
+    # because of what it *defines*, and a script's `[DISABLE]` run defines
+    # nothing at all: it is `unregistersymbol` and `dealloc` lines, which give
+    # symbols back rather than declaring them. So the hook's whole `[ENABLE]`
+    # side went and the lines that undo it stayed, naming symbols that are no
+    # longer there - which is what the closure proof refuses, correctly, for a
+    # repair that was otherwise complete.
+    #
+    # Only a line that is one statement about owned symbols and nothing else,
+    # which is why this cannot reach code: it is the removal's own residue.
+    # Measured over the corpus it repairs 106 more scans, taking out one to
+    # eleven such lines each, and takes the tables with at least one repairable
+    # scan from 34 of 88 to 57. It refuses nothing it used to allow, and in not
+    # one of the 106 does the repair reach another scan of the same script or
+    # cost a record its address. It does not reach the monoliths: a script with
+    # six scans or more still refuses, because what survives there is a scan
+    # line in a block held for the scans the table still makes.
+    for index, line in enumerate(lines):
+        if index in drop:
+            continue
+        leftover = _OWNED_LINE_RE.match(_without_comment(line))
+        if not leftover:
+            continue
+        named = [name.strip() for name in leftover.group(1).split(",") if name.strip()]
+        if named and all(name in owned for name in named):
+            drop.add(index)
     return "".join(line for index, line in enumerate(lines) if index not in drop), owned, len(removed)
 
 

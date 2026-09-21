@@ -349,6 +349,93 @@ def test_a_repair_removes_the_blocks_the_failing_scan_owns_and_no_others():
     assert "alloc(newmem,$1000)" in repaired
 
 
+# A script whose `[DISABLE]` gives every hook's symbols back in one run, which
+# is how the corpus writes one. That run declares nothing - `unregistersymbol`
+# and `dealloc` hand symbols back rather than announcing them - so no rule about
+# what a block defines can ever reach it, and the line undoing a hook that is
+# gone stayed behind naming a symbol that is not there.
+SHARED_DISABLE_SCRIPT = """[ENABLE]
+aobscanmodule(aobGone,game.exe,F3 0F 59 F0 48 8B C3)
+aobscanmodule(aobKeep,game.exe,48 8B 01 48 89 54 24)
+alloc(newmem,$1000)
+
+label(lblGone)
+label(lblGoneRet)
+registersymbol(aobGone_r)
+
+label(lblKeep)
+label(lblKeepRet)
+registersymbol(aobKeep_r)
+
+aobGone:
+aobGone_r:
+jmp lblGone
+lblGoneRet:
+
+aobKeep:
+aobKeep_r:
+jmp lblKeep
+lblKeepRet:
+
+[DISABLE]
+
+aobGone_r:
+db F3 0F 59 F0
+
+aobKeep_r:
+db 48 8B 01 48
+
+unregistersymbol(aobGone_r)
+unregistersymbol(aobKeep_r)
+dealloc(newmem)
+"""
+
+
+def test_a_repair_takes_the_lines_that_undo_a_hook_that_is_gone():
+    """The residue a block rule cannot reach, and nothing beyond it.
+
+    A `[DISABLE]` run declares nothing, so the pass that takes a block for what
+    it defines never sees one: the hook's whole `[ENABLE]` side went and the
+    line handing its symbol back stayed, naming something that is no longer
+    there. The closure proof refused that, correctly, for a repair that was
+    otherwise complete.
+    """
+    repaired, owned, _ = repair_script(SHARED_DISABLE_SCRIPT, ["aobGone"])
+    assert_repair_closed(repaired, owned)
+
+    # The line that gave the removed hook's symbol back is gone with it.
+    assert "unregistersymbol(aobGone_r)" not in repaired
+    # And the other hook keeps every one of its own, including the line in the
+    # same run: this takes single statements about symbols that are gone, never
+    # a block somebody else is still in.
+    assert "unregistersymbol(aobKeep_r)" in repaired
+    assert "registersymbol(aobKeep_r)" in repaired
+    assert "aobKeep_r:" in repaired
+    # The allocation both hooks share is nobody's residue: it is a statement
+    # about a symbol the repair did not take, so it stays.
+    assert "dealloc(newmem)" in repaired and "alloc(newmem,$1000)" in repaired
+    # And the section itself is still a section.
+    assert "[ENABLE]" in repaired and "[DISABLE]" in repaired
+
+
+def test_a_statement_naming_anything_that_survived_is_left_alone():
+    """The rule is one statement about symbols that are gone, and nothing else.
+
+    A line that also names a symbol the repair left in place is the author's
+    code rather than the removal's leftover, and taking it would be editing a
+    table instead of repairing one. What follows is a refusal, which is the
+    correct outcome: the script still names something that is not there.
+    """
+    script = SHARED_DISABLE_SCRIPT.replace(
+        "unregistersymbol(aobGone_r)\n", "unregistersymbol(aobGone_r,aobKeep_r)\n",
+    )
+    repaired, owned, _ = repair_script(script, ["aobGone"])
+
+    assert "unregistersymbol(aobGone_r,aobKeep_r)" in repaired
+    with pytest.raises(ScanRepairError, match="still names aobGone_r"):
+        assert_repair_closed(repaired, owned)
+
+
 def test_a_repair_that_leaves_a_reference_behind_is_refused():
     """A script Cheat Engine will not compile is the outcome this exists to fix.
 
