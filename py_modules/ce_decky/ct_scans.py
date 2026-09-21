@@ -523,10 +523,13 @@ class ScanRepairError(ValueError):
 class ScanRepair:
     """What dropping a scan from a table took out, and what it cost.
 
-    `orphaned` is the cost the user is owed: a record whose address was a symbol
-    the removal took away is a cheat that is gone from the repaired copy. It is
-    empty in the case this was built against, because the block that went only
-    refined a hook another block already made.
+    `orphaned` is the cost the user is owed: a cheat that is gone from the
+    repaired copy. Two things put a record here - its address was a symbol the
+    removal took away, or its whole script was the failing hook and is now an
+    empty pair of sections - and the second is the common one, because most
+    scripts in the corpus carry exactly one scan. It is empty in the case this
+    was built against, where the block that went only refined a hook another
+    block already made.
     """
 
     scans: tuple[str, ...]
@@ -540,6 +543,55 @@ class ScanRepair:
             "scans": list(self.scans), "blocks": self.blocks, "lines": self.lines,
             "bytes_removed": self.bytes_removed, "orphaned": list(self.orphaned),
         }
+
+
+# A script's own sections. Cheat Engine runs what is under `[ENABLE]` when a
+# record goes on and what is under `[DISABLE]` when it comes off, so these lines
+# are the script's structure rather than any hook's code.
+_SECTION_RE = re.compile(r"^\s*\[(ENABLE|DISABLE)\]\s*$", re.IGNORECASE)
+
+
+def _without_block_comments(text: str) -> str:
+    """The same text with Cheat Engine's `{ ... }` comments blanked out.
+
+    Line for line and character for character, so every offset and line number
+    still means what it meant: what a comment held becomes spaces, and the
+    newlines stay exactly where they were.
+
+    It matters in two places and for the same reason - a comment is not code.
+    The repair must not read a definition out of one, or a table's own header
+    listing what its hooks do would hand the removal every symbol it names; and
+    the closure proof must not refuse a repair because a comment mentions a
+    symbol that has gone, which is a refusal about nothing.
+
+    Braces that do not balance leave the text alone. A script that opens one and
+    never closes it would otherwise have everything after it read as a comment,
+    and a proof that cannot see the code is worse than one that reads a comment
+    as code.
+    """
+    # Most scripts carry none at all, and this runs over every line of every
+    # script a repair touches.
+    if "{" not in text:
+        return text
+    depth = 0
+    for character in text:
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth < 0:
+                return text
+    if depth != 0:
+        return text
+    out: list[str] = []
+    depth = 0
+    for character in text:
+        if character == "{":
+            depth += 1
+        out.append(character if (not depth or character == "\n") else " ")
+        if character == "}" and depth:
+            depth -= 1
+    return "".join(out)
 
 
 def _lines_with_endings(text: str) -> list[str]:
@@ -615,11 +667,19 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
     lines = _lines_with_endings(text)
     if len(lines) > MAX_SCRIPT_LINES:
         raise ScanRepairError("this script is longer than one this repairs")
-    blocks = _blocks(lines)
+    # Structure is read from the code alone and the edit is made to the author's
+    # own lines. A table's header comment lists what its hooks do, symbol by
+    # symbol, and reading that as declarations handed the removal every one of
+    # them; a blank line inside such a comment also ran the comment's tail into
+    # the `[ENABLE]` below it, so removing one hook took the section marker with
+    # it. Both are the same mistake - a comment is not code - and both go away
+    # by looking at the script without them.
+    code = _lines_with_endings(_without_block_comments(text))
+    blocks = _blocks(code)
     scan_lines: dict[str, int] = {}
     for name in missing:
         pattern = re.compile(r"^\s*(?:" + "|".join(SCAN_DIRECTIVES) + r")\s*\(\s*" + re.escape(name) + r"\s*,", re.IGNORECASE)
-        for index, line in enumerate(lines):
+        for index, line in enumerate(code):
             if pattern.match(line):
                 scan_lines[name] = index
                 break
@@ -638,7 +698,7 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
         r"^\s*(?:" + "|".join(SCAN_DIRECTIVES) + r")\s*\(\s*(?!(?:" +
         "|".join(re.escape(name) for name in scan_lines) + r")\s*,)", re.IGNORECASE)
     scan_blocks = {index for index, block in enumerate(blocks)
-                   if any(surviving.match(lines[at]) for at in range(*block))}
+                   if any(surviving.match(code[at]) for at in range(*block))}
     removed: set[int] = set()
     changed = True
     while changed:
@@ -646,7 +706,7 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
         for index, block in enumerate(blocks):
             if index in removed or index in scan_blocks:
                 continue
-            declared = _defined_in(lines, block)
+            declared = _defined_in(code, block)
             if declared & owned:
                 removed.add(index)
                 owned |= declared
@@ -658,7 +718,7 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
         drop.update(range(block[0], block[1]))
         # The blank line under a block goes with it, or a repair leaves a run of
         # empty lines where its hooks were.
-        if block[1] < len(lines) and not lines[block[1]].strip():
+        if block[1] < len(code) and not code[block[1]].strip():
             drop.add(block[1])
     # And the leftovers no block rule can reach. The pass above takes a block
     # because of what it *defines*, and a script's `[DISABLE]` run defines
@@ -677,7 +737,7 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
     # cost a record its address. It does not reach the monoliths: a script with
     # six scans or more still refuses, because what survives there is a scan
     # line in a block held for the scans the table still makes.
-    for index, line in enumerate(lines):
+    for index, line in enumerate(code):
         if index in drop:
             continue
         leftover = _OWNED_LINE_RE.match(_without_comment(line))
@@ -686,6 +746,13 @@ def repair_script(text: str, missing: Sequence[str]) -> tuple[str, set[str], int
         named = [name.strip() for name in leftover.group(1).split(",") if name.strip()]
         if named and all(name in owned for name in named):
             drop.add(index)
+    # A section marker is structure rather than anybody's code, and it is never
+    # what a hook owns: a script writes `[DISABLE]` against its restore with no
+    # blank line between them often enough that removing the restore took the
+    # section with it, leaving a cheat that switches on and cannot be switched
+    # off. Nothing is gained by taking one, so it stays, and the proof beside
+    # this says so out loud.
+    drop -= {index for index in drop if _SECTION_RE.match(code[index])}
     return "".join(line for index, line in enumerate(lines) if index not in drop), owned, len(removed)
 
 
@@ -706,8 +773,10 @@ def assert_repair_closed(repaired: str, owned: set[str], before: set[str] | None
 
     Comments are not code. A script that says in words what a hook used to do
     would otherwise refuse its own repair, which is a refusal about nothing.
+    That covers both forms a table uses: the line a `//` or `--` starts, and
+    Cheat Engine's own `{ ... }`, which a table's header is written in.
     """
-    lines = _lines_with_endings(repaired)
+    lines = _lines_with_endings(_without_block_comments(repaired))
     defined: set[str] = set()
     for block in _blocks(lines):
         defined |= _defined_in(lines, block)
@@ -724,6 +793,31 @@ def assert_repair_closed(repaired: str, owned: set[str], before: set[str] | None
         # over one would be refusing a table for something the repair did not do.
         if jump and jump.group(1) not in defined and (before is None or jump.group(1) in before):
             raise ScanRepairError(f"line {index + 1} jumps to {jump.group(1)}, which the repair removed")
+
+
+def assert_sections_kept(original: str, repaired: str) -> None:
+    """Prove the repaired script still has the sections it had.
+
+    `[ENABLE]` and `[DISABLE]` are what Cheat Engine runs a record's code from,
+    so a repair that takes one away leaves a script that cannot be switched on -
+    the same dead table the missing pattern produced, reached by the repair for
+    it. Nothing else here would notice: every symbol still resolves, and every
+    record is still the record it was.
+
+    Exactly what it had, with no case for a script the repair emptied: the
+    markers cost nothing to keep, so a script whose only hook has gone keeps an
+    empty pair rather than becoming a record with no script at all. What that
+    costs the user is the cheats that hook created, which the caller reports.
+    """
+    before = [match.group(1).upper() for match in
+              (_SECTION_RE.match(line) for line in _without_block_comments(original).splitlines()) if match]
+    after = [match.group(1).upper() for match in
+             (_SECTION_RE.match(line) for line in _without_block_comments(repaired).splitlines()) if match]
+    if before == after:
+        return
+    missing_section = next((name for name in before if name not in after), "ENABLE")
+    raise ScanRepairError(
+        f"the repaired script no longer has its [{missing_section}] section, which is what Cheat Engine runs")
 
 
 def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, ScanRepair]:
@@ -766,6 +860,7 @@ def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, Sc
             continue
         repaired, script_owned, script_blocks = repair_script(text, present)
         assert_repair_closed(repaired, script_owned, _defined_anywhere(text))
+        assert_sections_kept(text, repaired)
         edited += blob[at:match.start(2)]
         edited += repaired.encode("utf-8")
         at = match.end(2)
@@ -777,11 +872,73 @@ def drop_unmatched_scans(blob: bytes, missing: Sequence[str]) -> tuple[bytes, Sc
         raise ScanRepairError("no script in this table scans for what was named")
     edited += blob[at:]
     derived = bytes(edited)
+    # Both ways a cheat goes. One is a record reached through an address the
+    # removal took away; the other is the record that *was* the script, left
+    # holding nothing but its two section markers because the failing scan was
+    # the only thing in it. The second is the common one by a long way, and
+    # reporting it as "no cheat was lost" would hand somebody a copy quietly
+    # missing what they came for - which is the whole reason this is counted.
     orphaned = _orphaned_records(blob, owned)
+    orphaned += tuple(name for name in _emptied_script_records(blob, derived) if name not in orphaned)
     return derived, ScanRepair(
         scans=tuple(wanted), blocks=blocks, lines=lines_removed,
         bytes_removed=len(blob) - len(derived), orphaned=orphaned,
     )
+
+
+def _emptied_script_records(original: bytes, derived: bytes) -> tuple[str, ...]:
+    """Records whose whole script the repair took, leaving an empty pair of sections.
+
+    A script with one scan is dead when that scan is, so what is left is a cheat
+    that switches and does nothing. It is not reached through an address, so the
+    other half of this report never sees it, and it is the outcome most repairs
+    in the corpus actually produce.
+    """
+    def scripted(blob: bytes) -> list[tuple[str, str]] | None:
+        """Every record carrying a script, in document order, with its name."""
+        try:
+            root = ET.fromstring(blob)
+        except ET.ParseError:
+            return None
+        found: list[tuple[str, str]] = []
+        for entry in root.iter():
+            if local_tag(entry.tag) != "CheatEntry":
+                continue
+            for child in entry:
+                if local_tag(child.tag) != "AssemblerScript":
+                    continue
+                described = (entry.findtext("Description") or "").strip().strip('"').strip()
+                found.append((described or f"record {(entry.findtext('ID') or '?').strip()}", child.text or ""))
+                break
+        return found
+
+    before, after = scripted(original), scripted(derived)
+    # Read in document order rather than by id, because a table is free to use
+    # one id twice and this must not decide anything from the wrong record. The
+    # edit adds and removes no element, so the two orders describe the same
+    # records; where they somehow do not, this reports nothing rather than
+    # guessing, and the proof that follows is what refuses the result.
+    if before is None or after is None or len(before) != len(after):
+        return ()
+    names: list[str] = []
+    for (described, was), (_still_named, now) in zip(before, after):
+        if _code_in(was) and not _code_in(now):
+            names.append(described)
+            if len(names) >= 64:
+                break
+    return tuple(names)
+
+
+def _code_in(script: str) -> str:
+    """Whatever a script holds that Cheat Engine would run, as one string.
+
+    Its section markers are structure and its comments are words, so a script
+    left with nothing but those is a cheat that switches and does nothing.
+    """
+    return "".join(
+        line for line in _without_block_comments(script).splitlines()
+        if line.strip() and not _SECTION_RE.match(line) and _without_comment(line).strip()
+    ).strip()
 
 
 def scans_in_table(blob: bytes) -> list[TableScan]:
@@ -839,8 +996,13 @@ def _orphaned_records(blob: bytes, owned: set[str]) -> tuple[str, ...]:
 
 
 def _defined_anywhere(text: str) -> set[str]:
-    """Every symbol a script defines, before anything is removed from it."""
-    lines = _lines_with_endings(text)
+    """Every symbol a script defines, before anything is removed from it.
+
+    Read the same way the repair and the proof read one, so the three agree: a
+    name a comment mentions is not a definition, and a jump to it was never
+    going to resolve whatever this did.
+    """
+    lines = _lines_with_endings(_without_block_comments(text))
     found: set[str] = set()
     for block in _blocks(lines):
         found |= _defined_in(lines, block)

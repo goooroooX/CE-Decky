@@ -14,6 +14,7 @@ import struct
 import pytest
 
 from ce_decky.ct_scans import (
+    assert_sections_kept,
     DEFAULT_BUDGET_SECONDS,
     ScanParseError,
     ScanRepairError,
@@ -436,6 +437,107 @@ def test_a_statement_naming_anything_that_survived_is_left_alone():
         assert_repair_closed(repaired, owned)
 
 
+# A table's own header, written the way Cheat Engine writes one: a `{ ... }`
+# comment listing what each hook does, symbol by symbol, with a blank line in
+# the middle of it. Read as code it hands the removal every symbol it names, and
+# its blank line runs the comment's tail into the `[ENABLE]` below.
+COMMENTED_SCRIPT = """{Game: a game
+Date 2026-01-01
+
+  Initiate aobGone
+  Initiate aobKeep
+}
+[ENABLE]
+aobscanmodule(aobGone,game.exe,F3 0F 59 F0 48 8B C3)
+aobscanmodule(aobKeep,game.exe,48 8B 01 48 89 54 24)
+
+label(lblGone)
+registersymbol(aobGone_r)
+
+aobGone:
+aobGone_r:
+jmp lblGone
+
+aobKeep:
+db 90 90
+
+[DISABLE]
+aobGone_r:
+db F3 0F 59 F0
+unregistersymbol(aobGone_r)
+"""
+
+
+def test_a_table_header_is_read_as_the_comment_it_is():
+    """A comment is not code, in either direction.
+
+    Read as code, a header naming the hooks hands the removal every symbol it
+    mentions and its blank line runs the comment into the section below, so
+    removing one hook took `[ENABLE]` with it. Read as a reference, it refuses
+    the repair for a line Cheat Engine never executes. Both are the same
+    mistake.
+    """
+    repaired, owned, _ = repair_script(COMMENTED_SCRIPT, ["aobGone"])
+    assert_repair_closed(repaired, owned)
+    assert_sections_kept(COMMENTED_SCRIPT, repaired)
+
+    # The header is the author's and stays, mentions and all.
+    assert "Initiate aobGone" in repaired
+    # The sections are what Cheat Engine runs the record from.
+    assert "[ENABLE]" in repaired and "[DISABLE]" in repaired
+    # And the other hook is untouched.
+    assert "aobscanmodule(aobKeep,game.exe,48 8B 01 48 89 54 24)" in repaired
+
+
+def test_a_repair_may_not_take_the_sections_the_script_runs_from():
+    """A cheat that switches on and cannot be switched off is not a repair.
+
+    A script writes `[DISABLE]` against its restore with no blank line between
+    them often enough that removing the restore took the section with it, and
+    nothing noticed: every symbol still resolved and every record was still the
+    record it was.
+    """
+    script = """[ENABLE]
+aobscanmodule(aobGone,game.exe,F3 0F 59 F0 48 8B C3)
+label(lblGone)
+
+aobGone:
+jmp lblGone
+[DISABLE]
+aobGone:
+db F3 0F 59 F0
+"""
+    repaired, owned, _ = repair_script(script, ["aobGone"])
+
+    assert "[ENABLE]" in repaired and "[DISABLE]" in repaired
+    assert_sections_kept(script, repaired)
+    # And the proof is a proof rather than a description of the code above it.
+    with pytest.raises(ScanRepairError, match=r"no longer has its \[DISABLE\] section"):
+        assert_sections_kept(script, repaired.replace("[DISABLE]\n", ""))
+
+
+def test_a_script_whose_only_hook_went_keeps_an_empty_pair_of_sections():
+    """A script with one scan is dead when that scan is, and still a script.
+
+    The markers cost nothing to keep, so what is left is an empty `[ENABLE]`
+    and `[DISABLE]` rather than a record with no script at all. What it costs
+    the user is the cheats that hook created, which the caller reports.
+    """
+    script = """[ENABLE]
+aobscan(aobGone,F3 0F 59 F0)
+aobGone:
+db 90 90
+
+[DISABLE]
+aobGone:
+db F3 0F 59 F0
+"""
+    repaired, _owned, _ = repair_script(script, ["aobGone"])
+
+    assert_sections_kept(script, repaired)
+    assert [line.strip() for line in repaired.splitlines() if line.strip()] == ["[ENABLE]", "[DISABLE]"]
+
+
 def test_a_repair_that_leaves_a_reference_behind_is_refused():
     """A script Cheat Engine will not compile is the outcome this exists to fix.
 
@@ -514,6 +616,40 @@ def test_the_repair_names_the_cheats_it_costs():
     blob = _table_with(REPAIRABLE_SCRIPT, extra_records=extra)
     _, repair = drop_unmatched_scans(blob, ["aobGone"])
     assert repair.orphaned == ("Acceleration",)
+
+
+def test_the_cost_names_a_cheat_whose_whole_script_went():
+    """Most repairs empty a script, and saying nothing was lost is untrue.
+
+    A script carrying one scan is dead when that scan is, so what is left is a
+    record that switches and does nothing. It is reached through no address, so
+    the other half of this report never sees it, and the copy would have gone to
+    the reader as one that cost them nothing.
+    """
+    table = (
+        '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+        "  <CheatEntries>"
+        '<CheatEntry><ID>1</ID><Description>"Infinite health"</Description>'
+        "<VariableType>Auto Assembler Script</VariableType>"
+        "<AssemblerScript>[ENABLE]\n"
+        "aobscan(aobGone,F3 0F 59 F0)\n"
+        "aobGone:\n"
+        "db 90 90\n"
+        "\n"
+        "[DISABLE]\n"
+        "aobGone:\n"
+        "db F3 0F 59 F0\n"
+        "</AssemblerScript></CheatEntry>"
+        "</CheatEntries>\n</CheatTable>\n"
+    ).encode("utf-8")
+
+    derived, repair = drop_unmatched_scans(table, ["aobGone"])
+
+    assert repair.orphaned == ("Infinite health",)
+    # The record is still there and still named: what changed is that its script
+    # is now an empty pair of sections.
+    assert b"Infinite health" in derived
+    assert b"aobscan(aobGone" not in derived
 
 
 def test_a_repair_that_changed_the_table_is_refused():
