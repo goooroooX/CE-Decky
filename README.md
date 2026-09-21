@@ -12,10 +12,12 @@ CE Decky is a [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) 
 
 - **Nothing to install by hand.** One press downloads the official Cheat Engine installer, checks its size and SHA-256 against a pinned manifest, and unpacks it into the plugin's own storage. The installer is never run, and no Cheat Engine code ships in this repository.
 - **It finds the table.** Search five community catalogs at once, ranked against the name your library actually shows for the game, with the source, post date and claimed version on every result. Or open a `.CT`, `.zip`, `.7z` or `.rar` you already have.
-- **Cheats become toggles.** Pin the ones you use onto the Quick Access panel and flip them mid-game with the controller. `Disable all` switches everything off without stopping Cheat Engine.
+- **Cheats become toggles.** A cheat that is simply on or off is a switch, with no list and no box to fill in. Pin the ones you use onto the Quick Access panel and flip them mid-game with the controller. `Disable all` switches everything off without stopping Cheat Engine.
+- **Only the cheat you asked for comes on.** A table's script often switches on most of the table by itself: one real table turns on 22 of its 24 cheats that way, including damage times ten. CE Decky holds those off, so the count on the panel is what is actually running in your game.
+- **It checks a table against your copy of the game, and can fix two things itself.** Before you use a table it tells you if Cheat Engine will refuse it, or if it is looking for code your version of the game does not have. One press makes a copy without those problems. See [When a table does not work](#when-a-table-does-not-work).
 - **It attaches to the game you are already playing.** Cheat Engine starts in that game's own Proton environment and on its display. Stopping it leaves the game running.
 - **Set it up before you play.** Configure cheats with nothing running at all; the choices are saved for that exact table and applied the moment Cheat Engine starts.
-- **Scripts are handled for you.** Switching on a cheat that lives inside a script switches on the scripts it needs first, outermost first, instead of failing.
+- **Scripts are handled for you.** Switching on a cheat that lives inside a script switches on the scripts it needs first, outermost first, instead of failing. Stopping Cheat Engine switches your cheats off first, so the game is left as it was found rather than half patched.
 - **It remembers.** Auto-load brings back the same table and the same cheats for that exact game, so the second session is one press instead of another search.
 - **It remembers what worked.** A cheat that switched on and read back as active marks that exact table as working for that game. The mark changes when the game updates, so an old table tells you whether it is worth trying again.
 - **Every table is authorized on purpose.** A table is executable content, so opening one is never permission to run it: you review it and authorize its exact SHA-256, and a changed file is a different table.
@@ -70,11 +72,13 @@ On the table row:
 - Any of those five sources can be switched off under **Advanced… → Table sources**, and search then says which ones it did not ask.
 - **Manage** is everything that is not an online search: your own library, opening a `.CT`, `.zip`, `.7z` or `.rar` you already have, and removing one.
 
-When a cheat refuses to switch on, CE Decky asks whether to stop using that table. Nothing is recorded until you answer. A table you stop using is greyed out in later searches and carries a red mark, so you do not download it again, and it is not offered until you clear the mark. **Retry N** above the results clears those marks, and **Advanced… → Tables that did not work** is the full list.
+When a cheat refuses to switch on, CE Decky asks whether to stop using that table, and offers to try a repaired copy first where it can make one. Nothing is recorded until you answer. A table you stop using is greyed out in later searches and carries a red mark, so you do not download it again, and it is not offered until you clear the mark. **Retry N** above the results clears those marks, and **Advanced… → Tables that did not work** is the full list.
 
 Downloading or opening a table brings up **Review cheat table**: how many records it has, whether it carries Lua, Auto Assembler code, a window of its own or an embedded file, and which process it expects.
 
 **Opening a table is not permission to run it.** A table is executable content. CE Decky stores it by its exact SHA-256 and asks you to authorize that exact file; change the file and the authorization no longer applies.
+
+Review also says what CE Decky found wrong with the table, where it found anything: that Cheat Engine will refuse it, that it looks for code your copy of the game does not have, or that the table switches most of itself on by itself. A table with nothing wrong says nothing extra. [When a table does not work](#when-a-table-does-not-work) covers what those mean and which of them CE Decky can fix for you.
 
 **Look inside this table**, on that same screen, shows what is in it: the table's Lua, each cheat's Auto Assembler script and any window it carries, as plain text, a page at a time. An embedded file is named and sized, not opened. Nothing runs, and text that was shortened for display says so. The same view is under **Advanced… → Active table → Look inside** for the table you are already using.
 
@@ -85,7 +89,7 @@ Search and Manage show a small round mark beside each table:
 | Mark | What it means |
 |---|---|
 | Green check in a solid ring | A cheat from this table worked for this game, on the version of the game you have now. |
-| Green check in a dashed ring | A cheat from this table worked for this game, but CE Decky could not tell which version of the game that was. |
+| Green check in a dashed ring | A cheat from this table worked for this game, but CE Decky could not tell which version of the game that was. A game added to Steam yourself used to land here often; it usually does not any more. |
 | Amber arrow | It worked before, and the game has been updated since. Try it again. |
 | Red cross | You marked this table as not working. It will not be used for any game until you clear the mark. |
 
@@ -122,7 +126,9 @@ A table marked as not working is still **Local**: the file is here, you just can
 - You can do this with the game running or with nothing running. Your choices are saved for that exact table and applied the next time Cheat Engine starts.
 - Switching on a cheat that lives inside a script switches on the scripts it needs first: a record inside a script has no address until that script has run.
 - **Pin** puts a control on the main panel as a live toggle, so the cheats you use are one press away.
-- A cheat that chooses from a list offers that list on the row. Long lists get a **Find a value** box: type part of the name or the number to narrow it. Only values the table itself declares are offered.
+- A cheat that is simply on or off is a plain switch: the toggle is the whole control, with no list and no box. Most cheats in most tables are these.
+- A cheat that really does choose between things offers that list on the row, and nothing else. If you need a value the author did not list, **Type a value instead** gives you a box. Long lists get a **Find a value** search: type part of the name or the number to narrow it.
+- A cheat that takes a number, like a damage multiplier, keeps its box. Those sit under the switch they belong to.
 - The scripts a table uses to build its cheats are behind the **Scripts** toggle in the header; CE Decky manages them for you.
 
 ### 4. Start Cheat Engine
@@ -133,9 +139,34 @@ Cheat Engine takes the foreground as it starts, so some games drop out for a mom
 
 Once connected, the Cheats section shows the live state and your pinned toggles work from the panel. **Disable all** switches every active cheat off without stopping Cheat Engine. **Stop CE** ends the session and leaves the game running.
 
+Stopping switches your cheats off first, and waits for them. This matters: a cheat works by rewriting the game's code, and the table's own script is what puts it back. Killing Cheat Engine with a cheat still on leaves the game rewritten for as long as it runs, and no later session can undo it. If a cheat will not switch off, CE Decky says which one and that restarting the game is what clears it.
+
 ### 5. Next time
 
 Turn on **Load last table & cheats** and the next session restores the same table and the same choices for that game, with no search. If you switch off the last saved cheat, auto-load switches off with it.
+
+## When a table does not work
+
+Most tables you download are written for a different build of the game than the one you have, and some are refused by Cheat Engine before they even open. CE Decky checks for both before you use a table, and says what it found in plain words on the review screen. Two of those problems it can fix for you.
+
+| What is wrong | How you find out | What CE Decky can do |
+|---|---|---|
+| The table is signed. This Cheat Engine refuses signed tables and says nothing about why, so it looks like nothing happened. | Review says so before you use it. | Make a copy without the signature. |
+| The table looks for code that is not in your copy of the game. Every cheat in that script is dead the moment you switch one on. | Review names the code it could not find. | Make a copy without the cheats that needed it, and name the cheats that go with them. |
+| Both at once. | Review says both. | One press, one copy, both problems gone. |
+| The table looks for code that appears in more than one place in your game. Cheat Engine picks one of those places at random, so the cheat may change the wrong thing. | Review says which one. | Nothing, and it says so. That table was written for another build of the game; look for a different one. |
+| You already used the table and a cheat came straight back off. | CE Decky asks whether to stop using it. | Offers **Try a repaired copy** first, if it can make one. |
+
+The check reads the game's own program, and the other files the table names where they sit beside it, so a table that finds its code in a game's engine library is checked there too. It runs only where CE Decky already knows which program the game runs, which means the game is running now or a cheat from it worked here before. For a game this device has never started, review looks exactly as it always did and claims nothing.
+
+**Prepare a copy that works here** is the press that makes the copy. It is on the review screen and on the row in **Manage**.
+
+A few things about that copy, because it is your table that is being changed:
+
+- it is a new table, not an edit of the one you downloaded. The original is untouched and stays in your library;
+- it opens its own review screen, which says what was removed and what it cost you, including any cheat that is gone with it. You authorize it there, the same as any other table;
+- nothing is done silently, and nothing is guessed. CE Decky only makes the copy if it can prove the rest of the table still holds together: every remaining cheat still there, every piece of code still resolving, and every other pattern still found in your game. If it cannot prove that, it refuses and says so instead of handing you a copy nobody can vouch for;
+- no source vouched for those bytes, so the copy carries no download mark of its own. The review screen says which table it was made from.
 
 ## Where your data lives
 
@@ -200,6 +231,7 @@ Only the five newest archives are kept, so collecting several while you narrow a
 ## Limitations
 
 - **CE Decky runs the cheats a table already contains, and nothing else.** Cheat Engine's own interface is never shown, so there is no memory scanning, no pointer scan, no editing a table and no writing a new one from the panel. If the table you found does not have the cheat you want, CE Decky cannot make it.
+- **A repaired copy is not a rewritten table.** CE Decky can take out what does not work and take off a signature. It cannot write a cheat, move one to a new version of the game, or work out what the author meant. Where a table's cheats are tangled together too tightly to take one out safely, it refuses rather than handing you a copy that quietly lost half the table.
 - **A table is bound to its exact bytes.** A newer revision of the same table is a different table: it is imported, reviewed and authorized separately, and your saved cheat choices do not carry across.
 - **A very large table cannot be switched on the fly.** Confirming a change while the game runs means reading the whole table back, and past a certain size that cannot finish. The table still works: pick its cheats and values in the panel and they are applied when Cheat Engine starts. The panel says live controls are unavailable for a table that size.
 - **The game list leaves out what is not a game.** Proton builds, the Steam Linux Runtimes, Steamworks Common Redistributables and desktop applications you added to Steam yourself are hidden. They are recognised by what Steam records about them, not by name, so a game you added from its own `.desktop` entry, such as a flatpak game, is hidden too. There is no way to bring a hidden entry back yet.
