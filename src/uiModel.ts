@@ -2158,14 +2158,39 @@ export function ambiguousScanFinding(check: TableScanCheck | null | undefined): 
  * whose declarations cannot be read says nothing rather than guessing, and a
  * table that declares nothing on says nothing either: there is no finding.
  */
-export function scriptDefaultsOn(inspection: TableInspection | null): { on: number; switches: number } | null {
+export function scriptDefaultsOn(
+  inspection: TableInspection | null,
+): { on: number; switches: number; unsafe: number } | null {
   // Counted over what the picker will actually draw, so the number on this
   // screen is the number of switches the reader then meets: a record with a
   // duplicate ID, or one under a script whose address cannot be resolved, is
   // offered nowhere and may not be counted here either.
   const switches = safeActionableControls(inspection).filter((control) => controlIsSwitch(control));
-  const on = switches.filter((control) => control.declared_default === control.switch_on_value).length;
-  return on > 0 ? { on, switches: switches.length } : null;
+  const declaredOn = switches.filter((control) => control.declared_default === control.switch_on_value);
+  // The ones CE Decky will not switch off on the reader's behalf, because their
+  // code was not read as surviving it: they stay on whenever their script runs.
+  const unsafe = declaredOn.filter((control) => control.switch_off_is_safe !== true).length;
+  return declaredOn.length > 0 ? { on: declaredOn.length, switches: switches.length, unsafe } : null;
+}
+
+/**
+ * The one sentence Review says about what a table switches on by itself.
+ *
+ * "Only the ones you choose" is a promise, and it is made only where every
+ * default can be held off: a flag whose code was not read as surviving that is
+ * left on, and a reader told otherwise starts a game with cheats running that
+ * the panel does not count.
+ */
+export function scriptDefaultsSentence(defaults: { on: number; switches: number; unsafe: number } | null): string | null {
+  if (!defaults) return null;
+  const lead = `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself.`;
+  if (defaults.unsafe === 0) return `${lead} CE Decky turns on only the ones you choose.`;
+  const one = defaults.unsafe === 1;
+  const which = defaults.unsafe === defaults.on
+    ? (one ? "It stays" : "They stay")
+    : `${defaults.unsafe} of them ${one ? "stays" : "stay"}`;
+  const rest = defaults.unsafe === defaults.on ? "" : " The rest are off unless you choose them.";
+  return `${lead} ${which} on whenever another cheat from the same script is on, because CE Decky could not prove the game survives switching ${one ? "it" : "them"} off.${rest}`;
 }
 
 /** Every switch record's off key, for a call that only switches things off. */

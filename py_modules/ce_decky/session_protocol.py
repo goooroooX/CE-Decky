@@ -1683,13 +1683,31 @@ def _held_off_switch_preferences(
     everything else, which is what bounds a script with thousands of flags under
     it; no table in the sampled corpus carries a tenth of that.
     """
+    held: dict[int, StartupPreference] = {}
+    for record_id, control in _script_default_switches(preferences, controls, ambiguous).items():
+        off = _switch_off_value(control)
+        if off is not None:
+            held[record_id] = StartupPreference(record_id=record_id, active=None, value=off)
+    return list(held.values())
+
+
+def _script_default_switches(
+    preferences: list[StartupPreference],
+    controls: dict[int, object],
+    ambiguous: set[int],
+) -> dict[int, object]:
+    """Every switch a script this plan starts declares on and nobody named.
+
+    The candidates both halves of the rule are drawn from: the ones held off
+    and the ones left on, so the two cannot disagree about which is which.
+    """
     named = {preference.record_id for preference in preferences}
     switched_on = [
         control
         for preference in preferences
         if preference.active is True and (control := controls.get(preference.record_id)) is not None
     ]
-    held: dict[int, StartupPreference] = {}
+    found: dict[int, object] = {}
     for script in switched_on:
         script_path = getattr(script, "path", ())
         for record_id, control in controls.items():
@@ -1701,10 +1719,29 @@ def _held_off_switch_preferences(
             path = getattr(control, "path", ())
             if len(path) <= len(script_path) or tuple(path[:len(script_path)]) != tuple(script_path):
                 continue
-            off = _switch_off_value(control)
-            if off is not None:
-                held[record_id] = StartupPreference(record_id=record_id, active=None, value=off)
-    return list(held.values())
+            on = getattr(control, "switch_on_value", None)
+            values = getattr(control, "dropdown_values", ())
+            if not isinstance(on, str) or not on or len(values) != 2 or getattr(control, "declared_default", None) != on:
+                continue
+            found[record_id] = control
+    return found
+
+
+def startup_left_on(profile: GameProfile, inspection: TableInspection) -> tuple[int, ...]:
+    """The cheats a session prepared from this profile leaves switched on unasked.
+
+    The other half of `_held_off_switch_preferences`, from the same candidates
+    and the same plan: a script startup starts declares these on, and their
+    code was not read as surviving being written off, so startup does not
+    write them and they run in the game while the panel counts only what the
+    user chose. Whoever said the startup succeeded owes the user these names.
+    """
+    expanded, controls, ambiguous = _startup_expansion(_effective_startup_preferences(profile), inspection)
+    return tuple(sorted(
+        record_id
+        for record_id, control in _script_default_switches(expanded, controls, ambiguous).items()
+        if getattr(control, "switch_off_is_safe", False) is not True
+    ))
 
 
 def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ...]:
@@ -1789,7 +1826,10 @@ def _switch_off_value(control: object) -> str | None:
     return next((value for value, _ in values if value != on), None)
 
 
-def _startup_actions(preferences: Iterable[StartupPreference], inspection: TableInspection) -> list[StartupAction]:
+def _startup_expansion(
+    preferences: Iterable[StartupPreference], inspection: TableInspection,
+) -> tuple[list[StartupPreference], dict[int, object], set[int]]:
+    """The preferences a startup plan acts on, before the switches it holds off."""
     controls = {}
     ambiguous: set[int] = set()
     for control in inspection.controls:
@@ -1799,7 +1839,6 @@ def _startup_actions(preferences: Iterable[StartupPreference], inspection: Table
             ambiguous.add(control.id)
         else:
             controls[control.id] = control
-    actions: list[StartupAction] = []
     # A table author's own "attach to the game" record is machinery, not a
     # cheat: CE Decky has attached to the exact process long before a startup
     # plan runs, and switching it on re-opens that process by name, which can
@@ -1814,6 +1853,12 @@ def _startup_actions(preferences: Iterable[StartupPreference], inspection: Table
     expanded = _without_orphan_off_preferences(
         _with_enclosing_scripts(kept, controls, ambiguous), controls
     )
+    return expanded, controls, ambiguous
+
+
+def _startup_actions(preferences: Iterable[StartupPreference], inspection: TableInspection) -> list[StartupAction]:
+    expanded, controls, ambiguous = _startup_expansion(preferences, inspection)
+    actions: list[StartupAction] = []
     expanded = expanded + _held_off_switch_preferences(expanded, controls, ambiguous)
     for preference in expanded:
         if preference.record_id in ambiguous:

@@ -89,7 +89,7 @@ from .providers import (
     selectable_providers,
 )
 from .provider_sources import ProviderSourceSelection
-from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, wine_z_path
+from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, startup_left_on, wine_z_path
 from .table_blocklist import CAUSE_REFUSED, CAUSE_UNUSABLE, MAX_REASON_BYTES as MAX_BLOCKED_REASON_BYTES, BlockedTableError, TableBlocklist, is_compatibility_failure
 from . import frontend_journal, journal_records
 from .support_bundle import create_support_bundle as write_support_bundle, normalize_frontend_log
@@ -1647,6 +1647,35 @@ class PluginService:
                     public_key_bytes=inspection.public_key_bytes,
                 )
         return inspection.as_dict()
+
+    def startup_left_on(self, app_id: int) -> dict[str, object]:
+        """The cheats this game's startup leaves on that nobody asked for.
+
+        Asked after a startup has succeeded, by whoever is about to say so: a
+        script the plan starts brings its author's defaults with it, the ones
+        whose code was not read as surviving being written off are left
+        running, and the panel counts only what the user chose. Read from the
+        current profile and the exact table it selects, through the same plan
+        the session was prepared from, so the answer cannot name a different
+        set from the one startup acted on.
+        """
+        profile = self.profile_store.get(app_id)
+        if profile is None or not profile.table_sha256:
+            return {"table_sha256": None, "record_ids": []}
+        digest = self._sha(profile.table_sha256)
+        blob = self.table_store.verified_blob(digest)
+        inspection = self._inspect_table_blob(blob, digest, app_id)
+        left = startup_left_on(profile, inspection)
+        if left:
+            # The identity this answer turned on, at the moment it was given:
+            # these are cheats running in somebody's game that they did not
+            # choose, and a report about one arrives as this log and a sentence.
+            log_activity(
+                self.logger, "info", "startup.left_on",
+                app_id=app_id, table_sha=digest[:12], count=len(left),
+                record_ids=",".join(str(record_id) for record_id in left[:32]),
+            )
+        return {"table_sha256": digest, "record_ids": list(left)}
 
     def _log_unrecognised_pairs(self, digest: str, inspection) -> None:
         """Name the two-entry lists the switch vocabulary could not place.

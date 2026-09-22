@@ -206,3 +206,25 @@ def test_focus_outcomes_are_logged_once_with_attempts_and_candidates(tmp_path, c
     changes = [line for line in _messages(caplog) if "event=runtime.state_changed" in line]
     assert len(changes) == 1
     assert all(value in changes[0] for value in ["focus_candidates=1", "focus_attempts=6", "focus_successes=0", "focus_reason=refused"])
+
+
+def test_the_log_names_the_cheats_a_startup_left_on(tmp_path: Path, caplog):
+    """A report that cheats nobody chose were running needs which ones, and from which table."""
+    from test_session_protocol import SCRIPT_SWITCH_CT
+
+    service = _service(tmp_path)
+    source = tmp_path / "defaults.CT"
+    source.write_bytes(SCRIPT_SWITCH_CT)
+    table = service.import_table(str(source))
+    digest = str(table["sha256"])
+    assert service.startup_left_on(42) == {"table_sha256": None, "record_ids": []}
+    service.profile_store.upsert(app_id=42, name="Game", is_shortcut=False, table_sha256=digest, target_process="game.exe")
+    service.profile_store.set_startup(app_id=42, table_sha256=digest, record_id=1, active=True, value=None)
+
+    with caplog.at_level(logging.INFO, logger="support-logging"):
+        assert service.startup_left_on(42) == {"table_sha256": digest, "record_ids": [3]}
+
+    left = [line for line in _messages(caplog) if "event=startup.left_on" in line]
+    assert len(left) == 1
+    assert f"table_sha={digest[:12]}" in left[0]
+    assert "record_ids=3" in left[0]

@@ -42,6 +42,7 @@ import {
   importCEArchive,
   importTable,
   inspectTableSha,
+  startupLeftOn,
   inspectTableSource,
   launchCEForGame,
   getProviderSources,
@@ -1862,6 +1863,28 @@ function Content() {
     await refreshRuntime(appId).catch(() => undefined);
   };
 
+  /**
+   * Name the cheats a successful startup left on that nobody chose.
+   *
+   * Every path that says a startup succeeded owes this, because what it says is
+   * about the cheats the user chose and these are running beside them: a script
+   * startup started brought its author's defaults, and the ones whose code was
+   * not read as surviving being written off stay on. The backend answers from
+   * the same plan the session was prepared from; an answer about another table
+   * than the one this path loaded says nothing about it.
+   */
+  const announceStartupLeftOn = async (appId: number, tableSha: string, controls: readonly TableControl[]) => {
+    try {
+      const answer = await startupLeftOn(appId);
+      if (answer.table_sha256 !== tableSha || answer.record_ids.length === 0) return;
+      const ids = new Set(answer.record_ids);
+      const sentence = leftOnSentence(controls.filter((control) => control.id !== null && ids.has(control.id)));
+      if (sentence) toaster.toast({ title: "CE Decky", body: sentence });
+    } catch (cause) {
+      logUiFailure("startup.left_on_unread", cause, { app_id: appId });
+    }
+  };
+
   const ensureAttachedRuntime = async (game: GameSummary, process: string, report: StepReporter = () => undefined): Promise<RuntimeEnvelope> => {
     report("Starting Cheat Engine");
     const capability = await refreshCELaunch(game.appId);
@@ -2053,6 +2076,7 @@ function Content() {
           await captureLiveSnapshot(game.appId, nextInspection);
           await stopRequested();
           toaster.toast({ title: "CE Decky", body: hadOwnedCE ? "Table switched; the game kept running." : "Table loaded and Cheat Engine connected." });
+          await announceStartupLeftOn(game.appId, table.sha256, nextInspection.controls);
         } else {
           dropLiveSnapshot();
           toaster.toast({ title: "CE Decky", body: "Table loaded. Cheat Engine connected, but the target process still needs an exact PID selection in Advanced." });
@@ -3131,6 +3155,7 @@ function Content() {
         await reconcileStartupCompatibility(game.appId, observed);
         await captureLiveSnapshot(game.appId, nextInspection);
         toaster.toast({ title: "CE Decky", body: "Table loaded and Cheat Engine connected." });
+        await announceStartupLeftOn(game.appId, tableSha, nextInspection.controls);
       } else {
         dropLiveSnapshot();
         toaster.toast({ title: "CE Decky", body: "Cheat Engine connected, but the target process still needs an exact PID selection in Advanced." });
@@ -3548,6 +3573,9 @@ function Content() {
           clearAutoloadRetry();
           return;
         }
+        // Kept for after the action: what the startup left on is named once it
+        // has been said to have succeeded, against the table it inspected.
+        const loaded: { inspection: TableInspection | null } = { inspection: null };
         await runAction(async () => {
           const observed = await ensureAttachedRuntime(selectedGame, profile.target_process as string);
           if (!observed.connected) throw new Error("Auto-load started Cheat Engine, but the bridge did not stay connected.");
@@ -3560,6 +3588,7 @@ function Content() {
           // state before saying anything to the user.
           const settled = await awaitStartupOutcome(selectedGame.appId, observed);
           await captureLiveSnapshot(selectedGame.appId, autoloadInspection);
+          loaded.inspection = autoloadInspection;
           if (settled === "failed") {
             const envelope = await refreshRuntime(selectedGame.appId);
             const reason = startupFailureReason(envelope);
@@ -3582,6 +3611,9 @@ function Content() {
           ));
         }, { automatic: true });
         toaster.toast({ title: "CE Decky", body: "Last authorized table and confirmed cheats were auto-loaded." });
+        if (loaded.inspection && profile.table_sha256) {
+          await announceStartupLeftOn(selectedGame.appId, profile.table_sha256, loaded.inspection.controls);
+        }
         clearAutoloadRetry();
       } catch {
         // runAction already surfaced the exact blocker, so this decides only

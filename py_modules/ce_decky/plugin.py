@@ -196,6 +196,9 @@ class Plugin:
     async def inspect_table_sha(self, digest: str, app_id: int | None = None):
         return await self.operations.run_blocking(self._svc().inspect_table_sha, digest, app_id)
 
+    async def startup_left_on(self, app_id: int):
+        return await self.operations.run_blocking(self._svc().startup_left_on, app_id)
+
     async def prepare_table_copy(self, sha256: str, app_id: int | None = None, target_process: str | None = None):
         return await self.operations.run_blocking(self._svc().prepare_table_copy, sha256, app_id, target_process)
 

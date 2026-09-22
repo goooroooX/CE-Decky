@@ -21,6 +21,7 @@ from ce_decky.session_protocol import (
     parse_control,
     parse_descriptor,
     parse_status,
+    startup_left_on,
     percent_decode,
     percent_encode,
     render_control,
@@ -1487,3 +1488,33 @@ def test_a_script_flag_spelled_another_way_is_still_the_scripts(tmp_path: Path):
         assert spelling in table
         (tmp_path / str(index)).mkdir()
         assert _stop_keys(tmp_path / str(index), table) == ((2, "0"), (4, "0")), spelling
+
+
+def test_startup_names_the_defaults_it_leaves_on_from_the_plan_it_holds_off(tmp_path: Path):
+    """Both halves come from one set of candidates, so they cannot disagree.
+
+    Starting the script brings both of its flags on. The safe one is written
+    off in the plan; the unsafe one is not, and it is exactly the one the
+    startup has to name, because it is running in the game beside the cheat
+    that was chosen. A flag the user named is theirs rather than a default.
+    """
+    source = tmp_path / "defaults.CT"
+    source.write_bytes(SCRIPT_SWITCH_CT)
+    tables = TableStore(tmp_path / "tables")
+    artifact = tables.import_ct(str(source))
+    blob = tables.verified_blob(artifact.sha256)
+    inspection = inspect_table(blob, artifact.sha256)
+    profiles = ProfileStore(tmp_path / "profiles.json")
+    profiles.upsert(app_id=42, name="Game", is_shortcut=False, table_sha256=artifact.sha256, target_process="game.exe")
+    profiles.set_execution_consent(app_id=42, table_sha256=artifact.sha256, consent=True)
+    assert startup_left_on(profiles.get(42), inspection) == ()
+
+    profiles.set_startup(app_id=42, table_sha256=artifact.sha256, record_id=1, active=True, value=None)
+    profile = profiles.get(42)
+    assert startup_left_on(profile, inspection) == (3,)
+    prepared = SessionStore(tmp_path / "state", tmp_path).prepare(profile, blob, inspection, CE_SHA)
+    startup = parse_descriptor(Path(prepared.descriptor_path).read_bytes()).startup
+    assert [(action.record_id, action.kind, action.value) for action in startup if action.kind == "value"] == [(2, "value", "0")]
+
+    profiles.set_startup(app_id=42, table_sha256=artifact.sha256, record_id=3, active=True, value=None)
+    assert startup_left_on(profiles.get(42), inspection) == ()

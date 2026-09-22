@@ -1001,6 +1001,8 @@ const clearCEImport = callable("clear_ce_import");
 const inspectTableSource = callable("inspect_table_source");
 const importTable = callable("import_table");
 const inspectTableSha = callable("inspect_table_sha");
+/** The cheats this game's startup leaves on that nobody asked for, by record ID. */
+const startupLeftOn = callable("startup_left_on");
 /**
  * The copy of this table that opens here, stored as a table of its own.
  *
@@ -5106,8 +5108,32 @@ function scriptDefaultsOn(inspection) {
     // duplicate ID, or one under a script whose address cannot be resolved, is
     // offered nowhere and may not be counted here either.
     const switches = safeActionableControls(inspection).filter((control) => controlIsSwitch(control));
-    const on = switches.filter((control) => control.declared_default === control.switch_on_value).length;
-    return on > 0 ? { on, switches: switches.length } : null;
+    const declaredOn = switches.filter((control) => control.declared_default === control.switch_on_value);
+    // The ones CE Decky will not switch off on the reader's behalf, because their
+    // code was not read as surviving it: they stay on whenever their script runs.
+    const unsafe = declaredOn.filter((control) => control.switch_off_is_safe !== true).length;
+    return declaredOn.length > 0 ? { on: declaredOn.length, switches: switches.length, unsafe } : null;
+}
+/**
+ * The one sentence Review says about what a table switches on by itself.
+ *
+ * "Only the ones you choose" is a promise, and it is made only where every
+ * default can be held off: a flag whose code was not read as surviving that is
+ * left on, and a reader told otherwise starts a game with cheats running that
+ * the panel does not count.
+ */
+function scriptDefaultsSentence(defaults) {
+    if (!defaults)
+        return null;
+    const lead = `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself.`;
+    if (defaults.unsafe === 0)
+        return `${lead} CE Decky turns on only the ones you choose.`;
+    const one = defaults.unsafe === 1;
+    const which = defaults.unsafe === defaults.on
+        ? (one ? "It stays" : "They stay")
+        : `${defaults.unsafe} of them ${one ? "stays" : "stay"}`;
+    const rest = defaults.unsafe === defaults.on ? "" : " The rest are off unless you choose them.";
+    return `${lead} ${which} on whenever another cheat from the same script is on, because CE Decky could not prove the game survives switching ${one ? "it" : "them"} off.${rest}`;
 }
 /** Every switch record's off key, for a call that only switches things off. */
 function switchOffValues(controls) {
@@ -12677,9 +12703,7 @@ function TableReviewModal({ table, inspection, observedProcesses: initialObserve
         // land in the wrong code is worse than one that switches on more than was
         // asked, and better than one that will not run at all.
         ambiguousScanFinding(scanAnswer),
-        defaults
-            ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
-            : null,
+        scriptDefaultsSentence(defaults),
         // Two, and the order above is the priority: the block is one block rather
         // than a row per finding, and a screen that asks one question may not open
         // with four answers. What is dropped is always the least consequential of
@@ -15245,6 +15269,30 @@ function Content() {
         await refreshCELaunch(appId).catch(() => undefined);
         await refreshRuntime(appId).catch(() => undefined);
     };
+    /**
+     * Name the cheats a successful startup left on that nobody chose.
+     *
+     * Every path that says a startup succeeded owes this, because what it says is
+     * about the cheats the user chose and these are running beside them: a script
+     * startup started brought its author's defaults, and the ones whose code was
+     * not read as surviving being written off stay on. The backend answers from
+     * the same plan the session was prepared from; an answer about another table
+     * than the one this path loaded says nothing about it.
+     */
+    const announceStartupLeftOn = async (appId, tableSha, controls) => {
+        try {
+            const answer = await startupLeftOn(appId);
+            if (answer.table_sha256 !== tableSha || answer.record_ids.length === 0)
+                return;
+            const ids = new Set(answer.record_ids);
+            const sentence = leftOnSentence(controls.filter((control) => control.id !== null && ids.has(control.id)));
+            if (sentence)
+                toaster.toast({ title: "CE Decky", body: sentence });
+        }
+        catch (cause) {
+            logUiFailure("startup.left_on_unread", cause, { app_id: appId });
+        }
+    };
     const ensureAttachedRuntime = async (game, process, report = () => undefined) => {
         report("Starting Cheat Engine");
         const capability = await refreshCELaunch(game.appId);
@@ -15434,6 +15482,7 @@ function Content() {
                     await captureLiveSnapshot(game.appId, nextInspection);
                     await stopRequested();
                     toaster.toast({ title: "CE Decky", body: hadOwnedCE ? "Table switched; the game kept running." : "Table loaded and Cheat Engine connected." });
+                    await announceStartupLeftOn(game.appId, table.sha256, nextInspection.controls);
                 }
                 else {
                     dropLiveSnapshot();
@@ -16409,6 +16458,7 @@ function Content() {
                 await reconcileStartupCompatibility(game.appId, observed);
                 await captureLiveSnapshot(game.appId, nextInspection);
                 toaster.toast({ title: "CE Decky", body: "Table loaded and Cheat Engine connected." });
+                await announceStartupLeftOn(game.appId, tableSha, nextInspection.controls);
             }
             else {
                 dropLiveSnapshot();
@@ -16814,6 +16864,9 @@ function Content() {
                     clearAutoloadRetry();
                     return;
                 }
+                // Kept for after the action: what the startup left on is named once it
+                // has been said to have succeeded, against the table it inspected.
+                const loaded = { inspection: null };
                 await runAction(async () => {
                     const observed = await ensureAttachedRuntime(selectedGame, profile.target_process);
                     if (!observed.connected)
@@ -16827,6 +16880,7 @@ function Content() {
                     // state before saying anything to the user.
                     const settled = await awaitStartupOutcome(selectedGame.appId, observed);
                     await captureLiveSnapshot(selectedGame.appId, autoloadInspection);
+                    loaded.inspection = autoloadInspection;
                     if (settled === "failed") {
                         const envelope = await refreshRuntime(selectedGame.appId);
                         const reason = startupFailureReason(envelope);
@@ -16847,6 +16901,9 @@ function Content() {
                     await refreshStatus().catch((cause) => logUiFailure("autoload.compatibility_refresh_failed", cause, { app_id: selectedGame.appId }));
                 }, { automatic: true });
                 toaster.toast({ title: "CE Decky", body: "Last authorized table and confirmed cheats were auto-loaded." });
+                if (loaded.inspection && profile.table_sha256) {
+                    await announceStartupLeftOn(selectedGame.appId, profile.table_sha256, loaded.inspection.controls);
+                }
                 clearAutoloadRetry();
             }
             catch {

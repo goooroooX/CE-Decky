@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   clearStartupPreference: vi.fn(), completeManagedCEInstall: vi.fn(), listBlockedTables: vi.fn(), unblockTable: vi.fn(),
   getCELaunchCapability: vi.fn(), getManagedCECapability: vi.fn(), getRuntimeStatus: vi.fn(), getStatus: vi.fn(),
   importCE: vi.fn(), importTable: vi.fn(), inspectTableSha: vi.fn(), inspectTableSource: vi.fn(), launchCEForGame: vi.fn(),
+  startupLeftOn: vi.fn(),
   listTableCode: vi.fn(), readTableCode: vi.fn(), createSupportBundle: vi.fn(),
   // Whether the game's own program still holds what the table scans for, read
   // while Review is being prepared. Resolved with the answer a game this device
@@ -222,6 +223,8 @@ beforeEach(() => {
     reason: "not read in this test", shortcuts_reason: "not read in this test",
   });
   api.stopCEForGame.mockReset().mockResolvedValue({ stopped: false, recovered: false });
+  // What an ordinary startup leaves on that nobody chose: nothing.
+  api.startupLeftOn.mockReset().mockResolvedValue({ table_sha256: SHA, record_ids: [] });
   api.revokeTable.mockReset().mockImplementation(async () => {
     const detached = status(true) as any;
     Object.assign(detached.profiles[0], { table_sha256: null, execution_consent_sha256: null,
@@ -3466,13 +3469,13 @@ describe("Home panel and managed setup", () => {
     // whether to use this table is entitled to know it turns 22 of its 24
     // cheats on by itself. One block, one sentence, and nothing on any other
     // screen.
-    const flag = (id: number, declared: string | null) => ({
+    const flag = (id: number, declared: string | null, safe = true) => ({
       id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
-      switch_on_value: "1", declared_default: declared,
+      switch_on_value: "1", declared_default: declared, switch_off_is_safe: safe,
     });
-    render(<TableReviewModal
+    const { unmount } = render(<TableReviewModal
       table={table as any}
       inspection={{ ...inspect, controls: [flag(1, "1"), flag(2, "1"), flag(3, "0")] } as any}
       onUse={vi.fn()}
@@ -3481,6 +3484,18 @@ describe("Home panel and managed setup", () => {
     const block = await screen.findByTestId("review-findings");
     expect(block.textContent).toContain("Of this table's 3 on/off cheats, 2 are switched on by the table itself");
     expect(block.textContent).toContain("only the ones you choose");
+    unmount();
+    // One default CE Decky may not write off stays running whenever its script
+    // does, so the same screen may not promise the reader only their choices.
+    render(<TableReviewModal
+      table={table as any}
+      inspection={{ ...inspect, controls: [flag(1, "1"), flag(2, "1", false), flag(3, "0")] } as any}
+      onUse={vi.fn()}
+      onCancel={vi.fn()}
+    />);
+    const unsafe = await screen.findByTestId("review-findings");
+    expect(unsafe.textContent).toContain("1 of them stays on whenever another cheat from the same script is on");
+    expect(unsafe.textContent).not.toContain("only the ones you choose");
   });
 
   it("says at Review that a signed table is one this Cheat Engine refuses", async () => {
@@ -5376,6 +5391,35 @@ describe("Launching the selected table", () => {
     snapshot.profiles[0].autoload_enabled = false;
     return snapshot;
   }
+
+  it("names the cheats a start left on that nobody chose", async () => {
+    // A script startup started brings its author's defaults, and the ones whose
+    // code was not read as surviving being written off stay on beside the cheat
+    // that was chosen. "Table loaded" is about the chosen ones, so these are
+    // named after it rather than left for the reader to find in the game.
+    const drain = {
+      ...inspect.controls[0], id: 77, description: "Vitals drain", path: ["Script", "Vitals drain"],
+      kind: "dropdown", dropdown_values: [["0", "Off"], ["1", "On"]], switch_on_value: "1",
+      declared_default: "1", switch_off_is_safe: false,
+    };
+    api.inspectTableSha.mockResolvedValue({ ...inspect, controls: [...inspect.controls, drain] });
+    api.startupLeftOn.mockResolvedValue({ table_sha256: SHA, record_ids: [77] });
+    api.getStatus.mockResolvedValue(withoutAutoload());
+    api.getRuntimeStatus.mockResolvedValueOnce(noRuntime()).mockResolvedValue(liveRuntime());
+    api.launchCEForGame.mockResolvedValue({
+      operation_id: "op", app_id: 10, mode: "attached", state: "connected",
+      session_id: "session", message: "connected", error: null,
+    });
+    renderContent();
+
+    const start = await screen.findByRole("button", { name: "Load table & start CE" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining("One more cheat from this table is on: Vitals drain") }),
+    ), { timeout: 4000 });
+    expect(api.startupLeftOn).toHaveBeenCalledWith(10);
+  });
 
   it("starts Cheat Engine for the table this game already authorized", async () => {
     api.getStatus.mockResolvedValue(withoutAutoload());

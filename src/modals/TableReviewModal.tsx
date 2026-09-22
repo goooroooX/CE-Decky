@@ -3,7 +3,7 @@ import { traceUiAction, traceUiEdit, startUiOperation } from "../uiActions";
 import { DialogButton, Dropdown, Field, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
-import { ambiguousScanFinding, antiCheatBlockedReason, canPrepareCopy, defaultTargetProcess, derivedChangeSentence, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
+import { ambiguousScanFinding, antiCheatBlockedReason, canPrepareCopy, defaultTargetProcess, derivedChangeSentence, scriptDefaultsSentence, installedGameExecutables, isValidProcessBasename, isWineRuntimeExecutable, launchExecutableBasename, missingScanFinding, scriptDefaultsOn, withoutWineRuntimeProcesses } from "../uiModel";
 import type { GameExecutableListing, TableInspection, TableScanCheck, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
@@ -259,9 +259,7 @@ export function TableReviewModal({ table, inspection, observedProcesses: initial
     // land in the wrong code is worse than one that switches on more than was
     // asked, and better than one that will not run at all.
     ambiguousScanFinding(scanAnswer),
-    defaults
-      ? `Of this table's ${defaults.switches} on/off cheats, ${defaults.on} are switched on by the table itself. CE Decky turns on only the ones you choose.`
-      : null,
+    scriptDefaultsSentence(defaults),
     // Two, and the order above is the priority: the block is one block rather
     // than a row per finding, and a screen that asks one question may not open
     // with four answers. What is dropped is always the least consequential of

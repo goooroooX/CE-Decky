@@ -73,6 +73,7 @@ import {
   runtimeAttachCandidates,
   safeActionableControls,
   scriptDefaultsOn,
+  scriptDefaultsSentence,
   sortPinnedControls,
   startupParentWarnings,
   withoutKnownLaunchers,
@@ -1095,7 +1096,9 @@ describe("compact cheat rows", () => {
     const inspection = (controls: unknown[], ambiguous: number[] = []) =>
       ({ controls, ambiguous_record_ids: ambiguous } as any);
     expect(scriptDefaultsOn(inspection([flag(1, "1"), flag(2, "1"), flag(3, "0")])))
-      .toEqual({ on: 2, switches: 3 });
+      .toEqual({ on: 2, switches: 3, unsafe: 2 });
+    expect(scriptDefaultsOn(inspection([{ ...flag(1, "1"), switch_off_is_safe: true }, flag(2, "1")])))
+      .toEqual({ on: 2, switches: 2, unsafe: 1 });
     // A table that switches nothing on by itself has no finding to report, and
     // neither has one whose declarations could not be read at all.
     expect(scriptDefaultsOn(inspection([flag(1, "0"), flag(2, null)]))).toBe(null);
@@ -1104,7 +1107,25 @@ describe("compact cheat rows", () => {
     // A record the picker will not draw is not counted on the screen that
     // promises how many the picker holds.
     expect(scriptDefaultsOn(inspection([flag(1, "1"), flag(2, "1")], [2])))
-      .toEqual({ on: 1, switches: 1 });
+      .toEqual({ on: 1, switches: 1, unsafe: 1 });
+  });
+
+  it("promises only the chosen cheats where every default can be held off", () => {
+    const said = (on: number, unsafe: number) => scriptDefaultsSentence({ on, switches: 24, unsafe });
+    expect(said(22, 0)).toBe(
+      "Of this table's 24 on/off cheats, 22 are switched on by the table itself. CE Decky turns on only the ones you choose.",
+    );
+    // A default CE Decky will not write off is left running, so the promise
+    // would be false the moment its script starts.
+    expect(said(22, 5)).not.toContain("only the ones you choose");
+    expect(said(22, 5)).toContain("5 of them stay on whenever another cheat from the same script is on");
+    expect(said(22, 5)).toContain("The rest are off unless you choose them.");
+    expect(said(22, 1)).toContain("1 of them stays on");
+    expect(said(22, 1)).toContain("switching it off");
+    expect(said(2, 2)).toContain("They stay on");
+    expect(said(2, 2)).not.toContain("The rest");
+    expect(said(1, 1)).toContain("It stays on");
+    expect(scriptDefaultsSentence(null)).toBeNull();
   });
 
   it("keeps one page inside the 800p Game Mode viewport", () => {

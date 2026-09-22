@@ -56,6 +56,8 @@ export const clearCEImport = callable<[], { ok: boolean }>("clear_ce_import");
 export const inspectTableSource = callable<[selection: string], TableSourceInspection>("inspect_table_source");
 export const importTable = callable<[selection: string, memberPath?: string | null, password?: string | null, appId?: number | null], TableStatus>("import_table");
 export const inspectTableSha = callable<[digest: string, appId?: number | null], TableInspection>("inspect_table_sha");
+/** The cheats this game's startup leaves on that nobody asked for, by record ID. */
+export const startupLeftOn = callable<[appId: number], { table_sha256: string | null; record_ids: number[] }>("startup_left_on");
 /**
  * The copy of this table that opens here, stored as a table of its own.
  *
