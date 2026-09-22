@@ -50,6 +50,40 @@ FAILURE_NAMES = 12
 # nothing else: with `-q` and nothing to run, both streams are empty.
 PYTEST_NOTHING_COLLECTED = 5
 
+# `pytest`'s own last line under `-q`: the counts and the time, with nothing
+# else on it. The repository's `pytest.ini` already asks for that brevity, and
+# passing `-q` again on top of it took this line away entirely, which is what
+# left the count reachable only by counting dots.
+_PYTEST_TOTAL = re.compile(r"^\d+ (passed|failed|skipped|error)")
+
+
+def _case_count(text: str) -> int | None:
+    """How many test cases a stage actually ran, in each runner's own words.
+
+    A stage that passed says only that, and how long it took, which leaves the
+    one question a narrowed selection is asked with: did it cover what I named?
+    `--name` matching nothing is caught on its own, but a file whose cases were
+    renamed, a path that holds fewer than the reader thinks and a whole suite
+    are all `PASSED` in the same eight characters, and the count was reachable
+    only by opening the stage log and counting the runner's dots.
+
+    Both runners state it and neither is parsed for anything else here: the
+    number of cases that ran, which is what the reader is checking, rather than
+    the number collected or skipped. Nothing is printed where a stage is not a
+    test run or its runner said nothing this recognises.
+    """
+    found: int | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        # `vitest` names its own verdict; `pytest` ends `-q` output with the
+        # same words and nothing before them.
+        if stripped.startswith("Tests ") or _PYTEST_TOTAL.match(stripped):
+            match = re.search(r"(\d+) passed", stripped)
+            if match:
+                found = int(match.group(1))
+    return found
+
+
 def _ran_no_cases(text: str) -> bool:
     """Whether a narrowed run matched nothing, in each runner's own words.
 
@@ -691,7 +725,7 @@ def _repo_stages() -> list[Stage]:
 
 
 def _backend_full_stage() -> Stage:
-    command, reason = _wsl_backend_command(("-m", "pytest", "-q", "--tb=short", "--disable-warnings"))
+    command, reason = _wsl_backend_command(("-m", "pytest", "--tb=short", "--disable-warnings"))
     return Stage("backend-full", command or (), timeout=1800.0, incomplete_reason=reason)
 
 
@@ -701,14 +735,14 @@ def _backend_focused_stage(tests: list[str], *, key: str = "backend-focused", li
     if "tests" in tests:
         return _backend_full_stage()
     if linux and os.name == "nt":
-        command, reason = _wsl_backend_command(("-m", "pytest", "-q", "--tb=short", "--disable-warnings", *tests))
+        command, reason = _wsl_backend_command(("-m", "pytest", "--tb=short", "--disable-warnings", *tests))
         return Stage(key, command or (), timeout=1200.0, incomplete_reason=reason)
     python = _development_python()
     if not _python_has(python, ("pytest", "httpx", "bs4", "defusedxml")):
         return Stage(key, incomplete_reason="Python dev dependencies are absent; rerun with --bootstrap")
     return Stage(
         key,
-        (str(python), "-m", "pytest", "-q", "--tb=short", "--disable-warnings", *tests),
+        (str(python), "-m", "pytest", "--tb=short", "--disable-warnings", *tests),
         timeout=1200.0,
     )
 
@@ -778,7 +812,7 @@ def _explicit_pytest_stages(tests: list[str], name: str | None = None) -> list[S
             stages.append(stage)
     if linux:
         command, reason = _wsl_backend_command(
-            ("-m", "pytest", "-q", "--tb=short", "--disable-warnings", *linux, *narrow))
+            ("-m", "pytest", "--tb=short", "--disable-warnings", *linux, *narrow))
         stages.append(Stage(
             "backend-linux-explicit", command or (), timeout=1200.0,
             incomplete_reason=reason, named_cases=bool(name),
@@ -894,7 +928,7 @@ def _profile_stages(
         return [
             Stage(
                 "provider-live",
-                (python, "-m", "pytest", "-q", "-m", "live_provider", "tests/live"),
+                (python, "-m", "pytest", "-m", "live_provider", "tests/live"),
                 timeout=1800.0,
                 env={"CE_DECKY_RUN_LIVE_PROVIDER_TESTS": "1"},
                 rerun_command="python scripts/qa.py --profile live",
@@ -1157,6 +1191,7 @@ def _run_stage(stage: Stage, run_root: Path) -> dict[str, object]:
         "stderr_log": str(stderr_path.relative_to(ROOT)),
         "output_tail": combined[-4000:] if status != "passed" else "",
         "exit_code": completed.returncode if completed else None,
+        **({} if (cases := _case_count(combined)) is None else {"cases": cases}),
         **({} if status == "passed" else _failure_digest(combined)),
     }
 
@@ -1230,8 +1265,13 @@ def _write_results(profile: str, source: str, changed: list[str], results: list[
     print(f"QA {profile}: {len(changed)} changed file(s) from {source}")
     for item in results:
         duration = f"{item['duration_seconds']:.1f}s"
+        # What a test stage covered, beside what it cost. A reused stage has no
+        # count of its own: it did not run, and printing the one from the run
+        # that did would say this one proved it.
+        cases = item.get("cases")
+        covered = f", {cases} case{'' if cases == 1 else 's'}" if isinstance(cases, int) else ""
         reason = f" - {item['reason']}" if item.get("reason") else ""
-        print(f"  {str(item['status']).upper():10} {item['key']} ({duration}){reason}")
+        print(f"  {str(item['status']).upper():10} {item['key']} ({duration}{covered}){reason}")
     counts = {status: sum(item["status"] == status for item in results) for status in ("passed", "failed", "incomplete", "skipped")}
     reused_note = f", {len(reused)} reused" if reused else ""
     skipped_note = f", {counts['skipped']} not run" if counts["skipped"] else ""

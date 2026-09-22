@@ -1010,6 +1010,35 @@ def test_a_narrowed_run_that_matched_nothing_is_not_a_run_that_passed():
     assert not qa._ran_no_cases("Tests were skipped by the code under test\n")
 
 
+def test_a_stage_says_how_many_cases_it_ran(monkeypatch):
+    """`PASSED` in eight characters answers what it cost, not what it covered.
+
+    A narrowed selection is run to prove one thing, and a file whose cases were
+    renamed, a path holding fewer than the reader thinks and a whole suite all
+    print the same word. The count was reachable only by opening the stage log
+    and counting the runner's dots.
+    """
+    assert qa._case_count("      Tests  1 passed | 338 skipped (339)\n") == 1
+    assert qa._case_count("...                       [100%]\n11 passed in 0.12s\n") == 11
+    assert qa._case_count("3 failed, 8 passed in 1.02s\n") == 8
+    # Nothing to say rather than a wrong number: a stage that is not a test run,
+    # and a test that prints a line of its own about tests, say nothing here.
+    assert qa._case_count("wrote artifacts/CE-Decky-v0.9.29.zip\n") is None
+    assert qa._case_count("Tests were skipped by the code under test\n") is None
+
+
+def test_the_backend_runner_is_left_able_to_state_its_own_total():
+    """`pytest.ini` already asks for `-q`, and a second one takes the line away.
+
+    That is where the count went: `-qq` prints the dots and no total at all, so
+    the run said how long it took and nothing about what it covered.
+    """
+    stage = qa._backend_full_stage()
+    if stage.command:
+        assert "-q" not in stage.command
+        assert "--tb=short" in stage.command
+
+
 def test_a_phrase_is_narrowed_the_way_each_runner_reads_it():
     """`-k` is an expression and `-t` is text, so the same `--name` is both.
 
