@@ -9,9 +9,11 @@ is off returns to the game without turning it back. The game's own instruction
 then reads an offset as an address and the process dies, minutes later, with no
 sign that a cheat table was involved.
 
-What this reads is the script's own code: labels, direct jumps, and `sub`/`add`
-pairs on the same two operands. Everything else is an opaque instruction that
-changes nothing it tracks.
+What this reads is the script's own code: labels, direct jumps, `sub`/`add`
+pairs on the same two operands, and the `lea` that does the same arithmetic.
+An instruction that writes a register out of that register's own value is a
+transformation this cannot follow, and a path carrying one is not a path this
+can call balanced.
 
 **It answers in one direction only.** A flag comes back as safe when every
 mention of it is a test this could follow and every path through those tests
@@ -43,6 +45,31 @@ _JUMP = re.compile(
     r"\s+(?:short\s+|near\s+)?([A-Za-z_@][\w@]*)\s*$", re.IGNORECASE)
 _LABEL = re.compile(r"^\s*([A-Za-z_][\w]*):\s*$")
 _SUBADD = re.compile(r"^\s*(sub|add)\s+([a-z0-9]+)\s*,\s*([a-z0-9]+)\s*$", re.IGNORECASE)
+# The same arithmetic written as an address calculation, which is how a hook
+# that must not touch the flags moves a pointer: `lea rcx,[rcx-rsi]` and the
+# `lea rcx,[rcx+rsi]` that puts it back.
+_LEA = re.compile(
+    r"^\s*lea\s+([a-z0-9]+)\s*,\s*\[\s*([a-z0-9]+)\s*([+-])\s*([a-z0-9]+)\s*\]\s*$", re.IGNORECASE)
+# A general-purpose register, which is what a hook hands the game back. A
+# floating-point register carries a cheat's own multiplier rather than the
+# address the game is about to read, so it is not what this is looking for.
+_REGISTER = (
+    r"(?:r[abcd]x|r[sd]i|r[sb]p|r(?:8|9|1[0-5])[dwb]?|e[abcd]x|e[sd]i|e[sb]p"
+    r"|[abcd]x|[abcd][lh]|[sd]il|spl|bpl)")
+# An instruction that writes one of those registers, and what it reads to do it.
+_WRITES = re.compile(rf"^\s*([a-z][a-z0-9]*)\s+({_REGISTER})\s*(?:,\s*(.*))?$", re.IGNORECASE)
+# Instructions that read a register without writing it, so a hook is free to
+# use them between a modification and the branch that undoes it.
+_READ_ONLY = frozenset({"cmp", "test", "push", "ret", "retn", "nop", "call", "int", "int3"})
+# Instructions that replace a register's whole value out of somewhere else. What
+# they overwrite is gone whichever way the flag goes, so they are not something
+# one branch has to put back - unless the register already carries a
+# modification this is waiting to see undone, which is that modification being
+# lost rather than restored.
+_REPLACES = frozenset({
+    "mov", "movsx", "movsxd", "movzx", "movaps", "movss", "movsd", "movups", "pop",
+    "cvtss2si", "cvtsi2ss", "cvttss2si", "cvtsd2si", "cvtsi2sd",
+})
 # A test of one of the table's own flags against a number. The right side has
 # to be a literal: `cmp qword ptr [pPlayerStats],rsi` is the script comparing a
 # pointer it captured, which is not a switch and not this question.
@@ -80,6 +107,36 @@ def _without_comment(line: str) -> str:
     return line
 
 
+def _changes_a_register(line: str, pending: list[tuple[str, str]]) -> bool:
+    """Whether this line changes a register in a way the walk cannot follow.
+
+    The question is not whether the line writes a register. A hook loads what it
+    needs into scratch registers before it tests anything, and that load happens
+    whichever way the flag goes, so it is never the difference between a cheat
+    being on and the game being handed something it cannot use.
+
+    What is that difference is a register whose own value an instruction
+    transforms, because such a value has to be put back and this can only
+    recognise `sub`/`add` and the `lea` spelling of them putting it back. A
+    shift, a negation, an address calculation into some other register and an
+    instruction this has never heard of are all read as one of those, and the
+    unknown mnemonic is read that way deliberately: the answer this file may not
+    give is `safe`.
+    """
+    found = _WRITES.match(line)
+    if not found:
+        return False
+    mnemonic, into, reads = found.group(1).lower(), found.group(2).lower(), found.group(3)
+    if mnemonic in _READ_ONLY:
+        return False
+    sources = {word.lower() for word in _WORD.findall(reads or "")}
+    if into in sources or mnemonic not in _REPLACES:
+        return True
+    # A replacement is only a loss where it overwrites a modification this is
+    # still waiting to see undone.
+    return any(into == left for left, _right in pending)
+
+
 class _Script:
     def __init__(self, lines: list[str]) -> None:
         self.lines = lines
@@ -97,31 +154,57 @@ class _Script:
         from a pointer, tests, and adds it back on its way out. Each state
         carries the flags whose branches it took, which is what names the cheats
         whose being off leads to an exit that never added it back.
+
+        A flag is carried into both sides of its own branch. Which side runs
+        when the flag is off is the switch's own key, which this does not read,
+        and the dangerous shape is written either way round: a hook that tests
+        for zero and jumps to its restore leaves the unbalanced exit on the side
+        the branch falls through to. Attributing one side only reported such a
+        flag as safe, which is the one answer this may not give.
+
+        A path also carries whether something happened on it that this cannot
+        read, and that never comes off again. An instruction that writes a
+        register out of that register's own value is a modification like the
+        `sub` above, without the `add` this would recognise as putting it back;
+        a load into a register that is already carrying one loses the value the
+        `add` was going to restore. Either way the exits after it are exits this
+        cannot call balanced.
         """
-        seen: set[tuple[int, tuple, frozenset[str]]] = set()
+        seen: set[tuple[int, tuple, bool, frozenset[str]]] = set()
         found: set[tuple[tuple, frozenset[str]]] = set()
-        work: list[tuple[int, tuple, frozenset[str]]] = [(start, (), frozenset())]
+        work: list[tuple[int, tuple, bool, frozenset[str]]] = [(start, (), False, frozenset())]
         while work:
-            index, balance, because = work.pop()
-            key = (index, balance, because)
+            index, balance, opaque, because = work.pop()
+            key = (index, balance, opaque, because)
             if key in seen:
                 continue
             seen.add(key)
             if len(seen) > MAX_STATES or len(balance) > MAX_PENDING:
                 return {((_UNREADABLE,), because)}
             if index >= len(self.lines):
-                if balance:
+                if balance or opaque:
                     found.add((balance, because))
                 continue
             line = self.lines[index]
             state = list(balance)
+            lea = _LEA.match(line)
             edit = _SUBADD.match(line)
-            if edit:
+            if lea:
+                into, base, sign, other = (group.lower() for group in lea.groups())
+                if into == base and sign == "-":
+                    state.append((into, other))
+                elif into == base and (into, other) in state:
+                    state.remove((into, other))
+                else:
+                    opaque = True
+            elif edit:
                 kind, left, right = edit.group(1).lower(), edit.group(2).lower(), edit.group(3).lower()
                 if kind == "sub":
                     state.append((left, right))
                 elif (left, right) in state:
                     state.remove((left, right))
+            elif not (_JUMP.match(line) or _RETURN.match(line) or _LABEL.match(line) or _DATA.match(line)):
+                opaque = opaque or _changes_a_register(line, state)
             now = tuple(state)
             hop = _JUMP.match(line)
             if hop:
@@ -133,20 +216,20 @@ class _Script:
                     # Returning to the game is this hook's exit: the injection
                     # template names that label for the point it came from, and
                     # what the game does next is not this question.
-                    if now:
+                    if now or opaque:
                         found.add((now, taken))
                 elif target not in self.at:
                     found.add(((_UNREADABLE,), taken))
                 else:
-                    work.append((self.at[target], now, taken))
+                    work.append((self.at[target], now, opaque, taken))
                 if conditional:
-                    work.append((index + 1, now, because))
+                    work.append((index + 1, now, opaque, taken))
                 continue
             if _RETURN.match(line):
-                if now:
+                if now or opaque:
                     found.add((now, because))
                 continue
-            work.append((index + 1, now, because))
+            work.append((index + 1, now, opaque, because))
         return found
 
 

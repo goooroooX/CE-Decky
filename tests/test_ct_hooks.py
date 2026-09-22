@@ -110,3 +110,100 @@ dd 1
 [DISABLE]
 """
     assert flags_safe_to_switch_off(script) == frozenset()
+
+
+FALLTHROUGH = """
+[ENABLE]
+label(bEnableThing)
+registersymbol(bEnableThing)
+lblHook:
+sub rcx,rsi
+cmp dword ptr [bEnableThing],0
+jne lblHookRestore
+jmp lblHookRet
+lblHookRestore:
+add rcx,rsi
+jmp lblHookRet
+bEnableThing:
+dd 1
+[DISABLE]
+"""
+
+
+def test_the_unsafe_exit_counts_whichever_side_of_the_branch_it_is_on():
+    """The same hook written the other way round is the same hook.
+
+    Which branch runs when the flag is off is the switch's own key, and this
+    reader does not know it. A hook that tests for zero and jumps to its restore
+    leaves the exit that never restores on the side the branch falls through to,
+    and attributing the flag to the jump alone reported it as safe.
+    """
+    assert "bEnableThing" not in flags_safe_to_switch_off(FALLTHROUGH)
+
+
+def test_the_same_shape_written_as_an_address_calculation_is_the_same_shape():
+    """A hook that must not touch the flags moves its pointer with `lea`."""
+    script = FALLTHROUGH.replace("sub rcx,rsi", "lea rcx,[rcx-rsi]").replace("add rcx,rsi", "lea rcx,[rcx+rsi]")
+    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+    # And the balanced spelling of it is still a hook this can follow, because
+    # refusing every `lea` would leave the reader with nothing to prove.
+    balanced = script.replace("jmp lblHookRet\nlblHookRestore:", "lblHookRestore:")
+    assert "bEnableThing" in flags_safe_to_switch_off(balanced)
+
+
+def test_a_transformation_this_does_not_model_is_not_a_balanced_one():
+    """A shift is a modification with no `add` to recognise as putting it back."""
+    script = FALLTHROUGH.replace("sub rcx,rsi", "shl rcx,04").replace("add rcx,rsi", "shr rcx,04")
+    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+
+
+def test_a_modification_overwritten_before_its_restore_is_not_restored():
+    """The `add` at the end put back a value that was no longer there.
+
+    The register was loaded with something else in between, so the arithmetic
+    this reader pairs up balances while the hook does not.
+    """
+    script = """
+[ENABLE]
+label(bEnableThing)
+registersymbol(bEnableThing)
+lblHook:
+sub rcx,rsi
+mov rcx,[rdx+08]
+cmp dword ptr [bEnableThing],1
+jne lblHookSkip
+mulss xmm0,[fThingMod]
+lblHookSkip:
+add rcx,rsi
+jmp lblHookRet
+bEnableThing:
+dd 1
+[DISABLE]
+"""
+    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+
+
+def test_what_a_hook_loads_before_it_tests_anything_is_not_a_finding():
+    """It happens whichever way the flag goes, so it is never the difference.
+
+    A hook reads what it needs into scratch registers first. Treating that as a
+    modification somebody has to undo would refuse the ordinary shape and leave
+    this reader with no positive answer to give.
+    """
+    script = """
+[ENABLE]
+label(bEnableThing)
+registersymbol(bEnableThing)
+lblHook:
+mov r10,[rbx+20]
+movsxd r11,[iOwnerOffset]
+cmp dword ptr [bEnableThing],1
+jne lblHookSkip
+mulss xmm1,[fThingMod]
+lblHookSkip:
+jmp lblHookRet
+bEnableThing:
+dd 1
+[DISABLE]
+"""
+    assert "bEnableThing" in flags_safe_to_switch_off(script)
