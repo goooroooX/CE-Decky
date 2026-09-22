@@ -282,3 +282,21 @@ def test_a_label_named_like_a_branch_is_still_a_label():
     for label in ("jumpTable", "loopTop"):
         script = BALANCED.replace("lblHookRestore", label)
         assert "bEnableThing" in flags_safe_to_switch_off(script), label
+
+
+def test_a_register_one_side_of_the_flag_replaces_is_not_proven_safe():
+    """Both sides return to the game, and only one of them changed what it reads.
+
+    Which side runs when the flag is off is the switch's own key, which this
+    reader does not read, so a load on one side is a register the off state may
+    hand the game. Measured on the table the crash came from, this refuses the
+    three hooks that load `r10` or convert into `r8d` behind their flag.
+    """
+    one_side = BALANCED.replace("sub rcx,rsi\n", "").replace("add rcx,rsi\n", "")
+    assert "bEnableThing" in flags_safe_to_switch_off(one_side)
+    for change in ("mov rcx,[rdx+08]", "movsxd r10,[rbx+04]", "cvtss2si r8d,xmm5", "pop rcx", "push rax"):
+        script = one_side.replace("mulss xmm0,[fThingMod]", change)
+        assert "bEnableThing" not in flags_safe_to_switch_off(script), change
+    # The same load made before the flag is tested happens either way.
+    before = one_side.replace("lblHook:\n", "lblHook:\nmov r10,[rbx+20]\n")
+    assert "bEnableThing" in flags_safe_to_switch_off(before)

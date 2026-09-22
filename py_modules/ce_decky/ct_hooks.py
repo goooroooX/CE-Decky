@@ -17,7 +17,10 @@ can call balanced. An `add` with no `sub` to pair it with is one of those. So is
 a call made once something is waiting to be undone or once a flag has been
 tested, because the callee is code this does not walk and nothing obliges it to
 leave a register alone; and a branch whose target this cannot name is an exit
-it cannot read.
+it cannot read. Once a flag has been tested, a load into a register and a push
+or a pop are refused too: they are one side of the branch handing the game a
+register or a stack the other side does not, and which side is off is the
+switch's own key, which this does not read.
 
 **It answers in one direction only.** A flag comes back as safe when every
 mention of it is a test this could follow and every path through those tests
@@ -88,6 +91,10 @@ _ANY_JUMP = re.compile(r"^\s*(j[a-z]+|loop[a-z]*)\b", re.IGNORECASE)
 # A call runs code this does not walk, and nothing obliges it to leave a
 # register the way it found it.
 _CALL = re.compile(r"^\s*call\b", re.IGNORECASE)
+# What moves the stack pointer by itself. Paired on one path it is the hook
+# saving what it uses; on one side of a flag only, it is an exit that hands the
+# game a stack the other side does not.
+_STACK = re.compile(r"^\s*(push|pop)[a-z]*\b", re.IGNORECASE)
 # The lines a symbol is allowed to appear in without being a use of its value:
 # its own declaration, and the directives that give it a name.
 _DECLARES = re.compile(r"^\s*(label|registersymbol|unregistersymbol|alloc|globalalloc)\s*\(", re.IGNORECASE)
@@ -117,13 +124,15 @@ def _without_comment(line: str) -> str:
     return line
 
 
-def _changes_a_register(line: str, pending: list[tuple[str, str]]) -> bool:
+def _changes_a_register(line: str, pending: list[tuple[str, str]], dependent: bool = False) -> bool:
     """Whether this line changes a register in a way the walk cannot follow.
 
     The question is not whether the line writes a register. A hook loads what it
     needs into scratch registers before it tests anything, and that load happens
     whichever way the flag goes, so it is never the difference between a cheat
-    being on and the game being handed something it cannot use.
+    being on and the game being handed something it cannot use. After a flag
+    has been tested (`dependent`) the same load is exactly that difference, so
+    it counts there.
 
     What is that difference is a register whose own value an instruction
     transforms, because such a value has to be put back and this can only
@@ -141,6 +150,12 @@ def _changes_a_register(line: str, pending: list[tuple[str, str]]) -> bool:
         return False
     sources = {word.lower() for word in _WORD.findall(reads or "")}
     if into in sources or mnemonic not in _REPLACES:
+        return True
+    # Once a flag has been tested, a replacement is no longer something that
+    # happens whichever way the flag goes: it is one side of the branch handing
+    # the game a register the other side does not, and which side is off is the
+    # switch's own key, which this does not read.
+    if dependent:
         return True
     # A replacement is only a loss where it overwrites a modification this is
     # still waiting to see undone.
@@ -226,6 +241,11 @@ class _Script:
                 # unpaired `add`; after either, the `add` this pairs may be
                 # restoring a value the callee already replaced.
                 opaque = opaque or bool(state) or bool(because)
+            elif _STACK.match(line) and because:
+                # After a flag is tested, a push or a pop is one side of the
+                # branch moving the stack and, for a pop, replacing a register,
+                # and this does not know which side is off.
+                opaque = True
             elif _ANY_JUMP.match(line) and not (_JUMP.match(line) or _LABEL.match(line)):
                 # A branch whose target this cannot name is not a line to walk
                 # past. Where it goes is unknown, and so is what it undoes.
@@ -234,7 +254,7 @@ class _Script:
                     work.append((index + 1, tuple(state), True, because))
                 continue
             elif not (_JUMP.match(line) or _RETURN.match(line) or _LABEL.match(line) or _DATA.match(line)):
-                opaque = opaque or _changes_a_register(line, state)
+                opaque = opaque or _changes_a_register(line, state, bool(because))
             now = tuple(state)
             hop = _JUMP.match(line)
             if hop:
