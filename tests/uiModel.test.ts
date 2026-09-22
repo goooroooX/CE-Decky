@@ -74,6 +74,7 @@ import {
   safeActionableControls,
   scriptDefaultsOn,
   scriptDefaultsSentence,
+  switchAfterStopRefusal,
   sortPinnedControls,
   startupParentWarnings,
   withoutKnownLaunchers,
@@ -1138,6 +1139,19 @@ describe("compact cheat rows", () => {
     // promises how many the picker holds.
     expect(scriptDefaultsOn(inspection([flag(1, "1"), flag(2, "1")], [2])))
       .toEqual({ on: 1, switches: 1, unsafe: 1 });
+  });
+
+  it("refuses another table only after a stop that could not prove the game clean", () => {
+    expect(switchAfterStopRefusal({ stopped: false, cleanupConfirmed: null, unsettled: [] })).toBeNull();
+    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: true, unsettled: [] })).toBeNull();
+    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: false, unsettled: ["6"] }))
+      .toContain("One cheat from the table that was running could not be switched off");
+    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: false, unsettled: ["6", "7"] }))
+      .toContain("2 cheats from the table that was running");
+    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: false, unsettled: [] }))
+      .toContain("could not confirm the cheats from the table that was running were switched off");
+    // A stop that ended Cheat Engine with no verdict at all is not a clean one.
+    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: null, unsettled: [] })).toContain("Restart the game");
   });
 
   it("promises only the chosen cheats where every default can be held off", () => {

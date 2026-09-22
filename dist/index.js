@@ -4875,6 +4875,24 @@ function switchCandidates(scripts, controls, requested) {
     return [...held.values()];
 }
 /**
+ * Why another table may not be started after this stop, or nothing where it may.
+ *
+ * Only a stop that ended a Cheat Engine and could not prove the game clean
+ * refuses. One that found nothing running left nothing behind, and one that
+ * proved every cheat put down, or the game gone, is the clean answer the
+ * backend gives for both. Everything else is a game still carrying what the
+ * last table changed, with no Cheat Engine left that could undo it.
+ */
+function switchAfterStopRefusal(verdict) {
+    if (!verdict.stopped || verdict.cleanupConfirmed === true)
+        return null;
+    const left = verdict.unsettled.length;
+    const what = left > 0
+        ? `${left === 1 ? "One cheat" : `${left} cheats`} from the table that was running could not be switched off`
+        : "CE Decky could not confirm the cheats from the table that was running were switched off";
+    return `${what}, and nothing can undo them now that its Cheat Engine has stopped. Restart the game before starting a table in it; nothing was saved or started.`;
+}
+/**
  * The one sentence about the cheats that stayed on, or nothing where none did.
  *
  * Named rather than counted: these are cheats running in somebody's game that
@@ -8843,6 +8861,35 @@ function boundName(name) {
     const characters = Array.from(name);
     return characters.length > NAME_CHARACTERS
         ? `${characters.slice(0, NAME_CHARACTERS).join("")}…` : name;
+}
+
+let held = null;
+/** Hold this game, for the reason the reader is given when a start is refused. */
+function holdUncleanGame(appId, reason) {
+    held = { appId, reason, pids: null };
+}
+/** Why no table may be started in this game now, or nothing where one may. */
+function uncleanGameReason(appId) {
+    return held?.appId === appId ? held.reason : null;
+}
+/**
+ * Read what the launcher sees of the held game, and say whether that lifted it.
+ *
+ * A game seen not running, or running as other processes than the run the hold
+ * was taken in, has taken whatever was left in it with it.
+ */
+function observeUncleanGame(appId, capability) {
+    const game = capability.game;
+    if (!held || appId !== held.appId || !game || game.app_id !== appId)
+        return false;
+    const pids = game.pids ?? [];
+    if (!game.running || (held.pids !== null && !pids.some((pid) => held.pids.includes(pid)))) {
+        held = null;
+        return true;
+    }
+    if (held.pids === null && pids.length > 0)
+        held = { ...held, pids };
+    return false;
 }
 
 /**
@@ -13997,6 +14044,8 @@ function Content() {
         }
         if (generation !== launchGenerationRef.current)
             return next;
+        if (observeUncleanGame(appId, next))
+            logUi("panel.unclean_game_cleared", { app_id: appId, running: next.game?.running ?? null });
         setCELaunchError(null);
         setCELaunch({ appId, capability: next });
         setLaunchProtonToolId((current) => next.observed_proton_tool?.tool_id
@@ -15287,12 +15336,21 @@ function Content() {
             throw new Error("CE Decky could not prove that the owned Cheat Engine process stopped; the session was left unchanged.");
         }
         dropLiveSnapshot();
-        return result.stopped;
+        const verdict = { stopped: result.stopped, cleanupConfirmed: quiesce?.cleanup_confirmed ?? null, unsettled: left };
+        const refusal = switchAfterStopRefusal(verdict);
+        if (refusal) {
+            holdUncleanGame(appId, refusal);
+            logUiWarning("panel.unclean_game_held", {
+                app_id: appId, cleanup_confirmed: verdict.cleanupConfirmed, unsettled: left.join(",") || null,
+            });
+        }
+        return verdict;
     };
     const stopOwnedCE = async (appId, tableSha256) => {
-        await requestOwnedCEStop(appId, tableSha256);
+        const verdict = await requestOwnedCEStop(appId, tableSha256);
         await refreshCELaunch(appId).catch(() => undefined);
         await refreshRuntime(appId).catch(() => undefined);
+        return verdict;
     };
     /**
      * Name the cheats a successful startup left on that nobody chose.
@@ -15455,6 +15513,17 @@ function Content() {
             if (hadOwnedCE && (changingIdentity || !beforeRuntimeReady)) {
                 report("Stopping the Cheat Engine that is already running");
                 await stopOwnedCE(game.appId);
+            }
+            // The stop has already warned, and for a stop that is the whole answer:
+            // ending Cheat Engine is its job. This goes on to start a table in the
+            // same game, and what the last one left changed can no longer be put
+            // back - its restore resolves symbols belonging to the Cheat Engine that
+            // was ended. So nothing is saved or started until the game has been seen
+            // not running, whether that stop was this one or an earlier one.
+            const unclean = uncleanGameReason(game.appId);
+            if (unclean) {
+                logUiWarning("panel.activation_refused_unclean_game", { app_id: game.appId, table: table.sha256.slice(0, 12) });
+                throw new Error(unclean);
             }
             report("Saving the selected table");
             // Two independent durable mutations, reconciled one at a time. A
@@ -15681,7 +15750,7 @@ function Content() {
                     activation.stopState = "pending";
                     activation.stopAttempt = Promise.resolve().then(async () => {
                         try {
-                            const stopped = await requestOwnedCEStop(activation.appId);
+                            const { stopped } = await requestOwnedCEStop(activation.appId);
                             activation.stopState = stopped ? "confirmed" : "failed";
                         }
                         catch (cause) {
@@ -16470,6 +16539,9 @@ function Content() {
             // a proven absence stops the launch: a read that fails proves nothing,
             // and a game that is running the target is the ordinary case.
             const live = await refreshCELaunch(game.appId).catch(() => null);
+            const unclean = uncleanGameReason(game.appId);
+            if (unclean)
+                throw new Error(unclean);
             const targetNotRunning = live ? absentLiveTarget(live.game, process) : null;
             if (targetNotRunning) {
                 throw new Error(`${process} is not running in this game. This game is running ${targetNotRunning.join(", ")}. Set the target under Advanced, then start Cheat Engine.`);
@@ -16844,7 +16916,10 @@ function Content() {
             || runtime?.connected
             || busyRef.current
             || contextModalDepthRef.current > 0
-            || managedSetupPending)
+            || managedSetupPending
+            // Nobody is watching this one, so it may not start a table in a game a
+            // stop could not prove clean; the game being seen not running re-arms it.
+            || uncleanGameReason(selectedGame.appId) !== null)
             return;
         const key = `${selectedGame.appId}:${profile.table_sha256}:${profile.target_process}`;
         if (autoloadAttemptRef.current === key)

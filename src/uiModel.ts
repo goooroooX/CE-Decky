@@ -1927,6 +1927,34 @@ function switchCandidates(
   return [...held.values()];
 }
 
+/** What a stop of the owned Cheat Engine established about the game it left. */
+export interface OwnedStopVerdict {
+  /** Whether an owned Cheat Engine was running and was ended. */
+  stopped: boolean;
+  /** `true` only where every cheat was put down or the game has exited; `null` where nothing was asked. */
+  cleanupConfirmed: boolean | null;
+  /** The cheats the stop named as still on. */
+  unsettled: readonly string[];
+}
+
+/**
+ * Why another table may not be started after this stop, or nothing where it may.
+ *
+ * Only a stop that ended a Cheat Engine and could not prove the game clean
+ * refuses. One that found nothing running left nothing behind, and one that
+ * proved every cheat put down, or the game gone, is the clean answer the
+ * backend gives for both. Everything else is a game still carrying what the
+ * last table changed, with no Cheat Engine left that could undo it.
+ */
+export function switchAfterStopRefusal(verdict: OwnedStopVerdict): string | null {
+  if (!verdict.stopped || verdict.cleanupConfirmed === true) return null;
+  const left = verdict.unsettled.length;
+  const what = left > 0
+    ? `${left === 1 ? "One cheat" : `${left} cheats`} from the table that was running could not be switched off`
+    : "CE Decky could not confirm the cheats from the table that was running were switched off";
+  return `${what}, and nothing can undo them now that its Cheat Engine has stopped. Restart the game before starting a table in it; nothing was saved or started.`;
+}
+
 /**
  * The one sentence about the cheats that stayed on, or nothing where none did.
  *

@@ -88,7 +88,8 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { holdUncleanGame, observeUncleanGame, uncleanGameReason } from "./uncleanGame";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, switchAfterStopRefusal, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -513,6 +514,7 @@ function Content() {
       throw cause;
     }
     if (generation !== launchGenerationRef.current) return next;
+    if (observeUncleanGame(appId, next)) logUi("panel.unclean_game_cleared", { app_id: appId, running: next.game?.running ?? null });
     setCELaunchError(null);
     setCELaunch({ appId, capability: next });
     setLaunchProtonToolId((current) => next.observed_proton_tool?.tool_id
@@ -1806,7 +1808,7 @@ function Content() {
     }
   };
 
-  const requestOwnedCEStop = async (appId: number, tableSha256?: string): Promise<boolean> => {
+  const requestOwnedCEStop = async (appId: number, tableSha256?: string): Promise<OwnedStopVerdict> => {
     // Said before it happens, because it is more of the table's own code than
     // CE Decky runs at any other moment: switching a cheat off runs the
     // script's `[DISABLE]`, which is what puts the game's bytes back. The user
@@ -1854,13 +1856,22 @@ function Content() {
       throw new Error("CE Decky could not prove that the owned Cheat Engine process stopped; the session was left unchanged.");
     }
     dropLiveSnapshot();
-    return result.stopped;
+    const verdict: OwnedStopVerdict = { stopped: result.stopped, cleanupConfirmed: quiesce?.cleanup_confirmed ?? null, unsettled: left };
+    const refusal = switchAfterStopRefusal(verdict);
+    if (refusal) {
+      holdUncleanGame(appId, refusal);
+      logUiWarning("panel.unclean_game_held", {
+        app_id: appId, cleanup_confirmed: verdict.cleanupConfirmed, unsettled: left.join(",") || null,
+      });
+    }
+    return verdict;
   };
 
-  const stopOwnedCE = async (appId: number, tableSha256?: string): Promise<void> => {
-    await requestOwnedCEStop(appId, tableSha256);
+  const stopOwnedCE = async (appId: number, tableSha256?: string): Promise<OwnedStopVerdict> => {
+    const verdict = await requestOwnedCEStop(appId, tableSha256);
     await refreshCELaunch(appId).catch(() => undefined);
     await refreshRuntime(appId).catch(() => undefined);
+    return verdict;
   };
 
   /**
@@ -2023,6 +2034,17 @@ function Content() {
       if (hadOwnedCE && (changingIdentity || !beforeRuntimeReady)) {
         report("Stopping the Cheat Engine that is already running");
         await stopOwnedCE(game.appId);
+      }
+      // The stop has already warned, and for a stop that is the whole answer:
+      // ending Cheat Engine is its job. This goes on to start a table in the
+      // same game, and what the last one left changed can no longer be put
+      // back - its restore resolves symbols belonging to the Cheat Engine that
+      // was ended. So nothing is saved or started until the game has been seen
+      // not running, whether that stop was this one or an earlier one.
+      const unclean = uncleanGameReason(game.appId);
+      if (unclean) {
+        logUiWarning("panel.activation_refused_unclean_game", { app_id: game.appId, table: table.sha256.slice(0, 12) });
+        throw new Error(unclean);
       }
       report("Saving the selected table");
       // Two independent durable mutations, reconciled one at a time. A
@@ -2274,7 +2296,7 @@ function Content() {
             activation.stopState = "pending";
             activation.stopAttempt = Promise.resolve().then(async () => {
               try {
-                const stopped = await requestOwnedCEStop(activation.appId!);
+                const { stopped } = await requestOwnedCEStop(activation.appId!);
                 activation.stopState = stopped ? "confirmed" : "failed";
               } catch (cause) {
                 activation.stopState = "failed";
@@ -3142,6 +3164,8 @@ function Content() {
       // a proven absence stops the launch: a read that fails proves nothing,
       // and a game that is running the target is the ordinary case.
       const live = await refreshCELaunch(game.appId).catch(() => null);
+      const unclean = uncleanGameReason(game.appId);
+      if (unclean) throw new Error(unclean);
       const targetNotRunning = live ? absentLiveTarget(live.game, process) : null;
       if (targetNotRunning) {
         throw new Error(`${process} is not running in this game. This game is running ${targetNotRunning.join(", ")}. Set the target under Advanced, then start Cheat Engine.`);
@@ -3526,6 +3550,9 @@ function Content() {
       || busyRef.current
       || contextModalDepthRef.current > 0
       || managedSetupPending
+      // Nobody is watching this one, so it may not start a table in a game a
+      // stop could not prove clean; the game being seen not running re-arms it.
+      || uncleanGameReason(selectedGame.appId) !== null
     ) return;
     const key = `${selectedGame.appId}:${profile.table_sha256}:${profile.target_process}`;
     if (autoloadAttemptRef.current === key) return;
