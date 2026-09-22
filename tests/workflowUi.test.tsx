@@ -2697,6 +2697,31 @@ describe("Home panel and managed setup", () => {
     ...overrides,
   }) as any;
 
+  it("says on Advanced what a fixed copy was made from and what it cost", async () => {
+    // A copy CE Decky made carries no origin, because no provider served these
+    // bytes, so the row that names where a table came from was absent for
+    // exactly the tables whose provenance is least obvious from the name.
+    const snapshot = status(true) as any;
+    const source = { ...snapshot.tables[0], sha256: "c".repeat(64), filename: "Downloaded.CT" };
+    snapshot.tables = [
+      source,
+      { ...snapshot.tables[0], derived_from: { sha256: source.sha256, transforms: ["remove-signature", "drop-unmatched-scans"], scans: ["aobHealth"], orphaned: ["Health"] } },
+    ];
+    render(<AdvancedModal {...blocklistProps({ status: snapshot, blockedTables: [], onRefreshBlockedTables: vi.fn().mockResolvedValue({ tables: [], reason: null }) })} />);
+
+    const row = await screen.findByTestId("active-table-derived");
+    expect(row.textContent).toMatch(/Fixed copy/);
+    // One line: where it came from, what went, and what it cost.
+    expect(row.textContent).toMatch(/from Downloaded\.CT · signature removed · code for 1 missing pattern removed · 1 cheat gone/);
+    // The whole account is behind the press every row here has, not on the row.
+    expect(row.textContent).not.toMatch(/no source vouched/);
+    fireEvent.click(within(row).getByRole("button", { name: "?" }));
+    const opened = screen.getByTestId("active-table-derived").textContent ?? "";
+    expect(opened).toMatch(/aobHealth/);
+    expect(opened).toMatch(/still on this device/);
+    expect(opened).toMatch(/its own authorization/);
+  });
+
   it("keeps the blocklist to one panel row and reaches every entry through Review", async () => {
     // Distinct leading hex per entry: the row identity is the digest prefix.
     const entry = (index: number) => ({
@@ -2706,7 +2731,9 @@ describe("Home panel and managed setup", () => {
       app_id: 10,
       game_name: "Example",
       game_version: "1.2.3",
-      recorded_at: 1_700_000_000,
+      // A day apart each, because a record that collected over weeks is what
+      // the row above them describes and a single date says nothing about one.
+      recorded_at: 1_700_000_000 - index * 86_400,
     });
     const all = Array.from({ length: 20 }, (_, index) => entry(index));
     const onRefreshBlockedTables = vi.fn()
@@ -2756,6 +2783,10 @@ describe("Home panel and managed setup", () => {
     // costs one row and everything below it stays reachable.
     expect(screen.queryAllByTestId(/^blocked-table-/)).toHaveLength(0);
     expect(screen.getByText("newest 2023-11-14")).toBeTruthy();
+    // And a description, because this is the one row here whose list is on
+    // another screen: what it says is what cannot be read off the entries from
+    // here, which is how far the record spreads and how far back it goes.
+    expect(screen.getByTestId("blocked-tables").textContent).toMatch(/Example · since 2023-10-26/);
     // Advanced's own last section must not have been pushed off by the record.
     expect(screen.getByText("Plugin data on disk")).toBeTruthy();
 

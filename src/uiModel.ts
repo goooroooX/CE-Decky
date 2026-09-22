@@ -1620,6 +1620,56 @@ export function blockedRecordedOn(seconds: number): string | null {
   return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }
 
+/**
+ * What the record of refused tables holds, in one line, for the row above it.
+ *
+ * The row that summarises this record said how many entries there are and when
+ * the newest arrived, and then nothing: the causes are in the help, deliberately,
+ * because six lines of prose above three entries is a screen explaining itself.
+ * That left the row a heading with no description while every row beside it has
+ * one, and on Advanced the entries it stands for are on another screen, so what
+ * it can usefully say is what cannot be read off them from here: how far the
+ * record spreads, and how far back it goes. The screen that does list them uses
+ * the same line, so the two cannot describe different records.
+ *
+ * The game leads, because that is what this list is scanned by. One game is
+ * named; more are counted, since names here are long and the row is one line.
+ * An entry keyed by a provider row rather than by bytes is counted apart, as
+ * the one kind that never produced a file and so answers for a row instead of a
+ * table.
+ */
+export function blockedRecordShape(tables: readonly BlockedTable[]): string | null {
+  if (tables.length === 0) return null;
+  const games = new Map<number, string | null>();
+  let unattributed = 0;
+  let withoutBytes = 0;
+  let oldest: number | null = null;
+  let newest: number | null = null;
+  for (const entry of tables) {
+    if (typeof entry.app_id === "number") games.set(entry.app_id, entry.game_name ?? null);
+    else unattributed += 1;
+    if (!entry.sha256) withoutBytes += 1;
+    if (Number.isFinite(entry.recorded_at) && entry.recorded_at > 0) {
+      oldest = oldest === null ? entry.recorded_at : Math.min(oldest, entry.recorded_at);
+      newest = newest === null ? entry.recorded_at : Math.max(newest, entry.recorded_at);
+    }
+  }
+  const parts: string[] = [];
+  if (games.size === 1) {
+    const [only] = [...games.values()];
+    parts.push(only?.trim() || "one game");
+  } else if (games.size > 1) parts.push(`${games.size} games`);
+  if (unattributed > 0) parts.push(`${unattributed} for no game of this device's`);
+  if (withoutBytes > 0) parts.push(`${withoutBytes} without a file of its own`);
+  // Only where it says something the newest does not, which is a record that
+  // has been collecting rather than one written this afternoon. The row already
+  // carries the newest beside it, so a record made in one day would otherwise
+  // print the same date twice.
+  const since = oldest === null ? null : blockedRecordedOn(oldest);
+  if (since && newest !== null && since !== blockedRecordedOn(newest)) parts.push(`since ${since}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function blockedTableLookups(tables: readonly BlockedTable[]): BlockedLookups {
   const byDigest: Record<string, BlockedMark> = {};
   const byArtifact: Record<string, BlockedMark[]> = {};
@@ -1917,6 +1967,44 @@ export function derivedFromLabel(table: Pick<TableStatus, "derived_from">): stri
 }
 
 /**
+ * The same two facts in the space a row has: what was taken out, and what it cost.
+ *
+ * A copy CE Decky made carries no origin, because no provider served these
+ * bytes, so the row that names where a table came from is absent for exactly
+ * the tables whose provenance is the least obvious. This is that row: the table
+ * it was made from, what was removed, and whether any cheat went with it. The
+ * whole account is one press away rather than on the row, because a screen that
+ * explains itself in four lines is a screen that shows less of what it holds.
+ */
+export function derivedSummaryLine(
+  derivation: TableDerivation | null | undefined,
+  sourceFilename?: string | null,
+): string | null {
+  if (!derivation) return null;
+  const parts: string[] = [];
+  for (const transform of derivation.transforms) {
+    if (transform === "remove-signature") parts.push("signature removed");
+    else if (transform === "drop-unmatched-scans") {
+      const scans = derivation.scans?.length ?? 0;
+      parts.push(scans === 0
+        ? "code for a missing pattern removed"
+        : scans === 1 ? "code for 1 missing pattern removed" : `code for ${scans} missing patterns removed`);
+    } else parts.push("a change this version cannot name");
+  }
+  // A record naming no transform at all is one the store refuses to write and
+  // drops when it cannot read it, so this is the belt on that brace. What it
+  // may not do is leave the row with a label and nothing under it, which is the
+  // state this row exists to end.
+  if (parts.length === 0) parts.push("what was changed is not recorded");
+  const orphaned = derivation.orphaned?.length ?? 0;
+  // The cost belongs on the row rather than behind the press, because it is
+  // what makes this copy different from the table somebody chose.
+  parts.push(orphaned === 0 ? "no cheat lost" : orphaned === 1 ? "1 cheat gone" : `${orphaned} cheats gone`);
+  const source = sourceFilename?.trim() || derivation.sha256.slice(0, 12);
+  return [`from ${source}`, ...parts].join(" · ");
+}
+
+/**
  * What CE Decky changed in a copy it made, and what that copy cost.
  *
  * Said on the copy rather than on the press that made it, because this is where
@@ -1930,6 +2018,8 @@ export function derivedFromLabel(table: Pick<TableStatus, "derived_from">): stri
  * possible on a record written by a build that knew a transform this one does
  * not, and it is described as a change this build cannot name rather than
  * passed through as a symbol nobody can read.
+ *
+ * The long form of `derivedSummaryLine`, which is the row this opens from.
  */
 export function derivedChangeSentence(derivation: TableDerivation | null | undefined): string | null {
   if (!derivation) return null;

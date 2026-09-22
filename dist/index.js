@@ -4586,6 +4586,64 @@ function blockedRecordedOn(seconds) {
     const when = new Date(seconds * 1000);
     return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }
+/**
+ * What the record of refused tables holds, in one line, for the row above it.
+ *
+ * The row that summarises this record said how many entries there are and when
+ * the newest arrived, and then nothing: the causes are in the help, deliberately,
+ * because six lines of prose above three entries is a screen explaining itself.
+ * That left the row a heading with no description while every row beside it has
+ * one, and on Advanced the entries it stands for are on another screen, so what
+ * it can usefully say is what cannot be read off them from here: how far the
+ * record spreads, and how far back it goes. The screen that does list them uses
+ * the same line, so the two cannot describe different records.
+ *
+ * The game leads, because that is what this list is scanned by. One game is
+ * named; more are counted, since names here are long and the row is one line.
+ * An entry keyed by a provider row rather than by bytes is counted apart, as
+ * the one kind that never produced a file and so answers for a row instead of a
+ * table.
+ */
+function blockedRecordShape(tables) {
+    if (tables.length === 0)
+        return null;
+    const games = new Map();
+    let unattributed = 0;
+    let withoutBytes = 0;
+    let oldest = null;
+    let newest = null;
+    for (const entry of tables) {
+        if (typeof entry.app_id === "number")
+            games.set(entry.app_id, entry.game_name ?? null);
+        else
+            unattributed += 1;
+        if (!entry.sha256)
+            withoutBytes += 1;
+        if (Number.isFinite(entry.recorded_at) && entry.recorded_at > 0) {
+            oldest = oldest === null ? entry.recorded_at : Math.min(oldest, entry.recorded_at);
+            newest = newest === null ? entry.recorded_at : Math.max(newest, entry.recorded_at);
+        }
+    }
+    const parts = [];
+    if (games.size === 1) {
+        const [only] = [...games.values()];
+        parts.push(only?.trim() || "one game");
+    }
+    else if (games.size > 1)
+        parts.push(`${games.size} games`);
+    if (unattributed > 0)
+        parts.push(`${unattributed} for no game of this device's`);
+    if (withoutBytes > 0)
+        parts.push(`${withoutBytes} without a file of its own`);
+    // Only where it says something the newest does not, which is a record that
+    // has been collecting rather than one written this afternoon. The row already
+    // carries the newest beside it, so a record made in one day would otherwise
+    // print the same date twice.
+    const since = oldest === null ? null : blockedRecordedOn(oldest);
+    if (since && newest !== null && since !== blockedRecordedOn(newest))
+        parts.push(`since ${since}`);
+    return parts.length > 0 ? parts.join(" · ") : null;
+}
 function blockedTableLookups(tables) {
     const byDigest = {};
     const byArtifact = {};
@@ -4852,6 +4910,45 @@ function derivedFromLabel(table) {
     return source ? `derived from ${source.slice(0, 12)}` : null;
 }
 /**
+ * The same two facts in the space a row has: what was taken out, and what it cost.
+ *
+ * A copy CE Decky made carries no origin, because no provider served these
+ * bytes, so the row that names where a table came from is absent for exactly
+ * the tables whose provenance is the least obvious. This is that row: the table
+ * it was made from, what was removed, and whether any cheat went with it. The
+ * whole account is one press away rather than on the row, because a screen that
+ * explains itself in four lines is a screen that shows less of what it holds.
+ */
+function derivedSummaryLine(derivation, sourceFilename) {
+    if (!derivation)
+        return null;
+    const parts = [];
+    for (const transform of derivation.transforms) {
+        if (transform === "remove-signature")
+            parts.push("signature removed");
+        else if (transform === "drop-unmatched-scans") {
+            const scans = derivation.scans?.length ?? 0;
+            parts.push(scans === 0
+                ? "code for a missing pattern removed"
+                : scans === 1 ? "code for 1 missing pattern removed" : `code for ${scans} missing patterns removed`);
+        }
+        else
+            parts.push("a change this version cannot name");
+    }
+    // A record naming no transform at all is one the store refuses to write and
+    // drops when it cannot read it, so this is the belt on that brace. What it
+    // may not do is leave the row with a label and nothing under it, which is the
+    // state this row exists to end.
+    if (parts.length === 0)
+        parts.push("what was changed is not recorded");
+    const orphaned = derivation.orphaned?.length ?? 0;
+    // The cost belongs on the row rather than behind the press, because it is
+    // what makes this copy different from the table somebody chose.
+    parts.push(orphaned === 0 ? "no cheat lost" : orphaned === 1 ? "1 cheat gone" : `${orphaned} cheats gone`);
+    const source = sourceFilename?.trim() || derivation.sha256.slice(0, 12);
+    return [`from ${source}`, ...parts].join(" · ");
+}
+/**
  * What CE Decky changed in a copy it made, and what that copy cost.
  *
  * Said on the copy rather than on the press that made it, because this is where
@@ -4865,6 +4962,8 @@ function derivedFromLabel(table) {
  * possible on a record written by a build that knew a transform this one does
  * not, and it is described as a change this build cannot name rather than
  * passed through as a symbol nobody can read.
+ *
+ * The long form of `derivedSummaryLine`, which is the row this opens from.
  */
 function derivedChangeSentence(derivation) {
     if (!derivation)
@@ -10003,11 +10102,16 @@ function AdvancedModal(props) {
     // and what a press does. A record with nothing in it has no entries to say
     // any of that, so that is the one state that still needs a line of its own.
     const BLOCKED_CAUSES = "a table that ran and did not work, a download that was not a usable table or an archive nothing here can open, or a provider row whose file the source no longer has";
+    //
+    // A record with entries says what cannot be read off them from here: how far
+    // it spreads and how far back it goes. The row used to say nothing at all in
+    // that state, which is the one row on this screen whose list lives somewhere
+    // else, so it read as a heading beside rows that each describe themselves.
     const blockedSummaryDescription = blockedTablesReason
         ? `${blockedTablesReason} Nothing is being refused while this cannot be read; Clear all replaces it with an empty record.`
         : blockedTables.length === 0
             ? "Nothing is recorded here yet."
-            : undefined;
+            : blockedRecordShape(blockedTables) ?? undefined;
     const blockedSummaryHelp = `Each entry is something not to try again until it is cleared, and what it holds is ${BLOCKED_CAUSES}. A download or a source condition never refuses a copy already on this device. CE Decky records a table by its exact contents when Cheat Engine runs it and it comes straight back off, when a download turns out not to be a usable table at all, and when its archive is one only 7-Zip opens and every file inside it is locked, which is kept apart because re-packing such a download is something the user can act on. A row whose file the source says it no longer has is recorded too, by that row rather than by contents, because nothing was ever downloaded to key it on. A cheat table finds the game's code by scanning for patterns, so the first case is almost always a table written for a different build of the game - which is why the game's version is kept beside it. Clearing an entry removes that refusal and nothing else: a table it marked can be chosen and imported again, while what is already known about it, including a success an entry invalidated, stays as it was until a cheat proves the table again.`;
     const blockedManageable = (blockedTables.length > 0 || Boolean(blockedTablesReason))
         && Boolean(onClearBlockedTables || onUnblockTable);
@@ -10356,6 +10460,12 @@ function AdvancedModal(props) {
         ? statusView.tables.find((table) => table.sha256 === profile.table_sha256) ?? null
         : null;
     const tableOrigin = activeTable?.origins[activeTable.origins.length - 1] ?? null;
+    // The table a copy was made from, where this device still holds it: a
+    // filename is what a reader recognises, and the digest is the fallback rather
+    // than the answer.
+    const derivedSourceTable = activeTable?.derived_from
+        ? statusView.tables.find((table) => table.sha256 === activeTable.derived_from?.sha256) ?? null
+        : null;
     // A table published for another store's build commonly differs from the
     // running executable in letter case alone, which reads as a contradiction
     // between two rows unless it is named as the ordinary thing it is.
@@ -10503,7 +10613,13 @@ function AdvancedModal(props) {
                                         tableOrigin ? tableOrigin.retrieved_at.slice(0, 10) : null,
                                         tableOrigin?.advertised_sha256 && tableOrigin.advertised_sha256 !== activeTable.sha256 ? "advertised SHA differed" : null,
                                         activeTable.available ? null : "file missing",
-                                    ].filter(Boolean).join(" · "), help: "The exact table this game is configured to use. Everything CE Decky does with it is keyed by this SHA-256: the consent you gave, the cheats it remembers, and the pins on the panel all belong to these exact bytes and to no other copy of the same table." })), tableOrigin && (SP_JSX.jsx(PanelRow, { truncate: true, label: `From ${providerDisplayName(tableOrigin.provider)}`, description: tableOrigin.source_page, help: "The page this exact file was downloaded from. Open reaches it in the Steam browser; a table imported from a local file has no origin recorded.", actions: originOpenable ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.open", () => { openSourcePage(tableOrigin.source_page); }), children: "Open" })) : undefined })), activeTable && (SP_JSX.jsx(PanelRow, { truncate: true, label: "Stored at", description: activeTable.blob_path, help: "CE Decky's own copy of the file, stored under its SHA-256 rather than its name, so two tables that happen to share a filename cannot overwrite each other. The original you imported is left where it was, and this copy is never edited in place. Look inside opens what the table can execute, as text; it runs nothing.", actions: activeTable.available ? (SP_JSX.jsx("div", { ref: openerRef("code"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.look_inside", () => openSubScreen("code", () => setCodeOpen(true))), children: "Look inside" }) })) : undefined })), SP_JSX.jsx(PanelRow, { truncate: true, label: profile?.execution_consent_sha256 === profile?.table_sha256 ? "Execution authorized" : "Not authorized", description: `${profile?.pinned.length ?? 0} pinned · ${profile?.remembered.length ?? 0} remembered · ${profile?.table_library.length ?? 0} table(s) imported for this game${profile?.autoload_enabled ? " · auto-load on" : ""}`, help: "Whether you have authorized this exact table's executable content to run, and how much state this game keeps for it. Revoke clears that authorization and nothing else; the table and its remembered cheats stay. A Cheat Engine running for this game is stopped first, because it is running under the authorization being withdrawn.", actions: profile?.table_sha256 && profile.execution_consent_sha256 === profile.table_sha256 ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.consent.revoke", () => { void invoke(onRevokeConsent); }), children: ownership.ownedBySelected ? "Stop CE and revoke" : "Revoke" })) : undefined }), inspectionView && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelRow, { truncate: true, label: `${inspectionView.total_entries} entries · ${inspectionView.controls.length} controls`, description: `${`${inspectionView.has_lua ? "Lua " : ""}${inspectionView.has_auto_assembler ? "AutoAssembler " : ""}${inspectionView.embedded_files ? `${inspectionView.embedded_files} embedded ` : ""}`.trim() || "no executable content"}${inspectionView.unsupported_record_id_count ? ` · ${inspectionView.unsupported_record_id_count} unsupported` : ""}${inspectionView.ambiguous_record_ids.length ? ` · ${inspectionView.ambiguous_record_ids.length} ambiguous` : ""}`, help: "What is actually inside the table. Controls are the records CE Decky can drive; unsupported and ambiguous records are skipped rather than guessed at. Lua and AutoAssembler are executable content, which is why the table needs explicit authorization." }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Process hints", description: inspectionView.process_candidates.join(", ") || "None", help: hintCaseOnlyMismatch
+                                    ].filter(Boolean).join(" · "), help: "The exact table this game is configured to use. Everything CE Decky does with it is keyed by this SHA-256: the consent you gave, the cheats it remembers, and the pins on the panel all belong to these exact bytes and to no other copy of the same table." })), tableOrigin && (SP_JSX.jsx(PanelRow, { truncate: true, label: `From ${providerDisplayName(tableOrigin.provider)}`, description: tableOrigin.source_page, help: "The page this exact file was downloaded from. Open reaches it in the Steam browser; a table imported from a local file has no origin recorded.", actions: originOpenable ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.open", () => { openSourcePage(tableOrigin.source_page); }), children: "Open" })) : undefined })), activeTable?.derived_from && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "active-table-derived", label: "Fixed copy", description: derivedSummaryLine(activeTable.derived_from, derivedSourceTable?.filename) ?? undefined, help: [
+                                        derivedChangeSentence(activeTable.derived_from),
+                                        derivedSourceTable
+                                            ? "The table it was made from is still on this device and is selectable on its own."
+                                            : "The table it was made from is no longer on this device, so it is named by its digest.",
+                                        "This copy is a table of its own: its own digest, its own review and its own authorization, and the cheats it remembers belong to these exact bytes.",
+                                    ].filter(Boolean).join(" ") })), activeTable && (SP_JSX.jsx(PanelRow, { truncate: true, label: "Stored at", description: activeTable.blob_path, help: "CE Decky's own copy of the file, stored under its SHA-256 rather than its name, so two tables that happen to share a filename cannot overwrite each other. The original you imported is left where it was, and this copy is never edited in place. Look inside opens what the table can execute, as text; it runs nothing.", actions: activeTable.available ? (SP_JSX.jsx("div", { ref: openerRef("code"), style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.look_inside", () => openSubScreen("code", () => setCodeOpen(true))), children: "Look inside" }) })) : undefined })), SP_JSX.jsx(PanelRow, { truncate: true, label: profile?.execution_consent_sha256 === profile?.table_sha256 ? "Execution authorized" : "Not authorized", description: `${profile?.pinned.length ?? 0} pinned · ${profile?.remembered.length ?? 0} remembered · ${profile?.table_library.length ?? 0} table(s) imported for this game${profile?.autoload_enabled ? " · auto-load on" : ""}`, help: "Whether you have authorized this exact table's executable content to run, and how much state this game keeps for it. Revoke clears that authorization and nothing else; the table and its remembered cheats stay. A Cheat Engine running for this game is stopped first, because it is running under the authorization being withdrawn.", actions: profile?.table_sha256 && profile.execution_consent_sha256 === profile.table_sha256 ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.consent.revoke", () => { void invoke(onRevokeConsent); }), children: ownership.ownedBySelected ? "Stop CE and revoke" : "Revoke" })) : undefined }), inspectionView && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelRow, { truncate: true, label: `${inspectionView.total_entries} entries · ${inspectionView.controls.length} controls`, description: `${`${inspectionView.has_lua ? "Lua " : ""}${inspectionView.has_auto_assembler ? "AutoAssembler " : ""}${inspectionView.embedded_files ? `${inspectionView.embedded_files} embedded ` : ""}`.trim() || "no executable content"}${inspectionView.unsupported_record_id_count ? ` · ${inspectionView.unsupported_record_id_count} unsupported` : ""}${inspectionView.ambiguous_record_ids.length ? ` · ${inspectionView.ambiguous_record_ids.length} ambiguous` : ""}`, help: "What is actually inside the table. Controls are the records CE Decky can drive; unsupported and ambiguous records are skipped rather than guessed at. Lua and AutoAssembler are executable content, which is why the table needs explicit authorization." }), SP_JSX.jsx(PanelRow, { truncate: true, label: "Process hints", description: inspectionView.process_candidates.join(", ") || "None", help: hintCaseOnlyMismatch
                                                 ? `This table names its process differently from the one saved for this game - ${profile?.target_process} - in letter case only. That is the table author's build, not a mismatch: CE Decky attaches to the executable this game actually runs.`
                                                 : "The process this table's author wrote it against. It is evidence about the table, not the target: the saved target process above is what Cheat Engine attaches to." })] })), (startupCount ?? profile?.startup.length ?? 0) > 0 && (SP_JSX.jsx(PanelRow, { truncate: true, label: "Legacy startup actions", description: startupCount !== null
                                         ? `${startupCount} remain for this exact table`

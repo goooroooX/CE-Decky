@@ -21,7 +21,7 @@ import { TableCodeModal } from "./TableCodeModal";
 import { openExternalWeb } from "../externalNavigation";
 import { logUiFailure } from "../supportLog";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
-import { absentLiveTarget, blockedKey, blockedRecordedOn, sentence, updateSummary, blockedRowDetail, blockedRowLabel, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
+import { absentLiveTarget, blockedKey, blockedRecordedOn, sentence, updateSummary, blockedRowDetail, blockedRowLabel, blockedRecordShape, derivedChangeSentence, derivedSummaryLine, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
 import type { BlockedTable, CELaunchCapability, CEStatus, DiagnosticsSnapshot, ManagedDataDeletion, ManagedDataScope, PanelPreferences, PluginStatus, PluginUpdateState, ProviderSourceStatus, ProviderSourcesSnapshot, RemovalReadiness, RuntimeEnvelope, SelfTestResult, SupportBundleResult, TableInspection } from "../types";
 
 export interface AdvancedContextSnapshot {
@@ -584,11 +584,16 @@ export function AdvancedModal(props: Props) {
   // and what a press does. A record with nothing in it has no entries to say
   // any of that, so that is the one state that still needs a line of its own.
   const BLOCKED_CAUSES = "a table that ran and did not work, a download that was not a usable table or an archive nothing here can open, or a provider row whose file the source no longer has";
+  //
+  // A record with entries says what cannot be read off them from here: how far
+  // it spreads and how far back it goes. The row used to say nothing at all in
+  // that state, which is the one row on this screen whose list lives somewhere
+  // else, so it read as a heading beside rows that each describe themselves.
   const blockedSummaryDescription = blockedTablesReason
     ? `${blockedTablesReason} Nothing is being refused while this cannot be read; Clear all replaces it with an empty record.`
     : blockedTables.length === 0
       ? "Nothing is recorded here yet."
-      : undefined;
+      : blockedRecordShape(blockedTables) ?? undefined;
   const blockedSummaryHelp = `Each entry is something not to try again until it is cleared, and what it holds is ${BLOCKED_CAUSES}. A download or a source condition never refuses a copy already on this device. CE Decky records a table by its exact contents when Cheat Engine runs it and it comes straight back off, when a download turns out not to be a usable table at all, and when its archive is one only 7-Zip opens and every file inside it is locked, which is kept apart because re-packing such a download is something the user can act on. A row whose file the source says it no longer has is recorded too, by that row rather than by contents, because nothing was ever downloaded to key it on. A cheat table finds the game's code by scanning for patterns, so the first case is almost always a table written for a different build of the game - which is why the game's version is kept beside it. Clearing an entry removes that refusal and nothing else: a table it marked can be chosen and imported again, while what is already known about it, including a success an entry invalidated, stays as it was until a cheat proves the table again.`;
   const blockedManageable = (blockedTables.length > 0 || Boolean(blockedTablesReason))
     && Boolean(onClearBlockedTables || onUnblockTable);
@@ -976,6 +981,12 @@ export function AdvancedModal(props: Props) {
     ? statusView.tables.find((table) => table.sha256 === profile.table_sha256) ?? null
     : null;
   const tableOrigin = activeTable?.origins[activeTable.origins.length - 1] ?? null;
+  // The table a copy was made from, where this device still holds it: a
+  // filename is what a reader recognises, and the digest is the fallback rather
+  // than the answer.
+  const derivedSourceTable = activeTable?.derived_from
+    ? statusView.tables.find((table) => table.sha256 === activeTable.derived_from?.sha256) ?? null
+    : null;
   // A table published for another store's build commonly differs from the
   // running executable in letter case alone, which reads as a contradiction
   // between two rows unless it is named as the ordinary thing it is.
@@ -1798,6 +1809,27 @@ export function AdvancedModal(props: Props) {
                 actions={originOpenable ? (
                   <SmallButton disabled={blocked} onClick={traceUiAction("advanced_modal.open", () => { openSourcePage(tableOrigin.source_page); })}>Open</SmallButton>
                 ) : undefined}
+              />
+            )}
+            {/* A copy CE Decky made has no origin row, because no provider
+                served these bytes: the table that names where it came from is
+                absent for exactly the tables whose provenance is least obvious
+                from their name. This is that row, and it stays one line - what
+                was removed, what it cost and which table it was made from -
+                with the whole account behind the press every row here has. */}
+            {activeTable?.derived_from && (
+              <PanelRow
+                truncate
+                testId="active-table-derived"
+                label="Fixed copy"
+                description={derivedSummaryLine(activeTable.derived_from, derivedSourceTable?.filename) ?? undefined}
+                help={[
+                  derivedChangeSentence(activeTable.derived_from),
+                  derivedSourceTable
+                    ? "The table it was made from is still on this device and is selectable on its own."
+                    : "The table it was made from is no longer on this device, so it is named by its digest.",
+                  "This copy is a table of its own: its own digest, its own review and its own authorization, and the cheats it remembers belong to these exact bytes.",
+                ].filter(Boolean).join(" ")}
               />
             )}
             {activeTable && (

@@ -45,6 +45,8 @@ import {
   leftOnSentence,
   switchesLeftOn,
   tableSourceLabel,
+  derivedSummaryLine,
+  blockedRecordShape,
   providerShortName,
   controlSections,
   sharedSectionDepth,
@@ -168,6 +170,60 @@ describe("controller UI model", () => {
     // or not anything was done to it afterwards.
     expect(tableSourceLabel({ origins: [{ provider: "vgtimes" }], derived_from: null } as any)).toBe("vgtimes");
     expect(tableSourceLabel(null)).toBe("Local");
+  });
+
+  it("puts what a fixed copy was made from, and what it cost, on one row", () => {
+    // The screen that names where a table came from has nothing to say about a
+    // copy CE Decky made: no provider served those bytes. This is that row, and
+    // it is a row rather than the whole account, which the press holds.
+    const derivation = {
+      sha256: "c".repeat(64),
+      transforms: ["remove-signature", "drop-unmatched-scans"],
+      scans: ["aobHealth", "aobAmmo"],
+      orphaned: ["Health"],
+    };
+    expect(derivedSummaryLine(derivation, "Downloaded.CT"))
+      .toBe("from Downloaded.CT · signature removed · code for 2 missing patterns removed · 1 cheat gone");
+    // The source table is named by its digest where this device no longer
+    // holds it, and no cheat lost is a finding of its own rather than silence.
+    expect(derivedSummaryLine({ ...derivation, scans: [], orphaned: [] }, null))
+      .toBe(`from ${"c".repeat(12)} · signature removed · code for a missing pattern removed · no cheat lost`);
+    // A transform this build cannot name is said to be one, and a table nobody
+    // derived has no row at all.
+    expect(derivedSummaryLine({ ...derivation, transforms: ["something-later"], orphaned: [] }, "T.CT"))
+      .toBe("from T.CT · a change this version cannot name · no cheat lost");
+    expect(derivedSummaryLine(null)).toBeNull();
+    // A record naming no transform still leaves a row, because a label with
+    // nothing under it is the state this row was added to end.
+    expect(derivedSummaryLine({ ...derivation, transforms: [], orphaned: [] }, "T.CT"))
+      .toBe("from T.CT · what was changed is not recorded · no cheat lost");
+  });
+
+  it("describes the record of refused tables by what its entries cannot say", () => {
+    // The one row on that screen whose list is somewhere else. How many and how
+    // recent are already on it; what it was missing is how far the record
+    // spreads and how far back it goes.
+    const entry = (overrides: Record<string, unknown>) => ({
+      key: "k", sha256: "a".repeat(64), reason: "it did not work", filename: "T.CT",
+      app_id: 10, game_name: "Example", game_version: null, table_version: null,
+      recorded_at: 1_700_000_000, ...overrides,
+    }) as any;
+    expect(blockedRecordShape([])).toBeNull();
+    // One game is named; a single entry says nothing about a span.
+    expect(blockedRecordShape([entry({})])).toBe("Example");
+    expect(blockedRecordShape([entry({}), entry({ recorded_at: 1_600_000_000 })]))
+      .toBe("Example · since 2020-09-13");
+    // A record written in one day says nothing about a span: the row beside
+    // this already carries the newest, and printing that date twice is not a
+    // second fact.
+    expect(blockedRecordShape([entry({}), entry({})])).toBe("Example");
+    // More games are counted, because a name here is longer than the row.
+    expect(blockedRecordShape([entry({}), entry({ app_id: 20, game_name: "Other" })]))
+      .toBe("2 games");
+    // A row whose file the source no longer has never produced bytes, and an
+    // entry belonging to no game of this device's is counted rather than lost.
+    expect(blockedRecordShape([entry({}), entry({ app_id: null, game_name: null, sha256: null })]))
+      .toBe("Example · 1 for no game of this device's · 1 without a file of its own");
   });
 
   it("requires prepared/status exact identity before Home treats runtime as attached", () => {
