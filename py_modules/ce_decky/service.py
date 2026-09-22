@@ -32,6 +32,8 @@ from .ce_archive_import import (
 )
 from .ce_launch import (
     CELaunchSupervisor,
+    capture_run_identities,
+    run_identities_gone,
     game_target_states,
     match_observed_proton,
     observe_game_container,
@@ -92,6 +94,7 @@ from .provider_sources import ProviderSourceSelection
 from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, startup_left_on, wine_z_path
 from .table_blocklist import CAUSE_REFUSED, CAUSE_UNUSABLE, MAX_REASON_BYTES as MAX_BLOCKED_REASON_BYTES, BlockedTableError, TableBlocklist, is_compatibility_failure
 from . import frontend_journal, journal_records
+from .game_run_holds import GameRunHolds, RunHold, new_hold
 from .support_bundle import create_support_bundle as write_support_bundle, normalize_frontend_log
 from .table_store import MAX_CT_BYTES, TableStore
 from .text import utf8_len
@@ -244,6 +247,11 @@ def _disconnected_bridge_reason(runtime: dict[str, object]) -> str:
 # on waiting for its answer, and it is deliberately far shorter than a user's
 # patience with a stop that appears to have hung.
 QUIESCE_WAIT_SECONDS = 15.0
+# What a start is refused with in a game a stop could not prove clean.
+DIRTY_RUN_REFUSAL = (
+    "CE Decky could not confirm the cheats from the last table were switched off in this game, and nothing "
+    "can undo them now that its Cheat Engine has stopped. Restart the game before starting a table in it."
+)
 QUIESCE_POLL_SECONDS = 0.25
 
 # How many of a game's other files one scan check may open. A table naming its
@@ -307,6 +315,11 @@ class PluginService:
         # because deleting the cache is offered as a safe repair and a switched
         # off source coming back on by itself is not a repair.
         self.provider_sources = ProviderSourceSelection(paths.state_root / "provider_sources.json")
+        # What may not start in a game until the run of it going now is over.
+        # Its own lock rather than the mutation lock: the launcher's capability
+        # poll reads it, and a stop holding the mutation lock must not stall it.
+        self.game_run_holds = GameRunHolds(paths.state_root / "game_run_holds.json")
+        self._run_holds_lock = threading.Lock()
         # Logged once per change rather than once per read: the catalog asks for
         # this several times per search, and an unreadable file would otherwise
         # fill the log with the same line instead of describing the fault once.
@@ -3611,6 +3624,13 @@ class PluginService:
             if enabled:
                 self.table_store.verified_blob(digest)
             profile = self.profile_store.set_autoload(app_id=app_id, table_sha256=digest, enabled=enabled)
+            if enabled:
+                # Switching it on is asking for it, which answers the Stop that
+                # held it.
+                try:
+                    self._release_run_hold(app_id, "stopped", reason="autoload_enabled")
+                except (OSError, ValueError) as exc:
+                    log_failure(self.logger, "run_hold.persist_failed", exc, expected=True, app_id=app_id)
             log_activity(
                 self.logger, "info", "profile.autoload_set",
                 app_id=app_id, table_sha=digest[:12], enabled=enabled,
@@ -4445,7 +4465,116 @@ class PluginService:
             capability["ce_executable_sha256"] = None
             capability["ce_ready"] = False
             capability["reason"] = reason or str(exc)[:512]
+        capability["run_holds"] = None if app_id is None else self._public_run_holds(app_id)
         return capability
+
+    def _read_run_holds(self) -> dict[int, dict[str, RunHold]]:
+        try:
+            return self.game_run_holds.load()
+        except (OSError, ValueError) as exc:
+            # Read as holding nothing: the other reading refuses every start in
+            # every game, which is a refusal nobody can act on.
+            log_failure(self.logger, "run_holds.unreadable", exc, expected=True)
+            return {}
+
+    def _run_is_over(self, hold: RunHold) -> bool:
+        """Whether the run a hold was taken on is proven to have ended.
+
+        By its own processes where they could all be listed, which the next run
+        of the same game cannot share; otherwise by every program the session
+        was pointed at proven absent. Not knowing is not over.
+        """
+        try:
+            if hold.identities:
+                return run_identities_gone(hold.identities)
+            return self._game_is_gone(hold.app_id, hold.targets)
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    def _current_run_holds(self, app_id: int) -> dict[str, RunHold]:
+        """The holds on this game, with any whose run is proven over retired."""
+        with self._run_holds_lock:
+            holds = self._read_run_holds()
+            kinds = holds.get(app_id, {})
+            retired = [kind for kind, hold in kinds.items() if self._run_is_over(hold)]
+            if retired:
+                for kind in retired:
+                    kinds.pop(kind)
+                if kinds:
+                    holds[app_id] = kinds
+                else:
+                    holds.pop(app_id, None)
+                try:
+                    self.game_run_holds.save(holds)
+                except (OSError, ValueError) as exc:
+                    log_failure(self.logger, "run_holds.persist_failed", exc, expected=True, app_id=app_id)
+                log_activity(self.logger, "info", "run_hold.retired", app_id=app_id, kinds=",".join(retired))
+            return dict(kinds)
+
+    def _public_run_holds(self, app_id: int) -> dict[str, object]:
+        holds = self._current_run_holds(app_id)
+        dirty = holds.get("dirty")
+        return {"dirty": None if dirty is None else dirty.public(), "autoload_held": "stopped" in holds}
+
+    def _hold_run(self, app_id: int, kind: str, unsettled: int = 0) -> None:
+        """Hold this game for the run of it going now, named by its own processes."""
+        targets: tuple[str, ...] | None = ()
+        try:
+            prepared = self.session_store.load_current(app_id)
+        except (OSError, ValueError):
+            prepared, targets = None, None
+        if prepared is not None:
+            targets = self._session_targets(prepared)
+        names = targets
+        if names is None and kind == "stopped":
+            # Nothing is at stake in this one but Auto-load starting again, and a
+            # hold that could not be lifted by a restart would leave Auto-load
+            # silently off: the profile's program is enough to tell a restart by.
+            names = ()
+        if names is not None and not names:
+            profile = self.profile_store.get(app_id)
+            names = (profile.target_process,) if profile is not None and profile.target_process else ()
+        identities = None
+        if names:
+            try:
+                identities = capture_run_identities(app_id, names)
+            except (OSError, ValueError, RuntimeError):
+                identities = None
+        if identities == () and kind == "dirty":
+            # None of its programs is running: the game took what was left in
+            # it with it, and there is no run to hold.
+            log_activity(self.logger, "info", "run_hold.not_needed", app_id=app_id, kind=kind)
+            return
+        hold = new_hold(app_id, kind, names, identities or None, unsettled)
+        with self._run_holds_lock:
+            holds = self._read_run_holds()
+            holds.setdefault(app_id, {})[kind] = hold
+            self.game_run_holds.save(holds)
+        log_activity(
+            self.logger, "info", "run_hold.taken", app_id=app_id, kind=kind, unsettled=unsettled,
+            targets=",".join(names or ()) or None,
+            processes=None if hold.identities is None else len(hold.identities),
+        )
+
+    def _release_run_hold(self, app_id: int, kind: str, *, reason: str) -> bool:
+        with self._run_holds_lock:
+            holds = self._read_run_holds()
+            kinds = holds.get(app_id, {})
+            if kind not in kinds:
+                return False
+            kinds.pop(kind)
+            if not kinds:
+                holds.pop(app_id, None)
+            self.game_run_holds.save(holds)
+        log_activity(self.logger, "info", "run_hold.released", app_id=app_id, kind=kind, reason=reason)
+        return True
+
+    def clear_game_run_holds(self, app_id: int) -> dict[str, object]:
+        """The user clears this game's holds, having been told what they are for."""
+        if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
+            raise ValueError("AppID must be a positive integer")
+        cleared = [kind for kind in ("dirty", "stopped") if self._release_run_hold(app_id, kind, reason="cleared_by_user")]
+        return {"cleared": cleared, "run_holds": self._public_run_holds(app_id)}
 
     async def start_ce_self_test(self, proton_tool_id: str) -> dict[str, object]:
         """Launch the private Cheat Engine runtime with no game and no Steam state."""
@@ -4466,6 +4595,10 @@ class PluginService:
         """
         if proton_tool_id is not None and not isinstance(proton_tool_id, str):
             raise ValueError("Proton tool identity must be a string or null")
+        holds = await drained_to_thread(self._current_run_holds, app_id)
+        if "dirty" in holds:
+            log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
+            raise ValueError(DIRTY_RUN_REFUSAL)
         try:
             # Session/runtime preparation mutates plugin-owned files and creates
             # a launch reservation. Cancellation must not abandon that worker:
@@ -4476,7 +4609,7 @@ class PluginService:
             )
             tools = await asyncio.to_thread(discover_proton_tools, self.paths.user_home)
             await asyncio.to_thread(self._revalidate_launch_reservation, prepared)
-            return await self.ce_launch.start_attached(
+            started = await self.ce_launch.start_attached(
                 tools,
                 executable,
                 app_id=prepared.app_id,
@@ -4499,6 +4632,13 @@ class PluginService:
             )
         finally:
             await drained_to_thread(self._release_launch_reservation, app_id)
+        # A start is the answer to the Stop that held Auto-load: Auto-load itself
+        # never gets here while the hold stands, so this start was somebody's.
+        try:
+            await drained_to_thread(self._release_run_hold, app_id, "stopped", reason="started")
+        except (OSError, ValueError) as exc:
+            log_failure(self.logger, "run_hold.persist_failed", exc, expected=True, app_id=app_id)
+        return started
 
     def _quiesce_session(self, app_id: int) -> dict[str, object]:
         """Ask the running bridge to switch this session's own cheats off.
@@ -4701,7 +4841,38 @@ class PluginService:
             "reason": "the bridge did not answer before the stop had to proceed",
         }
 
-    async def stop_ce_for_game(self, app_id: int, table_sha256: str | None = None) -> dict[str, object]:
+    async def stop_ce_for_game(
+        self, app_id: int, table_sha256: str | None = None, hold_autoload: bool = False,
+    ) -> dict[str, object]:
+        """Stop the owned Cheat Engine, and hold the game where the stop says to.
+
+        A stop that ended Cheat Engine without proving every cheat put down or
+        the game gone holds that game from every start until the run is over.
+        One the user asked for (`hold_autoload`) also holds Auto-load, which
+        would otherwise start the table straight back.
+        """
+        if not isinstance(hold_autoload, bool):
+            raise ValueError("hold_autoload must be a boolean")
+        result = await self._stop_ce_for_game(app_id, table_sha256)
+        if result.get("stopped"):
+            await drained_to_thread(self._hold_after_stop, app_id, result, hold_autoload)
+        return result
+
+    def _hold_after_stop(self, app_id: int, result: dict[str, object], hold_autoload: bool) -> None:
+        quiesce = result.get("quiesce")
+        confirmed = isinstance(quiesce, dict) and quiesce.get("cleanup_confirmed") is True
+        unsettled = quiesce.get("records_unsettled") if isinstance(quiesce, dict) else None
+        try:
+            if not confirmed:
+                self._hold_run(app_id, "dirty", len(unsettled) if isinstance(unsettled, list) else 0)
+            if hold_autoload:
+                self._hold_run(app_id, "stopped")
+        except (OSError, ValueError) as exc:
+            # The stop happened either way; what did not is its record, which is
+            # the one thing a later start would have been refused by.
+            log_failure(self.logger, "run_hold.persist_failed", exc, expected=True, app_id=app_id)
+
+    async def _stop_ce_for_game(self, app_id: int, table_sha256: str | None = None) -> dict[str, object]:
         """A Revoke stop carries exact table and captured owned session authority."""
         if table_sha256 is None:
             return await self.ce_launch.stop_for_app(app_id)

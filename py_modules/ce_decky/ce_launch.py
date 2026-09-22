@@ -1414,6 +1414,92 @@ def resolve_target_identity(
     return None
 
 
+def capture_run_identities(
+    app_id: int,
+    target_processes: Sequence[str],
+    *,
+    proc_root: Path = Path("/proc"),
+    max_processes: int = MAX_SCANNED_PROCESSES,
+) -> tuple[TargetIdentity, ...] | None:
+    """Every process of this run of the game that is running one of these programs.
+
+    What a later answer to "is that run over?" is asked of. Names cannot answer
+    it: the next run of the same game has the same names, so a hold taken on one
+    run would outlast it. A process is its PID and its start time, which the
+    next run cannot share.
+
+    `None` where the list cannot be complete, and the caller then has nothing
+    but names to prove an end by: a walk that could not answer for a name, and a
+    process it could not read that may be running one, are both a process this
+    list would be missing. An empty tuple is a game none of whose programs is
+    running.
+    """
+    names = tuple(dict.fromkeys(name for name in target_processes if _process_basename(name)))
+    if not names:
+        return None
+    with poll_counters.timed(poll_counters.SUPERVISOR_TARGET_SCAN):
+        app_id = _app_id(app_id)
+        observation = observe_game_container(app_id, proc_root=proc_root, max_processes=max_processes)
+        found: list[TargetIdentity] = []
+        for name in names:
+            state = _target_state_of(observation, name, proc_root)
+            if state == "unknown":
+                return None
+            if state == "absent":
+                continue
+            if _unreadable_target_candidate(observation, name, proc_root):
+                return None
+            wanted = name.casefold()
+            matched = False
+            for pid in observation.pids:
+                start_time = _process_start_time(pid, proc_root)
+                declared = _declared_windows_executable(pid, proc_root)
+                if start_time is None or declared is None or declared.casefold() != wanted:
+                    continue
+                # One process answered both reads, or this is not an identity.
+                if _process_start_time(pid, proc_root) != start_time:
+                    continue
+                found.append(TargetIdentity(pid=pid, start_time=start_time, windows_executable=declared, app_id=app_id))
+                matched = True
+            if not matched:
+                return None
+        return tuple(found)
+
+
+def run_identities_gone(identities: Sequence[TargetIdentity], *, proc_root: Path = Path("/proc")) -> bool:
+    """Whether every one of these processes is proven to have ended.
+
+    A process has ended where its PID has no entry in a `/proc` that answers
+    for this process itself, or where the entry there started at another time.
+    Anything else is not knowing: a `/proc` that is not mounted answers "no such
+    file" for every PID, and a read refused for any other reason proves nothing.
+    Asked of nothing, it proves nothing either.
+    """
+    if not identities:
+        return False
+    try:
+        if _process_start_time(os.getpid(), proc_root) is None:
+            return False
+    except OSError:
+        return False
+    for identity in identities:
+        try:
+            raw = (proc_root / str(identity.pid) / "stat").read_bytes()[:4096].decode("utf-8", "replace")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        close = raw.rfind(")")
+        fields = raw[close + 1:].split() if close >= 0 else []
+        try:
+            start_time = int(fields[19])
+        except (IndexError, ValueError):
+            return False
+        if start_time == identity.start_time:
+            return False
+    return True
+
+
 def target_liveness(
     app_id: int,
     target_process: str,

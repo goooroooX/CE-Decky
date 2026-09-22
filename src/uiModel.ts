@@ -1,6 +1,6 @@
 import { isArchiveFilename } from "./tableImport";
 import type { GameSummary } from "./steam/client";
-import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameExecutableListing, LocalLibrary, PluginUpdateState, ProviderSearchSummary, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableDerivation, TableInspection, TableScanCheck, TableStatus } from "./types";
+import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameRunHolds, GameExecutableListing, LocalLibrary, PluginUpdateState, ProviderSearchSummary, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableDerivation, TableInspection, TableScanCheck, TableStatus } from "./types";
 
 // One 1280x800 Game Mode viewport fits roughly six compact record rows beside
 // the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
@@ -1938,21 +1938,36 @@ export interface OwnedStopVerdict {
 }
 
 /**
- * Why another table may not be started after this stop, or nothing where it may.
+ * Why no table may be started in this game now, or nothing where one may.
  *
- * Only a stop that ended a Cheat Engine and could not prove the game clean
- * refuses. One that found nothing running left nothing behind, and one that
- * proved every cheat put down, or the game gone, is the clean answer the
- * backend gives for both. Everything else is a game still carrying what the
- * last table changed, with no Cheat Engine left that could undo it.
+ * Read from the backend's own hold, which it keeps on disk for every game a
+ * stop could not prove clean and lifts only on proof that the run of the game
+ * it was taken on is over.
  */
-export function switchAfterStopRefusal(verdict: OwnedStopVerdict): string | null {
-  if (!verdict.stopped || verdict.cleanupConfirmed === true) return null;
-  const left = verdict.unsettled.length;
-  const what = left > 0
-    ? `${left === 1 ? "One cheat" : `${left} cheats`} from the table that was running could not be switched off`
-    : "CE Decky could not confirm the cheats from the table that was running were switched off";
+export function dirtyRunRefusal(holds: GameRunHolds | null | undefined): string | null {
+  const dirty = holds?.dirty;
+  if (!dirty) return null;
+  const what = dirty.unsettled > 0
+    ? `${dirty.unsettled === 1 ? "One cheat" : `${dirty.unsettled} cheats`} from the last table could not be switched off`
+    : "CE Decky could not confirm the cheats from the last table were switched off";
   return `${what}, and nothing can undo them now that its Cheat Engine has stopped. Restart the game before starting a table in it; nothing was saved or started.`;
+}
+
+/**
+ * What Home says about a game the backend holds, or nothing where it holds none.
+ *
+ * Said before anything is pressed, because every start in that game is refused
+ * until the game has been restarted. Clearing it is offered too: a device whose
+ * process table never answers could otherwise hold that game for ever, and the
+ * reader is told what clearing it without a restart costs.
+ */
+export function dirtyRunNotice(holds: GameRunHolds | null | undefined): string | null {
+  const dirty = holds?.dirty;
+  if (!dirty) return null;
+  const what = dirty.unsettled > 0
+    ? `${dirty.unsettled === 1 ? "One cheat" : `${dirty.unsettled} cheats`} from the last table could not be switched off in this game`
+    : "CE Decky could not confirm the last table's cheats were switched off in this game";
+  return `${what}, so no table is started in it until it has been restarted. Clear this only if you already have: a table started over what is left may fail and be marked as not working.`;
 }
 
 /**

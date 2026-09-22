@@ -29,6 +29,7 @@ DECKY_USER_HOME/.cheat-engine-decky
   ├── tables/sha256/...
   ├── state/profiles/...   (per-game table library, autoload, consent and cheat choices)
   ├── state/provider_sources.json   (the table sources this user switched off)
+  ├── state/game_run_holds.json     (per game: a run a stop left unproven clean, or whose Cheat Engine the user stopped)
   └── state/sessions/<appid>/<uuid>/...
 
 Starting Cheat Engine:

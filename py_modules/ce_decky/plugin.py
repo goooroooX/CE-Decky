@@ -450,6 +450,9 @@ class Plugin:
     async def launch_ce_for_game(self, app_id: int, proton_tool_id: str | None = None):
         return await self.operations.create(self._svc().launch_ce_for_game(app_id, proton_tool_id), label="launch_ce_for_game")
 
-    async def stop_ce_for_game(self, app_id: int, table_sha256: str | None = None):
-        operation = self._svc().stop_ce_for_game(app_id) if table_sha256 is None else self._svc().stop_ce_for_game(app_id, table_sha256)
+    async def stop_ce_for_game(self, app_id: int, table_sha256: str | None = None, hold_autoload: bool = False):
+        operation = self._svc().stop_ce_for_game(app_id, table_sha256, hold_autoload)
         return await self.operations.create(operation, label="stop_ce_for_game")
+
+    async def clear_game_run_holds(self, app_id: int):
+        return await self.operations.run_blocking(self._svc().clear_game_run_holds, app_id)

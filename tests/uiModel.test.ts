@@ -74,7 +74,8 @@ import {
   safeActionableControls,
   scriptDefaultsOn,
   scriptDefaultsSentence,
-  switchAfterStopRefusal,
+  dirtyRunNotice,
+  dirtyRunRefusal,
   sortPinnedControls,
   startupParentWarnings,
   withoutKnownLaunchers,
@@ -1141,17 +1142,18 @@ describe("compact cheat rows", () => {
       .toEqual({ on: 1, switches: 1, unsafe: 1 });
   });
 
-  it("refuses another table only after a stop that could not prove the game clean", () => {
-    expect(switchAfterStopRefusal({ stopped: false, cleanupConfirmed: null, unsettled: [] })).toBeNull();
-    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: true, unsettled: [] })).toBeNull();
-    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: false, unsettled: ["6"] }))
-      .toContain("One cheat from the table that was running could not be switched off");
-    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: false, unsettled: ["6", "7"] }))
-      .toContain("2 cheats from the table that was running");
-    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: false, unsettled: [] }))
-      .toContain("could not confirm the cheats from the table that was running were switched off");
-    // A stop that ended Cheat Engine with no verdict at all is not a clean one.
-    expect(switchAfterStopRefusal({ stopped: true, cleanupConfirmed: null, unsettled: [] })).toContain("Restart the game");
+  it("refuses a start, and says so on Home, only where the backend holds the game", () => {
+    expect(dirtyRunRefusal(null)).toBeNull();
+    expect(dirtyRunRefusal({ dirty: null, autoload_held: true })).toBeNull();
+    expect(dirtyRunNotice({ dirty: null, autoload_held: true })).toBeNull();
+    expect(dirtyRunRefusal({ dirty: { since: 1, unsettled: 1 }, autoload_held: false }))
+      .toContain("One cheat from the last table could not be switched off");
+    expect(dirtyRunRefusal({ dirty: { since: 1, unsettled: 2 }, autoload_held: false })).toContain("2 cheats");
+    expect(dirtyRunRefusal({ dirty: { since: 1, unsettled: 0 }, autoload_held: false }))
+      .toContain("could not confirm the cheats from the last table were switched off");
+    const notice = dirtyRunNotice({ dirty: { since: 1, unsettled: 0 }, autoload_held: false });
+    expect(notice).toContain("no table is started in it until it has been restarted");
+    expect(notice).toContain("Clear this only if you already have");
   });
 
   it("promises only the chosen cheats where every default can be held off", () => {

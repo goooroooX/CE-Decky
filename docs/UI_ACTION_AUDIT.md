@@ -16,7 +16,7 @@ This is a standing contract rather than a dated review: it is what every plugin-
 | Code section list, Read, Show more, Previous/Next and both Back routes | `TableCodeModal`; bounded section index/body RPCs and bounded page slices. One read starts per immediate press burst; read failures release the latch. No code executes in this view. |
 | Configure cheats: scripts, section, filter, More/Less, dropdown/value, pin, active and pages | `CheatSelectionModal`; values/active flags are staged, pins persist separately. Logs identify record IDs without entered values. Applying prevents concurrent edits/pinning/closing. |
 | Configure Apply, close confirmation Apply/Discard/Keep editing | Startup-plan validation, configured-value persistence, exact-session runtime commands, readback and remembered-state persistence. Failure reports partial durable/runtime changes and reconciles them. Discard drops staged edits only and cannot race an Apply already started. |
-| Home pinned toggle, Disable all, Auto-load, start/stop CE | `index.tsx` and `runtimeClient.ts`; exact game/table/session, runtime readback and desired-state persistence. `runAction` logs its captured interaction through completion/failure. Auto-load still revalidates after awaits and remains an automatic operation. |
+| Home pinned toggle, Disable all, Auto-load, start/stop CE, Clear on a held game | `index.tsx` and `runtimeClient.ts`; exact game/table/session, runtime readback and desired-state persistence. `runAction` logs its captured interaction through completion/failure. Auto-load still revalidates after awaits and remains an automatic operation. Every start in a game the backend holds is refused by the backend's own per-game hold as well as by the panel, and Clear releases it through `clear_game_run_holds`. |
 | Advanced Refresh, Self-test, Debug and debug Refresh/Back | `AdvancedModal.invoke`, `refreshAdvancedContext` and diagnostic RPCs. Direct diagnostics errors now have an operation failure record even when there is no parent action wrapper. |
 | Advanced CE Import/Test/Forget, Proton choice/Verify | Exact CE identity and launch self-test callbacks in `index.tsx`; selection alone never establishes compatibility. Native import picker decisions are logged without filesystem paths. |
 | Advanced target Save, Processes, observed target Save, exact PID Retry attach, Stop CE and save | Process/launch capabilities to exact target callbacks. Logs carry selected process/PID; backend target validation and launch ownership remain authoritative. |
@@ -160,6 +160,7 @@ Each identifier below names one owned callback location, even when several rows 
 | `home_panel.cancel` | `src/components/HomePanel.tsx` | `onCancelInstall` |
 | `home_panel.cancel_ce_launch` | `src/components/HomePanel.tsx` | `onStopCE` |
 | `home_panel.choose_game` | `src/components/HomePanel.tsx` | `onChooseGame` |
+| `home_panel.clear_dirty_run` | `src/components/HomePanel.tsx` | `onClearDirtyRun` |
 | `home_panel.configure_cheats` | `src/components/HomePanel.tsx` | `() => onChooseCheats()` |
 | `home_panel.disable_all` | `src/components/HomePanel.tsx` | `onDisableAllCheats` |
 | `home_panel.download_and_install_ce` | `src/components/HomePanel.tsx` | `() => onInstall()` |

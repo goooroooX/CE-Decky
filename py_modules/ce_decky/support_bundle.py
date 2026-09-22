@@ -727,6 +727,10 @@ def _build_support_bundle(
         # file, and a report with no answer to it is read as a crawl that was
         # broken rather than one that was never owed a pass.
         ("state/fearless-search.json", paths.cache_root / "fearless-search.json"),
+        # Which games no table may be started in until they are restarted, and
+        # on what evidence each will be lifted. A report that a game "will not
+        # start any table" is this file or a guess.
+        ("state/game_run_holds.json", paths.state_root / "game_run_holds.json"),
         # What the last update check found, and what the last update did. The
         # install happens while this plugin is being replaced, so the backend
         # that could describe it no longer exists by the time it finishes:

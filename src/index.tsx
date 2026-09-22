@@ -72,6 +72,7 @@ import {
   startCESelfTest,
   startManagedCEInstall,
   stopCEForGame,
+  clearGameRunHolds,
   unblockTable,
 } from "./api";
 import {
@@ -88,8 +89,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { autoloadHeldAfterStop, holdAutoloadAfterStop, holdUncleanGame, observeGameRun, releaseAutoloadHold, uncleanGameReason } from "./gameRunHolds";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, switchAfterStopRefusal, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -514,8 +514,6 @@ function Content() {
       throw cause;
     }
     if (generation !== launchGenerationRef.current) return next;
-    const lifted = observeGameRun(appId, next);
-    if (lifted.length > 0) logUi("panel.game_run_holds_lifted", { app_id: appId, holds: lifted.join(","), running: next.game?.running ?? null });
     setCELaunchError(null);
     setCELaunch({ appId, capability: next });
     setLaunchProtonToolId((current) => next.observed_proton_tool?.tool_id
@@ -1343,6 +1341,12 @@ function Content() {
       ?? null,
   });
   const ceRunning = ownership.ownedBySelected;
+  // What the backend holds this game from, read from the launcher's own answer
+  // for it; nothing is known for a game that answer was not about.
+  const selectedRunHolds = ceLaunch?.appId !== undefined && ceLaunch?.appId === selectedGame?.appId
+    ? ceLaunch?.capability.run_holds ?? null
+    : null;
+  const autoloadRunHeld = Boolean(selectedRunHolds?.dirty || selectedRunHolds?.autoload_held);
   // The exact running-process set already positively identifies a known
   // anti-cheat launcher; that signal was consumed only to keep the launcher out
   // of target selection and then discarded, so Start and Auto-load proceeded
@@ -1809,7 +1813,7 @@ function Content() {
     }
   };
 
-  const requestOwnedCEStop = async (appId: number, tableSha256?: string): Promise<OwnedStopVerdict> => {
+  const requestOwnedCEStop = async (appId: number, tableSha256?: string, holdAutoload = false): Promise<OwnedStopVerdict> => {
     // Said before it happens, because it is more of the table's own code than
     // CE Decky runs at any other moment: switching a cheat off runs the
     // script's `[DISABLE]`, which is what puts the game's bytes back. The user
@@ -1820,10 +1824,10 @@ function Content() {
     // panel cannot know yet whether there is anything on to switch off, and a
     // stop with a disconnected bridge would otherwise announce work that never
     // took place.
-    // A stop the user asked for is held from Auto-load, and the switch still
-    // reads on: without this sentence the reader would wonder why nothing
-    // started again, or wait for it to.
-    const armed = autoloadHeldAfterStop(appId)
+    // A stop the user asked for holds Auto-load for this run of the game, and
+    // the switch still reads on: without this sentence the reader would wonder
+    // why nothing started again, or wait for it to.
+    const armed = holdAutoload
       && selectedGameRef.current?.appId === appId
       && currentProfile(statusRef.current, selectedGameRef.current)?.autoload_enabled === true;
     toaster.toast({
@@ -1831,7 +1835,12 @@ function Content() {
       body: "Stopping Cheat Engine. Any cheats still on are switched off first."
         + (armed ? " Auto-load will not start it again until this game is restarted." : ""),
     });
-    const result = await (tableSha256 ? stopCEForGame(appId, tableSha256) : stopCEForGame(appId));
+    // The backend keeps what this stop leaves the game held from, per game and
+    // on disk: a stop that could not prove the game clean holds every start,
+    // and one the user asked for also holds Auto-load.
+    const result = await (holdAutoload
+      ? stopCEForGame(appId, tableSha256 ?? null, true)
+      : tableSha256 ? stopCEForGame(appId, tableSha256) : stopCEForGame(appId));
     const quiesce = result.quiesce ?? null;
     logUi("panel.stop_requested", {
       app_id: appId, stopped: result.stopped, recovered: result.recovered,
@@ -1867,34 +1876,14 @@ function Content() {
       throw new Error("CE Decky could not prove that the owned Cheat Engine process stopped; the session was left unchanged.");
     }
     dropLiveSnapshot();
-    const verdict: OwnedStopVerdict = { stopped: result.stopped, cleanupConfirmed: quiesce?.cleanup_confirmed ?? null, unsettled: left };
-    const refusal = switchAfterStopRefusal(verdict);
-    if (refusal) {
-      holdUncleanGame(appId, refusal);
-      logUiWarning("panel.unclean_game_held", {
-        app_id: appId, cleanup_confirmed: verdict.cleanupConfirmed, unsettled: left.join(",") || null,
-      });
-    }
-    return verdict;
+    return { stopped: result.stopped, cleanupConfirmed: quiesce?.cleanup_confirmed ?? null, unsettled: left };
   };
 
-  const stopOwnedCE = async (appId: number, tableSha256?: string): Promise<OwnedStopVerdict> => {
-    const verdict = await requestOwnedCEStop(appId, tableSha256);
+  const stopOwnedCE = async (appId: number, tableSha256?: string, holdAutoload = false): Promise<OwnedStopVerdict> => {
+    const verdict = await requestOwnedCEStop(appId, tableSha256, holdAutoload);
     await refreshCELaunch(appId).catch(() => undefined);
     await refreshRuntime(appId).catch(() => undefined);
     return verdict;
-  };
-
-  /**
-   * The user stopped Cheat Engine: Auto-load may not start it again in this run.
-   *
-   * Taken before the stop is asked for, so the Auto-load that watches for a game
-   * running without its table cannot slip in between the stop and the hold. The
-   * stop's own first message says so where Auto-load is on.
-   */
-  const stopHeldFromAutoload = (appId: number) => {
-    holdAutoloadAfterStop(appId);
-    logUi("panel.autoload_held_after_stop", { app_id: appId });
   };
 
   /**
@@ -2057,14 +2046,15 @@ function Content() {
       if (hadOwnedCE && (changingIdentity || !beforeRuntimeReady)) {
         report("Stopping the Cheat Engine that is already running");
         await stopOwnedCE(game.appId);
+        live = await refreshCELaunch(game.appId);
       }
       // The stop has already warned, and for a stop that is the whole answer:
       // ending Cheat Engine is its job. This goes on to start a table in the
       // same game, and what the last one left changed can no longer be put
       // back - its restore resolves symbols belonging to the Cheat Engine that
-      // was ended. So nothing is saved or started until the game has been seen
-      // not running, whether that stop was this one or an earlier one.
-      const unclean = uncleanGameReason(game.appId);
+      // was ended. So nothing is saved or started while the backend holds this
+      // game, whether the stop that left it so was this one or an earlier one.
+      const unclean = dirtyRunRefusal(live.run_holds);
       if (unclean) {
         logUiWarning("panel.activation_refused_unclean_game", { app_id: game.appId, table: table.sha256.slice(0, 12) });
         throw new Error(unclean);
@@ -2134,7 +2124,6 @@ function Content() {
         await stopRequested();
       }
       await stopRequested();
-      releaseAutoloadHold(game.appId);
       autoloadAttemptRef.current = null;
       clearAutoloadRetry();
     } catch (cause) {
@@ -2320,8 +2309,7 @@ function Content() {
             activation.stopState = "pending";
             activation.stopAttempt = Promise.resolve().then(async () => {
               try {
-                stopHeldFromAutoload(activation.appId!);
-                const { stopped } = await requestOwnedCEStop(activation.appId!);
+                const { stopped } = await requestOwnedCEStop(activation.appId!, undefined, true);
                 activation.stopState = stopped ? "confirmed" : "failed";
               } catch (cause) {
                 activation.stopState = "failed";
@@ -3189,7 +3177,7 @@ function Content() {
       // a proven absence stops the launch: a read that fails proves nothing,
       // and a game that is running the target is the ordinary case.
       const live = await refreshCELaunch(game.appId).catch(() => null);
-      const unclean = uncleanGameReason(game.appId);
+      const unclean = dirtyRunRefusal(live?.run_holds);
       if (unclean) throw new Error(unclean);
       const targetNotRunning = live ? absentLiveTarget(live.game, process) : null;
       if (targetNotRunning) {
@@ -3209,7 +3197,6 @@ function Content() {
         dropLiveSnapshot();
         toaster.toast({ title: "CE Decky", body: "Cheat Engine connected, but the target process still needs an exact PID selection in Advanced." });
       }
-      releaseAutoloadHold(game.appId);
       autoloadAttemptRef.current = null;
       clearAutoloadRetry();
     }).catch(() => undefined);
@@ -3527,8 +3514,9 @@ function Content() {
         verify: async () => currentProfile(await refreshStatus(), game)?.autoload_enabled === enabled,
       });
       await refreshStatus().catch(() => undefined);
-      // Switching it on is asking for it, which answers the Stop it was held for.
-      if (enabled) releaseAutoloadHold(game.appId);
+      // Switching it on is asking for it: the backend lifts the hold a Stop put
+      // on it, and the capability read afterwards is what says so here.
+      if (enabled) await refreshCELaunch(game.appId).catch(() => undefined);
       autoloadAttemptRef.current = null;
       clearAutoloadRetry();
     }).catch(() => undefined);
@@ -3579,11 +3567,11 @@ function Content() {
       || contextModalDepthRef.current > 0
       || managedSetupPending
       // Nobody is watching this one, so it may not start a table in a game a
-      // stop could not prove clean; the game being seen not running re-arms it.
-      || uncleanGameReason(selectedGame.appId) !== null
-      // The user stopped Cheat Engine in this run of the game; starting it again
-      // on their behalf is the loop a Stop could never get out of.
-      || autoloadHeldAfterStop(selectedGame.appId)
+      // stop could not prove clean, nor in one whose Cheat Engine the user
+      // stopped in this run: starting it again on their behalf is the loop a
+      // Stop could never get out of. The backend lifts both once the run is
+      // proven over.
+      || autoloadRunHeld
     ) return;
     const key = `${selectedGame.appId}:${profile.table_sha256}:${profile.target_process}`;
     if (autoloadAttemptRef.current === key) return;
@@ -3606,6 +3594,8 @@ function Content() {
           || absentLiveTarget(capability.game, profile.target_process) !== null
           || latestOwnership.blockedReason !== null
           || latestOwnership.ownedBySelected
+          // Asked again of the answer just read, which is the backend's own.
+          || Boolean(capability.run_holds?.dirty || capability.run_holds?.autoload_held)
         ) {
           autoloadAttemptRef.current = null;
           clearAutoloadRetry();
@@ -3698,7 +3688,7 @@ function Content() {
     // body takes its own fresh observation. It is here because the transition
     // this exists for - a launcher first, the game seconds later - changes no
     // other dependency, and without it Auto-load slept through it.
-  }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, clearAutoloadRetry, refreshCELaunch, runAction, captureLiveSnapshot]);
+  }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, autoloadRunHeld, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, clearAutoloadRetry, refreshCELaunch, runAction, captureLiveSnapshot]);
 
   const pickCE = async (): Promise<boolean> => {
     if (!status) return false;
@@ -4340,19 +4330,27 @@ function Content() {
       ceRunning={ceRunning}
       ceIdentityBlockedReason={ceIdentityBlockedReason}
       launchPending={launchInProgress !== null && launchInProgress.appId === selectedGame?.appId}
+      dirtyRunNotice={dirtyRunNotice(selectedRunHolds)}
+      onClearDirtyRun={() => {
+        const game = selectedGameRef.current;
+        if (!game) return;
+        void runAction(async () => {
+          const answer = await clearGameRunHolds(game.appId);
+          logUiWarning("panel.run_holds_cleared_by_user", { app_id: game.appId, cleared: answer.cleared.join(",") || null });
+          await refreshCELaunch(game.appId).catch(() => undefined);
+        }).catch(() => undefined);
+      }}
       onStopCE={() => {
         const pending = launchInProgress;
-        const stoppedAppId = pending?.appId ?? selectedGameRef.current?.appId ?? null;
-        if (stoppedAppId !== null) stopHeldFromAutoload(stoppedAppId);
         if (pending) {
           // The launch that is still waiting owns the busy latch, so cancelling
           // it cannot go through `runAction`; the backend stop is safe for a
           // `starting`/`running` operation and the awaiting caller then ends
           // with the stopped state instead of its own timeout.
-          void stopOwnedCE(pending.appId).catch((cause) => setError(describeError(cause)));
+          void stopOwnedCE(pending.appId, undefined, true).catch((cause) => setError(describeError(cause)));
           return;
         }
-        if (selectedGameRef.current) void runAction(() => stopOwnedCE(selectedGameRef.current!.appId)).catch(() => undefined);
+        if (selectedGameRef.current) void runAction(() => stopOwnedCE(selectedGameRef.current!.appId, undefined, true)).catch(() => undefined);
       }}
       onAdvanced={() => openAdvanced()}
       busy={busy || (managedCE === null && managedCEError === null)}

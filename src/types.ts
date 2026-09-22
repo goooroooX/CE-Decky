@@ -761,8 +761,22 @@ export interface OwnedLaunchRecord {
   started_at: number;
 }
 
+/**
+ * What may not start in one game until the run of it going now is over, as the
+ * backend answers it. It keeps these on disk and lifts one only on proof that
+ * the run has ended, so the panel reads them rather than keeping its own.
+ */
+export interface GameRunHolds {
+  /** A stop ended Cheat Engine without proving the game clean; every start is refused. */
+  dirty: { since: number; unsettled: number } | null;
+  /** The user stopped Cheat Engine in this run; Auto-load does not start it again. */
+  autoload_held: boolean;
+}
+
 export interface CELaunchCapability {
   schema: number;
+  /** For the game asked about; absent from a backend before holds, and for no game. */
+  run_holds?: GameRunHolds | null;
   modes: string[];
   self_test_prefix: string;
   operations: CELaunchStatus[];

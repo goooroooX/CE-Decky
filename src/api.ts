@@ -2,6 +2,7 @@ import { callable } from "@decky/api";
 import type { SupportLogEntry } from "./supportLog";
 import type {
   TableSearchProgress,
+  GameRunHolds,
   BlockedTable,
   BlockedTableList,
   GameProfile,
@@ -236,6 +237,8 @@ export const startCESelfTest = callable<[protonToolId: string], CELaunchStatus>(
 export const pollCELaunch = callable<[operationId: string], CELaunchStatus>("poll_ce_launch");
 export const stopCELaunch = callable<[operationId: string], CELaunchStatus>("stop_ce_launch");
 export const launchCEForGame = callable<[appId: number, protonToolId?: string | null], CELaunchStatus>("launch_ce_for_game");
-export const stopCEForGame = callable<[appId: number, tableSha256?: string], StopResult>("stop_ce_for_game");
+export const stopCEForGame = callable<[appId: number, tableSha256?: string | null, holdAutoload?: boolean], StopResult>("stop_ce_for_game");
+/** The user clears what holds this game from starting a table, having been told what it is. */
+export const clearGameRunHolds = callable<[appId: number], { cleared: string[]; run_holds: GameRunHolds }>("clear_game_run_holds");
 
 export const confirmTableWorking = callable<[appId: number, digest: string, sessionId: string, recordId: number], boolean>("confirm_table_working");

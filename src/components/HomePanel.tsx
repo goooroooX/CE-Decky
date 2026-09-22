@@ -199,6 +199,9 @@ interface Props {
   /** A launch that has started and is still waiting for the resident bridge. */
   launchPending: boolean;
   onStopCE: () => void;
+  /** Why no table may be started in this game until it is restarted, where the backend holds it. */
+  dirtyRunNotice?: string | null;
+  onClearDirtyRun?: () => void;
   onAdvanced: () => void;
   busy: boolean;
   error: string | null;
@@ -279,6 +282,8 @@ export function HomePanel(props: Props) {
     ceIdentityBlockedReason,
     launchPending,
     onStopCE,
+    dirtyRunNotice = null,
+    onClearDirtyRun = () => undefined,
     onAdvanced,
     busy,
     error,
@@ -628,6 +633,17 @@ export function HomePanel(props: Props) {
         )}
         <PanelSectionRow><ButtonItem layout="below" disabled={workflowBlocked || !table} onClick={traceUiAction("home_panel.configure_cheats", () => onChooseCheats(), { app_id: game?.appId, table_sha: table?.sha256 })}>Configure cheats</ButtonItem></PanelSectionRow>
         {error && <PanelSectionRow><PanelRow testId="panel-error" label="Attention" description={error} /></PanelSectionRow>}
+        {dirtyRunNotice && (
+          <PanelSectionRow>
+            <PanelRow
+              testId="dirty-run"
+              truncate
+              label="Restart the game first"
+              description={dirtyRunNotice}
+              actions={<SmallButton disabled={busy} onClick={traceUiAction("home_panel.clear_dirty_run", onClearDirtyRun, { app_id: game?.appId, table_sha: table?.sha256 })}>Clear</SmallButton>}
+            />
+          </PanelSectionRow>
+        )}
         {/* Switching everything off, diagnostics and the stop control are rare,
             so they share one row and never take a full-width button from the
             cheats. Disabling every cheat is not stopping Cheat Engine: the

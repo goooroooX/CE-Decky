@@ -3733,3 +3733,29 @@ def test_a_stop_proceeds_when_the_quiesce_cannot_be_asked_or_answered(tmp_path: 
     assert result["quiesce"] == {
         "asked": False, "reason": "the resident bridge is not attached", "cleanup_confirmed": False,
     }
+
+
+def test_a_runs_processes_are_listed_only_where_the_list_can_be_complete(tmp_path):
+    """A hold on one run of a game is lifted by its own processes, never by names.
+
+    The next run has the same names. The list is `None` wherever a process the
+    walk could not read may be running the program, because a list missing one
+    would be proven gone while that one still ran.
+    """
+    proc = tmp_path / "proc"
+    # A process table that does not answer lists nothing it could be sure of.
+    assert _ce_launch.capture_run_identities(620, ["game.exe"], proc_root=proc) is None
+    _target_proc(proc, 4321, app_id=620, executable="game.exe", start_time=1000)
+    listed = _ce_launch.capture_run_identities(620, ["game.exe"], proc_root=proc)
+    assert listed == (_ce_launch.TargetIdentity(pid=4321, start_time=1000, windows_executable="game.exe", app_id=620),)
+
+    # One it could not read, running the same program, may be part of the run.
+    _target_proc(proc, 4322, app_id=620, executable="game.exe", start_time=1001)
+    (proc / "4322" / "environ").write_bytes(b"")
+    assert _ce_launch.capture_run_identities(620, ["game.exe"], proc_root=proc) is None
+
+
+def test_a_game_none_of_whose_programs_runs_has_an_empty_run(tmp_path):
+    proc = tmp_path / "proc"
+    _target_proc(proc, 4321, app_id=620, executable="other.exe", start_time=1000)
+    assert _ce_launch.capture_run_identities(620, ["game.exe"], proc_root=proc) == ()

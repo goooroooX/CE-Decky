@@ -9,7 +9,7 @@ const api = vi.hoisted(() => ({
   clearStartupPreference: vi.fn(), completeManagedCEInstall: vi.fn(), listBlockedTables: vi.fn(), unblockTable: vi.fn(),
   getCELaunchCapability: vi.fn(), getManagedCECapability: vi.fn(), getRuntimeStatus: vi.fn(), getStatus: vi.fn(),
   importCE: vi.fn(), importTable: vi.fn(), inspectTableSha: vi.fn(), inspectTableSource: vi.fn(), launchCEForGame: vi.fn(),
-  startupLeftOn: vi.fn(),
+  startupLeftOn: vi.fn(), clearGameRunHolds: vi.fn(),
   listTableCode: vi.fn(), readTableCode: vi.fn(), createSupportBundle: vi.fn(),
   // Whether the game's own program still holds what the table scans for, read
   // while Review is being prepared. Resolved with the answer a game this device
@@ -111,7 +111,6 @@ vi.mock("@decky/ui", async () => (await import("./deckyUiMock")).deckyUiMock({
 }));
 
 import pluginFactory from "../src/index";
-import { forgetGameRunHolds } from "../src/gameRunHolds";
 import { ActionFailureModal } from "../src/modals/ActionFailureModal";
 import { PriorDurableCommitError } from "../src/durableWrite";
 import { AdvancedModal } from "../src/modals/AdvancedModal";
@@ -214,9 +213,6 @@ beforeEach(() => {
   // leftover one would leak into the next case.
   try { window.localStorage.clear(); } catch { /* jsdom always has it */ }
   quickAccess.visible = true; quickAccess.listeners.clear();
-  // A stop that could not prove a game clean holds it at module scope, which is
-  // what lets the hold outlive a remount and why it would outlive a case too.
-  forgetGameRunHolds();
   vi.clearAllMocks(); modalState.nodes.length = 0; modalState.closes.length = 0; modalState.events.length = 0; modalState.failTitle = null;
   api.listBlockedTables.mockResolvedValue({ schema: 1, reason: null, tables: [] });
   // Re-established per case, because `clearMocks` clears the calls and leaves
@@ -2194,15 +2190,19 @@ describe("Home panel and managed setup", () => {
   });
 
   it.each([
-    ["a cheat it named", { asked: true, answered: true, reason: null, cleanup_confirmed: false, records_put_down: 2, records_unsettled: ["6"] }],
-    ["nothing it could confirm", { asked: false, reason: "the resident bridge is not attached", cleanup_confirmed: false }],
-  ])("does not start another table in a game the last one may still have changed (%s)", async (_case, quiesce) => {
+    ["a cheat it named", 1],
+    ["nothing it could confirm", 0],
+  ])("does not start another table in a game the last one may still have changed (%s)", async (_case, unsettled) => {
     // The stop ends the old Cheat Engine either way, and what that table left
     // changed can no longer be undone: its restore resolves symbols belonging
-    // to the process that just ended. Starting the next table on top of it is
-    // what this refuses, before anything is saved.
-    api.getCELaunchCapability.mockResolvedValue({ ...launch, operations: [{ operation_id: "live", app_id: 10, state: "connected" }] });
-    api.stopCEForGame.mockResolvedValue({ stopped: true, recovered: false, quiesce });
+    // to the process that just ended. The backend holds the game from then on,
+    // and the switch reads that hold before anything is saved.
+    let capability: any = { ...launch, operations: [{ operation_id: "live", app_id: 10, state: "connected" }] };
+    api.getCELaunchCapability.mockImplementation(async () => capability);
+    api.stopCEForGame.mockImplementation(async () => {
+      capability = { ...launch, operations: [], run_holds: { dirty: { since: 1, unsettled }, autoload_held: false } };
+      return { stopped: true, recovered: false, quiesce: { asked: true, answered: true, reason: null, cleanup_confirmed: false, records_unsettled: unsettled ? ["6"] : [] } };
+    });
     api.saveProfile.mockResolvedValue({});
     api.setExecutionConsent.mockResolvedValue({});
     renderContent();
@@ -2216,35 +2216,31 @@ describe("Home panel and managed setup", () => {
     expect(api.saveProfile).not.toHaveBeenCalled();
     expect(api.setExecutionConsent).not.toHaveBeenCalled();
     expect(api.launchCEForGame).not.toHaveBeenCalled();
-  });
-
-  it("holds every start in that game until it has been seen not running", async () => {
-    // A second press finds no Cheat Engine to stop, so a check made only on the
-    // stop's own answer let it through into the same game. The game carries the
-    // hold instead, and only the game going away lifts it.
-    let capability: any = { ...launch, operations: [{ operation_id: "live", app_id: 10, state: "connected" }] };
-    api.getCELaunchCapability.mockImplementation(async () => capability);
-    api.stopCEForGame.mockImplementation(async () => {
-      capability = { ...launch, operations: [] };
-      return { stopped: true, recovered: false, quiesce: { asked: false, reason: "the resident bridge is not attached", cleanup_confirmed: false } };
-    });
-    api.saveProfile.mockResolvedValue({});
-    api.setExecutionConsent.mockResolvedValue({});
-    renderContent();
-    await screen.findByText("Game.CT");
-    fireEvent.click(screen.getByRole("button", { name: "Search" }));
-    await waitFor(() => expect(modalState.nodes.length).toBe(1));
-    await act(async () => { await modalState.nodes[0].props.onSelected(SHA); });
-    const review = modalState.nodes[1];
-    await expect(review.props.onUse("other.exe", vi.fn())).rejects.toThrow("Restart the game");
-    await expect(review.props.onUse("other.exe", vi.fn())).rejects.toThrow("Restart the game");
-    expect(api.stopCEForGame).toHaveBeenCalledOnce();
+    // A second press finds no Cheat Engine to stop, and the hold is still the
+    // backend's, so it is refused the same way.
+    await expect(review.props.onUse("other.exe", vi.fn())).rejects.toThrow("Restart the game before starting a table in it");
     expect(api.saveProfile).not.toHaveBeenCalled();
+    // Home says it before anything is pressed, and offers to clear it.
+    expect((await screen.findByTestId("dirty-run")).textContent).toContain("no table is started in it until it has been restarted");
 
-    // The game seen not running has taken what was left in it with it.
-    capability = { ...launch, operations: [], game: { ...launch.game, running: false, pids: [] } };
+    // Once the backend has proven that run over, the switch goes through.
+    capability = { ...launch, operations: [], run_holds: { dirty: null, autoload_held: false } };
     await act(async () => { await review.props.onUse("other.exe", vi.fn()).catch(() => undefined); });
     expect(api.saveProfile).toHaveBeenCalled();
+  });
+
+  it("clears the hold from Home when the reader asks to", async () => {
+    let capability: any = { ...launch, run_holds: { dirty: { since: 1, unsettled: 0 }, autoload_held: false } };
+    api.getCELaunchCapability.mockImplementation(async () => capability);
+    api.clearGameRunHolds.mockImplementation(async () => {
+      capability = { ...launch, run_holds: { dirty: null, autoload_held: false } };
+      return { cleared: ["dirty"], run_holds: capability.run_holds };
+    });
+    renderContent();
+    const row = await screen.findByTestId("dirty-run");
+    fireEvent.click(within(row).getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(api.clearGameRunHolds).toHaveBeenCalledWith(10));
+    await waitFor(() => expect(screen.queryByTestId("dirty-run")).toBeNull());
   });
 
   it("switches tables as before where the stop proved the game clean", async () => {
@@ -5508,12 +5504,13 @@ describe("Launching the selected table", () => {
   it("does not start the table again after Stop, with Auto-load on", async () => {
     // Auto-load starts the table whenever the game runs without it, and a Stop
     // is exactly that state: without this, pressing Stop brought Cheat Engine
-    // straight back, and pressing it again did the same.
+    // straight back, and pressing it again did the same. The Stop asks the
+    // backend to hold Auto-load for this run, and Auto-load reads that hold.
     let capability: any = { ...launch, operations: [{ operation_id: "live", app_id: 10, state: "connected" }] };
     api.getCELaunchCapability.mockImplementation(async () => capability);
     api.getRuntimeStatus.mockImplementation(async () => (capability.operations.length ? liveRuntime() : noRuntime()));
     api.stopCEForGame.mockImplementation(async () => {
-      capability = { ...launch, operations: [] };
+      capability = { ...launch, operations: [], run_holds: { dirty: null, autoload_held: true } };
       return {
         stopped: true, recovered: false,
         quiesce: { asked: true, answered: true, reason: null, cleanup_confirmed: true, records_put_down: 1, records_unsettled: [] },
@@ -5527,7 +5524,7 @@ describe("Launching the selected table", () => {
     const stop = await screen.findByRole("button", { name: "Stop CE" });
     await waitFor(() => expect((stop as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(stop);
-    await waitFor(() => expect(api.stopCEForGame).toHaveBeenCalledOnce());
+    await waitFor(() => expect(api.stopCEForGame).toHaveBeenCalledWith(10, null, true));
     // Long enough for the Auto-load that used to follow a Stop to have started.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1500)); });
     expect(api.launchCEForGame).not.toHaveBeenCalled();
@@ -5536,12 +5533,9 @@ describe("Launching the selected table", () => {
       body: expect.stringContaining("Auto-load will not start it again until this game is restarted."),
     }));
 
-    // The next run of the game is what Auto-load is for: the game exits, and
-    // comes back as another process.
-    capability = { ...launch, operations: [], game: { ...launch.game, running: false, pids: [] } };
-    const before = api.getCELaunchCapability.mock.calls.length;
-    await waitFor(() => expect(api.getCELaunchCapability.mock.calls.length).toBeGreaterThan(before), { timeout: 8000 });
-    capability = { ...launch, operations: [], game: { ...launch.game, pids: [77] } };
+    // The next run of the game is what Auto-load is for, once the backend has
+    // proven this one over.
+    capability = { ...launch, operations: [], run_holds: { dirty: null, autoload_held: false } };
     await waitFor(() => expect(api.launchCEForGame).toHaveBeenCalled(), { timeout: 8000 });
   }, 15000);
 
@@ -5554,7 +5548,7 @@ describe("Launching the selected table", () => {
     api.getCELaunchCapability.mockImplementation(async () => capability);
     api.getRuntimeStatus.mockImplementation(async () => (capability.operations.length ? liveRuntime() : noRuntime()));
     api.stopCEForGame.mockImplementation(async () => {
-      capability = { ...launch, operations: [] };
+      capability = { ...launch, operations: [], run_holds: { dirty: { since: 1, unsettled: 1 }, autoload_held: true } };
       return {
         stopped: true, recovered: false,
         quiesce: { asked: true, answered: true, reason: null, cleanup_confirmed: false, records_put_down: 1, records_unsettled: ["6"] },

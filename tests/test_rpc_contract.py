@@ -189,6 +189,7 @@ def test_high_risk_rpc_methods_forward_arguments_without_reordering(monkeypatch)
         assert await plugin.launch_ce_for_game(620, "proton-9") == "launched"
         assert await plugin.stop_ce_for_game(620) == "stopped"
         assert await plugin.stop_ce_for_game(620, "a" * 64) == "stopped"
+        assert await plugin.stop_ce_for_game(620, None, True) == "stopped"
 
     import asyncio
 
@@ -201,8 +202,9 @@ def test_high_risk_rpc_methods_forward_arguments_without_reordering(monkeypatch)
         ("set_startup_preference", (620, "sha", 7, True, "100")),
         ("validate_effective_startup_plan", (620, "sha", [], [])),
         ("launch_ce_for_game", (620, "proton-9")),
-        ("stop_ce_for_game", (620,)),
-        ("stop_ce_for_game", (620, "a" * 64)),
+        ("stop_ce_for_game", (620, None, False)),
+        ("stop_ce_for_game", (620, "a" * 64, False)),
+        ("stop_ce_for_game", (620, None, True)),
     ]
 
 
