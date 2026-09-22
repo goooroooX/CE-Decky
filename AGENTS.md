@@ -38,6 +38,7 @@ If documents disagree, use this order: `AGENTS.md` for workflow/invariants, `doc
 |---|---|---|
 | Documentation/repository layout | affected files | affected document |
 | Product behavior/workflow | relevant `docs/DESIGN.md`; source/tests | `docs/DESIGN.md` and tests |
+| An improvement nothing owes: a better answer to a case that already has a safe one | `docs/IMPROVEMENTS.md` | `docs/IMPROVEMENTS.md`, never `docs/FIELD_NOTES.md` **Still worth checking**, which holds a release |
 | Component/data/storage boundary | relevant `docs/ARCHITECTURE.md` and `docs/DESIGN.md` | `docs/ARCHITECTURE.md`; `docs/SECURITY.md` if trust changes |
 | Artifact, network, CE runtime, or Steam-state mutation | relevant design/architecture plus `docs/SECURITY.md` | contracts and regressions |
 | Decky, Steam, Proton, or CE target behavior | affected contract; `docs/FIELD_NOTES.md` for what a device already established | `docs/FIELD_NOTES.md` for a durable conclusion, and only for one |
@@ -73,7 +74,7 @@ Read a whole contract before changing it.
 2. Make the smallest change that proves or falsifies the assumption.
 3. Add or update tests for production behavior changes.
 4. Run the smallest QA selection that covers the changed surface. Reuse a pass until a covered input changes.
-5. Update `docs/FIELD_NOTES.md` only for a durable conclusion about the target, a measurement with the machine that produced it, a source evaluation, or work that is owed. Routine installs, hashes, readbacks, captures and unchanged passes are not conclusions and are recorded nowhere. Settling a row under **Still worth checking** means deleting it, not annotating it: `scripts/check_release.py` refuses a stable tag while that section holds one, so a stale row holds the release.
+5. Update `docs/FIELD_NOTES.md` only for a durable conclusion about the target, a measurement with the machine that produced it, a source evaluation, or work that is owed. Work that would be better but is not owed goes to `docs/IMPROVEMENTS.md`. Routine installs, hashes, readbacks, captures and unchanged passes are not conclusions and are recorded nowhere. Settling a row under **Still worth checking** means deleting it, not annotating it: `scripts/check_release.py` refuses a stable tag while that section holds one, so a stale row holds the release.
    - A conclusion states what was observed, not what was inferred from it: the mechanism actually seen, the ordinary explanations ruled out by test, and where the cause is unknown, that it is. A wrong conclusion recorded confidently stops the next person looking, so correcting one is ordinary work and the correction says what it replaced.
    - A measurement is recorded only once the tool that produced it is a tracked helper with its command in `docs/DEVELOPMENT.md`, and the same holds for a number said in conversation, because that is a claim too. `docs/DEVELOPMENT.md` **Measurement** carries what a figure must name and what one sample bounds.
 6. Keep production promotion, prototypes, and target experiments separate when practical.

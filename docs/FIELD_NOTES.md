@@ -104,7 +104,6 @@ The blocker is almost never the transport. Of the sources examined, one is block
 
 | Subject | What would settle it |
 |---|---|
-| A cheat that cannot be switched off is reported and left on; it could be taken out of the copy instead | The transform is already there: the hook belongs to a scan symbol, and dropping that symbol removes it with both existing proofs, measured at 5 blocks, 90 lines and 2264 bytes on the table this was found in. Three things are owed before it is offered. The cost report counts a record whose address the removal took and a script the removal emptied; a record whose flag no longer has any reader is neither, so such a cheat would go quietly. `prepare_table_copy` would carry a third transform beside the signature and the unmatched scans, in the same press and the same copy. And a game that dies seconds after CE Decky wrote anything is the only signal for the shapes the reader cannot follow: correlating the game's own exit with the write is what would turn those into something the user is told about rather than left to guess |
 
 ## 6. Upstream references
 

@@ -149,6 +149,7 @@ EM_DASH_ENFORCED = (
     "docs/DEVELOPMENT.md",
     "docs/FIELD_NOTES.md",
     "docs/REMOTE_TARGET.md",
+    "docs/IMPROVEMENTS.md",
     "CHANGELOG.md",
 )
 # And the plugin's own text, which is the same voice read by the same people.
