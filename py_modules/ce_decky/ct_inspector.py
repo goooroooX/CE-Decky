@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from hashlib import sha256 as _sha256
 import io
@@ -176,9 +176,18 @@ class TableControl:
     # cheat cannot be switched off safely" to "this was not something the reader
     # could follow" - and either way nothing writes it on the user's behalf.
     switch_off_is_safe: bool = False
+    # Whether this record's address is memory one of the table's own scripts
+    # allocates, rather than the game's. Decided by the address and never by
+    # where the record sits: a table groups a plain `game.exe+10` switch under
+    # a script as readily as it groups the script's own flags there, and only
+    # the flags go away with the script's `[DISABLE]`. Read across the whole
+    # table, because a symbol a script allocates is global once it runs and a
+    # record reading it may sit anywhere. Backend only, so not in `as_dict`.
+    script_owned: bool = False
 
     def as_dict(self) -> dict[str, object]:
         value = asdict(self)
+        value.pop("script_owned", None)
         value["path"] = list(self.path)
         value["dropdown_values"] = [list(item) for item in self.dropdown_values]
         return value
@@ -426,6 +435,8 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     unrecognised: list[tuple[str, str]] = []
     scans: dict[str, TableScan] = {}
     repeated: set[str] = set()
+    allocated: set[str] = set()
+    owners: list[frozenset[str]] = []
     has_lua = False
     has_auto_assembler = False
     has_forms = False
@@ -459,9 +470,18 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     if top_entries is not None:
         for child in top_entries:
             if local_tag(child.tag) == "CheatEntry":
-                total_entries += _walk_entry(child, (), controls, processes, sanitized, dropped, unrecognised, None, scans, repeated)
+                total_entries += _walk_entry(
+                    child, (), controls, processes, sanitized, dropped, unrecognised, None, scans, repeated,
+                    allocated=allocated, owners=owners,
+                )
                 if total_entries > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
+    # Settled after the walk, because the script that allocates a symbol may
+    # come after the record that reads it.
+    controls = [
+        replace(control, script_owned=True) if not owner.isdisjoint(allocated) else control
+        for control, owner in zip(controls, owners)
+    ]
 
     id_counts: dict[int, int] = {}
     unsupported_ids = 0
@@ -537,6 +557,9 @@ def _walk_entry(
     scans: dict[str, TableScan] | None = None,
     repeated: set[str] | None = None,
     safe: frozenset[str] | None = None,
+    *,
+    allocated: set[str] | None = None,
+    owners: list[frozenset[str]] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -582,6 +605,12 @@ def _walk_entry(
     dropdown = _parse_dropdown(_child_text(element, "DropDownList") or "", sanitized, dropped)
     dropdown_read_only = (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
     address = _child_text(element, "Address") or ""
+    if allocated is not None and assembler_text:
+        # Unbounded on purpose. A bound would have to read the names past it
+        # as the game's memory, which is a stop writing a flag nobody proved
+        # safe, and what bounds this is already the file: every name is a
+        # line of a script the size limit has admitted.
+        allocated.update(_allocated_symbols(assembler_text))
     for candidate in _process_candidates(address, "CT Address"):
         processes.add(candidate)
     # Cheat Engine writes `{ Game : <exe> }` into every Auto Assembler script it
@@ -633,6 +662,8 @@ def _walk_entry(
             switch_off_is_safe=switch_off_is_safe,
         )
     )
+    if owners is not None:
+        owners.append(_address_symbols(address, element))
 
     count = 1
     # A record inside this one is read against this script's declarations as
@@ -658,7 +689,10 @@ def _walk_entry(
     if nested is not None:
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
-                count += _walk_entry(child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated, nested_safe)
+                count += _walk_entry(
+                    child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated, nested_safe,
+                    allocated=allocated, owners=owners,
+                )
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count
@@ -725,6 +759,10 @@ MAX_UNRECOGNISED_PAIRS = 64
 _DECLARATION_RE = re.compile(
     r"(?mi)^[\t ]*([A-Za-z_]\w*)[\t ]*:[\t ]*(?:\r?\n[\t ]*)?(?:dd|dw|db|dq)[\t ]+([^\s/;]+)"
 )
+_ALLOCATION_RE = re.compile(r"(?mi)^[\t ]*(?:alloc|globalalloc|label)[\t ]*\([\t ]*([A-Za-z_]\w*)")
+_PLACEMENT_RE = re.compile(r"(?m)^[\t ]*([A-Za-z_]\w*)[\t ]*:")
+_BRACKETED_RE = re.compile(r"\[[^\[\]]*\]")
+_ADDRESS_WORD_RE = re.compile(r"\b[A-Za-z_]\w*")
 # What one script's declarations may cost to read. The largest real script here
 # declares 48; a file that declares more than this is not what this sentence is
 # about, and the records simply keep their own defaults.
@@ -741,6 +779,50 @@ def _public_key_bytes(element) -> int:
     if element is None:
         return 0
     return len((element.text or "").strip().encode("utf-8", "replace"))
+
+
+def _allocated_symbols(script: str) -> set[str]:
+    """Every name this script defines, which is where its own memory is named.
+
+    `alloc`, `globalalloc` and `label` declare one and a `name:` line places
+    it. A scan result is not one: `aobscanmodule(INJECT, ...)` names the game's
+    own code, and a record at `INJECT` is the game's memory however the script
+    registers the name.
+
+    A `name:` line also places a patch in the game's code, so this reads a
+    little more as the script's than is. That is the side it may err on: a
+    record read as the script's keeps the value it has at a stop, while one
+    read as the game's gets its off key written, and a flag nobody proved safe
+    is exactly the record that write must not reach. A table's own flags are
+    often placed with no `label` at all, which is why the placement counts.
+    """
+    names = {match.group(1).casefold() for match in _ALLOCATION_RE.finditer(script)}
+    names.update(match.group(1).casefold() for match in _PLACEMENT_RE.finditer(script))
+    return names
+
+
+def _address_symbols(address: str, element: ET.Element) -> frozenset[str]:
+    """The names this record's address is computed from, outside any bracket.
+
+    Casefolded, because Cheat Engine resolves `bEnableFlag` and `benableflag`
+    to the same symbol. What a bracket holds is a pointer read out of memory,
+    and what it points at is the game's; a record carrying `<Offsets>` is the
+    same, its address being only where the pointer chain starts. Anything else
+    that names a script's symbol, quoted or with a constant beside it, is that
+    script's memory, which is the side this may err on.
+    """
+    offsets = _first_child(element, "Offsets")
+    if offsets is not None and any(local_tag(child.tag) == "Offset" for child in offsets):
+        return frozenset()
+    outside = address
+    # Innermost first, so a nested dereference comes out whole; bounded by the
+    # address itself, which the record's own size limit has already admitted.
+    while True:
+        stripped = _BRACKETED_RE.sub(" ", outside)
+        if stripped == outside:
+            break
+        outside = stripped
+    return frozenset(word.casefold() for word in _ADDRESS_WORD_RE.findall(outside))
 
 
 def _declared_defaults(script: str | None) -> dict[str, str]:

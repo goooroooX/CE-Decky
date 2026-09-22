@@ -1722,15 +1722,19 @@ def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ..
     could belong to that one, and a stop that writes the wrong value into the
     game is worse than one that only releases the freeze.
 
-    A flag that belongs to one of the table's own scripts is here only where its
-    code was read and found to survive being written off. The stop has another
-    way to put that one back: it walks the address list deepest first, so the
-    script above the flag is disabled after it, and the table's own `[DISABLE]`
+    A flag that lives in memory one of the table's own scripts allocates is
+    here only where its code was read and found to survive being written off.
+    The stop has another way to put that one back: the table's own `[DISABLE]`
     removes the patch and the allocation the flag gated. Releasing the record
     and letting the script do the rest is the same outcome without the write
     that can hand the game an offset where it expects an address. A switch whose
     address the game itself owns has no such script behind it, and it still
-    needs its off value written or it stays on in the game.
+    needs its off value written or it stays on in the game - wherever the table
+    happens to file it. Which of the two a record is comes from its address,
+    never from its place in the list: a table groups a plain `game.exe+10`
+    switch under a script as readily as the script's own flags, and asking the
+    nesting left that switch at its on value after a stop that reported
+    success.
 
     Bounded, and the bound drops the rest rather than refusing the session: what
     a record past it loses is the write after the release, which is what every
@@ -1740,14 +1744,6 @@ def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ..
     for control in inspection.controls:
         if control.id is not None:
             seen[control.id] = seen.get(control.id, 0) + 1
-    # Every record carrying a script, including one the table also draws as a
-    # header: what makes the flags under it the script's own is the code, and a
-    # presentation flag on the record that carries that code changes nothing
-    # about who allocated the symbol underneath it.
-    scripts = [
-        tuple(control.path) for control in inspection.controls
-        if control.has_assembler_script
-    ]
     found: dict[int, str] = {}
     for control in inspection.controls:
         record_id = control.id
@@ -1755,9 +1751,7 @@ def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ..
             continue
         if control.group_header or control.has_assembler_script:
             continue
-        path = tuple(control.path)
-        under_script = any(len(prefix) < len(path) and path[:len(prefix)] == prefix for prefix in scripts)
-        if under_script and control.switch_off_is_safe is not True:
+        if control.script_owned and control.switch_off_is_safe is not True:
             continue
         on = control.switch_on_value
         if not isinstance(on, str) or not on or len(control.dropdown_values) != 2:

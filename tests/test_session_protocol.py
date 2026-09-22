@@ -1424,3 +1424,66 @@ def test_a_descriptor_states_one_off_value_per_record(tmp_path: Path):
     # And a session prepared before this existed still parses, with none stated.
     legacy = b"".join(line + b"\n" for line in rendered.split(b"\n") if line and not line.startswith(b"S\t"))
     assert parse_descriptor(legacy).switch_off == ()
+
+
+def _stop_keys(tmp_path: Path, table: bytes) -> tuple[tuple[int, str], ...]:
+    source = tmp_path / "stop.CT"
+    source.write_bytes(table)
+    tables = TableStore(tmp_path / "tables")
+    artifact = tables.import_ct(str(source))
+    blob = tables.verified_blob(artifact.sha256)
+    inspection = inspect_table(blob, artifact.sha256)
+    profiles = ProfileStore(tmp_path / "profiles.json")
+    profiles.upsert(app_id=42, name="Game", is_shortcut=False, table_sha256=artifact.sha256, target_process="game.exe")
+    profiles.set_execution_consent(app_id=42, table_sha256=artifact.sha256, consent=True)
+    profile = profiles.get(42)
+    assert profile is not None
+    prepared = SessionStore(tmp_path / "state", tmp_path).prepare(profile, blob, inspection, CE_SHA)
+    return parse_descriptor(Path(prepared.descriptor_path).read_bytes()).switch_off
+
+
+def test_a_game_switch_filed_under_a_script_is_still_the_games(tmp_path: Path):
+    """Where a table files a record says nothing about whose memory it is.
+
+    `game.exe+10` under the script is the game's own value, and the script's
+    `[DISABLE]` does not put it back: without its key the stop released it at
+    its on value and reported success. The unsafe flag beside it still gets
+    none, because that one is the script's.
+    """
+    table = SCRIPT_SWITCH_CT.replace(
+        b'<Address>bEnableUnsafe</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>\n',
+        b'<Address>bEnableUnsafe</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>\n'
+        b'<CheatEntry><ID>5</ID><Description>"Infinite stamina"</Description><VariableType>4 Bytes</VariableType>'
+        b'<Address>game.exe+20</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>\n'
+        b'<CheatEntry><ID>6</ID><Description>"Pointer switch"</Description><VariableType>4 Bytes</VariableType>'
+        b'<Address>bEnableUnsafe</Address><Offsets><Offset>10</Offset></Offsets><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>\n',
+    )
+    assert b"game.exe+20" in table
+    assert _stop_keys(tmp_path, table) == ((2, "0"), (4, "0"), (5, "0"), (6, "0"))
+
+
+def test_a_script_flag_filed_elsewhere_is_still_the_scripts(tmp_path: Path):
+    """A symbol a script allocates is global once it runs, so a table may read it from anywhere.
+
+    Filed outside its script, the unsafe flag was read as the game's and got
+    the key its own hook cannot survive. Nothing read its hook from there
+    either, so it is not one the stop may write.
+    """
+    unsafe = b'<CheatEntry><ID>3</ID><Description>"Unsafe"</Description><VariableType>4 Bytes</VariableType><Address>bEnableUnsafe</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>\n'
+    assert unsafe in SCRIPT_SWITCH_CT
+    table = SCRIPT_SWITCH_CT.replace(unsafe, b"").replace(b"<CheatEntries>\n<CheatEntry><ID>1</ID>", b"<CheatEntries>\n" + unsafe + b"<CheatEntry><ID>1</ID>")
+    assert table.count(b"bEnableUnsafe</Address>") == 1
+    assert _stop_keys(tmp_path, table) == ((2, "0"), (4, "0"))
+
+
+def test_a_script_flag_spelled_another_way_is_still_the_scripts(tmp_path: Path):
+    """Cheat Engine resolves a symbol whatever its case, quoted or with a constant beside it.
+
+    Matching the spelling alone read each of these as the game's memory and
+    handed the stop the key the flag's hook cannot survive.
+    """
+    for index, spelling in enumerate((b"benableunsafe", b'"bEnableUnsafe"', b"bEnableUnsafe+0")):
+        table = SCRIPT_SWITCH_CT.replace(b"<Address>bEnableUnsafe</Address>", b"<Address>" + spelling + b"</Address>")
+        assert spelling in table
+        (tmp_path / str(index)).mkdir()
+        assert _stop_keys(tmp_path / str(index), table) == ((2, "0"), (4, "0")), spelling
