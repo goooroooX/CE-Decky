@@ -24,6 +24,18 @@ FLAG_TABLE = """<?xml version="1.0" encoding="utf-8"?>
     <CheatEntry>
       <ID>1</ID><Description>Enable</Description><VariableType>Auto Assembler Script</VariableType>
       <AssemblerScript>[ENABLE]
+lblGodMode:
+cmp dword ptr [bEnableGodMode],1
+jne short lblGodModeSkip
+mulss xmm0,[fGodModeMod]
+lblGodModeSkip:
+jmp lblGodModeRet
+lblOneHitKill:
+cmp dword ptr [bEnableOneHitKill],1
+jne short lblOneHitKillSkip
+mulss xmm1,[fOneHitKillMod]
+lblOneHitKillSkip:
+jmp lblOneHitKillRet
 bEnableGodMode:
   dd 1
 bEnableOneHitKill:
@@ -162,6 +174,81 @@ def test_a_script_that_switches_its_own_flags_on_has_them_held_off_at_startup(tm
     # And the write lands after the script that creates the record.
     order = [(action.record_id, action.kind) for action in actions]
     assert order.index((1, "active")) < order.index((3, "value"))
+
+
+UNSAFE_FLAG_TABLE = """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID><Description>Enable</Description><VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+lblSafe:
+cmp dword ptr [bEnableSafe],1
+jne short lblSafeSkip
+mulss xmm0,[fSafeMod]
+lblSafeSkip:
+jmp lblSafeRet
+lblUnsafe:
+sub rcx,rsi
+cmp dword ptr [bEnableUnsafe],1
+jne lblUnsafeSkip
+add rcx,rsi
+lblUnsafeSkip:
+jmp lblUnsafeRet
+bEnableSafe:
+  dd 1
+bEnableUnsafe:
+  dd 1</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>2</ID><Description>Asked for</Description><VariableType>4 Bytes</VariableType>
+          <Address>game.exe+1234</Address>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>3</ID><Description>bEnableSafe</Description><VariableType>4 Bytes</VariableType>
+          <Address>bEnableSafe</Address>
+          <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>4</ID><Description>bEnableUnsafe</Description><VariableType>4 Bytes</VariableType>
+          <Address>bEnableUnsafe</Address>
+          <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
+"""
+
+
+def test_auto_load_holds_off_only_the_flags_whose_code_says_it_may(tmp_path: Path):
+    """Apply and Auto-load put the same cheats on, so they may not disagree.
+
+    A flag whose hook hands the game back an offset on the branch taken when it
+    is off is one Apply leaves alone. Writing it at startup instead would make
+    the guarantee depend on which of the two switched the script on, and the
+    crash it causes arrives minutes later with nothing to connect it to a press.
+    """
+    service = _service(tmp_path, "m43")
+    source = tmp_path / "unsafe-flags.CT"
+    source.write_text(UNSAFE_FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    service.save_profile(932, "Game", False, table["sha256"], "game.exe")
+    service.set_execution_consent(932, table["sha256"], True)
+    inspection = _inspection(service, table["sha256"])
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, None)],
+    )
+
+    actions = effective_startup_plan(profile, inspection)
+    by_record = {(action.record_id, action.kind): action for action in actions}
+
+    assert by_record[(3, "value")].value == "0", "the flag whose code was read stays held off"
+    assert (4, "value") not in by_record, "the one that could not be proven stays on"
+    assert (4, "active") not in by_record
 
 
 def test_a_cheat_the_user_switched_off_keeps_its_own_choice_at_startup(tmp_path: Path):

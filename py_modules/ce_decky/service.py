@@ -4485,7 +4485,10 @@ class PluginService:
         a user would decide the stop had hung.
         """
         started = time.monotonic()
-        targets: tuple[str, ...] = ()
+        # Nothing read yet, which is not the same as a session pointed nowhere
+        # else: until the session's own record has been read, this stop cannot
+        # name the programs it would have to prove gone.
+        targets: tuple[str, ...] | None = None
         try:
             prepared = self.session_store.load_current(app_id)
             if prepared is None:
@@ -4569,20 +4572,22 @@ class PluginService:
         except (OSError, ValueError):
             return ""
 
-    def _session_targets(self, prepared) -> tuple[str, ...]:
-        """The executables this session has been pointed at, or nothing.
+    def _session_targets(self, prepared) -> tuple[str, ...] | None:
+        """The executables this session has been pointed at, or nothing at all.
 
-        Nothing is the honest answer to state this could not read, and the
-        caller treats it as such: it falls back to the executable the profile
-        names, which is where a session with no retried attach behind it starts
-        and ends anyway.
+        Nothing at all is state this could not read, and it is a different
+        answer from a session that was never pointed anywhere else. A session
+        whose own record is unreadable may have been retried onto a program the
+        profile has never heard of, so falling back to the profile's executable
+        would prove the wrong game gone and suppress the warning that the one
+        still running was left changed. The caller treats it as not knowing.
         """
         try:
             return self.session_store.session_targets(prepared)
         except (OSError, ValueError):
-            return ()
+            return None
 
-    def _game_is_gone(self, app_id: int, targets: Sequence[str] = ()) -> bool:
+    def _game_is_gone(self, app_id: int, targets: Sequence[str] | None) -> bool:
         """Whether this game's own program is proven to be no longer running.
 
         The one independent answer to what a silent bridge means. A game that
@@ -4610,7 +4615,14 @@ class PluginService:
         one path where this would suppress the warning that matters most. The
         profile's executable is the fallback for a session with no override
         behind it, and for a stop with no session left to read.
+
+        `None` is the third answer, and it is not a session without an override:
+        it is one whose own record could not be read, which may have been
+        pointed at a program named nowhere else. Nothing can be proven gone from
+        there, so nothing is.
         """
+        if targets is None:
+            return False
         try:
             names = tuple(name for name in targets if name)
             if not names:

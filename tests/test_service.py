@@ -2792,6 +2792,56 @@ def test_a_stop_asks_about_the_executable_this_session_was_moved_to(tmp_path: Pa
     assert service._quiesce_session(4242)["cleanup_confirmed"] is False
 
 
+def test_a_stop_that_cannot_read_where_the_session_went_proves_nothing(tmp_path: Path, monkeypatch):
+    """An unreadable record is not a session that stayed where it started.
+
+    A retry points the session at a program the profile has never heard of, and
+    that override lives in the session's own state. So a stop that cannot read
+    that state cannot name the programs it would have to prove gone, and
+    falling back to the profile's executable proves the wrong game exited -
+    which is the stop claiming the game was put back while the one holding the
+    patches is still running.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("quiesce-unreadable"))
+    service.initialize()
+    service.save_profile(4242, "A game", False, None, "launcher.exe")
+    prepared = Mock(session_id="6d6f9d2a-0000-4000-8000-000000000005")
+    asked: list[tuple[str, ...]] = []
+
+    def observe(app_id, names):
+        asked.append(tuple(names))
+        return {name: "absent" for name in names}
+
+    monkeypatch.setattr(service_module, "game_target_states", observe)
+
+    class Store:
+        def load_current(self, app_id):
+            return prepared
+
+        def session_targets(self, session):
+            raise ValueError("runtime control path is invalid")
+
+        def read_status(self, session):
+            return None
+
+    service.session_store = Store()
+
+    answer = service._quiesce_session(4242)
+    assert answer["asked"] is False
+    assert answer["cleanup_confirmed"] is False, "nothing may be proven gone from a record nobody could read"
+    assert asked == [], "and the profile's own executable is not asked in its place"
+
+    # A stop with no prepared session at all is the other case, and it is the
+    # one the profile's executable is the fallback for.
+    class NoSession(Store):
+        def load_current(self, app_id):
+            return None
+
+    service.session_store = NoSession()
+    assert service._quiesce_session(4242)["cleanup_confirmed"] is True
+    assert asked == [("launcher.exe",)]
+
+
 def test_the_launcher_is_told_where_this_launch_s_own_session_points(tmp_path: Path):
     """Which session is current is separate state from which launch is live.
 

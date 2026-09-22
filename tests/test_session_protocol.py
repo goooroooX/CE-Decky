@@ -811,6 +811,60 @@ def test_a_session_names_every_executable_it_has_been_pointed_at(tmp_path: Path)
     assert store.session_targets(prepared) == ("game.exe", "alternate.exe")
 
 
+def test_every_program_a_session_passed_through_survives_the_log_being_compacted(tmp_path: Path):
+    """A retry moves the bridge; it does not move what is already patched.
+
+    The control log keeps the latest answered retry as the authorization a
+    status is checked against, and used to prune the rest. A session retried
+    twice with an ordinary command in between then remembered where it started
+    and where it ended, and the program in the middle - still running, still
+    holding what this session wrote into it - was proven gone by nobody.
+    """
+    store, prepared, artifact, *_ = _prepared_session_fixture(tmp_path)
+
+    def acknowledge(generation: int, target: str) -> None:
+        Path(prepared.status_path).write_bytes(render_status(RuntimeStatus(
+            prepared.session_id, prepared.app_id, prepared.ce_sha256, artifact.sha256,
+            prepared.descriptor_sha256, 100 * generation, True, target, 222,
+            tuple(RuntimeResult(step, None, True, None, None, None) for step in range(1, generation + 1)), (),
+        )))
+
+    store.write_commands(prepared, [RuntimeCommand(1, "retry_attach", None, "middle.exe")])
+    acknowledge(1, "middle.exe")
+    store.write_commands(prepared, [RuntimeCommand(2, "retry_attach", None, "current.exe")])
+    acknowledge(2, "current.exe")
+    # The ordinary command that compacts the log.
+    store.write_commands(prepared, [RuntimeCommand(3, "query", 2)])
+
+    assert store.session_targets(prepared) == ("game.exe", "middle.exe", "current.exe")
+    # And what the session is pointed at now is still the latest of them.
+    assert store.session_target(prepared) == "current.exe"
+    kept = [(command.generation, command.kind, command.value)
+            for command in parse_control(Path(prepared.control_path).read_bytes())]
+    assert kept == [(1, "retry_attach", "middle.exe"), (2, "retry_attach", "current.exe"), (3, "query", None)]
+
+
+def test_a_session_pointed_back_and_forth_does_not_grow_its_own_log(tmp_path: Path):
+    """One entry per program, because the second visit says nothing new.
+
+    The log has to stay parseable for as long as the session lives, and a user
+    switching between two programs would otherwise add a line per press.
+    """
+    store, prepared, artifact, *_ = _prepared_session_fixture(tmp_path)
+    for generation, target in ((1, "middle.exe"), (2, "game.exe"), (3, "middle.exe")):
+        store.write_commands(prepared, [RuntimeCommand(generation, "retry_attach", None, target)])
+        Path(prepared.status_path).write_bytes(render_status(RuntimeStatus(
+            prepared.session_id, prepared.app_id, prepared.ce_sha256, artifact.sha256,
+            prepared.descriptor_sha256, 100 * generation, True, target, 222,
+            tuple(RuntimeResult(step, None, True, None, None, None) for step in range(1, generation + 1)), (),
+        )))
+    store.write_commands(prepared, [RuntimeCommand(4, "query", 2)])
+
+    kept = [(command.kind, command.value) for command in parse_control(Path(prepared.control_path).read_bytes())]
+    assert kept == [("retry_attach", "game.exe"), ("retry_attach", "middle.exe"), ("query", None)]
+    assert store.session_targets(prepared) == ("game.exe", "middle.exe")
+
+
 def test_a_session_says_which_executable_it_is_pointed_at_now(tmp_path: Path):
     """What the launcher watches to know the game is still there.
 
@@ -1293,6 +1347,63 @@ def test_the_descriptor_carries_the_key_each_switch_is_off_at(tmp_path: Path):
 
     descriptor = parse_descriptor(Path(prepared.descriptor_path).read_bytes())
     assert descriptor.switch_off == ((2, "0"),)
+
+
+SCRIPT_SWITCH_CT = b'''<CheatTable CheatEngineTableVersion="45"><CheatEntries>
+<CheatEntry><ID>1</ID><Description>"Script"</Description><VariableType>Auto Assembler Script</VariableType>
+<AssemblerScript>[ENABLE]
+lblSafe:
+cmp dword ptr [bEnableSafe],1
+jne short lblSafeSkip
+mulss xmm0,[fSafeMod]
+lblSafeSkip:
+jmp lblSafeRet
+lblUnsafe:
+sub rcx,rsi
+cmp dword ptr [bEnableUnsafe],1
+jne lblUnsafeSkip
+add rcx,rsi
+lblUnsafeSkip:
+jmp lblUnsafeRet
+bEnableSafe:
+dd 1
+bEnableUnsafe:
+dd 1
+[DISABLE]
+</AssemblerScript><CheatEntries>
+<CheatEntry><ID>2</ID><Description>"Safe"</Description><VariableType>4 Bytes</VariableType><Address>bEnableSafe</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>
+<CheatEntry><ID>3</ID><Description>"Unsafe"</Description><VariableType>4 Bytes</VariableType><Address>bEnableUnsafe</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>
+</CheatEntries></CheatEntry>
+<CheatEntry><ID>4</ID><Description>"Godmode"</Description><VariableType>4 Bytes</VariableType><Address>game.exe+10</Address><DropDownList>0:Disabled\n1:Enabled</DropDownList></CheatEntry>
+</CheatEntries></CheatTable>'''
+
+
+def test_the_stop_is_given_no_key_for_a_flag_its_own_script_has_to_put_back(tmp_path: Path):
+    """Writing that key is what the stop is trying to avoid doing to the game.
+
+    A flag whose hook hands the game back an offset on the branch taken when it
+    is off is one nothing may write. The stop has another way: it walks the
+    address list deepest first, so the script above the flag comes down after
+    it and the table's own `[DISABLE]` takes the patch out. A switch the game
+    itself owns has no script behind it, and it still needs its off value or it
+    stays on in the running game.
+    """
+    source = tmp_path / "script-switches.CT"
+    source.write_bytes(SCRIPT_SWITCH_CT)
+    tables = TableStore(tmp_path / "tables")
+    artifact = tables.import_ct(str(source))
+    blob = tables.verified_blob(artifact.sha256)
+    inspection = inspect_table(blob, artifact.sha256)
+
+    profiles = ProfileStore(tmp_path / "profiles.json")
+    profiles.upsert(app_id=42, name="Game", is_shortcut=False, table_sha256=artifact.sha256, target_process="game.exe")
+    profiles.set_execution_consent(app_id=42, table_sha256=artifact.sha256, consent=True)
+    profile = profiles.get(42)
+    assert profile is not None
+    prepared = SessionStore(tmp_path / "state", tmp_path).prepare(profile, blob, inspection, CE_SHA)
+
+    descriptor = parse_descriptor(Path(prepared.descriptor_path).read_bytes())
+    assert descriptor.switch_off == ((2, "0"), (4, "0"))
 
 
 def test_a_descriptor_states_one_off_value_per_record(tmp_path: Path):

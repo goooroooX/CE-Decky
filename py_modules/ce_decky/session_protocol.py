@@ -49,6 +49,12 @@ WHOLE_SESSION_COMMAND_KINDS = frozenset({"retry_attach", "list_processes", "quie
 # Superseded sessions are evidence, not an archive: keep a short history so a
 # failure can still be inspected, and collect the rest.
 RETAINED_SESSION_HISTORY = 3
+# How many programs of a session's own the control log remembers. Every one of
+# them may hold what this session patched, so this is what a stop has to prove
+# absent before it may report a game put back. A session is pointed somewhere
+# else by a press, so this is generous for a real one and still bounds a log
+# that has to stay parseable.
+RETAINED_TARGET_HISTORY = 16
 MAX_SESSION_TABLE_BYTES = 32 * 1024 * 1024
 MAX_SESSION_INVENTORY_APPS = 1024
 MAX_SESSION_INVENTORY_TOTAL = 8192
@@ -252,6 +258,41 @@ class PreparedSession:
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def _retained_targets(
+    existing: Iterable[RuntimeCommand], acknowledged: int
+) -> tuple[RuntimeCommand, ...]:
+    """The answered retries a compaction keeps, oldest generation first.
+
+    One of them is authorization: the latest is what the bridge's own status is
+    checked against, and it is always kept because it is the newest here. The
+    rest are provenance, which is a different question with a different answer -
+    a program this session pointed at and moved away from still holds what was
+    patched into it, and the stop may not say the game was put back until that
+    program is proven gone too.
+
+    One entry per program rather than per command, because a session pushed back
+    and forth between two of them says nothing new each time, and the bound is
+    what keeps a log that must stay parseable from growing with every press.
+    Where a session has been pointed at more than that many programs, the oldest
+    are what goes, and the stop reports what it could not prove rather than
+    claiming the rest.
+    """
+    answered = sorted(
+        (
+            command for command in existing
+            if command.generation <= acknowledged
+            and command.kind == "retry_attach"
+            and command.value is not None
+        ),
+        key=lambda command: command.generation,
+    )
+    latest: dict[str, RuntimeCommand] = {}
+    for command in answered:
+        latest[command.value] = command
+    kept = sorted(latest.values(), key=lambda command: command.generation)
+    return tuple(kept[-RETAINED_TARGET_HISTORY:])
 
 
 class SessionStore:
@@ -550,11 +591,16 @@ class SessionStore:
         # A valueful retry_attach changes the bridge's active target process. Preserve
         # the latest acknowledged target-setting command as durable authorization so
         # later status validation can distinguish an explicit user switch from tamper.
-        retained_target = max(
-            (command for command in existing if command.generation <= acknowledged and command.kind == "retry_attach" and command.value is not None),
-            key=lambda command: command.generation,
-            default=None,
-        )
+        #
+        # And preserve the ones before it, which authorize nothing and are the
+        # only record of where this session has been. A retry moves the bridge
+        # to another program and leaves the patches it already wrote in the one
+        # it moved away from; that program goes on running without a bridge in
+        # it, and the stop has to prove it gone before it may say the game was
+        # put back. Keeping the latest alone let an ordinary command in between
+        # two retries throw the middle program away, after which the proof
+        # covered where the session started and where it ended and nothing else.
+        retained_targets = _retained_targets(existing, acknowledged)
         # Generation 0 is reserved for bridge-generated startup results.
         floor = max(0, acknowledged, max((command.generation for command in pending), default=-1))
         expected = floor + 1
@@ -567,8 +613,7 @@ class SessionStore:
             if command.generation != previous + 1:
                 raise ValueError("runtime command generations must be consecutive")
             previous = command.generation
-        prefix = (retained_target,) if retained_target is not None else ()
-        merged = prefix + pending + incoming
+        merged = retained_targets + pending + incoming
         data = render_control(merged)
         atomic_write_bytes(control_path, data)
         return previous + 1
@@ -627,10 +672,12 @@ class SessionStore:
         direction this may be wrong in is the one that costs a warning instead
         of hiding one.
 
-        Bounded by what the log keeps. `write_commands` retains the latest
-        authorized retry and prunes the ones before it, so a session retried
-        more than once is known by where it started and where it is now, and
-        not by the executable it passed through in between.
+        Bounded by what the log keeps. `write_commands` retains one answered
+        retry per program up to `RETAINED_TARGET_HISTORY`, so compaction no
+        longer throws away the program a session passed through between two
+        retries; a session pointed at more programs than that loses the oldest,
+        and what that costs is a name this cannot prove absent rather than a
+        claim that it is.
         """
         descriptor = self._validate_prepared(prepared)
         retries = self._retry_commands(Path(prepared.control_path))
@@ -1675,6 +1722,16 @@ def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ..
     could belong to that one, and a stop that writes the wrong value into the
     game is worse than one that only releases the freeze.
 
+    A flag that belongs to one of the table's own scripts is here only where its
+    code was read and found to survive being written off. The stop has another
+    way to put that one back: it walks the address list deepest first, so the
+    script above the flag is disabled after it, and the table's own `[DISABLE]`
+    removes the patch and the allocation the flag gated. Releasing the record
+    and letting the script do the rest is the same outcome without the write
+    that can hand the game an offset where it expects an address. A switch whose
+    address the game itself owns has no such script behind it, and it still
+    needs its off value written or it stays on in the game.
+
     Bounded, and the bound drops the rest rather than refusing the session: what
     a record past it loses is the write after the release, which is what every
     record got before this existed.
@@ -1683,12 +1740,24 @@ def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ..
     for control in inspection.controls:
         if control.id is not None:
             seen[control.id] = seen.get(control.id, 0) + 1
+    # Every record carrying a script, including one the table also draws as a
+    # header: what makes the flags under it the script's own is the code, and a
+    # presentation flag on the record that carries that code changes nothing
+    # about who allocated the symbol underneath it.
+    scripts = [
+        tuple(control.path) for control in inspection.controls
+        if control.has_assembler_script
+    ]
     found: dict[int, str] = {}
     for control in inspection.controls:
         record_id = control.id
         if record_id is None or seen[record_id] > 1:
             continue
         if control.group_header or control.has_assembler_script:
+            continue
+        path = tuple(control.path)
+        under_script = any(len(prefix) < len(path) and path[:len(prefix)] == prefix for prefix in scripts)
+        if under_script and control.switch_off_is_safe is not True:
             continue
         on = control.switch_on_value
         if not isinstance(on, str) or not on or len(control.dropdown_values) != 2:
@@ -1707,10 +1776,20 @@ def _switch_off_value(control: object) -> str | None:
     record whose address some other script owns would ask startup for one that
     cannot resolve, and a startup action that fails rolls the whole plan back -
     which would make this hygiene cost the user the cheats they asked for.
+
+    And only a flag whose own code was read and found to survive being written
+    off. A hook can turn a pointer into an offset, test the flag and hand the
+    game back the offset on the branch taken when it is off; the game dies
+    minutes later with nothing to say a table was involved. Apply already leaves
+    such a flag alone, and an Auto-load that wrote it anyway would make the
+    guarantee depend on which of the two put the cheats on. What was not
+    established stays on, and the panel is what names it.
     """
     on = getattr(control, "switch_on_value", None)
     values = getattr(control, "dropdown_values", ())
     declared = getattr(control, "declared_default", None)
+    if getattr(control, "switch_off_is_safe", False) is not True:
+        return None
     if not isinstance(on, str) or not on or len(values) != 2 or declared != on:
         return None
     return next((value for value, _ in values if value != on), None)
