@@ -4090,6 +4090,7 @@ class PluginService:
     def retire_session(self, app_id: int, expected_session_id: str) -> dict[str, object]:
         """Stop treating one exact prepared session as current without deleting its evidence."""
         with self._mutation_lock:
+            self._assert_no_run_transition(app_id)
             runtime = self.get_runtime_status(app_id)
             prepared = runtime.get("prepared")
             if prepared is None:
@@ -4172,6 +4173,7 @@ class PluginService:
     def repair_owned_launch_state(self, app_id: int) -> dict[str, object]:
         """Quarantine unreadable launch ownership after a global absence proof."""
         with self._mutation_lock:
+            self._assert_no_run_transition(app_id)
             outcome = self.ce_launch.repair_invalid_owned_launch_record(app_id)
             log_activity(self.logger, "info", "ce_launch.ownership_repaired", **outcome)
             return outcome
@@ -4577,8 +4579,15 @@ class PluginService:
             log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
             raise ValueError(DIRTY_RUN_REFUSAL)
 
-    def _hold_run(self, app_id: int, kind: str, unsettled: int = 0) -> None:
-        """Hold this game for the run of it going now, named by its own processes."""
+    def _stop_evidence(self, app_id: int) -> dict[str, tuple[str, ...] | None]:
+        """Which programs a stop's holds are about, read before it ends anything.
+
+        Called under the mutation lock as the stop begins, from the session it is
+        stopping, so nothing done while it runs - a revoke, a new target, a
+        retired session - can change what it holds the game on. After Cheat
+        Engine is gone, a session record read again may be another's, and the
+        profile's one program may not be the one a retried attach patched.
+        """
         targets: tuple[str, ...] | None = ()
         try:
             prepared = self.session_store.load_current(app_id)
@@ -4586,15 +4595,22 @@ class PluginService:
             prepared, targets = None, None
         if prepared is not None:
             targets = self._session_targets(prepared)
-        names = targets
-        if names is None and kind == "stopped":
+        profile = self.profile_store.get(app_id)
+        fallback = (profile.target_process,) if profile is not None and profile.target_process else ()
+        return {
+            # A session whose record could not be read may have been pointed at a
+            # program named nowhere else, so nothing is named for it.
+            "dirty": fallback if targets == () else targets,
             # Nothing is at stake in this one but Auto-load starting again, and a
-            # hold that could not be lifted by a restart would leave Auto-load
-            # silently off: the profile's program is enough to tell a restart by.
-            names = ()
-        if names is not None and not names:
-            profile = self.profile_store.get(app_id)
-            names = (profile.target_process,) if profile is not None and profile.target_process else ()
+            # hold a restart could not lift would leave Auto-load silently off:
+            # the profile's program is enough to tell a restart by.
+            "stopped": targets if targets else fallback,
+        }
+
+    def _hold_run(
+        self, app_id: int, kind: str, unsettled: int = 0, names: tuple[str, ...] | None = None,
+    ) -> None:
+        """Hold this game for the run of it going now, named by its own processes."""
         identities = None
         if names:
             try:
@@ -4669,9 +4685,10 @@ class PluginService:
             return await self.ce_launch.stop(operation_id)
         with self._mutation_lock:
             self._run_transitions.add(app_id)
+            evidence = self._stop_evidence(app_id)
         try:
             result = await self.ce_launch.stop(operation_id)
-            await drained_to_thread(self._hold_after_stop, app_id, {"stopped": True, "quiesce": None}, False)
+            await drained_to_thread(self._hold_after_stop, app_id, {"stopped": True, "quiesce": None}, False, evidence)
             return result
         finally:
             with self._mutation_lock:
@@ -4945,23 +4962,27 @@ class PluginService:
         # start in this game is admitted.
         with self._mutation_lock:
             self._run_transitions.add(app_id)
+            evidence = self._stop_evidence(app_id)
         try:
             result = await self._stop_ce_for_game(app_id, table_sha256)
             if result.get("stopped"):
-                await drained_to_thread(self._hold_after_stop, app_id, result, hold_autoload)
+                await drained_to_thread(self._hold_after_stop, app_id, result, hold_autoload, evidence)
             return result
         finally:
             with self._mutation_lock:
                 self._run_transitions.discard(app_id)
 
-    def _hold_after_stop(self, app_id: int, result: dict[str, object], hold_autoload: bool) -> None:
+    def _hold_after_stop(
+        self, app_id: int, result: dict[str, object], hold_autoload: bool,
+        evidence: dict[str, tuple[str, ...] | None],
+    ) -> None:
         quiesce = result.get("quiesce")
         confirmed = isinstance(quiesce, dict) and quiesce.get("cleanup_confirmed") is True
         unsettled = quiesce.get("records_unsettled") if isinstance(quiesce, dict) else None
         count = len(unsettled) if isinstance(unsettled, list) else 0
         if not confirmed:
             try:
-                self._hold_run(app_id, "dirty", count)
+                self._hold_run(app_id, "dirty", count, evidence["dirty"])
             except Exception as exc:  # noqa: BLE001 - the hold is what may not be lost
                 # What could not be taken with its evidence is taken without it:
                 # a hold nothing can prove over is lifted only by the user, which
@@ -4973,7 +4994,7 @@ class PluginService:
                     self._write_run_holds(holds)
         if hold_autoload:
             try:
-                self._hold_run(app_id, "stopped")
+                self._hold_run(app_id, "stopped", 0, evidence["stopped"])
             except (OSError, ValueError, RuntimeError) as exc:
                 log_failure(self.logger, "run_hold.persist_failed", exc, expected=True, app_id=app_id)
 
@@ -4988,7 +5009,7 @@ class PluginService:
             if profile is None or profile.table_sha256 != digest or (current is not None and current.table_sha256 != digest):
                 raise ValueError("selected table changed; refresh before revoking it")
             if current is None:
-                self._assert_no_live_owned_launch(app_id)
+                self._assert_no_live_owned_launch(app_id, allow_transition=True)
                 return {"stopped": False, "operation": None, "recovered": False}
             expected_session = current.session_id
             log_activity(self.logger, "info", "profile.revoke_stop_requested", app_id=app_id,
@@ -5100,9 +5121,22 @@ class PluginService:
         if self._managed_ce_reservation in {"starting", operation_id} and state in {"failed", "cancelled"}:
             self._managed_ce_reservation = None
 
-    def _assert_no_live_owned_launch(self, app_id: int, *, allow_reservation: bool = False) -> None:
+    def _assert_no_live_owned_launch(
+        self, app_id: int, *, allow_reservation: bool = False, allow_transition: bool = False,
+    ) -> None:
         if app_id in self._launch_reservations and not allow_reservation:
             raise ValueError("Cheat Engine launch authorization is in progress; wait for it to finish")
+        # A stop reads which programs its session was pointed at before it ends
+        # anything, and holds the game on that. Changing the profile's target,
+        # revoking the table or retiring the session while it runs would change
+        # nothing it already read, but the identity is this game's, and nothing
+        # is changed under a stop that is still deciding what it left.
+        if not allow_transition:
+            self._assert_no_run_transition(app_id)
+
+    def _assert_no_run_transition(self, app_id: int) -> None:
+        if app_id in self._run_transitions:
+            raise ValueError("Cheat Engine is still being stopped in this game. Try again once it has stopped.")
         if self.ce_launch.current_for_app(app_id) is not None:
             raise ValueError("cannot change this runtime identity while CE Decky owns a live Cheat Engine process")
         recovered = self.ce_launch.recover_owned_launch(app_id)

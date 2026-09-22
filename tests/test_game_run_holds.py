@@ -322,3 +322,62 @@ def test_a_launch_stopped_by_its_operation_holds_the_game_it_was_in(tmp_path: Pa
     assert service._public_run_holds(10)["dirty"] is None
     asyncio.run(service.stop_ce_launch("attached"))
     assert service._public_run_holds(10)["dirty"] is not None
+
+
+def test_a_stop_holds_the_game_on_what_its_session_was_pointed_at_whatever_changes_meanwhile(tmp_path: Path, monkeypatch):
+    """What a stop holds a game on is read before it ends anything.
+
+    A session retried onto `other.exe` may have patched both programs. Read
+    again after Cheat Engine is gone, a revoked table or retired session leaves
+    only the profile's `game.exe`, which may be gone while `other.exe` still
+    runs what was left in it, and no hold would be taken at all.
+    """
+    service = _service(tmp_path)
+    service.profile_store.upsert(app_id=10, name="Game", is_shortcut=False, table_sha256=None, target_process="game.exe")
+    session = {"current": object()}
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: session["current"])
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe", "other.exe") if prepared else ())
+    asked: list[tuple[str, ...]] = []
+
+    def capture(app_id, names):
+        asked.append(tuple(names))
+        return (_identity(pid=77),) if "other.exe" in names else ()
+    monkeypatch.setattr(service_module, "capture_run_identities", capture)
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+
+    async def scenario() -> list[str]:
+        ended = asyncio.Event()
+        release = asyncio.Event()
+
+        async def stop_for_app(app_id: int, **_kwargs):
+            ended.set()
+            await release.wait()
+            return {"stopped": True, "operation": None, "recovered": False,
+                    "quiesce": {"asked": True, "answered": False, "reason": "no answer", "cleanup_confirmed": False}}
+        service.ce_launch.stop_for_app = stop_for_app  # type: ignore[method-assign]
+        stopping = asyncio.create_task(service.stop_ce_for_game(10))
+        await ended.wait()
+        refusals: list[str] = []
+        for change in (
+            lambda: service.save_profile(10, "Game", False, None, "new.exe"),
+            lambda: service.revoke_table(10, "a" * 64),
+            lambda: service.retire_session(10, "session"),
+        ):
+            try:
+                change()
+            except ValueError as exc:
+                refusals.append(str(exc))
+        # Whatever else happened to the record while the stop ran.
+        session["current"] = None
+        release.set()
+        await stopping
+        return refusals
+
+    refusals = asyncio.run(scenario())
+    assert len(refusals) == 3 and all("still being stopped" in reason for reason in refusals)
+    assert service.profile_store.get(10).target_process == "game.exe"
+    hold = service._current_run_holds(10)["dirty"]
+    assert hold.targets == ("game.exe", "other.exe")
+    assert asked == [("game.exe", "other.exe")]
+    with pytest.raises(ValueError, match="Restart the game"):
+        asyncio.run(service.launch_ce_for_game(10))
