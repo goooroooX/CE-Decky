@@ -213,13 +213,34 @@ describe("controller UI model", () => {
     }] as any);
 
     const indexing = fearlessIndexSentence(row({
-      indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30,
+      indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30, missing_pages: 30,
       last_refresh_at: now / 1000 - 600, last_refresh_pages: 5,
     }), now);
     expect(indexing).toContain("12 of its 42 listing pages are indexed here, holding 900 tables.");
     expect(indexing).toContain("30 pages have still to be read");
     expect(indexing).toContain("searching again once the index has caught up is what finds it.");
     expect(indexing).toContain("The last pass read 5 pages 10 minutes ago.");
+    expect(indexing).not.toContain("due to be read again");
+
+    // Two of the twelve held pages have aged out. They are still in the copy
+    // and still searched, so they are not among the pages a table can hide on.
+    const aged = fearlessIndexSentence(row({
+      indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 32, missing_pages: 30,
+    }), now);
+    expect(aged).toContain("30 pages have still to be read");
+    expect(aged).not.toContain("32 pages");
+    expect(aged).toContain("2 indexed pages are due to be read again, and are still searched until then.");
+    // An answer from before never-read and due-again were told apart names
+    // neither, rather than calling every owed page missing.
+    const older = fearlessIndexSentence(row({ indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 32 }), now);
+    expect(older).not.toContain("still to be read");
+    expect(older).not.toContain("due to be read again");
+    // A listing that shrank leaves more pages held than it has, and a page of
+    // it as it is now that was never read still hides whatever it lists.
+    const shrunk = fearlessIndexSentence(row({ indexed_pages: 42, total_pages: 40, indexed_topics: 900, stale_pages: 1, missing_pages: 1 }), now);
+    expect(shrunk).not.toContain("the whole listing is indexed");
+    expect(shrunk).toContain("39 of its 40 listing pages are indexed here");
+    expect(shrunk).toContain("1 page has still to be read");
 
     // A complete index answers the other question: how fresh the whole of it
     // is, which is the age of its least recently read page.
@@ -234,6 +255,15 @@ describe("controller UI model", () => {
     // Two states the counts do not explain on their own.
     expect(fearlessIndexSentence(row({ indexed_pages: 4, stale_pages: 1, retry_after_seconds: 90 }), now))
       .toContain("asked CE Decky to wait, so nothing is read from it for another 90s.");
+    // A kept answer counts that wait down from when the source said it, and a
+    // wait that is over is not one to tell anybody about.
+    const cooled = row({ indexed_pages: 4, stale_pages: 1, retry_after_seconds: 90 });
+    expect(fearlessIndexSentence(cooled, now, now - 30_000)).toContain("for another 60s.");
+    expect(fearlessIndexSentence(cooled, now, now - 30_000)).not.toContain("These counts are from that search");
+    const over = fearlessIndexSentence(cooled, now, now - 120_000);
+    expect(over).not.toContain("asked CE Decky to wait");
+    // And a snapshot old enough for the index to have moved says whose counts these are.
+    expect(over).toContain("These counts are from that search; searching again reads them as they are now.");
     expect(fearlessIndexSentence(row({ indexed_pages: 4, stale_pages: 1, error: "HTTP 503" }), now))
       .toContain("The last read of the listing did not finish: HTTP 503");
 

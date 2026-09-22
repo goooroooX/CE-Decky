@@ -2660,7 +2660,10 @@ export function coarseAge(milliseconds: number): string {
  * screen where it was already reported.
  *
  * Read from the search's own answer, which carries that source's index state on
- * the row it reports for it, so this costs no call of its own. Nothing is said
+ * the row it reports for it, so this costs no call of its own. That answer is
+ * as old as the search, and a reopened Search shows the one it kept: so the
+ * wait a source asked for is counted down from when the search ran, and a
+ * snapshot older than a minute says the counts are that search's. Nothing is said
  * where the search did not include that source, where it failed outright or
  * where this build is answering an older search that carried no index state:
  * silence there is honest, and the source tally on the row already says which
@@ -2669,13 +2672,23 @@ export function coarseAge(milliseconds: number): string {
 export function fearlessIndexSentence(
   sources: readonly ProviderSearchSummary[] | null | undefined,
   nowMs: number = Date.now(),
+  searchedAtMs: number | null = null,
 ): string | null {
   const index = (sources ?? []).find((source) => source.provider === INDEXED_PROVIDER);
   if (!index || typeof index.indexed_pages !== "number") return null;
   const name = providerDisplayName(INDEXED_PROVIDER);
   const topics = typeof index.indexed_topics === "number" ? index.indexed_topics : null;
   const total = typeof index.total_pages === "number" ? index.total_pages : null;
-  const complete = total !== null && index.indexed_pages >= total;
+  const owed = typeof index.stale_pages === "number" ? index.stale_pages : 0;
+  // Never read and due again are different news: a page that aged out is still
+  // in the copy and still searched, so only the first kind hides a table. An
+  // answer from before the backend told them apart says nothing about either
+  // rather than calling every owed page missing.
+  const missing = typeof index.missing_pages === "number" ? Math.min(index.missing_pages, owed) : null;
+  const due = missing === null ? 0 : Math.max(0, owed - missing);
+  // Held pages can outnumber the listing once it shrinks, so a count alone is
+  // not a whole copy while a page of the listing as it is now was never read.
+  const complete = total !== null && index.indexed_pages >= total && !(missing !== null && missing > 0);
   const built = `${name} is searched through a copy of its own listing that this device builds a page at a time`;
   // Nothing indexed is a state rather than a count of nothing, and it is the
   // one where the sentences below are the whole of what there is to say: a
@@ -2685,24 +2698,28 @@ export function fearlessIndexSentence(
     : complete
       ? `the whole listing is indexed, ${total} page${total === 1 ? "" : "s"}`
       : total !== null
-        ? `${index.indexed_pages} of its ${total} listing pages are indexed here`
+        ? `${missing !== null ? total - missing : Math.min(index.indexed_pages, total)} of its ${total} listing pages are indexed here`
         : `${index.indexed_pages} listing page${index.indexed_pages === 1 ? "" : "s"} are indexed here`;
   const covers = index.indexed_pages === 0 || topics === null
     ? ""
     : `, holding ${topics} table${topics === 1 ? "" : "s"}`;
   const parts = [`${built}, and ${held}${covers}.`];
-  const stale = typeof index.stale_pages === "number" ? index.stale_pages : 0;
   if (complete) {
     const refreshed = typeof index.fully_refreshed_at === "number" && index.fully_refreshed_at > 0
       ? `Every page has been read, the oldest of them ${coarseAge(nowMs - index.fully_refreshed_at * 1000)}.`
       : "Every page has been read, though not all of them within one pass.";
     parts.push(refreshed);
-    if (stale > 0) parts.push(`${stale} page${stale === 1 ? " is" : "s are"} due to be read again.`);
-  } else if (stale > 0) {
-    parts.push(
-      `${stale === 1 ? "1 page has" : `${stale} pages have`} still to be read, so a table listed only there cannot be found here yet;`
-      + " searching again once the index has caught up is what finds it.",
-    );
+    if (owed > 0) parts.push(`${owed} page${owed === 1 ? " is" : "s are"} due to be read again.`);
+  } else {
+    if (missing !== null && missing > 0) {
+      parts.push(
+        `${missing === 1 ? "1 page has" : `${missing} pages have`} still to be read, so a table listed only there cannot be found here yet;`
+        + " searching again once the index has caught up is what finds it.",
+      );
+    }
+    if (due > 0) {
+      parts.push(`${due} indexed page${due === 1 ? " is" : "s are"} due to be read again, and ${due === 1 ? "is" : "are"} still searched until then.`);
+    }
   }
   if (typeof index.last_refresh_at === "number" && index.last_refresh_at > 0) {
     const pages = typeof index.last_refresh_pages === "number" ? index.last_refresh_pages : 0;
@@ -2711,10 +2728,19 @@ export function fearlessIndexSentence(
   // Two states the numbers above do not explain on their own. A cooldown is the
   // source asking to be left alone, which is why the index stops growing while
   // nothing is wrong; an error is why it stopped without being asked.
-  if (typeof index.retry_after_seconds === "number" && index.retry_after_seconds > 0) {
-    parts.push(`${name} asked CE Decky to wait, so nothing is read from it for another ${index.retry_after_seconds}s.`);
+  // Counted down from the search, which is when the source said it: the same
+  // number read out of a kept answer later is a wait that may already be over.
+  const elapsedS = searchedAtMs === null ? 0 : Math.max(0, Math.floor((nowMs - searchedAtMs) / 1000));
+  const wait = typeof index.retry_after_seconds === "number" ? index.retry_after_seconds - elapsedS : 0;
+  if (wait > 0) {
+    parts.push(`${name} asked CE Decky to wait, so nothing is read from it for another ${wait}s.`);
   }
   if (index.error) parts.push(`The last read of the listing did not finish: ${index.error}`);
+  // The index goes on growing in the background after a search, so what a kept
+  // answer says is that search's account rather than the copy as it is now.
+  if (searchedAtMs !== null && nowMs - searchedAtMs >= 60_000) {
+    parts.push("These counts are from that search; searching again reads them as they are now.");
+  }
   return parts.join(" ");
 }
 

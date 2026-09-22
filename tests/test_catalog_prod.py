@@ -1201,19 +1201,21 @@ async def test_fearless_index_builds_in_background_persists_and_refreshes_leadin
     assert first_status["status"] == "indexing"
     assert first_status["indexed_pages"] == 1
     assert first_status["total_pages"] == 2
+    # The one page not read yet is the one a search here cannot find anything on.
+    assert first_status["missing_pages"] == 1
 
     assert service._fearless_index_task is not None
     await service._fearless_index_task
     status = service.fearless_index_status()
     assert {key: status[key] for key in (
         "status", "error", "indexed_pages", "total_pages", "indexed_topics", "retry_after_seconds",
-        "stale_pages", "last_refresh_pages", "refresh_age_seconds",
+        "stale_pages", "missing_pages", "last_refresh_pages", "refresh_age_seconds",
     )} == {
         "status": "ok", "error": None, "indexed_pages": 2,
         "total_pages": 2, "indexed_topics": 2, "retry_after_seconds": None,
         # The search had already read the leading page, so the background pass
         # owed exactly the one page that was missing.
-        "stale_pages": 0, "last_refresh_pages": 1, "refresh_age_seconds": 24 * 60 * 60,
+        "stale_pages": 0, "missing_pages": 0, "last_refresh_pages": 1, "refresh_age_seconds": 24 * 60 * 60,
     }
     assert status["fully_refreshed_at"] is not None
     assert sorted(service._fearless_pages) == [0, 50]
@@ -1714,6 +1716,9 @@ async def test_fearless_index_freshness_survives_a_cache_written_without_it(tmp_
     status = reloaded.fearless_index_status()
     assert status["indexed_topics"] == 2
     assert status["stale_pages"] == 2
+    # Both pages are due again and both are still in the copy a search reads,
+    # so none of them is missing: that is the difference the panel says.
+    assert status["missing_pages"] == 0
     assert status["fully_refreshed_at"] is None
     await reloaded.close()
 

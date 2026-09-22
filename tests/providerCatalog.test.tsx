@@ -956,7 +956,7 @@ describe("ProviderCatalog controller workflow", () => {
       sources: [{
         provider: "fearless", provider_display_name: "FearLess Cheat Engine", results: 1,
         status: "indexing", error: null,
-        indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30,
+        indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30, missing_pages: 30,
         refresh_age_seconds: 86_400, fully_refreshed_at: null,
         last_refresh_at: Math.round(Date.now() / 1000) - 600, last_refresh_pages: 5,
         retry_after_seconds: null,
@@ -974,6 +974,46 @@ describe("ProviderCatalog controller workflow", () => {
     expect(opened).toMatch(/12 of its 42 listing pages are indexed here, holding 900 tables/);
     expect(opened).toMatch(/30 pages have still to be read/);
     expect(opened).toMatch(/The last pass read 5 pages/);
+  });
+
+  it("does not repeat a wait that is already over when Search reopens on a kept answer", async () => {
+    // Reopening Search restores the last answer for the game rather than asking
+    // again, and the wait that answer carried was counted from when the source
+    // said it. Read out as it was, it told the reader to wait after the wait
+    // was already over.
+    const start = Date.UTC(2026, 8, 22, 12, 0, 0);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(start);
+      api.searchTables.mockResolvedValueOnce({
+        results: [result], failures: [],
+        sources: [{
+          provider: "fearless", provider_display_name: "FearLess Cheat Engine", results: 1,
+          status: "cooldown", error: null,
+          indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30, missing_pages: 30,
+          refresh_age_seconds: 86_400, fully_refreshed_at: null,
+          last_refresh_at: null, last_refresh_pages: 0, retry_after_seconds: 90,
+        }],
+        stale: false,
+      });
+      const first = render(<ProviderCatalog gameIdentity="77:steam" gameName="Kept answer" autoSearch onImported={vi.fn()} />);
+      await waitFor(() => expect(api.searchTables).toHaveBeenCalledTimes(1));
+      await screen.findByTestId("search-controls");
+      fireEvent.click(within(screen.getByTestId("search-controls")).getByRole("button", { name: "?" }));
+      expect(screen.getByTestId("search-controls").textContent).toMatch(/for another 90s/);
+      first.unmount();
+
+      vi.setSystemTime(start + 120_000);
+      render(<ProviderCatalog gameIdentity="77:steam" gameName="Kept answer" autoSearch onImported={vi.fn()} />);
+      const row = await screen.findByTestId("search-controls");
+      expect(api.searchTables).toHaveBeenCalledTimes(1);
+      fireEvent.click(within(row).getByRole("button", { name: "?" }));
+      const opened = screen.getByTestId("search-controls").textContent ?? "";
+      expect(opened).not.toMatch(/asked CE Decky to wait/);
+      expect(opened).toMatch(/These counts are from that search/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("names a switched-off source as off rather than dropping it from the roster", async () => {

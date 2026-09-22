@@ -1551,7 +1551,7 @@ export function ProviderCatalog({
     // What a result count cannot say about the one source that is searched
     // through an index of this device's own: a table on a page it has not read
     // yet is absent from the copy rather than from the source.
-    fearlessIndexSentence(sources),
+    fearlessIndexSentence(sources, Date.now(), searchedAt),
     retryable.count > 0
       ? `${retryable.count} row(s) on this page are marked, each with what happened to it: Failed means Cheat Engine ran a cheat from it and it came straight back off, Not a table means the download was not one, Encrypted means its archive is locked and only 7-Zip opens it, and Gone means the source no longer has the file. Retry ${retryable.count} drops those marks and offers them again.`
       : null,

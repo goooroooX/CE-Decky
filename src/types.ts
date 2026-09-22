@@ -1241,6 +1241,12 @@ export interface FearlessIndexStatus {
   fully_refreshed_at: number | null;
   /** Pages the next background pass owes: never fetched, or aged out. */
   stale_pages: number;
+  /**
+   * The part of `stale_pages` never read at all: the only pages whose tables a
+   * search here cannot find. The rest are in the copy and merely due again.
+   * Absent from a backend before this field.
+   */
+  missing_pages?: number;
   last_refresh_at: number | null;
   last_refresh_pages: number;
 }

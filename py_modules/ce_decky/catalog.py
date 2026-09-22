@@ -2783,6 +2783,26 @@ class CatalogService:
                 pending.append(start)
         return pending
 
+    def _missing_fearless_page_count(self) -> int:
+        """Listing pages this device has never read, as opposed to ones due again.
+
+        The two are different news for a search. A page that aged out is still
+        in the copy and still searched; one never read is the only kind whose
+        tables a search here cannot find, and a count that mixed them told the
+        reader already searchable pages were missing.
+        """
+        total = self._fearless_total_pages
+        if total is None:
+            return 0
+        if self._fearless_page_step is None:
+            # Only the first page is a known offset until it has been read,
+            # and reading it is what learns the rest.
+            return max(0, total - len(self._fearless_pages))
+        return sum(
+            1 for page_number in range(total)
+            if page_number * self._fearless_page_step not in self._fearless_pages
+        )
+
     def _note_search_activity(self) -> None:
         """Remember that Search was used, and put it on disk while it is true.
 
@@ -3158,7 +3178,10 @@ class CatalogService:
             "retry_after_seconds": cooldown_remaining or None,
             "refresh_age_seconds": FEARLESS_INDEX_MAX_AGE_SECONDS,
             "fully_refreshed_at": oldest,
+            # Everything the index still owes, read for the first time or again.
             "stale_pages": len(self._pending_fearless_page_starts()),
+            # The part of that a search here cannot find anything on yet.
+            "missing_pages": self._missing_fearless_page_count(),
             "last_refresh_at": self._fearless_last_refresh_at,
             "last_refresh_pages": self._fearless_last_refresh_pages,
         }

@@ -170,6 +170,7 @@ def test_service_exposes_offline_provider_contract_diagnostics_and_removal_readi
     index = diag["fearless_index"]
     assert index["refresh_age_seconds"] == 24 * 60 * 60
     assert index["stale_pages"] == 0
+    assert index["missing_pages"] == 0
     assert index["last_refresh_pages"] == 0
     assert index["fully_refreshed_at"] is None
     assert index["last_refresh_at"] is None
