@@ -1945,6 +1945,9 @@ export interface OwnedStopVerdict {
  * it was taken on is over.
  */
 export function dirtyRunRefusal(holds: GameRunHolds | null | undefined): string | null {
+  if (holds?.unreadable) {
+    return `CE Decky starts no table while ${holds.error ?? "the record of which games have to be restarted could not be read"}. Clear it on Home to go on; nothing was saved or started.`;
+  }
   const dirty = holds?.dirty;
   if (!dirty) return null;
   const what = dirty.unsettled > 0
@@ -1962,6 +1965,13 @@ export function dirtyRunRefusal(holds: GameRunHolds | null | undefined): string 
  * reader is told what clearing it without a restart costs.
  */
 export function dirtyRunNotice(holds: GameRunHolds | null | undefined): string | null {
+  // The record itself failing is said first, because while it cannot be read
+  // every start in every game is refused, and while it cannot be saved a reload
+  // would forget a game that has to be restarted.
+  if (holds?.unreadable) {
+    return `CE Decky starts no table while ${holds.error ?? "the record of which games have to be restarted could not be read"}. Clear starts that record over: a game it held that is still running unrestarted could then have a table started over what was left in it.`;
+  }
+  if (holds?.error && !holds.dirty) return `Take care: ${holds.error}.`;
   const dirty = holds?.dirty;
   if (!dirty) return null;
   const what = dirty.unsettled > 0

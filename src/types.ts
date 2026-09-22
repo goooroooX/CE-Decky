@@ -771,6 +771,14 @@ export interface GameRunHolds {
   dirty: { since: number; unsettled: number } | null;
   /** The user stopped Cheat Engine in this run; Auto-load does not start it again. */
   autoload_held: boolean;
+  /**
+   * The record of held games could not be read, which refuses every start, or
+   * could not be saved, which a reload would forget. Absent from a backend
+   * before this field.
+   */
+  error?: string | null;
+  /** The record could not be read, so every start in every game is refused until it is cleared. */
+  unreadable?: boolean;
 }
 
 export interface CELaunchCapability {

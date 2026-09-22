@@ -320,6 +320,24 @@ class PluginService:
         # poll reads it, and a stop holding the mutation lock must not stall it.
         self.game_run_holds = GameRunHolds(paths.state_root / "game_run_holds.json")
         self._run_holds_lock = threading.Lock()
+        # The holds as this process knows them, which is what every start is
+        # admitted against. The file is how they outlive a reload; a write that
+        # fails leaves them here and in force rather than forgotten.
+        self._run_holds: dict[int, dict[str, RunHold]] = {}
+        # Why the file could not be read at start, or why the last write failed.
+        # A file that could not be read is not a file that holds nothing: every
+        # start is refused until the user clears it, and nothing here overwrites
+        # it, because doing so would quietly drop the games it did hold.
+        self._run_holds_unreadable: str | None = None
+        self._run_holds_unsaved: str | None = None
+        # Games a stop is running in. Set before the stop begins and cleared once
+        # its verdict is held, so no start is admitted in the gap between the old
+        # Cheat Engine ending and the hold that says what it left.
+        self._run_transitions: set[int] = set()
+        try:
+            self._run_holds = self.game_run_holds.load()
+        except (OSError, ValueError) as exc:
+            self._run_holds_unreadable = str(exc)[:256] or type(exc).__name__
         # Logged once per change rather than once per read: the catalog asks for
         # this several times per search, and an unreadable file would otherwise
         # fill the log with the same line instead of describing the fault once.
@@ -4469,13 +4487,30 @@ class PluginService:
         return capability
 
     def _read_run_holds(self) -> dict[int, dict[str, RunHold]]:
+        return {app_id: dict(kinds) for app_id, kinds in self._run_holds.items()}
+
+    def _write_run_holds(self, holds: dict[int, dict[str, RunHold]]) -> None:
+        """Make these the holds in force, and keep them on disk where it can.
+
+        In force first: a write that fails must not be what lets a start in.
+        Never over a file that could not be read, which still holds what it held.
+        """
+        self._run_holds = {app_id: dict(kinds) for app_id, kinds in holds.items() if kinds}
+        if self._run_holds_unreadable is not None:
+            return
         try:
-            return self.game_run_holds.load()
+            self.game_run_holds.save(self._run_holds)
+            self._run_holds_unsaved = None
         except (OSError, ValueError) as exc:
-            # Read as holding nothing: the other reading refuses every start in
-            # every game, which is a refusal nobody can act on.
-            log_failure(self.logger, "run_holds.unreadable", exc, expected=True)
-            return {}
+            self._run_holds_unsaved = str(exc)[:256] or type(exc).__name__
+            log_failure(self.logger, "run_holds.persist_failed", exc, expected=True)
+
+    def _run_holds_error(self) -> str | None:
+        if self._run_holds_unreadable is not None:
+            return f"the record of which games have to be restarted could not be read ({self._run_holds_unreadable})"
+        if self._run_holds_unsaved is not None:
+            return f"the record of which games have to be restarted could not be saved, so a reload would forget it ({self._run_holds_unsaved})"
+        return None
 
     def _run_is_over(self, hold: RunHold) -> bool:
         """Whether the run a hold was taken on is proven to have ended.
@@ -4504,17 +4539,43 @@ class PluginService:
                     holds[app_id] = kinds
                 else:
                     holds.pop(app_id, None)
-                try:
-                    self.game_run_holds.save(holds)
-                except (OSError, ValueError) as exc:
-                    log_failure(self.logger, "run_holds.persist_failed", exc, expected=True, app_id=app_id)
+                self._write_run_holds(holds)
                 log_activity(self.logger, "info", "run_hold.retired", app_id=app_id, kinds=",".join(retired))
             return dict(kinds)
 
     def _public_run_holds(self, app_id: int) -> dict[str, object]:
         holds = self._current_run_holds(app_id)
         dirty = holds.get("dirty")
-        return {"dirty": None if dirty is None else dirty.public(), "autoload_held": "stopped" in holds}
+        return {
+            "dirty": None if dirty is None else dirty.public(),
+            "autoload_held": "stopped" in holds,
+            "error": self._run_holds_error(),
+            # Structured beside the sentence, because the two errors lead to
+            # different places: an unreadable record refuses every start, and
+            # one that could not be saved is still in force until a reload.
+            "unreadable": self._run_holds_unreadable is not None,
+        }
+
+    def _admit_launch(self, app_id: int) -> None:
+        """Refuse a start this game may not have now. Called under the mutation lock.
+
+        Beside the proof that no owned Cheat Engine is running, and under the
+        same lock a stop takes to say it has begun, so there is no moment in
+        which the old Cheat Engine is gone and the hold that says what it left
+        is not yet there.
+        """
+        if app_id in self._run_transitions:
+            log_activity(self.logger, "info", "launch.refused_stop_in_progress", app_id=app_id)
+            raise ValueError("Cheat Engine is still being stopped in this game. Try again once it has stopped.")
+        if self._run_holds_unreadable is not None:
+            log_activity(self.logger, "info", "launch.refused_holds_unreadable", app_id=app_id)
+            raise ValueError(
+                "CE Decky could not read which games have to be restarted before a table is started, so it starts "
+                "none. Clear it on Home to go on."
+            )
+        if "dirty" in self._current_run_holds(app_id):
+            log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
+            raise ValueError(DIRTY_RUN_REFUSAL)
 
     def _hold_run(self, app_id: int, kind: str, unsettled: int = 0) -> None:
         """Hold this game for the run of it going now, named by its own processes."""
@@ -4549,7 +4610,7 @@ class PluginService:
         with self._run_holds_lock:
             holds = self._read_run_holds()
             holds.setdefault(app_id, {})[kind] = hold
-            self.game_run_holds.save(holds)
+            self._write_run_holds(holds)
         log_activity(
             self.logger, "info", "run_hold.taken", app_id=app_id, kind=kind, unsettled=unsettled,
             targets=",".join(names or ()) or None,
@@ -4565,7 +4626,7 @@ class PluginService:
             kinds.pop(kind)
             if not kinds:
                 holds.pop(app_id, None)
-            self.game_run_holds.save(holds)
+            self._write_run_holds(holds)
         log_activity(self.logger, "info", "run_hold.released", app_id=app_id, kind=kind, reason=reason)
         return True
 
@@ -4573,7 +4634,17 @@ class PluginService:
         """The user clears this game's holds, having been told what they are for."""
         if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
             raise ValueError("AppID must be a positive integer")
-        cleared = [kind for kind in ("dirty", "stopped") if self._release_run_hold(app_id, kind, reason="cleared_by_user")]
+        cleared: list[str] = []
+        with self._run_holds_lock:
+            if self._run_holds_unreadable is not None:
+                # Clearing an unreadable record is starting it over: what this
+                # process has held since is kept, and what the file held is not
+                # knowable any more, which the user was told before pressing.
+                self._run_holds_unreadable = None
+                self._write_run_holds(self._run_holds)
+                cleared.append("unreadable")
+                log_activity(self.logger, "info", "run_holds.reset_by_user", app_id=app_id)
+        cleared += [kind for kind in ("dirty", "stopped") if self._release_run_hold(app_id, kind, reason="cleared_by_user")]
         return {"cleared": cleared, "run_holds": self._public_run_holds(app_id)}
 
     async def start_ce_self_test(self, proton_tool_id: str) -> dict[str, object]:
@@ -4585,7 +4656,26 @@ class PluginService:
         return self.ce_launch.status(operation_id)
 
     async def stop_ce_launch(self, operation_id: str) -> dict[str, object]:
-        return await self.ce_launch.stop(operation_id)
+        """Stop one launch by its operation.
+
+        This route asks nothing of the bridge first, so a Cheat Engine it ends in
+        a game has left whatever was on in it: the game is held exactly as a stop
+        that could not confirm its cheats were switched off, and no start is
+        admitted in it while that is being decided.
+        """
+        before = self.ce_launch.status(operation_id)
+        app_id = before.get("app_id") if before.get("mode") == "attached" else None
+        if isinstance(app_id, bool) or not isinstance(app_id, int):
+            return await self.ce_launch.stop(operation_id)
+        with self._mutation_lock:
+            self._run_transitions.add(app_id)
+        try:
+            result = await self.ce_launch.stop(operation_id)
+            await drained_to_thread(self._hold_after_stop, app_id, {"stopped": True, "quiesce": None}, False)
+            return result
+        finally:
+            with self._mutation_lock:
+                self._run_transitions.discard(app_id)
 
     async def launch_ce_for_game(self, app_id: int, proton_tool_id: str | None = None) -> dict[str, object]:
         """Start Cheat Engine inside the running game's own compatibility prefix.
@@ -4595,10 +4685,6 @@ class PluginService:
         """
         if proton_tool_id is not None and not isinstance(proton_tool_id, str):
             raise ValueError("Proton tool identity must be a string or null")
-        holds = await drained_to_thread(self._current_run_holds, app_id)
-        if "dirty" in holds:
-            log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
-            raise ValueError(DIRTY_RUN_REFUSAL)
         try:
             # Session/runtime preparation mutates plugin-owned files and creates
             # a launch reservation. Cancellation must not abandon that worker:
@@ -4853,24 +4939,43 @@ class PluginService:
         """
         if not isinstance(hold_autoload, bool):
             raise ValueError("hold_autoload must be a boolean")
-        result = await self._stop_ce_for_game(app_id, table_sha256)
-        if result.get("stopped"):
-            await drained_to_thread(self._hold_after_stop, app_id, result, hold_autoload)
-        return result
+        if isinstance(app_id, bool) or not isinstance(app_id, int):
+            raise ValueError("AppID must be an integer")
+        # Before anything is stopped: from here until the verdict is held, no
+        # start in this game is admitted.
+        with self._mutation_lock:
+            self._run_transitions.add(app_id)
+        try:
+            result = await self._stop_ce_for_game(app_id, table_sha256)
+            if result.get("stopped"):
+                await drained_to_thread(self._hold_after_stop, app_id, result, hold_autoload)
+            return result
+        finally:
+            with self._mutation_lock:
+                self._run_transitions.discard(app_id)
 
     def _hold_after_stop(self, app_id: int, result: dict[str, object], hold_autoload: bool) -> None:
         quiesce = result.get("quiesce")
         confirmed = isinstance(quiesce, dict) and quiesce.get("cleanup_confirmed") is True
         unsettled = quiesce.get("records_unsettled") if isinstance(quiesce, dict) else None
-        try:
-            if not confirmed:
-                self._hold_run(app_id, "dirty", len(unsettled) if isinstance(unsettled, list) else 0)
-            if hold_autoload:
+        count = len(unsettled) if isinstance(unsettled, list) else 0
+        if not confirmed:
+            try:
+                self._hold_run(app_id, "dirty", count)
+            except Exception as exc:  # noqa: BLE001 - the hold is what may not be lost
+                # What could not be taken with its evidence is taken without it:
+                # a hold nothing can prove over is lifted only by the user, which
+                # is still better than a start over what the stop left.
+                log_failure(self.logger, "run_hold.taken_without_evidence", exc, expected=True, app_id=app_id)
+                with self._run_holds_lock:
+                    holds = self._read_run_holds()
+                    holds.setdefault(app_id, {})["dirty"] = new_hold(app_id, "dirty", None, None, count)
+                    self._write_run_holds(holds)
+        if hold_autoload:
+            try:
                 self._hold_run(app_id, "stopped")
-        except (OSError, ValueError) as exc:
-            # The stop happened either way; what did not is its record, which is
-            # the one thing a later start would have been refused by.
-            log_failure(self.logger, "run_hold.persist_failed", exc, expected=True, app_id=app_id)
+            except (OSError, ValueError, RuntimeError) as exc:
+                log_failure(self.logger, "run_hold.persist_failed", exc, expected=True, app_id=app_id)
 
     async def _stop_ce_for_game(self, app_id: int, table_sha256: str | None = None) -> dict[str, object]:
         """A Revoke stop carries exact table and captured owned session authority."""
@@ -4903,6 +5008,7 @@ class PluginService:
     def _attached_launch_inputs(self, app_id: int):
         with self._mutation_lock:
             self._assert_no_live_owned_launch(app_id)
+            self._admit_launch(app_id)
             # A readable-but-stale current session is exactly what an ordinary
             # identity change produces - switching table, changing the target
             # process, re-importing Cheat Engine - and refusing here made every

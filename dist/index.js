@@ -4884,6 +4884,9 @@ function switchCandidates(scripts, controls, requested) {
  * it was taken on is over.
  */
 function dirtyRunRefusal(holds) {
+    if (holds?.unreadable) {
+        return `CE Decky starts no table while ${holds.error ?? "the record of which games have to be restarted could not be read"}. Clear it on Home to go on; nothing was saved or started.`;
+    }
     const dirty = holds?.dirty;
     if (!dirty)
         return null;
@@ -4901,6 +4904,14 @@ function dirtyRunRefusal(holds) {
  * reader is told what clearing it without a restart costs.
  */
 function dirtyRunNotice(holds) {
+    // The record itself failing is said first, because while it cannot be read
+    // every start in every game is refused, and while it cannot be saved a reload
+    // would forget a game that has to be restarted.
+    if (holds?.unreadable) {
+        return `CE Decky starts no table while ${holds.error ?? "the record of which games have to be restarted could not be read"}. Clear starts that record over: a game it held that is still running unrestarted could then have a table started over what was left in it.`;
+    }
+    if (holds?.error && !holds.dirty)
+        return `Take care: ${holds.error}.`;
     const dirty = holds?.dirty;
     if (!dirty)
         return null;
@@ -14848,7 +14859,7 @@ function Content() {
     const selectedRunHolds = ceLaunch?.appId !== undefined && ceLaunch?.appId === selectedGame?.appId
         ? ceLaunch?.capability.run_holds ?? null
         : null;
-    const autoloadRunHeld = Boolean(selectedRunHolds?.dirty || selectedRunHolds?.autoload_held);
+    const autoloadRunHeld = Boolean(selectedRunHolds?.dirty || selectedRunHolds?.autoload_held || selectedRunHolds?.unreadable);
     // The exact running-process set already positively identifies a known
     // anti-cheat launcher; that signal was consumed only to keep the launcher out
     // of target selection and then discarded, so Start and Auto-load proceeded
@@ -16950,7 +16961,7 @@ function Content() {
                     || latestOwnership.blockedReason !== null
                     || latestOwnership.ownedBySelected
                     // Asked again of the answer just read, which is the backend's own.
-                    || Boolean(capability.run_holds?.dirty || capability.run_holds?.autoload_held)) {
+                    || Boolean(capability.run_holds?.dirty || capability.run_holds?.autoload_held || capability.run_holds?.unreadable)) {
                     autoloadAttemptRef.current = null;
                     clearAutoloadRetry();
                     return;

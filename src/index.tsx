@@ -1346,7 +1346,7 @@ function Content() {
   const selectedRunHolds = ceLaunch?.appId !== undefined && ceLaunch?.appId === selectedGame?.appId
     ? ceLaunch?.capability.run_holds ?? null
     : null;
-  const autoloadRunHeld = Boolean(selectedRunHolds?.dirty || selectedRunHolds?.autoload_held);
+  const autoloadRunHeld = Boolean(selectedRunHolds?.dirty || selectedRunHolds?.autoload_held || selectedRunHolds?.unreadable);
   // The exact running-process set already positively identifies a known
   // anti-cheat launcher; that signal was consumed only to keep the launcher out
   // of target selection and then discarded, so Start and Auto-load proceeded
@@ -3595,7 +3595,7 @@ function Content() {
           || latestOwnership.blockedReason !== null
           || latestOwnership.ownedBySelected
           // Asked again of the answer just read, which is the backend's own.
-          || Boolean(capability.run_holds?.dirty || capability.run_holds?.autoload_held)
+          || Boolean(capability.run_holds?.dirty || capability.run_holds?.autoload_held || capability.run_holds?.unreadable)
         ) {
           autoloadAttemptRef.current = null;
           clearAutoloadRetry();

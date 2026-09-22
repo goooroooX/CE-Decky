@@ -1154,6 +1154,15 @@ describe("compact cheat rows", () => {
     const notice = dirtyRunNotice({ dirty: { since: 1, unsettled: 0 }, autoload_held: false });
     expect(notice).toContain("no table is started in it until it has been restarted");
     expect(notice).toContain("Clear this only if you already have");
+    // A record that could not be read refuses every start, and says so on Home.
+    const unreadable = { dirty: null, autoload_held: false, unreadable: true, error: "the record of which games have to be restarted could not be read (bad json)" };
+    expect(dirtyRunRefusal(unreadable)).toContain("CE Decky starts no table while the record");
+    expect(dirtyRunNotice(unreadable)).toContain("Clear starts that record over");
+    // One that could not be saved refuses nothing by itself: the hold is still
+    // in force in the backend, and Home only warns that a reload would forget it.
+    const unsaved = { dirty: null, autoload_held: false, unreadable: false, error: "the record could not be saved" };
+    expect(dirtyRunRefusal(unsaved)).toBeNull();
+    expect(dirtyRunNotice(unsaved)).toBe("Take care: the record could not be saved.");
   });
 
   it("promises only the chosen cheats where every default can be held off", () => {
