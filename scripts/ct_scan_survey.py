@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""What a table scans for, and whether a game's program holds it.
+"""What a table scans for, whether a game's program holds it, and what it switches on by itself.
 
-Two questions, one reader. Over a directory of `.CT` files it reports what the
+Three questions, one reader. Over a directory of `.CT` files it reports what the
 production parser read out of them and what it refused, which is how the shapes
 real tables carry are measured rather than guessed: the corpus this project
 keeps writes the same byte pattern several different ways, comments scans out,
@@ -14,6 +14,8 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --table <file.CT> --executable <game.exe> --repeat 3
     python3 scripts/ct_scan_survey.py --tables <dir> --json
     python3 scripts/ct_scan_survey.py --tables <dir> --repair-coverage
+    python3 scripts/ct_scan_survey.py --table <file.CT> --flags
+    python3 scripts/ct_scan_survey.py --tables <dir> --flags
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+from hashlib import sha256
 import json
 from pathlib import Path
 import platform
@@ -35,6 +38,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "py_modules"))
 
+from ce_decky.ct_inspector import inspect_table  # noqa: E402
 from ce_decky.ct_scans import (  # noqa: E402
     ScanParseError,
     assert_only_scans_dropped,
@@ -53,6 +57,11 @@ from ce_decky.ct_scans import _scan_from_line  # noqa: E402
 # What one table may hold before this stops reading it, which is the bound the
 # production store works under rather than a choice made here.
 MAX_TABLE_BYTES = 32 * 1024 * 1024
+
+# How many of the flags a table leaves switched on this names. The count is the
+# answer; the names are there to be recognised in the picker, and a table with
+# dozens of them would otherwise print a page of them.
+MAX_NAMED_FLAGS = 40
 
 # What the store refuses outright, for the same reason it does: a table is
 # untrusted XML, and an entity declaration is how one makes a reader expand
@@ -304,6 +313,80 @@ def repair_one(table: Path, scans: list[str]) -> dict[str, object]:
     return {"table": table.name, "proved": True, **repair.as_dict()}
 
 
+def flags_one(table: Path) -> dict[str, object]:
+    """Which of one table's own flags it switches on, and which may be written off.
+
+    Read through the production inspector rather than out of the scripts here,
+    because what the product acts on is the record's own answer: a flag is a
+    record whose address its enclosing script allocates and whose declared
+    default is that script's on key, and whether it may be written off is what
+    `ct_hooks` established from the code that reads it.
+
+    The list that matters is the refused one. Those are the cheats CE Decky
+    leaves switched on when it starts a script for something else, and the
+    reason a number in a field note is a number somebody can reproduce.
+    """
+    data = table.read_bytes()
+    if len(data) > MAX_TABLE_BYTES:
+        raise ValueError("that table is larger than one this reads")
+    found = inspect_table(table, sha256(data).hexdigest())
+    declared = [
+        control for control in found.controls
+        if control.declared_default is not None and control.declared_default == control.switch_on_value
+    ]
+    safe = [control for control in declared if control.switch_off_is_safe is True]
+    refused = [control for control in declared if control.switch_off_is_safe is not True]
+    return {
+        "table": table.name,
+        "sha256": found.sha256,
+        "controls": len(found.controls),
+        "switched_on_by_the_table": len(declared),
+        "safe_to_switch_off": len(safe),
+        "left_on": [" > ".join(control.path) for control in refused[:MAX_NAMED_FLAGS]],
+        "left_on_count": len(refused),
+    }
+
+
+def flags_corpus(root: Path) -> dict[str, object]:
+    """The same question over a directory, which is how a shape is measured.
+
+    One row per table would be a report nobody reads; what a corpus answers is
+    how common the shape is and how much of it this reader can follow.
+    """
+    tables = 0
+    unreadable = 0
+    with_flags = 0
+    declared = 0
+    safe = 0
+    fully_readable = 0
+    for path in sorted(root.rglob("*")):
+        # The same walk the scan survey makes: a directory of tables holds the
+        # store's own files beside them, and one that is not a table is not a
+        # table this could not read.
+        if not path.is_file() or path.suffix.lower() != ".ct":
+            continue
+        tables += 1
+        try:
+            answer = flags_one(path)
+        except (OSError, ValueError, ET.ParseError):
+            unreadable += 1
+            continue
+        declared += int(answer["switched_on_by_the_table"])
+        safe += int(answer["safe_to_switch_off"])
+        if int(answer["switched_on_by_the_table"]) > 0:
+            with_flags += 1
+            if int(answer["left_on_count"]) == 0:
+                fully_readable += 1
+    return {
+        "tables": tables,
+        "unreadable": unreadable,
+        "tables_that_switch_something_on": with_flags,
+        "tables_whose_flags_are_all_readable": fully_readable,
+        "switched_on_by_the_table": declared,
+        "safe_to_switch_off": safe,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tables", type=Path, help="a directory of .CT files to read patterns out of")
@@ -318,6 +401,10 @@ def main() -> int:
         "--repair-coverage", action="store_true",
         help="with --tables: how many of the corpus's scans the repair can produce a proven table for",
     )
+    parser.add_argument(
+        "--flags", action="store_true",
+        help="which flags the table switches on by itself, and which of them may be switched off",
+    )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
 
@@ -325,13 +412,17 @@ def main() -> int:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if args.tables is not None and args.repair_coverage:
+        if args.tables is not None and args.flags:
+            answer["flags_corpus"] = flags_corpus(args.tables)
+        elif args.tables is not None and args.repair_coverage:
             answer["repair_coverage"] = repair_coverage(args.tables)
         elif args.tables is not None:
             answer["survey"] = survey_tables(args.tables)
+        if args.table is not None and args.flags:
+            answer["flags"] = flags_one(args.table)
         if args.table is not None and args.repair:
             answer["repair"] = repair_one(args.table, list(args.repair))
-        if args.table is not None and not args.repair:
+        if args.table is not None and not args.repair and not args.flags:
             if args.executable is None:
                 parser.error("--table needs --executable, which is the program to look in")
             answer["check"] = check_one(args.table, args.executable, args.repeat)
@@ -367,6 +458,22 @@ def main() -> int:
         print(f"{repaired['table']}: dropping {', '.join(repaired['scans'])} removes "
               f"{repaired['blocks']} blocks, {repaired['lines']} lines, {repaired['bytes_removed']} bytes")
         print(f"  cheats that lose their address: {repaired['orphaned'] or 'none'}")
+    flags = answer.get("flags")
+    if isinstance(flags, dict):
+        print(f"{flags['table']} ({flags['sha256'][:12]}): {flags['controls']} controls, "
+              f"{flags['switched_on_by_the_table']} switched on by the table")
+        print(f"  safe to switch off {flags['safe_to_switch_off']}  left on {flags['left_on_count']}")
+        for name in flags["left_on"]:
+            print(f"    left on: {name}")
+        if int(flags["left_on_count"]) > len(flags["left_on"]):
+            print(f"    and {int(flags['left_on_count']) - len(flags['left_on'])} more")
+    corpus = answer.get("flags_corpus")
+    if isinstance(corpus, dict):
+        print(f"tables {corpus['tables']} ({corpus['unreadable']} unreadable), "
+              f"switching something on {corpus['tables_that_switch_something_on']}, "
+              f"all flags readable {corpus['tables_whose_flags_are_all_readable']}")
+        print(f"  switched on by the table {corpus['switched_on_by_the_table']}, "
+              f"safe to switch off {corpus['safe_to_switch_off']}")
     check = answer.get("check")
     if isinstance(check, dict):
         megabytes = int(check["executable_bytes"]) // (1024 * 1024)
