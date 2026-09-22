@@ -2,7 +2,7 @@
 
 The compact entry point for coding agents. Everything else this project holds is in `docs/`, and **Authority and reading routes** below says which document owns what and which one wins.
 
-Current development version: **0.9.29 — 2026-09-21**
+Current development version: **0.9.29 — 2026-09-22**
 
 ## Start here
 
