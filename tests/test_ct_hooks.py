@@ -207,3 +207,78 @@ dd 1
 [DISABLE]
 """
     assert "bEnableThing" in flags_safe_to_switch_off(script)
+
+
+BALANCED = """
+[ENABLE]
+label(bEnableThing)
+registersymbol(bEnableThing)
+lblHook:
+sub rcx,rsi
+cmp dword ptr [bEnableThing],0
+jne lblHookRestore
+mulss xmm0,[fThingMod]
+lblHookRestore:
+add rcx,rsi
+jmp lblHookRet
+lblMutate:
+mov rcx,[rdx+08]
+ret
+bEnableThing:
+dd 1
+[DISABLE]
+"""
+
+
+def test_a_hook_that_puts_back_what_it_changed_is_still_safe():
+    """The control for the refusals below: without it they prove nothing."""
+    assert "bEnableThing" in flags_safe_to_switch_off(BALANCED)
+
+
+def test_a_call_between_a_modification_and_its_restore_breaks_the_proof():
+    """The `add` pairs the `sub` on paper while the callee replaced the value.
+
+    A direct call into the script, an indirect one, and one into the game are
+    all code this does not walk, so none of them leaves a proof standing.
+    """
+    for call in ("call lblMutate", "call qword ptr [rax+10]", "call game.exe+1234"):
+        script = BALANCED.replace("mulss xmm0,[fThingMod]", call)
+        assert "bEnableThing" not in flags_safe_to_switch_off(script), call
+        script = BALANCED.replace("sub rcx,rsi\n", f"sub rcx,rsi\n{call}\n")
+        assert "bEnableThing" not in flags_safe_to_switch_off(script), call
+
+
+def test_a_call_made_whichever_way_the_flag_goes_is_not_the_difference():
+    """Before any test and with nothing to undo, a call happens either way.
+
+    Refusing it would refuse every hook that calls a helper on its way in,
+    and a restore of what the callee changed would be an unpaired `add`,
+    which is refused below.
+    """
+    script = BALANCED.replace("lblHook:\nsub rcx,rsi\n", "lblHook:\ncall lblMutate\nsub rcx,rsi\n")
+    assert "bEnableThing" in flags_safe_to_switch_off(script)
+
+
+def test_an_add_with_no_sub_to_pair_is_a_change_on_that_path():
+    """`add rcx,rsi` on one side of a flag changes what the game is handed.
+
+    It is the same kind of change as the `inc` and the unpaired `lea` this
+    already refuses, and it is how a restore of a callee's change looks.
+    """
+    script = BALANCED.replace("sub rcx,rsi\n", "").replace(
+        "mulss xmm0,[fThingMod]", "add rcx,rsi").replace("lblHookRestore:\nadd rcx,rsi\n", "lblHookRestore:\n")
+    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+
+
+def test_a_branch_whose_target_this_cannot_name_is_not_walked_past():
+    """`jmp game.exe+1234` leaves the hook; reading on would be reading code that never runs."""
+    for jump in ("jmp game.exe+1234", "jmp qword ptr [rax]", "je game.exe+1234"):
+        script = BALANCED.replace("mulss xmm0,[fThingMod]", jump)
+        assert "bEnableThing" not in flags_safe_to_switch_off(script), jump
+
+
+def test_a_label_named_like_a_branch_is_still_a_label():
+    """`jumpTable:` and `loopTop:` start the way a branch does and are not one."""
+    for label in ("jumpTable", "loopTop"):
+        script = BALANCED.replace("lblHookRestore", label)
+        assert "bEnableThing" in flags_safe_to_switch_off(script), label

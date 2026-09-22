@@ -13,7 +13,11 @@ What this reads is the script's own code: labels, direct jumps, `sub`/`add`
 pairs on the same two operands, and the `lea` that does the same arithmetic.
 An instruction that writes a register out of that register's own value is a
 transformation this cannot follow, and a path carrying one is not a path this
-can call balanced.
+can call balanced. An `add` with no `sub` to pair it with is one of those. So is
+a call made once something is waiting to be undone or once a flag has been
+tested, because the callee is code this does not walk and nothing obliges it to
+leave a register alone; and a branch whose target this cannot name is an exit
+it cannot read.
 
 **It answers in one direction only.** A flag comes back as safe when every
 mention of it is a test this could follow and every path through those tests
@@ -60,7 +64,7 @@ _REGISTER = (
 _WRITES = re.compile(rf"^\s*([a-z][a-z0-9]*)\s+({_REGISTER})\s*(?:,\s*(.*))?$", re.IGNORECASE)
 # Instructions that read a register without writing it, so a hook is free to
 # use them between a modification and the branch that undoes it.
-_READ_ONLY = frozenset({"cmp", "test", "push", "ret", "retn", "nop", "call", "int", "int3"})
+_READ_ONLY = frozenset({"cmp", "test", "push", "ret", "retn", "nop", "int", "int3"})
 # Instructions that replace a register's whole value out of somewhere else. What
 # they overwrite is gone whichever way the flag goes, so they are not something
 # one branch has to put back - unless the register already carries a
@@ -78,6 +82,12 @@ _TEST = re.compile(
     r"((?:0x)?[0-9][0-9A-Fa-f]*)\s*$",
     re.IGNORECASE)
 _RETURN = re.compile(r"^\s*(ret|retn)\s*$", re.IGNORECASE)
+# Any branch at all, including the ones `_JUMP` cannot name a target for: an
+# address such as `game.exe+1234`, a pointer in memory, a loop instruction.
+_ANY_JUMP = re.compile(r"^\s*(j[a-z]+|loop[a-z]*)\b", re.IGNORECASE)
+# A call runs code this does not walk, and nothing obliges it to leave a
+# register the way it found it.
+_CALL = re.compile(r"^\s*call\b", re.IGNORECASE)
 # The lines a symbol is allowed to appear in without being a use of its value:
 # its own declaration, and the directives that give it a name.
 _DECLARES = re.compile(r"^\s*(label|registersymbol|unregistersymbol|alloc|globalalloc)\s*\(", re.IGNORECASE)
@@ -203,6 +213,26 @@ class _Script:
                     state.append((left, right))
                 elif (left, right) in state:
                     state.remove((left, right))
+                else:
+                    # An `add` with no `sub` to pair it with is a register
+                    # changed out of its own value, which is what `inc` is and
+                    # what an unpaired `lea` already counts as. Left alone, it
+                    # is the restore a call made invisible.
+                    opaque = True
+            elif _CALL.match(line):
+                # Whatever the callee does is on this path. Before any flag is
+                # tested and with nothing waiting to be undone, it happens
+                # whichever way the flag goes and a restore of it would be an
+                # unpaired `add`; after either, the `add` this pairs may be
+                # restoring a value the callee already replaced.
+                opaque = opaque or bool(state) or bool(because)
+            elif _ANY_JUMP.match(line) and not (_JUMP.match(line) or _LABEL.match(line)):
+                # A branch whose target this cannot name is not a line to walk
+                # past. Where it goes is unknown, and so is what it undoes.
+                found.add(((_UNREADABLE,), because))
+                if not line.strip().lower().startswith("jmp"):
+                    work.append((index + 1, tuple(state), True, because))
+                continue
             elif not (_JUMP.match(line) or _RETURN.match(line) or _LABEL.match(line) or _DATA.match(line)):
                 opaque = opaque or _changes_a_register(line, state)
             now = tuple(state)
