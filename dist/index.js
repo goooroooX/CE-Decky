@@ -5490,6 +5490,99 @@ function tableSourceLabel(table) {
 function providerDisplayName(provider) {
     return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
 }
+/** The provider whose results come out of a listing this device indexes itself. */
+const INDEXED_PROVIDER = "fearless";
+/**
+ * How long ago something happened, in the coarsest unit that still reads as one.
+ *
+ * Shared, because two different scales on one row are two different answers to
+ * the same question. Days exist here and the search's own freshness line never
+ * needed them; an index page read the day before yesterday did.
+ */
+function coarseAge(milliseconds) {
+    const minutes = Math.floor(Math.max(0, milliseconds) / 60000);
+    if (minutes < 1)
+        return "just now";
+    if (minutes === 1)
+        return "1 minute ago";
+    if (minutes < 60)
+        return `${minutes} minutes ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48)
+        return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+    const days = Math.floor(hours / 24);
+    return `${days} days ago`;
+}
+/**
+ * What the searchable copy of the FearLess listing holds right now.
+ *
+ * One source here is not searched the way the others are: that forum has no
+ * search route this project may use, so CE Decky reads its listing pages and
+ * keeps them as an index of its own, a page at a time and re-read by age. What
+ * follows from that is the thing a reader cannot guess from a result count: a
+ * table on a page this device has not read yet is not missing from the source,
+ * it is missing from the copy, and searching again once the index has caught up
+ * is what finds it. So the state of that index belongs beside the search it
+ * decides, in the words a reader can act on, rather than only in the developer
+ * screen where it was already reported.
+ *
+ * Read from the search's own answer, which carries that source's index state on
+ * the row it reports for it, so this costs no call of its own. Nothing is said
+ * where the search did not include that source, where it failed outright or
+ * where this build is answering an older search that carried no index state:
+ * silence there is honest, and the source tally on the row already says which
+ * sources answered.
+ */
+function fearlessIndexSentence(sources, nowMs = Date.now()) {
+    const index = (sources ?? []).find((source) => source.provider === INDEXED_PROVIDER);
+    if (!index || typeof index.indexed_pages !== "number")
+        return null;
+    const name = providerDisplayName(INDEXED_PROVIDER);
+    const topics = typeof index.indexed_topics === "number" ? index.indexed_topics : null;
+    const total = typeof index.total_pages === "number" ? index.total_pages : null;
+    const complete = total !== null && index.indexed_pages >= total;
+    const built = `${name} is searched through a copy of its own listing that this device builds a page at a time`;
+    // Nothing indexed is a state rather than a count of nothing, and it is the
+    // one where the sentences below are the whole of what there is to say: a
+    // search of an empty copy finds nothing there whatever that source holds.
+    const held = index.indexed_pages === 0
+        ? "none of it has been read yet, so a search finds nothing there until it has"
+        : complete
+            ? `the whole listing is indexed, ${total} page${total === 1 ? "" : "s"}`
+            : total !== null
+                ? `${index.indexed_pages} of its ${total} listing pages are indexed here`
+                : `${index.indexed_pages} listing page${index.indexed_pages === 1 ? "" : "s"} are indexed here`;
+    const covers = index.indexed_pages === 0 || topics === null
+        ? ""
+        : `, holding ${topics} table${topics === 1 ? "" : "s"}`;
+    const parts = [`${built}, and ${held}${covers}.`];
+    const stale = typeof index.stale_pages === "number" ? index.stale_pages : 0;
+    if (complete) {
+        const refreshed = typeof index.fully_refreshed_at === "number" && index.fully_refreshed_at > 0
+            ? `Every page has been read, the oldest of them ${coarseAge(nowMs - index.fully_refreshed_at * 1000)}.`
+            : "Every page has been read, though not all of them within one pass.";
+        parts.push(refreshed);
+        if (stale > 0)
+            parts.push(`${stale} page${stale === 1 ? " is" : "s are"} due to be read again.`);
+    }
+    else if (stale > 0) {
+        parts.push(`${stale === 1 ? "1 page has" : `${stale} pages have`} still to be read, so a table listed only there cannot be found here yet;`
+            + " searching again once the index has caught up is what finds it.");
+    }
+    if (typeof index.last_refresh_at === "number" && index.last_refresh_at > 0) {
+        const pages = typeof index.last_refresh_pages === "number" ? index.last_refresh_pages : 0;
+        parts.push(`The last pass read ${pages} page${pages === 1 ? "" : "s"} ${coarseAge(nowMs - index.last_refresh_at * 1000)}.`);
+    }
+    // Two states the numbers above do not explain on their own. A cooldown is the
+    // source asking to be left alone, which is why the index stops growing while
+    // nothing is wrong; an error is why it stopped without being asked.
+    if (typeof index.retry_after_seconds === "number" && index.retry_after_seconds > 0) {
+        parts.push(`${name} asked CE Decky to wait, so nothing is read from it for another ${index.retry_after_seconds}s.`);
+    }
+    if (index.error)
+        parts.push(`The last read of the listing did not finish: ${index.error}`);
+    return parts.join(" ");
+}
 /**
  * Which provider digests already resolve to a table this device already holds.
  *
@@ -6478,17 +6571,6 @@ function rememberSearch(key, value) {
             break;
         searchCache.delete(oldest.value);
     }
-}
-function formatAge(milliseconds) {
-    const minutes = Math.floor(milliseconds / 60000);
-    if (minutes < 1)
-        return "just now";
-    if (minutes === 1)
-        return "1 minute ago";
-    if (minutes < 60)
-        return `${minutes} minutes ago`;
-    const hours = Math.floor(minutes / 60);
-    return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
 }
 /** Results CE Decky can acquire on its own; a controller cannot browse the web. */
 const AUTOMATIC_DOWNLOAD_MODES = new Set(["direct_https"]);
@@ -7508,7 +7590,11 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
     const searchHelp = [
         searchedAt === null
             ? "Look this game up on the table sources CE Decky can download from."
-            : `Searched ${formatAge(Date.now() - searchedAt)}. The per-source counts say how many usable tables each one returned; a source listed as n/a refused an anonymous request.`,
+            : `Searched ${coarseAge(Date.now() - searchedAt)}. The per-source counts say how many usable tables each one returned; a source listed as n/a refused an anonymous request.`,
+        // What a result count cannot say about the one source that is searched
+        // through an index of this device's own: a table on a page it has not read
+        // yet is absent from the copy rather than from the source.
+        fearlessIndexSentence(sources),
         retryable.count > 0
             ? `${retryable.count} row(s) on this page are marked, each with what happened to it: Failed means Cheat Engine ran a cheat from it and it came straight back off, Not a table means the download was not one, Encrypted means its archive is locked and only 7-Zip opens it, and Gone means the source no longer has the file. Retry ${retryable.count} drops those marks and offers them again.`
             : null,

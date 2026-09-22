@@ -364,7 +364,14 @@ FearLess discovery never depends on its challenged `search.php` route. Its
 public table-forum listing exposes a bounded page count plus topic titles and
 IDs, so CE Decky refreshes the leading listing pages during a search, resumes a
 bounded local title index in the background, and shows indexed/total page
-progress in QAM. The index contains no table bytes, attachment URLs, cookies or
+progress in QAM. What that index holds is said where it decides what a
+search can find: the row that heads the results on **Search / Download**
+carries it under that row's own press, because a table on a listing page this
+device has not read yet is absent from the copy rather than from the source,
+and searching again once the index has caught up is what finds it. It is read
+from the search's own answer, which already reports that source's index state
+on the row it reports for it, so the screen spends no call of its own on it
+and says nothing where that source was not part of the search. The index contains no table bytes, attachment URLs, cookies or
 session IDs. A topic the forum has sorted to the end of its own listing with a
 leading lowercase `z` is scored and shown under the game's own name: the marker
 is the forum's ordering rather than part of the title, and carrying it into

@@ -46,6 +46,7 @@ import {
   switchesLeftOn,
   tableSourceLabel,
   derivedSummaryLine,
+  fearlessIndexSentence,
   blockedRecordShape,
   providerShortName,
   controlSections,
@@ -197,6 +198,59 @@ describe("controller UI model", () => {
     // nothing under it is the state this row was added to end.
     expect(derivedSummaryLine({ ...derivation, transforms: [], orphaned: [] }, "T.CT"))
       .toBe("from T.CT · what was changed is not recorded · no cheat lost");
+  });
+
+  it("says what the indexed source's own copy of the listing holds", () => {
+    // One source is not searched the way the others are: that forum has no
+    // search route, so this device reads its listing pages and keeps them. A
+    // table on a page it has not read yet is absent from the copy rather than
+    // from the source, and a result count cannot say that.
+    const now = Date.UTC(2026, 8, 22, 12, 0, 0);
+    const row = (overrides: Record<string, unknown>) => ([{
+      provider: "fearless", provider_display_name: "FearLess Cheat Engine",
+      results: 3, status: "indexing", error: null, ...overrides,
+    }] as any);
+
+    const indexing = fearlessIndexSentence(row({
+      indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30,
+      last_refresh_at: now / 1000 - 600, last_refresh_pages: 5,
+    }), now);
+    expect(indexing).toContain("12 of its 42 listing pages are indexed here, holding 900 tables.");
+    expect(indexing).toContain("30 pages have still to be read");
+    expect(indexing).toContain("searching again once the index has caught up is what finds it.");
+    expect(indexing).toContain("The last pass read 5 pages 10 minutes ago.");
+
+    // A complete index answers the other question: how fresh the whole of it
+    // is, which is the age of its least recently read page.
+    const whole = fearlessIndexSentence(row({
+      status: "ok", indexed_pages: 42, total_pages: 42, indexed_topics: 1200,
+      stale_pages: 2, fully_refreshed_at: now / 1000 - 3 * 3600,
+    }), now);
+    expect(whole).toContain("the whole listing is indexed, 42 pages, holding 1200 tables.");
+    expect(whole).toContain("Every page has been read, the oldest of them 3 hours ago.");
+    expect(whole).toContain("2 pages are due to be read again.");
+
+    // Two states the counts do not explain on their own.
+    expect(fearlessIndexSentence(row({ indexed_pages: 4, stale_pages: 1, retry_after_seconds: 90 }), now))
+      .toContain("asked CE Decky to wait, so nothing is read from it for another 90s.");
+    expect(fearlessIndexSentence(row({ indexed_pages: 4, stale_pages: 1, error: "HTTP 503" }), now))
+      .toContain("The last read of the listing did not finish: HTTP 503");
+
+    // An empty index is a state rather than a count of nothing, and it is what
+    // makes a search of that source find nothing whatever the source holds.
+    const empty = fearlessIndexSentence(row({
+      status: "unavailable", indexed_pages: 0, total_pages: 42, indexed_topics: 0,
+      stale_pages: 42, error: "HTTP 403",
+    }), now);
+    expect(empty).toContain("none of it has been read yet, so a search finds nothing there until it has.");
+    expect(empty).not.toContain("holding 0 tables");
+    expect(empty).toContain("The last read of the listing did not finish: HTTP 403");
+
+    // Silence where there is nothing to say: no such source in this search, and
+    // an answer from a build that carried no index state.
+    expect(fearlessIndexSentence([], now)).toBeNull();
+    expect(fearlessIndexSentence(null, now)).toBeNull();
+    expect(fearlessIndexSentence(row({}), now)).toBeNull();
   });
 
   it("describes the record of refused tables by what its entries cannot say", () => {

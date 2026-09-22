@@ -946,6 +946,36 @@ describe("ProviderCatalog controller workflow", () => {
     expect(screen.getByRole("button", { name: /Example\.CT/ })).toBeTruthy();
   });
 
+  it("puts the state of the indexed listing behind the summary row's own press", async () => {
+    // That source has no search route this project may use, so this device
+    // reads its listing pages and searches the copy. A table on a page it has
+    // not read yet is absent from the copy rather than from the source, which
+    // is the one thing a result count cannot say and the reader can act on.
+    api.searchTables.mockResolvedValueOnce({
+      results: [result], failures: [],
+      sources: [{
+        provider: "fearless", provider_display_name: "FearLess Cheat Engine", results: 1,
+        status: "indexing", error: null,
+        indexed_pages: 12, total_pages: 42, indexed_topics: 900, stale_pages: 30,
+        refresh_age_seconds: 86_400, fully_refreshed_at: null,
+        last_refresh_at: Math.round(Date.now() / 1000) - 600, last_refresh_pages: 5,
+        retry_after_seconds: null,
+      }],
+      stale: false,
+    });
+    render(<ProviderCatalog gameIdentity="10:steam" gameName="Example" onImported={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Search( again)?$/ }));
+    const row = await screen.findByTestId("search-controls");
+
+    // Not on the row: it is one line, and this is what the press is for.
+    expect(row.textContent).not.toMatch(/listing pages are indexed/);
+    fireEvent.click(within(row).getByRole("button", { name: "?" }));
+    const opened = screen.getByTestId("search-controls").textContent ?? "";
+    expect(opened).toMatch(/12 of its 42 listing pages are indexed here, holding 900 tables/);
+    expect(opened).toMatch(/30 pages have still to be read/);
+    expect(opened).toMatch(/The last pass read 5 pages/);
+  });
+
   it("names a switched-off source as off rather than dropping it from the roster", async () => {
     // A narrowed search and a build that never had those sources produce the
     // same empty answer otherwise, and only one of them is about this game.

@@ -13,7 +13,7 @@ import { forgetRejectedArtifact, isRejectedArtifact, isArchiveFilename } from ".
 import { showActionFailure } from "./modals/ActionFailureModal";
 import { TableAcquisitionModal } from "./modals/TableAcquisitionModal";
 import { ModalActions, modalActionStyle } from "./components/ModalActions";
-import { PROVIDER_PAGE_SIZE, advertisedRelease, clampPage, derivedFromLabel, pageCount, pageItems, providerShortName, releaseLabel, tableIsSigned, tableRowRefusals, type BlockedLookups, type BlockedMark } from "./uiModel";
+import { PROVIDER_PAGE_SIZE, advertisedRelease, clampPage, coarseAge, derivedFromLabel, fearlessIndexSentence, pageCount, pageItems, providerShortName, releaseLabel, tableIsSigned, tableRowRefusals, type BlockedLookups, type BlockedMark } from "./uiModel";
 import { MODAL_BOTTOM_PADDING, latchChrome, rowsThatFit, viewportHeight, type LatchedChrome } from "./viewport";
 import { CONTENTS_ONLY, FOCUS_SCROLL_CLASS, FocusScrollText, PanelRow, SectionHeading, SmallButton, focusFirstEnabled, usePageHeight, useRowHeight } from "./components/PanelDensity";
 import { PagerFooter } from "./components/PagerFooter";
@@ -365,15 +365,6 @@ function rememberSearch(key: string, value: CachedSearch): void {
     if (oldest.done) break;
     searchCache.delete(oldest.value);
   }
-}
-
-function formatAge(milliseconds: number): string {
-  const minutes = Math.floor(milliseconds / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes === 1) return "1 minute ago";
-  if (minutes < 60) return `${minutes} minutes ago`;
-  const hours = Math.floor(minutes / 60);
-  return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
 }
 
 /** Results CE Decky can acquire on its own; a controller cannot browse the web. */
@@ -1556,7 +1547,11 @@ export function ProviderCatalog({
   const searchHelp = [
     searchedAt === null
       ? "Look this game up on the table sources CE Decky can download from."
-      : `Searched ${formatAge(Date.now() - searchedAt)}. The per-source counts say how many usable tables each one returned; a source listed as n/a refused an anonymous request.`,
+      : `Searched ${coarseAge(Date.now() - searchedAt)}. The per-source counts say how many usable tables each one returned; a source listed as n/a refused an anonymous request.`,
+    // What a result count cannot say about the one source that is searched
+    // through an index of this device's own: a table on a page it has not read
+    // yet is absent from the copy rather than from the source.
+    fearlessIndexSentence(sources),
     retryable.count > 0
       ? `${retryable.count} row(s) on this page are marked, each with what happened to it: Failed means Cheat Engine ran a cheat from it and it came straight back off, Not a table means the download was not one, Encrypted means its archive is locked and only 7-Zip opens it, and Gone means the source no longer has the file. Retry ${retryable.count} drops those marks and offers them again.`
       : null,
