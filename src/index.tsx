@@ -3245,7 +3245,20 @@ function Content() {
           ...releasedRows,
         ]
       : [
-          { record_id: recordId, active, value: null, path: control.path, label: controlRowLabel(control) },
+          {
+            record_id: recordId,
+            active,
+            value: null,
+            // The off key belongs to the way down as much as to the way up.
+            // Releasing a frozen record leaves it at the value it was frozen
+            // at, so a pinned cheat switched off from here read as off on the
+            // panel and went on running in the game. Configure cheats has
+            // carried both keys all along, and a switch may not mean two
+            // different things depending on which screen it was pressed from.
+            switch_values: switchValuesFor(control),
+            path: control.path,
+            label: controlRowLabel(control),
+          },
           ...releasedRows,
         ];
     pinnedBusyRef.current = recordId;

@@ -162,8 +162,16 @@ function renderContent() { const plugin = (pluginFactory as any)(); return rende
  */
 async function pressLocalFile() {
   fireEvent.click(screen.getByRole("button", { name: "Manage" }));
-  const picker = [...modalState.nodes].reverse().find((node: any) => node?.props?.onOpenLocalFile);
-  if (!picker) throw new Error("the table picker did not open");
+  // Waited for rather than read once. What the press opens depends on what the
+  // panel has finished loading, and a case that opens it while the first status
+  // read is still in flight found nothing there and threw - which on CI failed
+  // the case and left the file picker's queued answer behind for whichever case
+  // ran next to consume.
+  const picker = await waitFor(() => {
+    const found = [...modalState.nodes].reverse().find((node: any) => node?.props?.onOpenLocalFile);
+    if (!found) throw new Error("the table picker did not open");
+    return found;
+  });
   await act(async () => {
     picker.props.onClose();
     picker.props.onOpenLocalFile();
@@ -226,9 +234,14 @@ beforeEach(() => {
   api.getCELaunchCapability.mockResolvedValue(launch); api.getRuntimeStatus.mockResolvedValue(liveRuntime()); api.inspectTableSha.mockResolvedValue(inspect);
   // `clearAllMocks` keeps queued `mockResolvedValueOnce` entries, and a case that
   // queues more than it consumes would otherwise answer the next case's first
-  // query. Reset these two before re-arming their defaults.
+  // query. Reset these before re-arming their defaults.
   runtimeClient.queryRuntimeControls.mockReset();
   runtimeClient.queryRuntimeControlsPartial.mockReset();
+  // The file picker is the one this caught out: a case that failed before its
+  // press consumed the path it queued handed that path to the next case, which
+  // then imported a file while proving that a cancelled picker imports nothing.
+  // One real failure read as four.
+  decky.openFilePicker.mockReset();
   runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: liveRuntime().status.results });
   runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: liveRuntime().status.results, unavailable: [] });
   steam.listRunningGames.mockResolvedValue({ available: true, games: [game] }); steam.listInstalledGames.mockResolvedValue([game]); steam.readAppDetails.mockResolvedValue(details);
@@ -6061,6 +6074,46 @@ describe("Pinned live controls", () => {
 
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
       { record_id: 7, active: true, value: "100", path: ["Health"], label: "Health" },
+    ]));
+  });
+
+  it("switches a pinned switch off at its own off key, not by releasing it", async () => {
+    // Releasing a frozen record leaves it at the value it was frozen at, so a
+    // pinned cheat switched off here read as off on the panel and went on
+    // running in the game. Configure cheats has carried both keys all along.
+    const binary = {
+      ...inspect,
+      controls: [{
+        id: 7, description: "Godmode", path: ["Godmode"], variable_type: "4 Bytes", kind: "dropdown",
+        group_header: false, has_assembler_script: false,
+        dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: true,
+        switch_on_value: "1",
+      }],
+    };
+    const live = liveRuntime();
+    live.status.results = [{ generation: 1, record_id: 7, ok: true, active: true, value: "1", error: null }];
+    const confirmed = [{ generation: 2, record_id: 7, ok: true, active: false, value: "0", error: null }];
+    api.getStatus.mockResolvedValue(pinnedStatus());
+    api.inspectTableSha.mockResolvedValue(binary);
+    api.getRuntimeStatus.mockResolvedValue(live);
+    api.setRememberedCheats.mockResolvedValue({});
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: confirmed });
+    runtimeClient.queryRuntimeControls
+      .mockResolvedValueOnce({ envelope: live, results: live.status.results })
+      .mockResolvedValue({ envelope: live, results: confirmed });
+    runtimeClient.queryRuntimeControlsPartial
+      .mockResolvedValueOnce({ envelope: live, results: live.status.results, unavailable: [] })
+      .mockResolvedValue({ envelope: live, results: confirmed, unavailable: [] });
+    renderContent();
+
+    const row = await screen.findByTestId("pinned-cheat-7");
+    fireEvent.click(within(row).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
+      {
+        record_id: 7, active: false, value: null, switch_values: { on: "1", off: "0" },
+        path: ["Godmode"], label: "Godmode",
+      },
     ]));
   });
 

@@ -2334,10 +2334,22 @@ export function pinnedCheatRows(
       rememberedById.get(control.id)?.value,
       configuredById.get(control.id)?.value,
     ));
+    // Said here too, because this row writes the flag's off key the moment it
+    // is pressed and the picker's own warning is two screens away. A cheat its
+    // table switches on by itself, whose code could not be proven to survive
+    // being written off, is one the reader has to know about before they press
+    // rather than after the game has died.
+    const unsafeToSwitchOff = typeof control.switch_on_value === "string"
+      && control.declared_default === control.switch_on_value
+      && control.switch_off_is_safe !== true;
     rows.push({
       recordId: control.id,
       label: controlRowLabel(control),
-      summary: [context, value ? `= ${value}` : null].filter(Boolean).join(" · "),
+      summary: [
+        context,
+        value ? `= ${value}` : null,
+        unsafeToSwitchOff ? "not safe to switch off" : null,
+      ].filter(Boolean).join(" · "),
       active: latest.active,
     });
   }

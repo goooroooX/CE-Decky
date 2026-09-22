@@ -5234,10 +5234,22 @@ function pinnedCheatRows(controls, pinned, results, remembered = [], configured 
         // A switch says what it is by being on or off, so `= 1` beside it is the
         // same fact written twice in the row's own scarcest space.
         const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
+        // Said here too, because this row writes the flag's off key the moment it
+        // is pressed and the picker's own warning is two screens away. A cheat its
+        // table switches on by itself, whose code could not be proven to survive
+        // being written off, is one the reader has to know about before they press
+        // rather than after the game has died.
+        const unsafeToSwitchOff = typeof control.switch_on_value === "string"
+            && control.declared_default === control.switch_on_value
+            && control.switch_off_is_safe !== true;
         rows.push({
             recordId: control.id,
             label: controlRowLabel(control),
-            summary: [context, value ? `= ${value}` : null].filter(Boolean).join(" · "),
+            summary: [
+                context,
+                value ? `= ${value}` : null,
+                unsafeToSwitchOff ? "not safe to switch off" : null,
+            ].filter(Boolean).join(" · "),
             active: latest.active,
         });
     }
@@ -16310,7 +16322,20 @@ function Content() {
                 ...releasedRows,
             ]
             : [
-                { record_id: recordId, active, value: null, path: control.path, label: controlRowLabel(control) },
+                {
+                    record_id: recordId,
+                    active,
+                    value: null,
+                    // The off key belongs to the way down as much as to the way up.
+                    // Releasing a frozen record leaves it at the value it was frozen
+                    // at, so a pinned cheat switched off from here read as off on the
+                    // panel and went on running in the game. Configure cheats has
+                    // carried both keys all along, and a switch may not mean two
+                    // different things depending on which screen it was pressed from.
+                    switch_values: switchValuesFor(control),
+                    path: control.path,
+                    label: controlRowLabel(control),
+                },
                 ...releasedRows,
             ];
         pinnedBusyRef.current = recordId;

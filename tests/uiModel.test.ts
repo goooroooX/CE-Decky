@@ -1132,6 +1132,28 @@ describe("pinned controls on the panel", () => {
     ])).toEqual([]);
   });
 
+  it("says on the row when a pinned cheat is one its own code may not switch off", () => {
+    // This row writes the flag's off key the moment it is pressed, and the
+    // picker's warning about it is two screens away.
+    const flag = {
+      ...control(11, "Vitals drain"),
+      kind: "dropdown" as const,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]] as [string, string][],
+      dropdown_read_only: true,
+      switch_on_value: "1",
+      declared_default: "1",
+      switch_off_is_safe: false,
+    };
+    const safe = { ...flag, id: 12, description: "Damage", path: ["Enable 1.0", "Damage"], switch_off_is_safe: true };
+    const rows = pinnedCheatRows([flag, safe], [11, 12], [
+      { generation: 1, record_id: 11, ok: true, active: true, value: "1", error: null },
+      { generation: 1, record_id: 12, ok: true, active: true, value: "1", error: null },
+    ]);
+
+    expect(rows[0].summary).toBe("Enable 1.0 \u00b7 not safe to switch off");
+    expect(rows[1].summary).toBe("Enable 1.0");
+  });
+
   it("bounds the panel to one page of pinned rows", () => {
     const many = Array.from({ length: 20 }, (_, index) => control(100 + index, `Cheat ${index}`));
     const results = many.map((item) => ({ generation: 1, record_id: item.id, ok: true, active: false, value: null, error: null }));
