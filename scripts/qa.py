@@ -54,7 +54,11 @@ PYTEST_NOTHING_COLLECTED = 5
 # else on it. The repository's `pytest.ini` already asks for that brevity, and
 # passing `-q` again on top of it took this line away entirely, which is what
 # left the count reachable only by counting dots.
-_PYTEST_TOTAL = re.compile(r"^\d+ (passed|failed|skipped|error)")
+_PYTEST_TOTAL = re.compile(r"^\d+ (passed|failed|skipped|error|xfailed|xpassed|deselected)")
+# Every outcome either runner's summary counts, and the ones that are a case
+# that did not run. A summary made only of those still answers: none ran.
+_OUTCOME = re.compile(r"(\d+) (passed|failed|errors?|xfailed|xpassed|skipped|deselected|todo)\b")
+_NOT_RUN = frozenset({"skipped", "deselected", "todo"})
 
 
 def _case_count(text: str) -> int | None:
@@ -69,8 +73,13 @@ def _case_count(text: str) -> int | None:
 
     Both runners state it and neither is parsed for anything else here: the
     number of cases that ran, which is what the reader is checking, rather than
-    the number collected or skipped. Nothing is printed where a stage is not a
-    test run or its runner said nothing this recognises.
+    the number collected or skipped. A case that failed ran, and so did one
+    that errored or was expected to fail, so every outcome but a skip counts:
+    counting the passes alone reported a failed run as covering less than it
+    did. `vitest` puts its own total in brackets, and that total includes the
+    skipped, so it is summed here the same way rather than read. Nothing is
+    printed where a stage is not a test run or its runner said nothing this
+    recognises.
     """
     found: int | None = None
     for line in text.splitlines():
@@ -78,9 +87,9 @@ def _case_count(text: str) -> int | None:
         # `vitest` names its own verdict; `pytest` ends `-q` output with the
         # same words and nothing before them.
         if stripped.startswith("Tests ") or _PYTEST_TOTAL.match(stripped):
-            match = re.search(r"(\d+) passed", stripped)
-            if match:
-                found = int(match.group(1))
+            outcomes = _OUTCOME.findall(stripped)
+            if outcomes:
+                found = sum(int(count) for count, outcome in outcomes if outcome not in _NOT_RUN)
     return found
 
 

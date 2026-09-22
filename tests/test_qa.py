@@ -1020,7 +1020,14 @@ def test_a_stage_says_how_many_cases_it_ran(monkeypatch):
     """
     assert qa._case_count("      Tests  1 passed | 338 skipped (339)\n") == 1
     assert qa._case_count("...                       [100%]\n11 passed in 0.12s\n") == 11
-    assert qa._case_count("3 failed, 8 passed in 1.02s\n") == 8
+    # A case that failed ran, and a failed stage covers every case it ran.
+    assert qa._case_count("3 failed, 8 passed in 1.02s\n") == 11
+    assert qa._case_count("      Tests  1 failed | 5 passed (6)\n") == 6
+    # A skip did not run, in either runner; every other outcome did.
+    assert qa._case_count("1 failed, 4 passed, 2 skipped, 1 xfailed, 1 xpassed, 2 errors in 3.1s\n") == 9
+    assert qa._case_count("      Tests  2 failed | 5 passed | 3 skipped (10)\n") == 7
+    # A summary of nothing but those is still an answer, and the answer is none.
+    assert qa._case_count("2 skipped, 5 deselected in 0.10s\n") == 0
     # Nothing to say rather than a wrong number: a stage that is not a test run,
     # and a test that prints a line of its own about tests, say nothing here.
     assert qa._case_count("wrote artifacts/CE-Decky-v0.9.29.zip\n") is None
