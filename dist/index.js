@@ -10895,7 +10895,7 @@ const RESTART_GRACE_MS = 45000;
  * Decky is replacing this plugin, so the backend that would answer the next
  * question is being stopped and this panel is about to be replaced with it.
  */
-function UpdateModal({ currentVersion, targetVersion, gameRunning, adopted = null, onStart, onPoll, onCancelUpdate, onClose }) {
+function UpdateModal({ currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose }) {
     useUiSurface("UpdateModal");
     // An operation that has already ended is not something to adopt. The panel
     // does not pass one, and this window does not act on one either: it opens as
@@ -11027,9 +11027,7 @@ function UpdateModal({ currentVersion, targetVersion, gameRunning, adopted = nul
     // waiting for an answer that has no one left to give it.
     const stranded = unreachable && !settled && !installingNow;
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("update_modal.cancel_back", () => { if (stranded || (!busyRef.current && !installing))
-            onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: gameRunning
-                                        ? "Installing replaces Steam's interface process. This closes the Decky panel and can interrupt the game that is running."
-                                        : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), stranded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-handed-off", label: "CE Decky stopped answering", description: "The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), ((installingNow && restartOverdue) || stranded) && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && !stranded && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
+            onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: "Steam's interface restarts during installation and the Decky panel closes for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), stranded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-handed-off", label: "CE Decky stopped answering", description: "The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), ((installingNow && restartOverdue) || stranded) && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && !stranded && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
                                 if (inFlight) {
                                     void abandon();
                                     return;
@@ -17422,7 +17420,7 @@ function Content() {
                 const next = await checkForUpdate();
                 await refreshStatus().catch(() => undefined);
                 return next;
-            }), onStartUpdate: (target) => { close(); openUpdateModal(target); }, onSetMascotVisible: (visible) => runAction(async () => {
+            }), onStartUpdate: (target) => { void requestPluginUpdate(target, null, close); }, onSetMascotVisible: (visible) => runAction(async () => {
                 const next = await setMascotVisible(visible);
                 await refreshStatus().catch(() => undefined);
                 return next;
@@ -17472,13 +17470,64 @@ function Content() {
         const target = requested ?? adopt?.version ?? offeredUpdateVersion;
         if (!status || !target)
             return;
-        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, gameRunning: runningGamesRef.current.length > 0, adopted: adopt ?? null, onStart: (targetVersion) => startPluginUpdate(targetVersion), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
+        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, adopted: adopt ?? null, onStart: (targetVersion) => startPluginUpdate(targetVersion), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
                 close();
                 // What the press changed about this device is in the status the panel
                 // reads: a cancelled update, a failed one, and the record of what the
                 // last check found all live there.
                 void refreshStatus().catch(() => undefined);
             } })));
+    };
+    /**
+     * The one press both Update controls make, Home's and Advanced's.
+     *
+     * An update replaces this backend and restarts Steam's interface, so it is
+     * made only where no game is running, and asked of the backend at the press
+     * rather than of what this panel last saw. A refusal is a notification and
+     * nothing else: the control stays where it is, and Advanced stays open. The
+     * backend refuses the same start on its own, for a panel that skips this.
+     * An update already running is only being looked at again, so it opens.
+     */
+    const updatePressRef = SP_REACT.useRef(false);
+    const requestPluginUpdate = async (requested, adopt, beforeOpen) => {
+        // The window used to open in the press itself; asking first leaves a moment
+        // in which a second press would open a second confirmation.
+        if (updatePressRef.current)
+            return;
+        updatePressRef.current = true;
+        try {
+            await guardedPluginUpdate(requested, adopt, beforeOpen);
+        }
+        finally {
+            updatePressRef.current = false;
+        }
+    };
+    const guardedPluginUpdate = async (requested, adopt, beforeOpen) => {
+        if (!adopt) {
+            let refusal = null;
+            let observed = null;
+            try {
+                observed = await listRunningAppIds();
+            }
+            catch (cause) {
+                logUiFailure("update.running_games_unread", cause);
+            }
+            if (!observed || !observed.available) {
+                refusal = "CE Decky could not confirm that no game is running. Close any running games and try again.";
+            }
+            else if (observed.app_ids.length > 0) {
+                refusal = "Close any running games before updating CE Decky, then try again.";
+            }
+            if (refusal) {
+                logUi("update.press_refused", {
+                    available: observed?.available ?? null, running: observed?.app_ids.length ?? null,
+                });
+                toaster.toast({ title: "CE Decky", body: refusal });
+                return;
+            }
+        }
+        beforeOpen?.();
+        openUpdateModal(requested, adopt);
     };
     const openGamePicker = (gameOptions) => {
         // Only the ambiguity this cannot resolve by itself is marked. One running
@@ -17510,7 +17559,7 @@ function Content() {
         const bootstrapFailed = error !== null;
         return SP_JSX.jsx(HomePanel, { pluginVersion: null, updateVersion: null, onUpdate: () => undefined, mascotVisible: mascotVisible, updateRunning: false, ceReady: false, ceStatusText: "Loading plugin status\u2026", installAvailable: false, installBusy: false, setupPending: false, setupStatusError: error, onRetrySetupStatus: () => { setBootstrapAttempt(0); void bootstrap(); }, installOperation: null, ceSource: null, ceSha256: null, onInstall: () => undefined, onCancelInstall: () => undefined, reinstallLabel: "Reinstall CE", onReinstall: () => undefined, game: null, appDetails: null, runningDetectionAvailable: false, runningGameCount: 0, selectedGameRunning: false, targetProcess: null, onChooseGame: () => undefined, table: null, tableSource: "Local", onSearchTable: () => undefined, tableMarkedNotWorking: null, onOpenImportedTables: () => undefined, runtimeReady: false, runtimeText: "Loading\u2026", runtimeTextComplete: true, liveControlsUnavailable: false, liveSnapshotError: null, startRuntimeAvailable: false, startRuntimeBlockedReason: null, onStartRuntime: () => undefined, activeCheatLabels: [], activeScriptCount: 0, activeCheatSnapshotReady: false, pinnedCount: 0, pinnedRows: [], pinnedBusyRecordId: null, onTogglePinnedCheat: () => undefined, onChooseCheats: () => undefined, onDisableAllCheats: () => undefined, autoloadEnabled: false, autoloadBlockedReason: "Loading\u2026", onAutoloadChange: () => undefined, ceRunning: false, ceIdentityBlockedReason: null, launchPending: false, onStopCE: () => undefined, onAdvanced: () => undefined, busy: !bootstrapFailed, error: error });
     }
-    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, updateVersion: panelUpdateVersion, updateRunning: updateRunning, onUpdate: () => openUpdateModal(panelUpdateVersion ?? undefined, runningUpdate), mascotVisible: mascotVisible, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(HomePanel, { pluginVersion: `v${status.version}`, updateVersion: panelUpdateVersion, updateRunning: updateRunning, onUpdate: () => { void requestPluginUpdate(panelUpdateVersion ?? undefined, runningUpdate); }, mascotVisible: mascotVisible, ceReady: status.ce.valid, ceStatusText: ceStatusText, installAvailable: installAvailable, installBusy: installBusy, setupStatusError: managedCEError, onRetrySetupStatus: () => { void refreshManagedCE().catch(() => undefined); }, setupPending: managedSetupPending, installOperation: managedInstallSnapshot, ceSource: status.ce.valid ? managedReleaseInstalled ? "Managed" : "Imported" : null, ceSha256: status.ce.sha256, onInstall: () => chooseManagedSetup(false), managedCancelling: managedCancelling, onCancelInstall: () => void cancelManagedSetup(), reinstallLabel: managedReleaseInstalled ? "Reinstall CE" : "Install managed CE", onReinstall: () => chooseManagedSetup(true), game: selectedGame, appDetails: appDetails, runningDetectionAvailable: runningGames.available, runningGameCount: runningGames.games.length, selectedGameRunning: selectedGameRunning, targetProcess: profile?.target_process ?? null, targetNotRunning: targetNotRunning, onChooseGame: () => {
                 void runAction(async () => {
                     // Before the library is even read, because the answer decides whether
                     // there is anything to open. The row's disabled state is up to three

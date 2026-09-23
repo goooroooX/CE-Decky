@@ -257,6 +257,15 @@ AUTOLOAD_HELD_REFUSAL = (
     "Auto-load does not start Cheat Engine again in this game until it is restarted, because you stopped it. "
     "Start it yourself to go on now."
 )
+# An update replaces this backend and restarts Steam's interface, so it is made
+# only where no game is running: checking for one and offering it are not.
+UPDATE_GAME_RUNNING_REFUSAL = "Close any running games before updating CE Decky, then try again."
+UPDATE_RUNNING_UNKNOWN_REFUSAL = (
+    "CE Decky could not confirm that no game is running. Close any running games and try again."
+)
+LAUNCH_UPDATE_INSTALLING_REFUSAL = (
+    "CE Decky is installing an update and is about to restart. Start Cheat Engine again once CE Decky is back."
+)
 AUTOLOAD_OFF_REFUSAL = (
     "Auto-load is switched off for this game or this table, so it does not start Cheat Engine. "
     "Start it yourself, or switch Auto-load on."
@@ -2869,6 +2878,11 @@ class PluginService:
             if self.managed_ce.has_active_operation() or self._managed_ce_reservation is not None:
                 raise ValueError("a Cheat Engine setup is still running; wait for it to finish, then update")
             self._assert_no_plugin_update()
+            # Before anything is reserved or downloaded: a panel that let the
+            # press through, an older one, or a direct call all get this answer.
+            blocker = self._plugin_update_runtime_blocker(log=True)
+            if blocker is not None:
+                raise ValueError(blocker[1])
             # Reserved before the lock is released, for the same reason the
             # setup above reserves: the manager's start is async and cannot
             # publish an operation until it has one.
@@ -4619,6 +4633,11 @@ class PluginService:
         if app_id in self._run_transitions:
             log_activity(self.logger, "info", "launch.refused_stop_in_progress", app_id=app_id)
             raise ValueError("Cheat Engine is still being stopped in this game. Try again once it has stopped.")
+        # An install already handed on replaces this backend at any moment, and
+        # a Cheat Engine it started would be one nothing is left to own.
+        if self.plugin_updates.replacement_committed():
+            log_activity(self.logger, "info", "launch.refused_update_installing", app_id=app_id)
+            raise ValueError(LAUNCH_UPDATE_INSTALLING_REFUSAL)
         if self._run_holds_unreadable is not None:
             log_activity(self.logger, "info", "launch.refused_holds_unreadable", app_id=app_id)
             raise ValueError(
@@ -4703,8 +4722,11 @@ class PluginService:
         begin, so no stop begins after it and none is running when it happens.
         """
         with self._mutation_lock:
-            if self._run_transitions:
-                return "Cheat Engine is still being stopped in a game"
+            # Asked again here, where the download has finished: a game started
+            # while it ran holds the install, which waits for it to close.
+            blocker = self._plugin_update_runtime_blocker(log=False)
+            if blocker is not None:
+                return blocker[0]
             with self._run_holds_lock:
                 if self._run_holds_unsaved is not None and self._run_holds_unreadable is None:
                     # Asked again on every poll of the wait, and the failure
@@ -4720,6 +4742,41 @@ class PluginService:
                 if self._run_holds_unsaved is not None:
                     return "CE Decky could not save which games have to be restarted, and installing now would forget them"
                 commit()
+        return None
+
+    def _plugin_update_runtime_blocker(self, *, log: bool) -> tuple[str, str] | None:
+        """Why this backend may not be replaced by an update now, or nothing.
+
+        Called under the mutation lock. The clause is for the updater's own
+        message, the sentence for a refused start. What CE Decky knows it is
+        doing comes first, because the process table is an observation and
+        this backend's own launches are not: a stop still deciding, a start on
+        its way, a Cheat Engine it owns. Then the games themselves, where an
+        observation that could not be completed is not one that found none.
+        """
+        if self._run_transitions:
+            if log:
+                log_activity(self.logger, "info", "update.refused_game_running", reason="stop_in_progress")
+            return "Cheat Engine is still being stopped in a game", UPDATE_GAME_RUNNING_REFUSAL
+        if self._launch_reservations or self.ce_launch.has_live_owned_launch():
+            if log:
+                log_activity(self.logger, "info", "update.refused_game_running", reason="owned_launch")
+            return "Cheat Engine is running in a game", UPDATE_GAME_RUNNING_REFUSAL
+        observation = observe_running_app_ids()
+        if not observation.available:
+            if log:
+                log_activity(
+                    self.logger, "info", "update.refused_running_state_unavailable",
+                    reason=(observation.reason or "")[:160] or None,
+                )
+            return "CE Decky could not confirm that no game is running", UPDATE_RUNNING_UNKNOWN_REFUSAL
+        if observation.app_ids:
+            if log:
+                log_activity(
+                    self.logger, "info", "update.refused_game_running", reason="game_running",
+                    count=len(observation.app_ids), app_ids=",".join(str(item) for item in observation.app_ids[:8]),
+                )
+            return "a game is running", UPDATE_GAME_RUNNING_REFUSAL
         return None
 
     def _end_run_transition(self, app_id: int, token: object) -> None:

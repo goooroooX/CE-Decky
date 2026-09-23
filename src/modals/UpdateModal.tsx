@@ -31,8 +31,6 @@ const RESTART_GRACE_MS = 45_000;
 interface Props {
   currentVersion: string;
   targetVersion: string;
-  /** Whether a game is running right now, which the interface restart can displace. */
-  gameRunning: boolean;
   /**
    * An update already running, which this window is opening to report rather
    * than to start.
@@ -67,7 +65,7 @@ interface Props {
  * question is being stopped and this panel is about to be replaced with it.
  */
 export function UpdateModal(
-  { currentVersion, targetVersion, gameRunning, adopted = null, onStart, onPoll, onCancelUpdate, onClose }: Props,
+  { currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose }: Props,
 ) {
   useUiSurface("UpdateModal");
   // An operation that has already ended is not something to adopt. The panel
@@ -213,9 +211,7 @@ export function UpdateModal(
                 status
                 testId="update-restart-warning"
                 label="Steam's interface restarts"
-                description={gameRunning
-                  ? "Installing replaces Steam's interface process. This closes the Decky panel and can interrupt the game that is running."
-                  : "Installing replaces Steam's interface process, which closes the Decky panel for a few seconds."}
+                description="Steam's interface restarts during installation and the Decky panel closes for a few seconds."
               />
             </PanelSectionRow>
             <PanelSectionRow>

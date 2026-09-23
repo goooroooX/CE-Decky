@@ -129,7 +129,7 @@ describe("the update offer on the home panel", () => {
 
 describe("the update confirmation", () => {
   const modal = (overrides: Record<string, unknown> = {}) => ({
-    currentVersion: "0.9.27", targetVersion: "0.9.28", gameRunning: false,
+    currentVersion: "0.9.27", targetVersion: "0.9.28",
     onStart: vi.fn(async () => operation()),
     onPoll: vi.fn(async () => operation()),
     onCancelUpdate: vi.fn(async () => operation({ state: "cancelled", message: "The update was cancelled" })),
@@ -144,11 +144,10 @@ describe("the update confirmation", () => {
     expect(screen.getByText(/cannot be cancelled once it starts installing/)).toBeTruthy();
   });
 
-  it("says that a running game can be interrupted, only when one is running", () => {
-    const view = render(<UpdateModal {...modal({ gameRunning: true })} />);
-    expect(screen.getByText(/can interrupt the game that is running/)).toBeTruthy();
-    view.rerender(<UpdateModal {...modal({ gameRunning: false })} />);
-    expect(screen.queryByText(/can interrupt the game that is running/)).toBeNull();
+  it("says the interface restarts, and nothing about a running game it is never opened over", () => {
+    render(<UpdateModal {...modal()} />);
+    expect(screen.getByText("Steam's interface restarts during installation and the Decky panel closes for a few seconds.")).toBeTruthy();
+    expect(screen.queryByText(/interrupt the game/)).toBeNull();
   });
 
   it("starts the update on the press and then reports what it is doing", async () => {

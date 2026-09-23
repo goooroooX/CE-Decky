@@ -383,6 +383,13 @@ def test_a_stop_holds_the_game_on_what_its_session_was_pointed_at_whatever_chang
         asyncio.run(service.launch_ce_for_game(10, None, False))
 
 
+def _games(monkeypatch, *app_ids: int, available: bool = True) -> None:
+    """What the process table says is running, instead of what this machine is running."""
+    from ce_decky.ce_launch import RunningAppObservation
+    observation = RunningAppObservation(available, tuple(app_ids), 10, None if available else "scan incomplete")
+    monkeypatch.setattr(service_module, "observe_running_app_ids", lambda: observation)
+
+
 def _paused_stop(service: PluginService, monkeypatch, *, confirmed: bool):
     """Both stop routes end Cheat Engine and then wait on `release` before their verdict."""
     ended = asyncio.Event()
@@ -525,6 +532,7 @@ def test_no_update_replaces_the_backend_while_a_stop_is_deciding_what_it_left(tm
     Cheat Engine and not yet held the game would leave neither, and the next
     backend would admit a start over what the stop left.
     """
+    _games(monkeypatch)
     service = _service(tmp_path)
     monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
     monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
@@ -591,6 +599,7 @@ def test_no_update_replaces_the_backend_while_a_hold_is_held_only_in_memory(
     have Auto-load start it straight back. The install waits for the same holds
     to be written, and goes ahead once they are.
     """
+    _games(monkeypatch)
     service = _service(tmp_path)
     monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
     monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
@@ -619,6 +628,7 @@ def test_no_update_replaces_the_backend_while_a_hold_is_held_only_in_memory(
 
 def test_a_hold_already_on_disk_does_not_hold_an_update(tmp_path: Path, monkeypatch):
     """The next backend reads the same hold and goes on refusing, so nothing is lost."""
+    _games(monkeypatch)
     service = _service(tmp_path)
     monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
     monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
@@ -879,3 +889,85 @@ def test_an_auto_load_admitted_before_its_authority_went_is_not_spawned(tmp_path
     outcome = asyncio.run(scenario())
     assert spawned == []
     assert ("Auto-load is switched off" in outcome) if withdrawn_by == "auto_load_off" else ("still being stopped" in outcome)
+
+
+@pytest.mark.parametrize("app_ids, available, refusal", [
+    ((2512597874,), True, "Close any running games"),
+    ((220, 2512597874), True, "Close any running games"),
+    ((), False, "could not confirm that no game is running"),
+])
+def test_no_update_is_started_while_a_game_runs_or_that_cannot_be_ruled_out(
+    tmp_path: Path, monkeypatch, app_ids, available, refusal,
+):
+    """Installing replaces this backend and restarts Steam's interface, so it waits for no game.
+
+    Refused before anything is reserved or downloaded, whoever asks: the panel
+    only saves the user a press, and an older panel or a direct call reach here
+    without it. A scan that could not finish is not a scan that found nothing.
+    """
+    service = _service(tmp_path)
+    _games(monkeypatch, *app_ids, available=available)
+    started: list[object] = []
+
+    async def start(**kwargs):
+        started.append(kwargs)
+        return {"operation_id": "op", "state": "checking"}
+    monkeypatch.setattr(service.plugin_updates, "start", start)
+    with pytest.raises(ValueError, match=refusal):
+        asyncio.run(service.start_plugin_update("0.9.30"))
+    assert started == [] and service._plugin_update_reservation is None
+
+    _games(monkeypatch)
+    assert asyncio.run(service.start_plugin_update("0.9.30"))["operation_id"] == "op"
+    assert started == [{"expected_version": "0.9.30"}]
+
+
+def test_a_game_started_during_the_download_holds_the_install_until_it_closes(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    committed: list[str] = []
+    admit = service.plugin_updates._admit_install
+    _games(monkeypatch, 2512597874)
+    assert admit(lambda: committed.append("installing")) == "a game is running"
+    _games(monkeypatch, available=False)
+    assert admit(lambda: committed.append("installing")) == "CE Decky could not confirm that no game is running"
+    assert committed == []
+    _games(monkeypatch)
+    assert admit(lambda: committed.append("installing")) is None
+    assert committed == ["installing"]
+
+
+@pytest.mark.parametrize("owned", ["reservation", "live_launch"])
+def test_cheat_engine_this_backend_is_starting_or_running_holds_the_install(tmp_path: Path, monkeypatch, owned: str):
+    """The process table is an observation; this backend's own launches are not.
+
+    Even where it says no game is running, a start on its way or a Cheat Engine
+    this backend owns is not something to replace the backend underneath.
+    """
+    service = _service(tmp_path)
+    _games(monkeypatch)
+    if owned == "reservation":
+        service._launch_reservations[10] = ("session", "a" * 64, "b" * 64)
+    else:
+        monkeypatch.setattr(service.ce_launch, "has_live_owned_launch", lambda **_kwargs: True)
+    committed: list[str] = []
+    assert service.plugin_updates._admit_install(lambda: committed.append("installing")) == "Cheat Engine is running in a game"
+    with pytest.raises(ValueError, match="Close any running games"):
+        asyncio.run(service.start_plugin_update("0.9.30"))
+    assert committed == []
+
+
+def test_no_start_is_admitted_once_an_install_has_been_handed_on(tmp_path: Path, monkeypatch):
+    """A game started after the install committed would get a Cheat Engine nothing is left to own."""
+    from ce_decky.service import LAUNCH_UPDATE_INSTALLING_REFUSAL
+    service = _service(tmp_path)
+    _armed(service)
+    monkeypatch.setattr(service.plugin_updates, "replacement_committed", lambda: True)
+    for automatic in (True, False, None):
+        with pytest.raises(ValueError) as refused:
+            asyncio.run(service.launch_ce_for_game(10, None, automatic))
+        assert str(refused.value) == LAUNCH_UPDATE_INSTALLING_REFUSAL
+    # An install that failed and gave the backend back admits starts again.
+    monkeypatch.setattr(service.plugin_updates, "replacement_committed", lambda: False)
+    with pytest.raises(ValueError) as later:
+        asyncio.run(service.launch_ce_for_game(10, None, False))
+    assert str(later.value) != LAUNCH_UPDATE_INSTALLING_REFUSAL

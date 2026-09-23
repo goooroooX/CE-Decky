@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   getCELaunchCapability: vi.fn(), getManagedCECapability: vi.fn(), getRuntimeStatus: vi.fn(), getStatus: vi.fn(),
   importCE: vi.fn(), importTable: vi.fn(), inspectTableSha: vi.fn(), inspectTableSource: vi.fn(), launchCEForGame: vi.fn(),
   startupLeftOn: vi.fn(), clearGameRunHolds: vi.fn(),
+  listRunningAppIds: vi.fn(), startPluginUpdate: vi.fn(), pollPluginUpdate: vi.fn(), cancelPluginUpdate: vi.fn(),
   listTableCode: vi.fn(), readTableCode: vi.fn(), createSupportBundle: vi.fn(),
   // Whether the game's own program still holds what the table scans for, read
   // while Review is being prepared. Resolved with the answer a game this device
@@ -114,6 +115,7 @@ import pluginFactory from "../src/index";
 import { ActionFailureModal } from "../src/modals/ActionFailureModal";
 import { PriorDurableCommitError } from "../src/durableWrite";
 import { AdvancedModal } from "../src/modals/AdvancedModal";
+import { UpdateModal } from "../src/modals/UpdateModal";
 import { CheatSelectionModal } from "../src/modals/CheatSelectionModal";
 import { ConfirmModal as DeckyConfirmModal } from "@decky/ui";
 import { GamePickerModal } from "../src/modals/GamePickerModal";
@@ -228,6 +230,8 @@ beforeEach(() => {
     reason: "not read in this test", shortcuts_reason: "not read in this test",
   });
   api.stopCEForGame.mockReset().mockResolvedValue({ stopped: false, recovered: false });
+  // No process-table fallback unless a case asks for one: Steam's own list is the ordinary answer.
+  api.listRunningAppIds.mockReset().mockRejectedValue(new Error("not read in this test"));
   // What an ordinary startup leaves on that nobody chose: nothing.
   api.startupLeftOn.mockReset().mockResolvedValue({ table_sha256: SHA, record_ids: [] });
   api.revokeTable.mockReset().mockImplementation(async () => {
@@ -8980,5 +8984,82 @@ describe("Compatibility survives a later preference refusal", () => {
         (props.onCancel ?? props.onClose)();
       });
     }
+  });
+});
+
+
+describe("Updating CE Decky only where no game is running", () => {
+  // Installing replaces the backend and restarts Steam's interface, so it is
+  // made only where the backend says no game is running. The press stays where
+  // it is and says why; the backend refuses the same start on its own.
+  function offering() {
+    const snapshot: any = status(true);
+    snapshot.update = {
+      current_version: "0.5.0", auto_check: true, latest_version: "0.5.1", update_available: true,
+      checked_at: 1, last_error: null, page_url: "", last_result: null, recovery: null,
+      install_supported: true, checking: false, operation: null,
+    };
+    api.getStatus.mockResolvedValue(snapshot);
+    api.getRuntimeStatus.mockResolvedValue(noRuntime());
+  }
+  const updateModals = () => modalState.nodes.filter((node: any) => node?.type === UpdateModal);
+  const running = (appIds: number[], available = true) => api.listRunningAppIds.mockResolvedValue({
+    available, app_ids: appIds, scanned: 10, reason: available ? null : "scan incomplete",
+  });
+
+  it("refuses from Home while a game is running, with one notification and no window", async () => {
+    offering();
+    running([10]);
+    renderContent();
+    const press = await screen.findByText("Update to v0.5.1");
+    fireEvent.click(press);
+    await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Close any running games before updating CE Decky, then try again.",
+    })));
+    expect(updateModals()).toHaveLength(0);
+    expect(api.startPluginUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText("Update to v0.5.1")).toBeTruthy();
+  });
+
+  it("refuses where it cannot be ruled out that a game is running", async () => {
+    offering();
+    running([], false);
+    renderContent();
+    fireEvent.click(await screen.findByText("Update to v0.5.1"));
+    await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(expect.objectContaining({
+      body: "CE Decky could not confirm that no game is running. Close any running games and try again.",
+    })));
+    expect(updateModals()).toHaveLength(0);
+  });
+
+  it("opens the confirmation where no game is running, once however fast it is pressed", async () => {
+    offering();
+    running([]);
+    renderContent();
+    const press = await screen.findByText("Update to v0.5.1");
+    fireEvent.click(press);
+    fireEvent.click(press);
+    await waitFor(() => expect(updateModals()).toHaveLength(1));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(updateModals()).toHaveLength(1);
+  });
+
+  it("leaves Advanced open when its press is refused", async () => {
+    offering();
+    running([10, 20]);
+    renderContent();
+    await screen.findByText("Update to v0.5.1");
+    fireEvent.click(screen.getByRole("button", { name: "Advanced…" }));
+    const index = await waitFor(() => {
+      const at = modalState.nodes.findIndex((node: any) => node.type === AdvancedModal);
+      expect(at).toBeGreaterThanOrEqual(0);
+      return at;
+    });
+    await act(async () => { modalState.nodes[index].props.onStartUpdate("0.5.1"); });
+    await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Close any running games before updating CE Decky, then try again.",
+    })));
+    expect(modalState.closes[index]).not.toHaveBeenCalled();
+    expect(updateModals()).toHaveLength(0);
   });
 });

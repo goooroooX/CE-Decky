@@ -111,6 +111,7 @@ import type {
   ManagedCEInstallStatus,
   PluginStatus,
   PluginUpdateOperation,
+  RunningAppIdObservation,
   RuntimeEnvelope,
   RuntimeResult,
   SelfTestResult,
@@ -4100,7 +4101,7 @@ function Content() {
           await refreshStatus().catch(() => undefined);
           return next;
         })}
-        onStartUpdate={(target) => { close(); openUpdateModal(target); }}
+        onStartUpdate={(target) => { void requestPluginUpdate(target, null, close); }}
         onSetMascotVisible={(visible) => runAction(async () => {
           const next = await setMascotVisible(visible);
           await refreshStatus().catch(() => undefined);
@@ -4159,7 +4160,6 @@ function Content() {
       <UpdateModal
         currentVersion={status.version}
         targetVersion={target}
-        gameRunning={runningGamesRef.current.length > 0}
         adopted={adopt ?? null}
         onStart={(targetVersion) => startPluginUpdate(targetVersion)}
         onPoll={(operationId) => pollPluginUpdate(operationId)}
@@ -4173,6 +4173,58 @@ function Content() {
         }}
       />
     ));
+  };
+
+  /**
+   * The one press both Update controls make, Home's and Advanced's.
+   *
+   * An update replaces this backend and restarts Steam's interface, so it is
+   * made only where no game is running, and asked of the backend at the press
+   * rather than of what this panel last saw. A refusal is a notification and
+   * nothing else: the control stays where it is, and Advanced stays open. The
+   * backend refuses the same start on its own, for a panel that skips this.
+   * An update already running is only being looked at again, so it opens.
+   */
+  const updatePressRef = useRef(false);
+  const requestPluginUpdate = async (
+    requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void,
+  ) => {
+    // The window used to open in the press itself; asking first leaves a moment
+    // in which a second press would open a second confirmation.
+    if (updatePressRef.current) return;
+    updatePressRef.current = true;
+    try {
+      await guardedPluginUpdate(requested, adopt, beforeOpen);
+    } finally {
+      updatePressRef.current = false;
+    }
+  };
+  const guardedPluginUpdate = async (
+    requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void,
+  ) => {
+    if (!adopt) {
+      let refusal: string | null = null;
+      let observed: RunningAppIdObservation | null = null;
+      try {
+        observed = await listRunningAppIds();
+      } catch (cause) {
+        logUiFailure("update.running_games_unread", cause);
+      }
+      if (!observed || !observed.available) {
+        refusal = "CE Decky could not confirm that no game is running. Close any running games and try again.";
+      } else if (observed.app_ids.length > 0) {
+        refusal = "Close any running games before updating CE Decky, then try again.";
+      }
+      if (refusal) {
+        logUi("update.press_refused", {
+          available: observed?.available ?? null, running: observed?.app_ids.length ?? null,
+        });
+        toaster.toast({ title: "CE Decky", body: refusal });
+        return;
+      }
+    }
+    beforeOpen?.();
+    openUpdateModal(requested, adopt);
   };
 
   const openGamePicker = (gameOptions: GameSummary[]) => {
@@ -4279,7 +4331,7 @@ function Content() {
       pluginVersion={`v${status.version}`}
       updateVersion={panelUpdateVersion}
       updateRunning={updateRunning}
-      onUpdate={() => openUpdateModal(panelUpdateVersion ?? undefined, runningUpdate)}
+      onUpdate={() => { void requestPluginUpdate(panelUpdateVersion ?? undefined, runningUpdate); }}
       mascotVisible={mascotVisible}
       ceReady={status.ce.valid}
       ceStatusText={ceStatusText}
