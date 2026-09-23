@@ -33,6 +33,7 @@ import {
   listGameExecutables,
   readLocalLibrary,
   listRunningAppIds,
+  getUpdateBlocker,
   getManagedCECapability,
   deleteManagedData,
   getRemovalReadiness,
@@ -111,7 +112,7 @@ import type {
   ManagedCEInstallStatus,
   PluginStatus,
   PluginUpdateOperation,
-  RunningAppIdObservation,
+  UpdateBlocker,
   RuntimeEnvelope,
   RuntimeResult,
   SelfTestResult,
@@ -4203,22 +4204,20 @@ function Content() {
     requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void,
   ) => {
     if (!adopt) {
-      let refusal: string | null = null;
-      let observed: RunningAppIdObservation | null = null;
+      // The backend's own start check, so the press and the start cannot
+      // disagree: it sees a shortcut running with only its Steam game id,
+      // which the running-AppID list a game is chosen from does not.
+      let blocker: UpdateBlocker | null = null;
       try {
-        observed = await listRunningAppIds();
+        blocker = await getUpdateBlocker();
       } catch (cause) {
-        logUiFailure("update.running_games_unread", cause);
+        logUiFailure("update.blocker_unread", cause);
       }
-      if (!observed || !observed.available) {
-        refusal = "CE Decky could not confirm that no game is running. Close any running games and try again.";
-      } else if (observed.app_ids.length > 0) {
-        refusal = "Close any running games before updating CE Decky, then try again.";
-      }
+      const refusal = blocker === null
+        ? "CE Decky could not confirm that no game is running. Close any running games and try again."
+        : blocker.blocked ? blocker.reason ?? "Close any running games before updating CE Decky, then try again." : null;
       if (refusal) {
-        logUi("update.press_refused", {
-          available: observed?.available ?? null, running: observed?.app_ids.length ?? null,
-        });
+        logUi("update.press_refused", { kind: blocker?.kind ?? "unread" });
         toaster.toast({ title: "CE Decky", body: refusal });
         return;
       }

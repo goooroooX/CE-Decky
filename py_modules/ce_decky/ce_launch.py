@@ -529,6 +529,57 @@ def observe_running_app_ids(
     return RunningAppObservation(True, tuple(sorted(app_ids)), scanned, None)
 
 
+@dataclass(frozen=True)
+class RunningGameEvidence:
+    """Whether any game Steam launched is running, for a decision that only needs yes or no."""
+
+    available: bool
+    running: bool
+    scanned: int
+    reason: str | None
+
+
+def observe_any_running_steam_game(
+    *, proc_root: Path = Path("/proc"), max_processes: int = MAX_SCANNED_PROCESSES
+) -> RunningGameEvidence:
+    """Whether some process Steam launched as a game is running at all.
+
+    A weaker question than `observe_running_app_ids`, and asked for a safety
+    decision rather than to choose a game, so it takes weaker evidence: a
+    non-Steam shortcut can run with only its 64-bit `SteamGameId`, which is no
+    AppID a profile is keyed by and still says a game is running. Steam sets
+    both only in a game's own process tree, never on the client or its
+    webhelper. CE Decky's own Cheat Engine carries the game's identity and does
+    not count. The first process that is evidence ends the walk; one that could
+    not be completed is not one that found none.
+    """
+    if not proc_root.is_dir():
+        return RunningGameEvidence(False, False, 0, "process table is unavailable")
+    try:
+        entries = [entry for entry in os.scandir(proc_root) if entry.name.isdigit()]
+    except OSError:
+        return RunningGameEvidence(False, False, 0, "process table is unreadable")
+    if len(entries) > max_processes:
+        return RunningGameEvidence(False, False, 0, "process table exceeds the bounded scan limit")
+    scanned = 0
+    for entry in entries:
+        scanned += 1
+        try:
+            raw = read_proc_bytes(Path(entry.path) / "environ", max_bytes=MAX_ENVIRON_BYTES)
+        except (OSError, ValueError):
+            continue
+        if not raw or (b"SteamAppId=" not in raw and b"SteamGameId=" not in raw):
+            continue
+        environ = parse_environ(raw)
+        if is_ce_decky_owned_environment(environ):
+            continue
+        for name in ("SteamAppId", "SteamGameId"):
+            value = environ.get(name, "")
+            if value.isdigit() and int(value) != 0:
+                return RunningGameEvidence(True, True, scanned, None)
+    return RunningGameEvidence(True, False, scanned, None)
+
+
 _PREFIX_SYSTEM_PATH_RE = re.compile(r"^[a-z]:\\windows\\", re.IGNORECASE)
 
 

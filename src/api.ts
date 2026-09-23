@@ -43,6 +43,7 @@ import type {
   GameExecutableListing,
   LocalLibrary,
   RunningAppIdObservation,
+  UpdateBlocker,
   SupportBundleResult,
 } from "./types";
 
@@ -224,6 +225,8 @@ export const preparePrivateCERuntime = callable<[], {
 }>("prepare_private_ce_runtime");
 export const getCELaunchCapability = callable<[appId?: number | null], CELaunchCapability>("get_ce_launch_capability");
 export const listRunningAppIds = callable<[], RunningAppIdObservation>("list_running_app_ids");
+/** What an Update press would be refused for right now, asked of the same backend check that refuses the start itself. */
+export const getUpdateBlocker = callable<[], UpdateBlocker>("get_update_blocker");
 /**
  * The Windows executables in one installed game's own folder.
  *

@@ -1288,6 +1288,14 @@ export interface ProviderSearchSummary extends Partial<FearlessIndexStatus> {
   error: string | null;
 }
 
+/** Why an update may not replace CE Decky now, as the backend's own start check answers it. */
+export interface UpdateBlocker {
+  blocked: boolean;
+  kind: "stop_in_progress" | "owned_launch" | "game_running" | "running_state_unavailable" | null;
+  /** The sentence the press is told, or null where nothing blocks it. */
+  reason: string | null;
+}
+
 export interface RunningAppIdObservation {
   available: boolean;
   app_ids: number[];

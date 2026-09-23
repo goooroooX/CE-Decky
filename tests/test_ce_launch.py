@@ -31,6 +31,7 @@ from ce_decky.ce_launch import (
     launch_environment,
     match_observed_proton,
     observe_game_container,
+    observe_any_running_steam_game,
     observe_running_app_ids,
     owned_descriptor_pids,
     owned_descriptor_state,
@@ -3851,3 +3852,40 @@ def test_a_stop_of_a_start_that_has_not_forked_asks_nothing_and_forks_nothing(tm
     assert forks == [] and asked == []
     assert result["stopped"] is True and result["quiesce"]["cleanup_confirmed"] is True
     assert status["state"] == "stopped"
+
+
+
+def test_any_game_is_seen_running_by_its_steam_game_id_alone(tmp_path: Path):
+    """An update is only safe where no game runs, and a shortcut may carry only its 64-bit game id.
+
+    That id is no AppID a profile is keyed by, which is why the running-AppID
+    list leaves it out; for "is anything running" it is exactly the evidence.
+    """
+    proc = tmp_path / "proc"
+    _proc(proc, 10, {"HOME": "/home/deck"})
+    _proc(proc, 40, {"SteamGameId": "13257106013057712128"})
+    assert observe_running_app_ids(proc_root=proc).app_ids == ()
+    evidence = observe_any_running_steam_game(proc_root=proc)
+    assert (evidence.available, evidence.running) == (True, True)
+
+
+def test_cheat_engine_this_plugin_started_is_not_the_game(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _proc(proc, 10, {
+        "SteamAppId": "220", "SteamGameId": "220",
+        "CE_DECKY_DESCRIPTOR": "Z:\\session\\descriptor.txt", "CE_DECKY_DESCRIPTOR_SHA256": "d" * 64,
+    })
+    _proc(proc, 11, {"SteamGameId": "0"})
+    evidence = observe_any_running_steam_game(proc_root=proc)
+    assert (evidence.available, evidence.running) == (True, False)
+
+
+def test_no_game_is_said_only_of_a_walk_that_finished(tmp_path: Path):
+    proc = tmp_path / "proc"
+    for pid in range(10, 15):
+        _proc(proc, pid, {"HOME": "/home/deck"})
+    assert observe_any_running_steam_game(proc_root=proc).running is False
+    assert observe_any_running_steam_game(proc_root=proc).available is True
+    truncated = observe_any_running_steam_game(proc_root=proc, max_processes=3)
+    assert (truncated.available, truncated.running) == (False, False)
+    assert observe_any_running_steam_game(proc_root=tmp_path / "nowhere").available is False

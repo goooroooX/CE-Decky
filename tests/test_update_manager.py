@@ -1338,7 +1338,7 @@ def test_an_install_waits_at_its_boundary_until_its_owner_admits_it(tmp_path: Pa
     starts the installer before the owner has published the install.
     """
     monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_POLL_SECONDS", 0.01)
-    answers = iter(["a stop is running", "a stop is running", None])
+    answers = iter([("stop_in_progress", "a stop is running"), ("stop_in_progress", "a stop is running"), None])
     seen: list[str] = []
     manager = _manager(tmp_path, FakeNetwork())
 
@@ -1366,7 +1366,7 @@ def test_an_install_its_owner_never_admits_is_not_installed(tmp_path: Path, spaw
     monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_POLL_SECONDS", 0.01)
     manager = _manager(tmp_path, FakeNetwork())
-    manager._admit_install = lambda commit: "Cheat Engine is still being stopped in a game"
+    manager._admit_install = lambda commit: ("stop_in_progress", "Cheat Engine is still being stopped in a game")
 
     async def scenario():
         started = await manager.start()
@@ -1378,3 +1378,46 @@ def test_an_install_its_owner_never_admits_is_not_installed(tmp_path: Path, spaw
     assert "still being stopped" in status["error"]
     assert spawned == []
     assert manager.replacement_committed() is False
+
+
+
+@pytest.mark.parametrize("kind, pause", [
+    ("game_running", update_manager.INSTALL_ADMISSION_GAME_POLL_SECONDS),
+    ("running_state_unavailable", update_manager.INSTALL_ADMISSION_GAME_POLL_SECONDS),
+    ("stop_in_progress", update_manager.INSTALL_ADMISSION_POLL_SECONDS),
+    ("unsaved_holds", update_manager.INSTALL_ADMISSION_POLL_SECONDS),
+])
+def test_a_wait_for_a_game_asks_seldom_and_installs_on_the_first_answer_that_none_runs(
+    tmp_path: Path, spawned, monkeypatch, kind: str, pause: float,
+):
+    """Asking whether a game runs walks the whole process table, on a device being played on.
+
+    So a wait for one asks every few seconds rather than twice a second, while
+    a wait for a stop or a hold stays quick. Every ask is a fresh one, and the
+    first that finds nothing in the way is the one that installs.
+    """
+    pauses: list[float] = []
+
+    async def pause_for(seconds):
+        pauses.append(seconds)
+    monkeypatch.setattr(update_manager, "_admission_sleep", pause_for)
+    answers = iter([(kind, "held"), (kind, "held"), None])
+    asked: list[bool] = []
+    manager = _manager(tmp_path, FakeNetwork())
+
+    def admit(commit):
+        asked.append(True)
+        answer = next(answers)
+        if answer is None:
+            commit()
+        return answer
+    manager._admit_install = admit
+
+    async def scenario():
+        started = await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    assert asyncio.run(scenario())["state"] == "installing"
+    assert pauses == [pause, pause] and len(asked) == 3
+    assert len(spawned) == 1

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, NamedTuple, Sequence
 import asyncio
 import os
 import re
@@ -40,6 +40,7 @@ from .ce_launch import (
     observe_game_container,
     observe_game_executable_path,
     observe_game_executable_paths,
+    observe_any_running_steam_game,
     observe_running_app_ids,
 )
 from .ce_runtime import (
@@ -266,6 +267,18 @@ UPDATE_RUNNING_UNKNOWN_REFUSAL = (
 LAUNCH_UPDATE_INSTALLING_REFUSAL = (
     "CE Decky is installing an update and is about to restart. Start Cheat Engine again once CE Decky is back."
 )
+
+
+class UpdateBlocker(NamedTuple):
+    """Why an update may not replace this backend now.
+
+    `kind` is stable and paces the updater's wait; `clause` is its message and
+    `sentence` what a refused press is told.
+    """
+    kind: str
+    clause: str
+    sentence: str
+
 AUTOLOAD_OFF_REFUSAL = (
     "Auto-load is switched off for this game or this table, so it does not start Cheat Engine. "
     "Start it yourself, or switch Auto-load on."
@@ -2882,7 +2895,7 @@ class PluginService:
             # press through, an older one, or a direct call all get this answer.
             blocker = self._plugin_update_runtime_blocker(log=True)
             if blocker is not None:
-                raise ValueError(blocker[1])
+                raise ValueError(blocker.sentence)
             # Reserved before the lock is released, for the same reason the
             # setup above reserves: the manager's start is async and cannot
             # publish an operation until it has one.
@@ -4707,26 +4720,29 @@ class PluginService:
                 del self._run_transitions[app_id]
                 raise
 
-    def _admit_plugin_install(self, commit: Callable[[], None]) -> str | None:
+    def _admit_plugin_install(self, commit: Callable[[], None]) -> tuple[str, str] | None:
         """Let the updater cross into a replacement of this backend, or say why not yet.
 
-        Nothing whose authority exists only in this process may be lost to the
-        replacement. A stop's transition is that until its verdict is on disk,
-        and the old Cheat Engine may already be gone: a replacement then would
-        leave neither the Cheat Engine nor the hold to refuse a start over what
-        it left. A hold whose write failed is that too, for as long as it
-        stays unsaved, so the same holds are written again here and the install
-        waits while they still cannot be. A file that could not be read is not:
-        it refuses every start in the next backend exactly as it does in this
-        one. `commit` publishes the install under the same lock a stop takes to
-        begin, so no stop begins after it and none is running when it happens.
+        Answers `(kind, reason)`: the kind is what the updater paces its next
+        ask by, the reason what it shows. Nothing whose authority exists only in
+        this process may be lost to the replacement. A stop's transition is that
+        until its verdict is on disk, and the old Cheat Engine may already be
+        gone: a replacement then would leave neither the Cheat Engine nor the
+        hold to refuse a start over what it left. A hold whose write failed is
+        that too, for as long as it stays unsaved, so the same holds are
+        written again here and the install waits while they still cannot be. A
+        file that could not be read is not: it refuses every start in the next
+        backend exactly as it does in this one. And a game started while the
+        download ran holds the install as it would have held the press. The
+        cheap questions come first and the process table last, so a wait on
+        either of the others never walks it. `commit` publishes the install
+        under the same lock a stop takes to begin, so no stop begins after it
+        and none is running when it happens.
         """
         with self._mutation_lock:
-            # Asked again here, where the download has finished: a game started
-            # while it ran holds the install, which waits for it to close.
-            blocker = self._plugin_update_runtime_blocker(log=False)
+            blocker = self._plugin_update_owned_blocker(log=False)
             if blocker is not None:
-                return blocker[0]
+                return blocker.kind, blocker.clause
             with self._run_holds_lock:
                 if self._run_holds_unsaved is not None and self._run_holds_unreadable is None:
                     # Asked again on every poll of the wait, and the failure
@@ -4740,44 +4756,69 @@ class PluginService:
                         self._run_holds_unsaved = None
                         log_activity(self.logger, "info", "run_holds.saved_on_retry")
                 if self._run_holds_unsaved is not None:
-                    return "CE Decky could not save which games have to be restarted, and installing now would forget them"
-                commit()
+                    return (
+                        "unsaved_holds",
+                        "CE Decky could not save which games have to be restarted, and installing now would forget them",
+                    )
+            # Fresh on every ask: an answer that no game is running is only ever
+            # the one taken here, under the mutation lock, before the commit.
+            blocker = self._plugin_update_game_blocker(log=False)
+            if blocker is not None:
+                return blocker.kind, blocker.clause
+            commit()
         return None
 
-    def _plugin_update_runtime_blocker(self, *, log: bool) -> tuple[str, str] | None:
-        """Why this backend may not be replaced by an update now, or nothing.
+    def _plugin_update_runtime_blocker(self, *, log: bool) -> UpdateBlocker | None:
+        """Why this backend may not be replaced by an update now, or nothing. Under the mutation lock."""
+        return self._plugin_update_owned_blocker(log=log) or self._plugin_update_game_blocker(log=log)
 
-        Called under the mutation lock. The clause is for the updater's own
-        message, the sentence for a refused start. What CE Decky knows it is
-        doing comes first, because the process table is an observation and
-        this backend's own launches are not: a stop still deciding, a start on
-        its way, a Cheat Engine it owns. Then the games themselves, where an
-        observation that could not be completed is not one that found none.
+    def _plugin_update_owned_blocker(self, *, log: bool) -> UpdateBlocker | None:
+        """What CE Decky itself is doing that an update may not replace.
+
+        Asked before the process table, because that is an observation and this
+        backend's own launches are not: a stop still deciding, a start on its
+        way, a Cheat Engine it owns.
         """
         if self._run_transitions:
             if log:
                 log_activity(self.logger, "info", "update.refused_game_running", reason="stop_in_progress")
-            return "Cheat Engine is still being stopped in a game", UPDATE_GAME_RUNNING_REFUSAL
+            return UpdateBlocker("stop_in_progress", "Cheat Engine is still being stopped in a game", UPDATE_GAME_RUNNING_REFUSAL)
         if self._launch_reservations or self.ce_launch.has_live_owned_launch():
             if log:
                 log_activity(self.logger, "info", "update.refused_game_running", reason="owned_launch")
-            return "Cheat Engine is running in a game", UPDATE_GAME_RUNNING_REFUSAL
-        observation = observe_running_app_ids()
-        if not observation.available:
+            return UpdateBlocker("owned_launch", "Cheat Engine is running in a game", UPDATE_GAME_RUNNING_REFUSAL)
+        return None
+
+    def _plugin_update_game_blocker(self, *, log: bool) -> UpdateBlocker | None:
+        """Whether any game is running, from a walk that has to finish to say no."""
+        evidence = observe_any_running_steam_game()
+        if not evidence.available:
             if log:
                 log_activity(
                     self.logger, "info", "update.refused_running_state_unavailable",
-                    reason=(observation.reason or "")[:160] or None,
+                    reason=(evidence.reason or "")[:160] or None,
                 )
-            return "CE Decky could not confirm that no game is running", UPDATE_RUNNING_UNKNOWN_REFUSAL
-        if observation.app_ids:
+            return UpdateBlocker(
+                "running_state_unavailable", "CE Decky could not confirm that no game is running",
+                UPDATE_RUNNING_UNKNOWN_REFUSAL,
+            )
+        if evidence.running:
             if log:
-                log_activity(
-                    self.logger, "info", "update.refused_game_running", reason="game_running",
-                    count=len(observation.app_ids), app_ids=",".join(str(item) for item in observation.app_ids[:8]),
-                )
-            return "a game is running", UPDATE_GAME_RUNNING_REFUSAL
+                log_activity(self.logger, "info", "update.refused_game_running", reason="game_running")
+            return UpdateBlocker("game_running", "a game is running", UPDATE_GAME_RUNNING_REFUSAL)
         return None
+
+    def get_update_blocker(self) -> dict[str, object]:
+        """What an Update press would be told, asked before its window opens.
+
+        The same answer `start_plugin_update` gives, so the two presses and the
+        backend cannot disagree about whether a game is running.
+        """
+        with self._mutation_lock:
+            blocker = self._plugin_update_runtime_blocker(log=True)
+        if blocker is None:
+            return {"blocked": False, "kind": None, "reason": None}
+        return {"blocked": True, "kind": blocker.kind, "reason": blocker.sentence}
 
     def _end_run_transition(self, app_id: int, token: object) -> None:
         with self._mutation_lock:

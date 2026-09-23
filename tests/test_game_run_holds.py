@@ -385,9 +385,9 @@ def test_a_stop_holds_the_game_on_what_its_session_was_pointed_at_whatever_chang
 
 def _games(monkeypatch, *app_ids: int, available: bool = True) -> None:
     """What the process table says is running, instead of what this machine is running."""
-    from ce_decky.ce_launch import RunningAppObservation
-    observation = RunningAppObservation(available, tuple(app_ids), 10, None if available else "scan incomplete")
-    monkeypatch.setattr(service_module, "observe_running_app_ids", lambda: observation)
+    from ce_decky.ce_launch import RunningGameEvidence
+    evidence = RunningGameEvidence(available, bool(app_ids) and available, 10, None if available else "scan incomplete")
+    monkeypatch.setattr(service_module, "observe_any_running_steam_game", lambda: evidence)
 
 
 def _paused_stop(service: PluginService, monkeypatch, *, confirmed: bool):
@@ -551,7 +551,7 @@ def test_no_update_replaces_the_backend_while_a_stop_is_deciding_what_it_left(tm
         return during, service._current_run_holds(10).get("dirty")
 
     during, hold = asyncio.run(scenario())
-    assert during == "Cheat Engine is still being stopped in a game" and committed == []
+    assert during == ("stop_in_progress", "Cheat Engine is still being stopped in a game") and committed == []
     assert hold is not None
     # With the verdict held, the install goes ahead.
     assert admit(lambda: committed.append("installing")) is None
@@ -617,7 +617,7 @@ def test_no_update_replaces_the_backend_while_a_hold_is_held_only_in_memory(
     assert service._run_holds_unsaved is not None and service._run_transitions == {}
     committed: list[str] = []
     reason = service.plugin_updates._admit_install(lambda: committed.append("installing"))
-    assert reason is not None and "could not save which games" in reason and committed == []
+    assert reason is not None and reason[0] == "unsaved_holds" and "could not save which games" in reason[1] and committed == []
 
     monkeypatch.setattr(service.game_run_holds, "save", saved)
     assert service.plugin_updates._admit_install(lambda: committed.append("installing")) is None
@@ -927,9 +927,11 @@ def test_a_game_started_during_the_download_holds_the_install_until_it_closes(tm
     committed: list[str] = []
     admit = service.plugin_updates._admit_install
     _games(monkeypatch, 2512597874)
-    assert admit(lambda: committed.append("installing")) == "a game is running"
+    assert admit(lambda: committed.append("installing")) == ("game_running", "a game is running")
     _games(monkeypatch, available=False)
-    assert admit(lambda: committed.append("installing")) == "CE Decky could not confirm that no game is running"
+    assert admit(lambda: committed.append("installing")) == (
+        "running_state_unavailable", "CE Decky could not confirm that no game is running",
+    )
     assert committed == []
     _games(monkeypatch)
     assert admit(lambda: committed.append("installing")) is None
@@ -950,7 +952,9 @@ def test_cheat_engine_this_backend_is_starting_or_running_holds_the_install(tmp_
     else:
         monkeypatch.setattr(service.ce_launch, "has_live_owned_launch", lambda **_kwargs: True)
     committed: list[str] = []
-    assert service.plugin_updates._admit_install(lambda: committed.append("installing")) == "Cheat Engine is running in a game"
+    assert service.plugin_updates._admit_install(lambda: committed.append("installing")) == (
+        "owned_launch", "Cheat Engine is running in a game",
+    )
     with pytest.raises(ValueError, match="Close any running games"):
         asyncio.run(service.start_plugin_update("0.9.30"))
     assert committed == []
@@ -971,3 +975,18 @@ def test_no_start_is_admitted_once_an_install_has_been_handed_on(tmp_path: Path,
     with pytest.raises(ValueError) as later:
         asyncio.run(service.launch_ce_for_game(10, None, False))
     assert str(later.value) != LAUNCH_UPDATE_INSTALLING_REFUSAL
+
+
+
+def test_an_update_press_is_told_what_the_start_would_be_told(tmp_path: Path, monkeypatch):
+    """The panel asks the backend's own check, so a shortcut only it can see refuses the press too."""
+    service = _service(tmp_path)
+    _games(monkeypatch, 1)
+    assert service.get_update_blocker() == {
+        "blocked": True, "kind": "game_running",
+        "reason": "Close any running games before updating CE Decky, then try again.",
+    }
+    _games(monkeypatch, available=False)
+    assert service.get_update_blocker()["kind"] == "running_state_unavailable"
+    _games(monkeypatch)
+    assert service.get_update_blocker() == {"blocked": False, "kind": None, "reason": None}

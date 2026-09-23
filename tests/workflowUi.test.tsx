@@ -10,7 +10,7 @@ const api = vi.hoisted(() => ({
   getCELaunchCapability: vi.fn(), getManagedCECapability: vi.fn(), getRuntimeStatus: vi.fn(), getStatus: vi.fn(),
   importCE: vi.fn(), importTable: vi.fn(), inspectTableSha: vi.fn(), inspectTableSource: vi.fn(), launchCEForGame: vi.fn(),
   startupLeftOn: vi.fn(), clearGameRunHolds: vi.fn(),
-  listRunningAppIds: vi.fn(), startPluginUpdate: vi.fn(), pollPluginUpdate: vi.fn(), cancelPluginUpdate: vi.fn(),
+  listRunningAppIds: vi.fn(), getUpdateBlocker: vi.fn(), startPluginUpdate: vi.fn(), pollPluginUpdate: vi.fn(), cancelPluginUpdate: vi.fn(),
   listTableCode: vi.fn(), readTableCode: vi.fn(), createSupportBundle: vi.fn(),
   // Whether the game's own program still holds what the table scans for, read
   // while Review is being prepared. Resolved with the answer a game this device
@@ -9003,9 +9003,14 @@ describe("Updating CE Decky only where no game is running", () => {
     api.getRuntimeStatus.mockResolvedValue(noRuntime());
   }
   const updateModals = () => modalState.nodes.filter((node: any) => node?.type === UpdateModal);
-  const running = (appIds: number[], available = true) => api.listRunningAppIds.mockResolvedValue({
-    available, app_ids: appIds, scanned: 10, reason: available ? null : "scan incomplete",
-  });
+  // What the backend's own start check answers, which is what the press asks.
+  const running = (appIds: number[], available = true) => api.getUpdateBlocker.mockResolvedValue(
+    !available
+      ? { blocked: true, kind: "running_state_unavailable", reason: "CE Decky could not confirm that no game is running. Close any running games and try again." }
+      : appIds.length
+        ? { blocked: true, kind: "game_running", reason: "Close any running games before updating CE Decky, then try again." }
+        : { blocked: false, kind: null, reason: null },
+  );
 
   it("refuses from Home while a game is running, with one notification and no window", async () => {
     offering();
@@ -9019,6 +9024,17 @@ describe("Updating CE Decky only where no game is running", () => {
     expect(updateModals()).toHaveLength(0);
     expect(api.startPluginUpdate).not.toHaveBeenCalled();
     expect(screen.getByText("Update to v0.5.1")).toBeTruthy();
+  });
+
+  it("refuses where the backend cannot be asked at all", async () => {
+    offering();
+    api.getUpdateBlocker.mockRejectedValue(new Error("the backend did not answer"));
+    renderContent();
+    fireEvent.click(await screen.findByText("Update to v0.5.1"));
+    await waitFor(() => expect(decky.toast).toHaveBeenCalledWith(expect.objectContaining({
+      body: "CE Decky could not confirm that no game is running. Close any running games and try again.",
+    })));
+    expect(updateModals()).toHaveLength(0);
   });
 
   it("refuses where it cannot be ruled out that a game is running", async () => {

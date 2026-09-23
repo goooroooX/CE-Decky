@@ -1104,6 +1104,8 @@ const writeRuntimeCommands = callable("write_runtime_commands");
 callable("prepare_private_ce_runtime");
 const getCELaunchCapability = callable("get_ce_launch_capability");
 const listRunningAppIds = callable("list_running_app_ids");
+/** What an Update press would be refused for right now, asked of the same backend check that refuses the start itself. */
+const getUpdateBlocker = callable("get_update_blocker");
 /**
  * The Windows executables in one installed game's own folder.
  *
@@ -17504,24 +17506,21 @@ function Content() {
     };
     const guardedPluginUpdate = async (requested, adopt, beforeOpen) => {
         if (!adopt) {
-            let refusal = null;
-            let observed = null;
+            // The backend's own start check, so the press and the start cannot
+            // disagree: it sees a shortcut running with only its Steam game id,
+            // which the running-AppID list a game is chosen from does not.
+            let blocker = null;
             try {
-                observed = await listRunningAppIds();
+                blocker = await getUpdateBlocker();
             }
             catch (cause) {
-                logUiFailure("update.running_games_unread", cause);
+                logUiFailure("update.blocker_unread", cause);
             }
-            if (!observed || !observed.available) {
-                refusal = "CE Decky could not confirm that no game is running. Close any running games and try again.";
-            }
-            else if (observed.app_ids.length > 0) {
-                refusal = "Close any running games before updating CE Decky, then try again.";
-            }
+            const refusal = blocker === null
+                ? "CE Decky could not confirm that no game is running. Close any running games and try again."
+                : blocker.blocked ? blocker.reason ?? "Close any running games before updating CE Decky, then try again." : null;
             if (refusal) {
-                logUi("update.press_refused", {
-                    available: observed?.available ?? null, running: observed?.app_ids.length ?? null,
-                });
+                logUi("update.press_refused", { kind: blocker?.kind ?? "unread" });
                 toaster.toast({ title: "CE Decky", body: refusal });
                 return;
             }

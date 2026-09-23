@@ -419,6 +419,9 @@ class Plugin:
     async def list_running_app_ids(self):
         return await self.operations.run_blocking(self._svc().list_running_app_ids)
 
+    async def get_update_blocker(self):
+        return await self.operations.run_blocking(self._svc().get_update_blocker)
+
     async def list_game_executables(self, app_id: int):
         return await self.operations.run_blocking(self._svc().list_game_executables, app_id)
 

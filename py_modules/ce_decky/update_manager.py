@@ -92,13 +92,20 @@ SYSTEM_INTERPRETERS = ("/usr/bin/python3", "/usr/local/bin/python3")
 # timeout; this is only the guarantee that a screen is answered at all.
 CHECK_JOIN_TIMEOUT_SECONDS = 90.0
 
-# How long a verified update waits at the install boundary for what the owner
-# holds only in this process - a Cheat Engine stop, a hold not yet saved - and
-# how often it asks. A stop is bounded by its quiesce wait and its termination
+# How long a verified update waits at the install boundary for what holds it -
+# a Cheat Engine stop, a hold not yet saved, a game started during the download
+# - and how often it asks. A stop is bounded by its quiesce wait and its termination
 # grace, about half a minute between them; what has not cleared by this is not
 # something to replace the backend underneath.
 INSTALL_ADMISSION_WAIT_SECONDS = 60.0
 INSTALL_ADMISSION_POLL_SECONDS = 0.5
+# How often it asks while what it waits for is a game, whose check walks the
+# whole process table: twice a second of that is load on a device somebody is
+# playing on, and a game closes on a human scale anyway.
+INSTALL_ADMISSION_GAME_POLL_SECONDS = 4.0
+_GAME_WAIT_KINDS = frozenset({"game_running", "running_state_unavailable"})
+# The wait between asks, by name so a test can count what the wait costs.
+_admission_sleep = asyncio.sleep
 
 # The states an update is over in. `installing` is deliberately not one of
 # them: the install is happening in another process and this plugin is being
@@ -110,7 +117,7 @@ _SETTLED_STATES = frozenset({"failed", "cancelled"})
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 
 
-def _admit_always(commit: Callable[[], None]) -> str | None:
+def _admit_always(commit: Callable[[], None]) -> tuple[str, str] | None:
     commit()
     return None
 
@@ -141,12 +148,13 @@ class PluginUpdateManager:
         current_version: str,
         auto_check: Callable[[], bool],
         last_search_activity: Callable[[], float],
-        admit_install: Callable[[Callable[[], None]], str | None] | None = None,
+        admit_install: Callable[[Callable[[], None]], tuple[str, str] | None] | None = None,
     ) -> None:
         self.paths = paths
         # Asked at the one point after which this backend will be replaced. It
         # runs `commit`, which publishes `installing`, only when the owner holds
-        # nothing a replacement would lose, and otherwise answers why not. The owner
+        # nothing a replacement would lose, and otherwise answers `(kind,
+        # reason)`: the kind paces the next ask, the reason is shown. The owner
         # decides that and commits under its own lock, so what it refuses once
         # the install is published and what it makes the install wait for are
         # one decision.
@@ -1252,7 +1260,8 @@ class PluginUpdateManager:
 
         deadline = time.monotonic() + INSTALL_ADMISSION_WAIT_SECONDS
         waiting_for: str | None = None
-        while (reason := self._admit_install(commit)) is not None:
+        while (refusal := self._admit_install(commit)) is not None:
+            kind, reason = refusal
             if reason != waiting_for:
                 waiting_for = reason
                 self._set(operation_id, message=f"Waiting to install: {reason}")
@@ -1260,7 +1269,9 @@ class PluginUpdateManager:
             if time.monotonic() >= deadline:
                 log_activity(self.logger, "warning", "update.install_refused", operation=operation_id[:12], reason=reason)
                 raise UpdateError(f"the update was not installed because {reason}; update again once that has cleared")
-            await asyncio.sleep(INSTALL_ADMISSION_POLL_SECONDS)
+            await _admission_sleep(
+                INSTALL_ADMISSION_GAME_POLL_SECONDS if kind in _GAME_WAIT_KINDS else INSTALL_ADMISSION_POLL_SECONDS
+            )
 
     def replacement_committed(self) -> bool:
         """Whether an install that will replace this backend has been handed on.
