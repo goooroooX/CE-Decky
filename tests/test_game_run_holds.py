@@ -662,7 +662,7 @@ def test_auto_load_is_refused_by_the_users_stop_in_the_backend_itself(tmp_path: 
     async def start_attached(*_args, **_kwargs):
         return started
     monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
-    assert asyncio.run(service.launch_ce_for_game(10)) == started
+    assert asyncio.run(service.launch_ce_for_game(10, None, False)) == started
     assert service._public_run_holds(10)["autoload_held"] is False
 
 
@@ -684,7 +684,7 @@ def test_a_start_by_hand_lifts_only_the_stop_hold_it_answered(tmp_path: Path, mo
         service._hold_run(10, "stopped", 0, ("game.exe",))
         return {"operation_id": "op", "app_id": 10, "state": "connected"}
     monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
-    asyncio.run(service.launch_ce_for_game(10))
+    asyncio.run(service.launch_ce_for_game(10, None, False))
     assert service._public_run_holds(10)["autoload_held"] is True
 
 
@@ -695,3 +695,52 @@ def _prepared():
         descriptor_md5="c" * 32, descriptor_windows_path="Z:\\tmp\\d\\descriptor.json", table_sha256="d" * 64,
         ce_sha256="e" * 64, status_path="/tmp/d/status.json",
     )
+
+
+
+def test_a_start_that_does_not_say_it_was_pressed_is_not_let_past_a_stop(tmp_path: Path, monkeypatch):
+    """A panel from before the question sends two arguments for Auto-load and Start alike.
+
+    Read as a press, its Auto-load would start Cheat Engine straight back after
+    the user's Stop and lift the hold. Only a start that says it was pressed is
+    let past; one that says nothing is refused and leaves the hold standing.
+    """
+    import importlib
+    import sys
+    import types
+    from ce_decky.service import UNSTATED_START_REFUSAL
+    # The RPC surface, loaded the way the contract test loads it: Decky's own
+    # module exists only inside the loader.
+    fake_decky = types.ModuleType("decky")
+    fake_decky.logger = logging.getLogger("fake-decky-run-holds")
+    monkeypatch.setitem(sys.modules, "decky", fake_decky)
+    monkeypatch.delitem(sys.modules, "ce_decky.plugin", raising=False)
+    Plugin = importlib.import_module("ce_decky.plugin").Plugin
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    _stopping(service, confirmed=True)
+    asyncio.run(service.stop_ce_for_game(10, None, True))
+
+    plugin = Plugin.__new__(Plugin)
+    plugin._svc = lambda: service  # type: ignore[method-assign]
+    plugin.operations = type("Inline", (), {"create": staticmethod(lambda awaitable, label="": awaitable)})()
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(plugin.launch_ce_for_game(10, None))
+    assert str(refused.value) == UNSTATED_START_REFUSAL
+    with pytest.raises(ValueError, match="because you stopped it"):
+        asyncio.run(plugin.launch_ce_for_game(10, None, True))
+    assert service._public_run_holds(10)["autoload_held"] is True
+
+    monkeypatch.setattr(service, "_attached_launch_inputs", lambda app_id, automatic=None: (
+        _prepared(), Path("cheatengine.exe"), "b" * 64, "game.exe"))
+    monkeypatch.setattr(service, "_revalidate_launch_reservation", lambda prepared: None)
+    monkeypatch.setattr(service_module, "discover_proton_tools", lambda home: ())
+
+    async def start_attached(*_args, **_kwargs):
+        return {"operation_id": "op", "app_id": 10, "state": "connected"}
+    monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
+    asyncio.run(plugin.launch_ce_for_game(10, None, False))
+    assert service._public_run_holds(10)["autoload_held"] is False

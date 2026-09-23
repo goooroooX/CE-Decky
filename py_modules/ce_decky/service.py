@@ -256,6 +256,12 @@ AUTOLOAD_HELD_REFUSAL = (
     "Auto-load does not start Cheat Engine again in this game until it is restarted, because you stopped it. "
     "Start it yourself to go on now."
 )
+# A start that did not say whether it was pressed: a panel from before CE Decky
+# was updated, whose Auto-load and whose Start look the same from here.
+UNSTATED_START_REFUSAL = (
+    "Cheat Engine was stopped in this game, and this panel is from before CE Decky was updated, so it cannot "
+    "say whether you asked for this start. Close and reopen the panel, then start it again."
+)
 QUIESCE_POLL_SECONDS = 0.25
 
 # How many of a game's other files one scan check may open. A table naming its
@@ -4580,7 +4586,7 @@ class PluginService:
             "unreadable": self._run_holds_unreadable is not None,
         }
 
-    def _admit_launch(self, app_id: int, automatic: bool = False) -> None:
+    def _admit_launch(self, app_id: int, automatic: bool | None = None) -> None:
         """Refuse a start this game may not have now. Called under the mutation lock.
 
         Beside the proof that no owned Cheat Engine is running, and under the
@@ -4592,7 +4598,10 @@ class PluginService:
         panel checks that first, but a panel is not the authority: one left
         over from a reload, or an Auto-load that read no hold just before the
         Stop, would otherwise be let in as though somebody had pressed Start,
-        and a start is what lifts that hold.
+        and a start is what lifts that hold. Only a start that says it was
+        pressed (`automatic` is `False`) is let past it: one that says nothing
+        comes from a panel older than the question, whose Auto-load and Start
+        look the same, and is refused as the Auto-load it may be.
         """
         if app_id in self._run_transitions:
             log_activity(self.logger, "info", "launch.refused_stop_in_progress", app_id=app_id)
@@ -4607,9 +4616,12 @@ class PluginService:
         if "dirty" in holds:
             log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
             raise ValueError(DIRTY_RUN_REFUSAL)
-        if automatic and "stopped" in holds:
-            log_activity(self.logger, "info", "launch.refused_autoload_held", app_id=app_id)
-            raise ValueError(AUTOLOAD_HELD_REFUSAL)
+        if automatic is not False and "stopped" in holds:
+            log_activity(
+                self.logger, "info", "launch.refused_autoload_held", app_id=app_id,
+                intent="automatic" if automatic else "unstated",
+            )
+            raise ValueError(AUTOLOAD_HELD_REFUSAL if automatic else UNSTATED_START_REFUSAL)
 
     def _begin_run_transition(self, app_id: int) -> tuple[object, dict[str, tuple[str, ...] | None]]:
         """Begin the one stop this game may have now, and read what it is about.
@@ -4796,23 +4808,24 @@ class PluginService:
             self._end_run_transition(app_id, transition)
 
     async def launch_ce_for_game(
-        self, app_id: int, proton_tool_id: str | None = None, automatic: bool = False,
+        self, app_id: int, proton_tool_id: str | None = None, automatic: bool | None = None,
     ) -> dict[str, object]:
         """Start Cheat Engine inside the running game's own compatibility prefix.
 
         No Steam launch option is written and the game is not restarted; the
         prepared exact-SHA session decides which table Cheat Engine loads.
-        `automatic` is Auto-load asking, which the user's Stop refuses and
-        which never lifts that hold.
+        `automatic` is `True` for Auto-load and `False` for a press. Only a
+        press is let past the user's Stop and lifts it; `None`, which is what a
+        panel from before this question sends, is neither.
         """
         if proton_tool_id is not None and not isinstance(proton_tool_id, str):
             raise ValueError("Proton tool identity must be a string or null")
-        if not isinstance(automatic, bool):
-            raise ValueError("automatic must be a boolean")
+        if automatic is not None and not isinstance(automatic, bool):
+            raise ValueError("automatic must be a boolean or null")
         # The Stop hold a start by hand answers is the one there before it was
         # admitted. One a Stop takes while this start is still under way is
         # about the Cheat Engine this starts, and stays.
-        answered = None if automatic else await drained_to_thread(
+        answered = None if automatic is not False else await drained_to_thread(
             lambda: self._current_run_holds(app_id).get("stopped")
         )
         try:
@@ -5138,7 +5151,7 @@ class PluginService:
         runtime = self.prepare_private_ce_runtime()
         return tool, Path(str(runtime["executable"])), str(runtime["source_executable_sha256"])
 
-    def _attached_launch_inputs(self, app_id: int, automatic: bool = False):
+    def _attached_launch_inputs(self, app_id: int, automatic: bool | None = None):
         with self._mutation_lock:
             self._assert_no_live_owned_launch(app_id)
             self._admit_launch(app_id, automatic)

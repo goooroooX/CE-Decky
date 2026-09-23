@@ -1116,7 +1116,11 @@ const readLocalLibrary = callable("local_library");
 const startCESelfTest = callable("start_ce_self_test");
 const pollCELaunch = callable("poll_ce_launch");
 callable("stop_ce_launch");
-/** `automatic` is Auto-load asking: the backend refuses it while the user's Stop holds the game, and never lifts that hold for it. */
+/**
+ * `automatic` is `true` for Auto-load and `false` for a press, and is always
+ * said: the backend lets only a press past the user's Stop, and reads a start
+ * that says nothing as the Auto-load it may be.
+ */
 const launchCEForGame = callable("launch_ce_for_game");
 const stopCEForGame = callable("stop_ce_for_game");
 /** The user clears what holds this game from starting a table, having been told what it is. */

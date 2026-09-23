@@ -447,7 +447,7 @@ class Plugin:
     async def stop_ce_launch(self, operation_id: str):
         return await self.operations.create(self._svc().stop_ce_launch(operation_id), label="stop_ce_launch")
 
-    async def launch_ce_for_game(self, app_id: int, proton_tool_id: str | None = None, automatic: bool = False):
+    async def launch_ce_for_game(self, app_id: int, proton_tool_id: str | None = None, automatic: bool | None = None):
         return await self.operations.create(
             self._svc().launch_ce_for_game(app_id, proton_tool_id, automatic), label="launch_ce_for_game",
         )

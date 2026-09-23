@@ -202,7 +202,7 @@ def test_high_risk_rpc_methods_forward_arguments_without_reordering(monkeypatch)
         ("save_profile", (620, "Portal 2", False, "sha", "portal2.exe")),
         ("set_startup_preference", (620, "sha", 7, True, "100")),
         ("validate_effective_startup_plan", (620, "sha", [], [])),
-        ("launch_ce_for_game", (620, "proton-9", False)),
+        ("launch_ce_for_game", (620, "proton-9", None)),
         ("launch_ce_for_game", (620, "proton-9", True)),
         ("stop_ce_for_game", (620, None, False)),
         ("stop_ce_for_game", (620, "a" * 64, False)),

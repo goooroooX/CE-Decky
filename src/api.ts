@@ -236,8 +236,12 @@ export const readLocalLibrary = callable<[], LocalLibrary>("local_library");
 export const startCESelfTest = callable<[protonToolId: string], CELaunchStatus>("start_ce_self_test");
 export const pollCELaunch = callable<[operationId: string], CELaunchStatus>("poll_ce_launch");
 export const stopCELaunch = callable<[operationId: string], CELaunchStatus>("stop_ce_launch");
-/** `automatic` is Auto-load asking: the backend refuses it while the user's Stop holds the game, and never lifts that hold for it. */
-export const launchCEForGame = callable<[appId: number, protonToolId?: string | null, automatic?: boolean], CELaunchStatus>("launch_ce_for_game");
+/**
+ * `automatic` is `true` for Auto-load and `false` for a press, and is always
+ * said: the backend lets only a press past the user's Stop, and reads a start
+ * that says nothing as the Auto-load it may be.
+ */
+export const launchCEForGame = callable<[appId: number, protonToolId: string | null, automatic: boolean], CELaunchStatus>("launch_ce_for_game");
 export const stopCEForGame = callable<[appId: number, tableSha256?: string | null, holdAutoload?: boolean], StopResult>("stop_ce_for_game");
 /** The user clears what holds this game from starting a table, having been told what it is. */
 export const clearGameRunHolds = callable<[appId: number], { cleared: string[]; run_holds: GameRunHolds }>("clear_game_run_holds");
