@@ -165,11 +165,15 @@ def _changes_a_register(line: str, pending: list[tuple[str, str]], dependent: bo
 class _Script:
     def __init__(self, lines: list[str]) -> None:
         self.lines = lines
+        # Keyed casefolded, as every name this file compares is: Cheat Engine
+        # resolves a label and a symbol whatever their case, so `bEnableFlag`
+        # and `BENABLEFLAG` are one flag, and a use spelled differently from
+        # its test is still a use.
         self.at: dict[str, int] = {}
         for index, line in enumerate(lines):
             found = _LABEL.match(line)
             if found and len(self.at) < MAX_LABELS:
-                self.at.setdefault(found.group(1), index)
+                self.at.setdefault(found.group(1).casefold(), index)
 
     def unbalanced_exits(self, start: int) -> set[tuple[tuple, frozenset[str]]]:
         """Exits reachable from one label that undo less than the block did.
@@ -260,7 +264,7 @@ class _Script:
             if hop:
                 target, conditional = hop.group(2), hop.group(1).lower() != "jmp"
                 test = _TEST.match(self.lines[index - 1]) if index >= 1 else None
-                flag = test.group(1) if test and test.group(1) in self.at else None
+                flag = test.group(1).casefold() if test and test.group(1).casefold() in self.at else None
                 taken = because | {flag} if (conditional and flag) else because
                 if target.endswith("Ret"):
                     # Returning to the game is this hook's exit: the injection
@@ -268,10 +272,10 @@ class _Script:
                     # what the game does next is not this question.
                     if now or opaque:
                         found.add((now, taken))
-                elif target not in self.at:
+                elif target.casefold() not in self.at:
                     found.add(((_UNREADABLE,), taken))
                 else:
-                    work.append((self.at[target], now, opaque, taken))
+                    work.append((self.at[target.casefold()], now, opaque, taken))
                 if conditional:
                     work.append((index + 1, now, opaque, taken))
                 continue
@@ -284,7 +288,7 @@ class _Script:
 
 
 def flags_safe_to_switch_off(script: str | None) -> frozenset[str]:
-    """Every symbol of this script whose flag can be written off safely.
+    """Every symbol of this script whose flag can be written off safely, casefolded.
 
     A positive list, and deliberately so: a caller writing into a running game
     may act on what this found, never on what it did not find.
@@ -311,14 +315,14 @@ def flags_safe_to_switch_off(script: str | None) -> frozenset[str]:
         if _LABEL.match(line) or _DECLARES.match(line) or _DATA.match(line):
             continue
         test = _TEST.match(line)
-        if test and test.group(1) in reader.at:
+        if test and test.group(1).casefold() in reader.at:
             following = _JUMP.match(lines[index + 1]) if index + 1 < len(lines) else None
             if following and following.group(1).lower() != "jmp":
-                tested.add(test.group(1))
+                tested.add(test.group(1).casefold())
                 continue
         for word in _WORD.findall(line):
-            if word in reader.at:
-                used_otherwise.add(word)
+            if word.casefold() in reader.at:
+                used_otherwise.add(word.casefold())
 
     refused: set[str] = set()
     for start in reader.at.values():

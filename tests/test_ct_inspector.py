@@ -619,3 +619,59 @@ def test_a_nested_script_answers_for_its_own_symbols(tmp_path: Path):
     found = inspect_table(path, sha256(data).hexdigest())
     shared = next(control for control in found.controls if control.id == 3)
     assert shared.switch_off_is_safe is False
+
+
+def test_a_records_symbol_is_its_scripts_whatever_case_either_spells_it(tmp_path: Path):
+    """Cheat Engine resolves `bEnablePlain` and `benableplain` to one symbol.
+
+    Read exactly, a record spelled differently from its script's declaration
+    lost the default the script gives it and the answer about its hook, so a
+    flag the script switches on went unnamed and unheld.
+    """
+    from hashlib import sha256
+    from ce_decky.ct_inspector import inspect_table
+    data = (
+        CT_WITH_A_HOOK_THAT_MUST_STAY_ON
+        .replace(b"<Address>bEnablePlain</Address>", b"<Address>benableplain</Address>")
+        .replace(b"<Address>bEnableVitals</Address>", b"<Address>BENABLEVITALS</Address>")
+    )
+    path = tmp_path / "respelled.CT"
+    path.write_bytes(data)
+    by_id = {control.id: control for control in inspect_table(path, sha256(data).hexdigest()).controls}
+    assert (by_id[2].declared_default, by_id[2].switch_off_is_safe) == ("1", True)
+    # The unsafe one is still found to be declared on, and still not safe.
+    assert (by_id[3].declared_default, by_id[3].switch_off_is_safe) == ("1", False)
+
+
+def test_the_nearest_script_wins_whatever_case_it_redeclares_a_symbol_in(tmp_path: Path):
+    """An inner script redeclaring an outer one's symbol in another case is the same symbol."""
+    from hashlib import sha256
+    from ce_decky.ct_inspector import inspect_table
+    outer = (
+        '[ENABLE]\nlabel(bEnableShared)\nlblOuter:\ncmp dword ptr [bEnableShared],1\n'
+        'jne short lblOuterSkip\nmulss xmm0,[fOuterMod]\nlblOuterSkip:\nreadmem(aobOuter,7)\n'
+        'jmp lblOuterRet\nbEnableShared:\ndd 1\n[DISABLE]\n'
+    )
+    inner = (
+        '[ENABLE]\nlabel(BENABLESHARED)\nlblInner:\nsub rcx,rsi\ncmp dword ptr [BENABLESHARED],1\n'
+        'jne lblInnerSkip\nadd rcx,rsi\nlblInnerSkip:\nreadmem(aobInner,3)\njmp lblInnerRet\n'
+        'BENABLESHARED:\ndd 0\n[DISABLE]\n'
+    )
+    data = (
+        '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45">\n'
+        '  <CheatEntries><CheatEntry><ID>1</ID><Description>"Outer"</Description>'
+        '<VariableType>Auto Assembler Script</VariableType>'
+        f'<AssemblerScript>{outer}</AssemblerScript>'
+        '<CheatEntries><CheatEntry><ID>2</ID><Description>"Inner"</Description>'
+        '<VariableType>Auto Assembler Script</VariableType>'
+        f'<AssemblerScript>{inner}</AssemblerScript>'
+        '<CheatEntries><CheatEntry><ID>3</ID><Description>"Shared"</Description>'
+        '<VariableType>4 Bytes</VariableType><Address>bEnableShared</Address>'
+        '<DropDownList>0:Off\n1:On</DropDownList></CheatEntry>'
+        '</CheatEntries></CheatEntry></CheatEntries></CheatEntry></CheatEntries>\n</CheatTable>\n'
+    ).encode("utf-8")
+    path = tmp_path / "nested-case.CT"
+    path.write_bytes(data)
+    shared = next(control for control in inspect_table(path, sha256(data).hexdigest()).controls if control.id == 3)
+    # The inner script's own answers: its declaration and its unsafe hook.
+    assert (shared.declared_default, shared.switch_off_is_safe) == ("0", False)

@@ -52,10 +52,10 @@ def test_a_flag_whose_off_branch_leaves_the_hook_changed_is_not_safe():
     game's own instruction then reads an offset as an address.
     """
     safe = flags_safe_to_switch_off(SAFE_AND_UNSAFE)
-    assert "bEnableVitals" not in safe
+    assert "benablevitals" not in safe
     # And the hook beside it, which changes nothing before it tests its flag,
     # is the ordinary shape and stays usable.
-    assert "bEnablePlain" in safe
+    assert "benableplain" in safe
 
 
 def test_a_flag_read_in_a_way_this_does_not_follow_is_not_offered_as_safe():
@@ -68,19 +68,19 @@ def test_a_flag_read_in_a_way_this_does_not_follow_is_not_offered_as_safe():
         "mulss xmm0,[fPlainMod]",
         "mov eax,[bEnablePlain]\ntest eax,eax",
     )
-    assert "bEnablePlain" not in flags_safe_to_switch_off(script)
+    assert "benableplain" not in flags_safe_to_switch_off(script)
 
 
 def test_a_flag_nothing_tests_is_not_safe_either():
     """Nothing read it here, which is not the same as nothing reading it."""
     script = SAFE_AND_UNSAFE.replace("cmp dword ptr [bEnablePlain],1\njne short lblPlainSkip\n", "")
-    assert "bEnablePlain" not in flags_safe_to_switch_off(script)
+    assert "benableplain" not in flags_safe_to_switch_off(script)
 
 
 def test_the_disable_section_is_not_this_question():
     """`[DISABLE]` runs when the whole script comes down, not when a flag moves."""
     script = SAFE_AND_UNSAFE.replace("[DISABLE]", "[DISABLE]\ncmp dword ptr [bEnablePlain],1\njne lblNowhere")
-    assert "bEnablePlain" in flags_safe_to_switch_off(script)
+    assert "benableplain" in flags_safe_to_switch_off(script)
 
 
 def test_a_script_this_cannot_read_offers_nothing():
@@ -90,7 +90,7 @@ def test_a_script_this_cannot_read_offers_nothing():
     # A jump to a label this section does not define is a path this cannot
     # follow, so the flag that led there is not offered.
     script = SAFE_AND_UNSAFE.replace("jne short lblPlainSkip", "jne short lblSomewhereElse")
-    assert "bEnablePlain" not in flags_safe_to_switch_off(script)
+    assert "benableplain" not in flags_safe_to_switch_off(script)
 
 
 def test_the_reader_is_bounded_rather_than_clever():
@@ -138,23 +138,23 @@ def test_the_unsafe_exit_counts_whichever_side_of_the_branch_it_is_on():
     leaves the exit that never restores on the side the branch falls through to,
     and attributing the flag to the jump alone reported it as safe.
     """
-    assert "bEnableThing" not in flags_safe_to_switch_off(FALLTHROUGH)
+    assert "benablething" not in flags_safe_to_switch_off(FALLTHROUGH)
 
 
 def test_the_same_shape_written_as_an_address_calculation_is_the_same_shape():
     """A hook that must not touch the flags moves its pointer with `lea`."""
     script = FALLTHROUGH.replace("sub rcx,rsi", "lea rcx,[rcx-rsi]").replace("add rcx,rsi", "lea rcx,[rcx+rsi]")
-    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+    assert "benablething" not in flags_safe_to_switch_off(script)
     # And the balanced spelling of it is still a hook this can follow, because
     # refusing every `lea` would leave the reader with nothing to prove.
     balanced = script.replace("jmp lblHookRet\nlblHookRestore:", "lblHookRestore:")
-    assert "bEnableThing" in flags_safe_to_switch_off(balanced)
+    assert "benablething" in flags_safe_to_switch_off(balanced)
 
 
 def test_a_transformation_this_does_not_model_is_not_a_balanced_one():
     """A shift is a modification with no `add` to recognise as putting it back."""
     script = FALLTHROUGH.replace("sub rcx,rsi", "shl rcx,04").replace("add rcx,rsi", "shr rcx,04")
-    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+    assert "benablething" not in flags_safe_to_switch_off(script)
 
 
 def test_a_modification_overwritten_before_its_restore_is_not_restored():
@@ -180,7 +180,7 @@ bEnableThing:
 dd 1
 [DISABLE]
 """
-    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+    assert "benablething" not in flags_safe_to_switch_off(script)
 
 
 def test_what_a_hook_loads_before_it_tests_anything_is_not_a_finding():
@@ -206,7 +206,7 @@ bEnableThing:
 dd 1
 [DISABLE]
 """
-    assert "bEnableThing" in flags_safe_to_switch_off(script)
+    assert "benablething" in flags_safe_to_switch_off(script)
 
 
 BALANCED = """
@@ -232,7 +232,7 @@ dd 1
 
 def test_a_hook_that_puts_back_what_it_changed_is_still_safe():
     """The control for the refusals below: without it they prove nothing."""
-    assert "bEnableThing" in flags_safe_to_switch_off(BALANCED)
+    assert "benablething" in flags_safe_to_switch_off(BALANCED)
 
 
 def test_a_call_between_a_modification_and_its_restore_breaks_the_proof():
@@ -243,9 +243,9 @@ def test_a_call_between_a_modification_and_its_restore_breaks_the_proof():
     """
     for call in ("call lblMutate", "call qword ptr [rax+10]", "call game.exe+1234"):
         script = BALANCED.replace("mulss xmm0,[fThingMod]", call)
-        assert "bEnableThing" not in flags_safe_to_switch_off(script), call
+        assert "benablething" not in flags_safe_to_switch_off(script), call
         script = BALANCED.replace("sub rcx,rsi\n", f"sub rcx,rsi\n{call}\n")
-        assert "bEnableThing" not in flags_safe_to_switch_off(script), call
+        assert "benablething" not in flags_safe_to_switch_off(script), call
 
 
 def test_a_call_made_whichever_way_the_flag_goes_is_not_the_difference():
@@ -256,7 +256,7 @@ def test_a_call_made_whichever_way_the_flag_goes_is_not_the_difference():
     which is refused below.
     """
     script = BALANCED.replace("lblHook:\nsub rcx,rsi\n", "lblHook:\ncall lblMutate\nsub rcx,rsi\n")
-    assert "bEnableThing" in flags_safe_to_switch_off(script)
+    assert "benablething" in flags_safe_to_switch_off(script)
 
 
 def test_an_add_with_no_sub_to_pair_is_a_change_on_that_path():
@@ -267,21 +267,21 @@ def test_an_add_with_no_sub_to_pair_is_a_change_on_that_path():
     """
     script = BALANCED.replace("sub rcx,rsi\n", "").replace(
         "mulss xmm0,[fThingMod]", "add rcx,rsi").replace("lblHookRestore:\nadd rcx,rsi\n", "lblHookRestore:\n")
-    assert "bEnableThing" not in flags_safe_to_switch_off(script)
+    assert "benablething" not in flags_safe_to_switch_off(script)
 
 
 def test_a_branch_whose_target_this_cannot_name_is_not_walked_past():
     """`jmp game.exe+1234` leaves the hook; reading on would be reading code that never runs."""
     for jump in ("jmp game.exe+1234", "jmp qword ptr [rax]", "je game.exe+1234"):
         script = BALANCED.replace("mulss xmm0,[fThingMod]", jump)
-        assert "bEnableThing" not in flags_safe_to_switch_off(script), jump
+        assert "benablething" not in flags_safe_to_switch_off(script), jump
 
 
 def test_a_label_named_like_a_branch_is_still_a_label():
     """`jumpTable:` and `loopTop:` start the way a branch does and are not one."""
     for label in ("jumpTable", "loopTop"):
         script = BALANCED.replace("lblHookRestore", label)
-        assert "bEnableThing" in flags_safe_to_switch_off(script), label
+        assert "benablething" in flags_safe_to_switch_off(script), label
 
 
 def test_a_register_one_side_of_the_flag_replaces_is_not_proven_safe():
@@ -293,10 +293,27 @@ def test_a_register_one_side_of_the_flag_replaces_is_not_proven_safe():
     three hooks that load `r10` or convert into `r8d` behind their flag.
     """
     one_side = BALANCED.replace("sub rcx,rsi\n", "").replace("add rcx,rsi\n", "")
-    assert "bEnableThing" in flags_safe_to_switch_off(one_side)
+    assert "benablething" in flags_safe_to_switch_off(one_side)
     for change in ("mov rcx,[rdx+08]", "movsxd r10,[rbx+04]", "cvtss2si r8d,xmm5", "pop rcx", "push rax"):
         script = one_side.replace("mulss xmm0,[fThingMod]", change)
-        assert "bEnableThing" not in flags_safe_to_switch_off(script), change
+        assert "benablething" not in flags_safe_to_switch_off(script), change
     # The same load made before the flag is tested happens either way.
     before = one_side.replace("lblHook:\n", "lblHook:\nmov r10,[rbx+20]\n")
-    assert "bEnableThing" in flags_safe_to_switch_off(before)
+    assert "benablething" in flags_safe_to_switch_off(before)
+
+
+def test_a_flag_is_one_flag_whatever_case_it_is_spelled_in():
+    """Cheat Engine resolves labels and symbols whatever their case.
+
+    A test spelled one way and a use spelled another are one flag read two
+    ways, and the use is one this does not follow; and a jump to a label spelled
+    differently is still a jump this can walk.
+    """
+    used_otherwise = SAFE_AND_UNSAFE.replace(
+        "mulss xmm0,[fPlainMod]", "mulss xmm0,[fPlainMod]\nmov eax,[BENABLEPLAIN]")
+    assert "benableplain" not in flags_safe_to_switch_off(used_otherwise)
+    respelled = SAFE_AND_UNSAFE.replace(
+        "cmp dword ptr [bEnablePlain],1\njne short lblPlainSkip",
+        "cmp dword ptr [BENABLEPLAIN],1\njne short LBLPLAINSKIP")
+    safe = flags_safe_to_switch_off(respelled)
+    assert "benableplain" in safe and "benablevitals" not in safe

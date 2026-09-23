@@ -636,12 +636,15 @@ def _walk_entry(
     # What the script above this record says its address holds. The address is a
     # symbol that script allocates, so this is read from the enclosing script
     # rather than from this record's own.
-    declared_default = (declared or {}).get(address.strip()) if address.strip() else None
+    # Casefolded on both sides, because Cheat Engine resolves `bEnableFlag` and
+    # `benableflag` to the same symbol; so are the script's answers below.
+    symbol = address.strip().casefold()
+    declared_default = (declared or {}).get(symbol) if symbol else None
     # Whether this record's own flag was read and found safe to write off, asked
     # of the enclosing script for the same reason `declared_default` is: the
     # address is a symbol that script allocates and the code that reads it is
     # that script's.
-    switch_off_is_safe = bool(address.strip()) and address.strip() in (safe or frozenset())
+    switch_off_is_safe = bool(symbol) and symbol in (safe or frozenset())
     if unrecognised_pair is not None and unrecognised is not None and unrecognised_pair not in unrecognised:
         if len(unrecognised) < MAX_UNRECOGNISED_PAIRS:
             unrecognised.append(unrecognised_pair)
@@ -826,15 +829,16 @@ def _address_symbols(address: str, element: ET.Element) -> frozenset[str]:
 
 
 def _declared_defaults(script: str | None) -> dict[str, str]:
-    """Each symbol this script allocates, and the value it gives it."""
+    """Each symbol this script allocates, casefolded, and the value it gives it."""
     if not script:
         return {}
     declared: dict[str, str] = {}
     for symbol, value in _DECLARATION_RE.findall(script):
         if len(declared) >= MAX_DECLARATIONS:
             break
-        # First declaration wins, which is the one that runs.
-        declared.setdefault(symbol, value)
+        # First declaration wins, which is the one that runs, whatever the
+        # case of the one after it.
+        declared.setdefault(symbol.casefold(), value)
     return declared
 
 
