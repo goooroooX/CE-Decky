@@ -184,11 +184,19 @@ class TableControl:
     # table, because a symbol a script allocates is global once it runs and a
     # record reading it may sit anywhere. Backend only, so not in `as_dict`.
     script_owned: bool = False
+    # Where this record sits in the table: one token per level, its place among
+    # its siblings there, so an equal prefix is the same record and nothing
+    # else. `path` is what the table calls those records and is for showing;
+    # two siblings may both be called `Enable`, so every decision about which
+    # record encloses which - the scripts a cheat needs switched on, the flags a
+    # script brings with it - is taken from this one.
+    structure: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         value = asdict(self)
         value.pop("script_owned", None)
         value["path"] = list(self.path)
+        value["structure"] = list(self.structure)
         value["dropdown_values"] = [list(item) for item in self.dropdown_values]
         return value
 
@@ -468,12 +476,14 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
 
     top_entries = _first_child(root, "CheatEntries")
     if top_entries is not None:
+        position = 0
         for child in top_entries:
             if local_tag(child.tag) == "CheatEntry":
                 total_entries += _walk_entry(
                     child, (), controls, processes, sanitized, dropped, unrecognised, None, scans, repeated,
-                    allocated=allocated, owners=owners,
+                    allocated=allocated, owners=owners, structure=(str(position),),
                 )
+                position += 1
                 if total_entries > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     # Settled after the walk, because the script that allocates a symbol may
@@ -560,6 +570,7 @@ def _walk_entry(
     *,
     allocated: set[str] | None = None,
     owners: list[frozenset[str]] | None = None,
+    structure: tuple[str, ...] = (),
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -663,6 +674,7 @@ def _walk_entry(
             switch_on_value=switch_on_value,
             declared_default=declared_default,
             switch_off_is_safe=switch_off_is_safe,
+            structure=structure,
         )
     )
     if owners is not None:
@@ -690,12 +702,14 @@ def _walk_entry(
         nested_safe = ((safe or frozenset()) - set(own)) | own_safe
     nested = _first_child(element, "CheatEntries")
     if nested is not None:
+        position = 0
         for child in nested:
             if local_tag(child.tag) == "CheatEntry":
                 count += _walk_entry(
                     child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated, nested_safe,
-                    allocated=allocated, owners=owners,
+                    allocated=allocated, owners=owners, structure=structure + (str(position),),
                 )
+                position += 1
                 if count > MAX_INSPECTION_ENTRIES:
                     raise ValueError(".CT inspection exceeds entry limit")
     return count

@@ -30,8 +30,11 @@ export interface RuntimeDesiredState {
   record_id: number;
   active: boolean | null;
   value: string | null;
-  /** Static table path used only to preserve parent-before-child mutation order. */
-  path?: readonly string[];
+  /**
+   * Where the record sits in the table (`TableControl.structure`), used only to
+   * order parents before children and to know which record a script creates.
+   */
+  structure?: readonly string[];
   /** Human name for this record, used in any message the user has to read. */
   label?: string;
   /**
@@ -620,8 +623,8 @@ export async function applyRuntimeSelection(
   // descendant it was about to verify and report a successful runtime change as
   // a failure, leaving the remembered state unsaved.
   const byDepth = (left: { state: RuntimeDesiredState; index: number }, right: { state: RuntimeDesiredState; index: number }, deepestFirst: boolean) => {
-    const leftPath = left.state.path;
-    const rightPath = right.state.path;
+    const leftPath = left.state.structure;
+    const rightPath = right.state.structure;
     if (leftPath && rightPath) {
       const depth = leftPath.length - rightPath.length;
       if (depth) return deepestFirst ? -depth : depth;
@@ -642,9 +645,9 @@ export async function applyRuntimeSelection(
   const ordered = [...disabling, ...enabling];
   const ids = ordered.map((state) => state.record_id);
   const isAncestorOf = (ancestor: RuntimeDesiredState, descendant: RuntimeDesiredState): boolean =>
-    Boolean(ancestor.path && descendant.path)
-    && ancestor.path!.length < descendant.path!.length
-    && ancestor.path!.every((segment, position) => descendant.path![position] === segment);
+    Boolean(ancestor.structure && descendant.structure)
+    && ancestor.structure!.length < descendant.structure!.length
+    && ancestor.structure!.every((segment, position) => descendant.structure![position] === segment);
   // A record that does not exist yet is expected exactly when an ancestor of it
   // is being enabled in this same call - that ancestor is the script that
   // creates it. Preflighting every ID strictly aborted before the parent
@@ -769,13 +772,13 @@ export async function applyRuntimeSelection(
   // and its intended state is already known: off.
   const deliberatelyOff = new Set(disabling.map((state) => state.record_id));
   const destroyedByAncestor = (state: RuntimeDesiredState): boolean => {
-    if (!state.path || state.active !== false) return false;
+    if (!state.structure || state.active !== false) return false;
     return ordered.some((other) =>
       other !== state
       && other.active === false
-      && Boolean(other.path)
-      && other.path!.length < state.path!.length
-      && other.path!.every((segment, position) => state.path![position] === segment),
+      && Boolean(other.structure)
+      && other.structure!.length < state.structure!.length
+      && other.structure!.every((segment, position) => state.structure![position] === segment),
     );
   };
   const verified = await queryRuntimeControlsPartial(appId, ids, before.envelope);
@@ -825,9 +828,9 @@ export async function applyRuntimeSelection(
     }
   }
   const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) =>
-    other !== candidate && other.active === true && candidate.path && other.path
-    && candidate.path.length < other.path.length
-    && candidate.path.every((segment, index) => other.path![index] === segment),
+    other !== candidate && other.active === true && candidate.structure && other.structure
+    && candidate.structure.length < other.structure.length
+    && candidate.structure.every((segment, index) => other.structure![index] === segment),
   ));
   const prepared = verified.envelope?.prepared;
   let compatibilityConfirmed = false;

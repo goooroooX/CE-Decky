@@ -3926,15 +3926,21 @@ function stepPage(page, total, pageSize, direction) {
  * failure. A dependency that cannot be addressed makes the descendant
  * unactionable, exactly as the backend's startup plan now refuses it.
  */
+/** Whether `outer` encloses `inner`, by where they sit rather than by what they are called. */
+function encloses(outer, inner) {
+    return outer.length < inner.length && outer.every((token, index) => inner[index] === token);
+}
+function sameRecordPlace(left, right) {
+    return left.length === right.length && left.every((token, index) => right[index] === token);
+}
 function hasUnaddressableEnclosingScript(control, controls, ambiguous) {
-    for (let depth = 1; depth < control.path.length; depth += 1) {
-        const prefix = control.path.slice(0, depth);
+    for (let depth = 1; depth < control.structure.length; depth += 1) {
+        const prefix = control.structure.slice(0, depth);
         const ancestor = controls.find((candidate) => candidate.id !== null
             && candidate.id !== control.id
             && candidate.kind !== "group"
             && !candidate.group_header
-            && candidate.path.length === prefix.length
-            && candidate.path.every((segment, index) => segment === prefix[index]));
+            && sameRecordPlace(candidate.structure, prefix));
         if (ancestor && ancestor.id !== null && ambiguous.has(ancestor.id))
             return true;
     }
@@ -4857,9 +4863,9 @@ function switchCandidates(scripts, controls, requested) {
         for (const control of controls) {
             if (control.id === null || control.id === script.id || requested.has(control.id))
                 continue;
-            if (control.path.length <= script.path.length)
-                continue;
-            if (!script.path.every((segment, index) => control.path[index] === segment))
+            // Below it by where it sits: a sibling script with the same name brings
+            // its own flags, not this one's.
+            if (!encloses(script.structure, control.structure))
                 continue;
             // Only a flag this script declares as on: its address is a symbol the
             // script itself allocates, so it exists once the script has run, and
@@ -5450,13 +5456,13 @@ function inactiveAncestorControl(control, controls, activeById) {
 function enclosingControlIds(controls) {
     const prefixes = new Set();
     for (const control of controls) {
-        for (let depth = 1; depth < control.path.length; depth += 1) {
-            prefixes.add(JSON.stringify(control.path.slice(0, depth)));
+        for (let depth = 1; depth < control.structure.length; depth += 1) {
+            prefixes.add(JSON.stringify(control.structure.slice(0, depth)));
         }
     }
     const ids = new Set();
     for (const control of controls) {
-        if (control.id !== null && prefixes.has(JSON.stringify(control.path)))
+        if (control.id !== null && prefixes.has(JSON.stringify(control.structure)))
             ids.add(control.id);
     }
     return ids;
@@ -5496,7 +5502,7 @@ function unusedActiveScripts(controls, activeById) {
     const enclosing = enclosingControlIds(controls);
     const scripts = controls
         .filter((control) => control.id !== null && enclosing.has(control.id))
-        .sort((left, right) => right.path.length - left.path.length);
+        .sort((left, right) => right.structure.length - left.structure.length);
     const active = new Map(activeById);
     const released = [];
     for (const script of scripts) {
@@ -5504,8 +5510,7 @@ function unusedActiveScripts(controls, activeById) {
             continue;
         const used = controls.some((candidate) => candidate.id !== null
             && candidate.id !== script.id
-            && candidate.path.length > script.path.length
-            && script.path.every((segment, index) => candidate.path[index] === segment)
+            && encloses(script.structure, candidate.structure)
             && active.get(candidate.id) === true);
         if (used)
             continue;
@@ -5524,12 +5529,11 @@ function unusedActiveScripts(controls, activeById) {
  */
 function inactiveAncestorControls(control, controls, activeById) {
     const chain = [];
-    for (let depth = 1; depth < control.path.length; depth += 1) {
-        const prefix = control.path.slice(0, depth);
+    for (let depth = 1; depth < control.structure.length; depth += 1) {
+        const prefix = control.structure.slice(0, depth);
         const ancestor = controls.find((candidate) => candidate.id !== null
             && candidate.id !== control.id
-            && candidate.path.length === prefix.length
-            && candidate.path.every((segment, index) => segment === prefix[index]));
+            && sameRecordPlace(candidate.structure, prefix));
         if (ancestor && ancestor.id !== null && activeById.get(ancestor.id) === false)
             chain.push(ancestor);
     }
@@ -8439,8 +8443,8 @@ async function applyRuntimeSelection(appId, desiredStates) {
     // descendant it was about to verify and report a successful runtime change as
     // a failure, leaving the remembered state unsaved.
     const byDepth = (left, right, deepestFirst) => {
-        const leftPath = left.state.path;
-        const rightPath = right.state.path;
+        const leftPath = left.state.structure;
+        const rightPath = right.state.structure;
         if (leftPath && rightPath) {
             const depth = leftPath.length - rightPath.length;
             if (depth)
@@ -8461,9 +8465,9 @@ async function applyRuntimeSelection(appId, desiredStates) {
     // Retire descendants before the ancestors that own them, then build upward.
     const ordered = [...disabling, ...enabling];
     const ids = ordered.map((state) => state.record_id);
-    const isAncestorOf = (ancestor, descendant) => Boolean(ancestor.path && descendant.path)
-        && ancestor.path.length < descendant.path.length
-        && ancestor.path.every((segment, position) => descendant.path[position] === segment);
+    const isAncestorOf = (ancestor, descendant) => Boolean(ancestor.structure && descendant.structure)
+        && ancestor.structure.length < descendant.structure.length
+        && ancestor.structure.every((segment, position) => descendant.structure[position] === segment);
     // A record that does not exist yet is expected exactly when an ancestor of it
     // is being enabled in this same call - that ancestor is the script that
     // creates it. Preflighting every ID strictly aborted before the parent
@@ -8571,13 +8575,13 @@ async function applyRuntimeSelection(appId, desiredStates) {
     // and its intended state is already known: off.
     const deliberatelyOff = new Set(disabling.map((state) => state.record_id));
     const destroyedByAncestor = (state) => {
-        if (!state.path || state.active !== false)
+        if (!state.structure || state.active !== false)
             return false;
         return ordered.some((other) => other !== state
             && other.active === false
-            && Boolean(other.path)
-            && other.path.length < state.path.length
-            && other.path.every((segment, position) => state.path[position] === segment));
+            && Boolean(other.structure)
+            && other.structure.length < state.structure.length
+            && other.structure.every((segment, position) => state.structure[position] === segment));
     };
     const verified = await queryRuntimeControlsPartial(appId, ids, before.envelope);
     assertSameSession(before.envelope, verified.envelope, appId);
@@ -8618,9 +8622,9 @@ async function applyRuntimeSelection(appId, desiredStates) {
                 : `${name} kept ${describeReadBack(result.value)} instead of ${wanted}.`, verified.envelope);
         }
     }
-    const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) => other !== candidate && other.active === true && candidate.path && other.path
-        && candidate.path.length < other.path.length
-        && candidate.path.every((segment, index) => other.path[index] === segment)));
+    const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) => other !== candidate && other.active === true && candidate.structure && other.structure
+        && candidate.structure.length < other.structure.length
+        && candidate.structure.every((segment, index) => other.structure[index] === segment)));
     const prepared = verified.envelope?.prepared;
     let compatibilityConfirmed = false;
     // A confirmation that throws has not necessarily written nothing: the record
@@ -11682,7 +11686,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                         active,
                         value,
                         switch_values: switchValuesFor(control),
-                        path: control.path,
+                        structure: control.structure,
                         label: controlRowLabel(control),
                     }];
             });
@@ -11722,7 +11726,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     active: null,
                     value,
                     switch_values: switchValuesFor(control),
-                    path: control.path,
+                    structure: control.structure,
                     label: controlRowLabel(control),
                     held_off: true,
                 });
@@ -16640,7 +16644,7 @@ function Content() {
         const released = unusedActiveScripts(controls, projected);
         const releasedRows = released.flatMap((scriptId) => {
             const script = controls.find((candidate) => candidate.id === scriptId);
-            return script ? [{ record_id: scriptId, active: false, value: null, path: script.path, label: controlRowLabel(script) }] : [];
+            return script ? [{ record_id: scriptId, active: false, value: null, structure: script.structure, label: controlRowLabel(script) }] : [];
         });
         // The scripts above carry the table author's own defaults, so every switch
         // under them that this press did not ask for is written to its off key in
@@ -16664,7 +16668,7 @@ function Content() {
                         record_id: ancestor.id,
                         active: true,
                         value: null,
-                        path: ancestor.path,
+                        structure: ancestor.structure,
                         label: controlRowLabel(ancestor),
                     }]),
                 {
@@ -16672,7 +16676,7 @@ function Content() {
                     active,
                     value: active ? valueToApply : null,
                     switch_values: switchValuesFor(control),
-                    path: control.path,
+                    structure: control.structure,
                     label: controlRowLabel(control),
                 },
                 ...heldOff.flatMap(({ control: held, value }) => held.id === null ? [] : [{
@@ -16680,7 +16684,7 @@ function Content() {
                         active: null,
                         value,
                         switch_values: switchValuesFor(held),
-                        path: held.path,
+                        structure: held.structure,
                         label: controlRowLabel(held),
                         held_off: true,
                     }]),
@@ -16698,7 +16702,7 @@ function Content() {
                     // carried both keys all along, and a switch may not mean two
                     // different things depending on which screen it was pressed from.
                     switch_values: switchValuesFor(control),
-                    path: control.path,
+                    structure: control.structure,
                     label: controlRowLabel(control),
                 },
                 ...releasedRows,
@@ -16821,7 +16825,7 @@ function Content() {
         // disable leaves before their enclosing scripts so every command still has
         // a live target when the bridge processes it.
         const recordIds = [...controls]
-            .sort((left, right) => right.path.length - left.path.length)
+            .sort((left, right) => right.structure.length - left.structure.length)
             .flatMap((control) => control.id === null ? [] : [control.id]);
         void runAction(async () => {
             dropLiveSnapshot();

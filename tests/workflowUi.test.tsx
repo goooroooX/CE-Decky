@@ -135,7 +135,7 @@ const diagnostics = {
 const game = { appId: 10, name: "Game", sortAs: "Game", isShortcut: false };
 const details = { appId: 10, displayName: "Game", shortcutExe: "", isShortcut: false, compatToolName: "proton", compatToolDisplayName: "Proton", compatToolPriority: 1, platforms: ["windows"] };
 const table = { sha256: SHA, filename: "Game.CT", size: 100, table_version: "45", has_lua: false, has_auto_assembler: false, has_embedded_files: false, executable_content: false, entry_count: 1, blob_path: "/managed/Game.CT", available: true, schema_version: 2, origins: [] };
-const inspect = { sha256: SHA, table_version: "45", total_entries: 1, has_lua: false, has_auto_assembler: false, embedded_files: 0, process_candidates: ["game.exe"], controls: [{ id: 7, description: "Health", path: ["Health"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false }], ambiguous_record_ids: [], unsupported_record_id_count: 0 };
+const inspect = { sha256: SHA, table_version: "45", total_entries: 1, has_lua: false, has_auto_assembler: false, embedded_files: 0, process_candidates: ["game.exe"], controls: [{ id: 7, description: "Health", path: ["Health"], structure: ["Health"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false }], ambiguous_record_ids: [], unsupported_record_id_count: 0 };
 
 function status(withProfile = true, ceReady = true) {
   return {
@@ -1241,7 +1241,7 @@ describe("Home panel and managed setup", () => {
     // not "Cheat Engine is not running": the session is there and fine, and
     // saying otherwise sends the user looking for one.
     const big = { ...inspect, controls: Array.from({ length: MAX_LIVE_CONTROLS + 1 }, (_, index) => ({
-      id: index + 1, description: `Cheat ${index + 1}`, path: [`Cheat ${index + 1}`],
+      id: index + 1, description: `Cheat ${index + 1}`, path: [`Cheat ${index + 1}`], structure: [`Cheat ${index + 1}`],
       variable_type: "4 Bytes", kind: "value", group_header: false,
       has_assembler_script: false, dropdown_values: [], dropdown_read_only: false,
     })) };
@@ -3550,7 +3550,7 @@ describe("Home panel and managed setup", () => {
     // cheats on by itself. One block, one sentence, and nothing on any other
     // screen.
     const flag = (id: number, declared: string | null, safe = true) => ({
-      id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
+      id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], structure: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1", declared_default: declared, switch_off_is_safe: safe,
@@ -3944,7 +3944,7 @@ describe("Home panel and managed setup", () => {
     // applies - a table that turns itself on is a caution, a table that will
     // not open and a table whose cheats are dead are not.
     const flag = (id: number) => ({
-      id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
+      id, description: `Flag ${id}`, path: ["Enable", `Flag ${id}`], structure: ["Enable", `Flag ${id}`], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1", declared_default: "1",
@@ -3974,7 +3974,7 @@ describe("Home panel and managed setup", () => {
     render(<TableReviewModal
       table={table as any}
       inspection={{ ...inspect, controls: [{
-        id: 1, description: "Health", path: ["Health"], variable_type: "4 Bytes",
+        id: 1, description: "Health", path: ["Health"], structure: ["Health"], variable_type: "4 Bytes",
         kind: "value", group_header: false, has_assembler_script: false,
         dropdown_values: [], dropdown_read_only: false, switch_on_value: null, declared_default: null,
       }] } as any}
@@ -4427,7 +4427,7 @@ describe("Cheat selection workflow", () => {
   const manyControls = Array.from({ length: 10 }, (_, index) => ({
     id: 100 + index,
     description: `Cheat ${index}`,
-    path: ["Enable 1.0", `Cheat ${index}`],
+    path: ["Enable 1.0", `Cheat ${index}`], structure: ["Enable 1.0", `Cheat ${index}`],
     variable_type: "4 Bytes",
     kind: index % 2 === 0 ? "value" : "script",
     group_header: false,
@@ -4464,7 +4464,7 @@ describe("Cheat selection workflow", () => {
     // back on.
     const values = Array.from({ length: 6508 }, (_, index) => [String(index + 1), `Item ${index + 1}`]);
     const picker = {
-      id: 300, description: "Weapon", path: ["Weapon"], variable_type: "4 Bytes",
+      id: 300, description: "Weapon", path: ["Weapon"], structure: ["Weapon"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: values, dropdown_read_only: true,
     };
@@ -4494,7 +4494,7 @@ describe("Cheat selection workflow", () => {
     // dropdown and a text field on every one of them, so switching on a cheat
     // meant answering a question the toggle beside it had already answered.
     const flag = {
-      id: 302, description: "bEnableGodMode", path: ["bEnableGodMode"], variable_type: "4 Bytes",
+      id: 302, description: "bEnableGodMode", path: ["bEnableGodMode"], structure: ["bEnableGodMode"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1",
@@ -4520,12 +4520,12 @@ describe("Cheat selection workflow", () => {
     // flags as on, so switching the script on for one cheat switched on most of
     // the table while the panel counted the one cheat and said `1 active`.
     const script = {
-      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      id: 400, description: "Enable", path: ["Enable"], structure: ["Enable"], variable_type: "Auto Assembler Script",
       kind: "script", group_header: false, has_assembler_script: true,
       dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
     };
     const flag = (id: number, name: string) => ({
-      id, description: name, path: ["Enable", name], variable_type: "4 Bytes",
+      id, description: name, path: ["Enable", name], structure: ["Enable", name], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1",
@@ -4578,12 +4578,12 @@ describe("Cheat selection workflow", () => {
     // own count cannot show it: it is a value in the game rather than a record
     // Cheat Engine has activated.
     const script = {
-      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      id: 400, description: "Enable", path: ["Enable"], structure: ["Enable"], variable_type: "Auto Assembler Script",
       kind: "script", group_header: false, has_assembler_script: true,
       dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
     };
     const flag = (id: number, name: string, safe: boolean) => ({
-      id, description: name, path: ["Enable", name], variable_type: "4 Bytes",
+      id, description: name, path: ["Enable", name], structure: ["Enable", name], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1", declared_default: "1", switch_off_is_safe: safe,
@@ -4632,18 +4632,18 @@ describe("Cheat selection workflow", () => {
     // only for a script CE Decky switched on meant doing it by hand brought the
     // whole table's declarations with it, which is the thing this prevents.
     const script = {
-      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      id: 400, description: "Enable", path: ["Enable"], structure: ["Enable"], variable_type: "Auto Assembler Script",
       kind: "script", group_header: false, has_assembler_script: true,
       dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
     };
     const unasked = {
-      id: 402, description: "bEnableOneHitKill", path: ["Enable", "bEnableOneHitKill"],
+      id: 402, description: "bEnableOneHitKill", path: ["Enable", "bEnableOneHitKill"], structure: ["Enable", "bEnableOneHitKill"],
       variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1", declared_default: "1", switch_off_is_safe: true,
     };
     const chosen = {
-      id: 401, description: "bEnableGodMode", path: ["Enable", "bEnableGodMode"],
+      id: 401, description: "bEnableGodMode", path: ["Enable", "bEnableGodMode"], structure: ["Enable", "bEnableGodMode"],
       variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1",
@@ -4692,17 +4692,17 @@ describe("Cheat selection workflow", () => {
     // the reader did type is a pre-game setting and was already deferred; the
     // press has nothing to send at all.
     const script = {
-      id: 400, description: "Enable", path: ["Enable"], variable_type: "Auto Assembler Script",
+      id: 400, description: "Enable", path: ["Enable"], structure: ["Enable"], variable_type: "Auto Assembler Script",
       kind: "script", group_header: false, has_assembler_script: true,
       dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
     };
     const damage = {
-      id: 401, description: "fPlayerWeaponDamageMod", path: ["Enable", "fPlayerWeaponDamageMod"],
+      id: 401, description: "fPlayerWeaponDamageMod", path: ["Enable", "fPlayerWeaponDamageMod"], structure: ["Enable", "fPlayerWeaponDamageMod"],
       variable_type: "Float", kind: "value", group_header: false, has_assembler_script: false,
       dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
     };
     const unasked = {
-      id: 402, description: "bEnableVitalsDrainRateMod", path: ["Enable", "bEnableVitalsDrainRateMod"],
+      id: 402, description: "bEnableVitalsDrainRateMod", path: ["Enable", "bEnableVitalsDrainRateMod"], structure: ["Enable", "bEnableVitalsDrainRateMod"],
       variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
       switch_on_value: "1", declared_default: "1",
@@ -4743,7 +4743,7 @@ describe("Cheat selection workflow", () => {
     // reachable. Beside every list it was a second control on a row that needed
     // one, which is the clutter drawing switches as switches exists to remove.
     const picker = {
-      id: 305, description: "Weapon", path: ["Weapon"], variable_type: "4 Bytes",
+      id: 305, description: "Weapon", path: ["Weapon"], structure: ["Weapon"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Pistol"], ["1", "Rifle"]], dropdown_read_only: false,
     };
@@ -4767,7 +4767,7 @@ describe("Cheat selection workflow", () => {
     // 332 records in the corpus declare a single value. That is a control with
     // nothing to choose from, and what the record actually has is a value.
     const single = {
-      id: 306, description: "Item", path: ["Item"], variable_type: "4 Bytes",
+      id: 306, description: "Item", path: ["Item"], structure: ["Item"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["7", "Medkit"]], dropdown_read_only: false,
     };
@@ -4789,7 +4789,7 @@ describe("Cheat selection workflow", () => {
     // The field is what replaces a list of one, and a read-only record has no
     // field: taking its list away left the row with no control at all.
     const single = {
-      id: 308, description: "Mode", path: ["Mode"], variable_type: "4 Bytes",
+      id: 308, description: "Mode", path: ["Mode"], structure: ["Mode"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["3", "Hardcore"]], dropdown_read_only: true,
     };
@@ -4808,7 +4808,7 @@ describe("Cheat selection workflow", () => {
     // A record that allows free entry is for exactly this, and hiding what the
     // reader already set behind a press would hide their own answer.
     const picker = {
-      id: 307, description: "Ammo", path: ["Ammo"], variable_type: "4 Bytes",
+      id: 307, description: "Ammo", path: ["Ammo"], structure: ["Ammo"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Empty"], ["1", "Full"]], dropdown_read_only: false,
     };
@@ -4830,7 +4830,7 @@ describe("Cheat selection workflow", () => {
 
   it("leaves a value list that fits the panel exactly as it was", async () => {
     const picker = {
-      id: 301, description: "Difficulty", path: ["Difficulty"], variable_type: "4 Bytes",
+      id: 301, description: "Difficulty", path: ["Difficulty"], structure: ["Difficulty"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Easy"], ["1", "Hard"]], dropdown_read_only: true,
     };
@@ -5478,7 +5478,7 @@ describe("Launching the selected table", () => {
     // that was chosen. "Table loaded" is about the chosen ones, so these are
     // named after it rather than left for the reader to find in the game.
     const drain = {
-      ...inspect.controls[0], id: 77, description: "Vitals drain", path: ["Script", "Vitals drain"],
+      ...inspect.controls[0], id: 77, description: "Vitals drain", path: ["Script", "Vitals drain"], structure: ["Script", "Vitals drain"],
       kind: "dropdown", dropdown_values: [["0", "Off"], ["1", "On"]], switch_on_value: "1",
       declared_default: "1", switch_off_is_safe: false,
     };
@@ -6203,7 +6203,7 @@ describe("Pinned live controls", () => {
     fireEvent.click(within(row).getByTestId("toggle"));
 
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
-      { record_id: 7, active: false, value: null, path: ["Health"], label: "Health" },
+      { record_id: 7, active: false, value: null, structure: ["Health"], label: "Health" },
     ]));
     await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalledWith(10, SHA, [
       { record_id: 7, active: false, value: "100" },
@@ -6274,7 +6274,7 @@ describe("Pinned live controls", () => {
     fireEvent.click(within(row).getByTestId("toggle"));
 
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
-      { record_id: 7, active: true, value: "40", path: ["Health"], label: "Health" },
+      { record_id: 7, active: true, value: "40", structure: ["Health"], label: "Health" },
     ]));
   });
 
@@ -6299,7 +6299,7 @@ describe("Pinned live controls", () => {
     fireEvent.click(within(row).getByTestId("toggle"));
 
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
-      { record_id: 7, active: true, value: "100", path: ["Health"], label: "Health" },
+      { record_id: 7, active: true, value: "100", structure: ["Health"], label: "Health" },
     ]));
   });
 
@@ -6310,7 +6310,7 @@ describe("Pinned live controls", () => {
     const binary = {
       ...inspect,
       controls: [{
-        id: 7, description: "Godmode", path: ["Godmode"], variable_type: "4 Bytes", kind: "dropdown",
+        id: 7, description: "Godmode", path: ["Godmode"], structure: ["Godmode"], variable_type: "4 Bytes", kind: "dropdown",
         group_header: false, has_assembler_script: false,
         dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: true,
         switch_on_value: "1",
@@ -6338,7 +6338,7 @@ describe("Pinned live controls", () => {
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
       {
         record_id: 7, active: false, value: null, switch_values: { on: "1", off: "0" },
-        path: ["Godmode"], label: "Godmode",
+        structure: ["Godmode"], label: "Godmode",
       },
     ]));
   });
@@ -6356,8 +6356,8 @@ describe("Pinned live controls", () => {
       ...inspect,
       total_entries: 2,
       controls: [
-        { id: 20, description: "Party Damage Reduction", path: ["Party Damage Reduction"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
-        { id: 21, description: "Reduction %", path: ["Party Damage Reduction", "Reduction %"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 20, description: "Party Damage Reduction", path: ["Party Damage Reduction"], structure: ["Party Damage Reduction"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 21, description: "Reduction %", path: ["Party Damage Reduction", "Reduction %"], structure: ["Party Damage Reduction", "Reduction %"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
       ],
     };
     const initial = [
@@ -6391,8 +6391,8 @@ describe("Pinned live controls", () => {
     // what Cheat Engine holds, `applyRuntimeSelection` sends no `set_value` for
     // it anyway. The script above it takes no value, because it has none.
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
-      { record_id: 20, active: true, value: null, path: ["Party Damage Reduction"], label: "Party Damage Reduction" },
-      { record_id: 21, active: true, value: "40", path: ["Party Damage Reduction", "Reduction %"], label: "Reduction %" },
+      { record_id: 20, active: true, value: null, structure: ["Party Damage Reduction"], label: "Party Damage Reduction" },
+      { record_id: 21, active: true, value: "40", structure: ["Party Damage Reduction", "Reduction %"], label: "Reduction %" },
     ]));
   });
 
@@ -6401,8 +6401,8 @@ describe("Pinned live controls", () => {
       ...inspect,
       total_entries: 2,
       controls: [
-        { id: 20, description: "Parent", path: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
-        { id: 21, description: "Child", path: ["Parent", "Child"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 20, description: "Parent", path: ["Parent"], structure: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 21, description: "Child", path: ["Parent", "Child"], structure: ["Parent", "Child"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
       ],
     };
     const results = [
@@ -6438,9 +6438,9 @@ describe("Pinned live controls", () => {
       ...inspect,
       total_entries: 3,
       controls: [
-        { id: 20, description: "Parent", path: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
-        { id: 21, description: "Child", path: ["Parent", "Child"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
-        { id: 22, description: "Other", path: ["Parent", "Other"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 20, description: "Parent", path: ["Parent"], structure: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 21, description: "Child", path: ["Parent", "Child"], structure: ["Parent", "Child"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 22, description: "Other", path: ["Parent", "Other"], structure: ["Parent", "Other"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
       ],
     };
     const results = [
@@ -6643,7 +6643,7 @@ describe("Pinned live controls", () => {
     // picker/snapshot/bulk operations degrade. Awaiting the snapshot as part of
     // the success transaction reported a connected, attached session as failed.
     const controls = Array.from({ length: 513 }, (_, index) => ({
-      id: 1000 + index, description: `Cheat ${index}`, path: [`Cheat ${index}`],
+      id: 1000 + index, description: `Cheat ${index}`, path: [`Cheat ${index}`], structure: [`Cheat ${index}`],
       variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false,
       dropdown_values: [], dropdown_read_only: false,
     }));
@@ -7498,8 +7498,8 @@ describe("Selection and staged-change persistence", () => {
     ...inspect,
     total_entries: 2,
     controls: [
-      { id: 20, description: "Party Damage Reduction", path: ["Party Damage Reduction"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
-      { id: 21, description: "Reduction %", path: ["Party Damage Reduction", "Reduction %"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      { id: 20, description: "Party Damage Reduction", path: ["Party Damage Reduction"], structure: ["Party Damage Reduction"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+      { id: 21, description: "Reduction %", path: ["Party Damage Reduction", "Reduction %"], structure: ["Party Damage Reduction", "Reduction %"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
     ],
   };
 
@@ -7657,7 +7657,7 @@ describe("Selection and staged-change persistence", () => {
       controls: [
         ...nestedInspection.controls,
         {
-          id: 22, description: "bEnableVitalsDrain", path: ["Party Damage Reduction", "bEnableVitalsDrain"],
+          id: 22, description: "bEnableVitalsDrain", path: ["Party Damage Reduction", "bEnableVitalsDrain"], structure: ["Party Damage Reduction", "bEnableVitalsDrain"],
           variable_type: "4 Bytes", kind: "dropdown", group_header: false, has_assembler_script: false,
           dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false,
           switch_on_value: "1", declared_default: "1", switch_off_is_safe: false,

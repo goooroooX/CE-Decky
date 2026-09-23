@@ -1099,7 +1099,7 @@ def test_startup_actions_switch_on_the_scripts_that_create_a_remembered_record()
 
     def control(record_id, path, kind):
         return SimpleNamespace(
-            id=record_id, path=tuple(path), kind=kind, group_header=False,
+            id=record_id, path=tuple(path), structure=tuple(path), kind=kind, group_header=False,
             dropdown_read_only=False, dropdown_values=(),
         )
 
@@ -1118,7 +1118,7 @@ def test_startup_actions_switch_on_the_scripts_that_create_a_remembered_record()
 def _plan_control(record_id, path, kind, *, attach_only=False):
     from types import SimpleNamespace
     return SimpleNamespace(
-        id=record_id, path=tuple(path), kind=kind, group_header=False,
+        id=record_id, path=tuple(path), structure=tuple(path), kind=kind, group_header=False,
         dropdown_read_only=False, dropdown_values=(), attach_only=attach_only,
     )
 
@@ -1518,3 +1518,72 @@ def test_startup_names_the_defaults_it_leaves_on_from_the_plan_it_holds_off(tmp_
 
     profiles.set_startup(app_id=42, table_sha256=artifact.sha256, record_id=3, active=True, value=None)
     assert startup_left_on(profiles.get(42), inspection) == ()
+
+
+def _twin_scripts_table(grouped: bool) -> bytes:
+    """Two sibling scripts both called `Enable`, each with its own flag and cheat.
+
+    `grouped` puts each inside a group header, and the two headers share a name
+    too, so every record of the second branch has the same display path as its
+    counterpart in the first.
+    """
+    def script(record_id: int, flag_id: int, cheat_id: int, symbol: str, address: str) -> str:
+        code = (
+            f"[ENABLE]\nlabel({symbol})\nlbl{symbol}:\ncmp dword ptr [{symbol}],1\n"
+            f"jne short lbl{symbol}Skip\nmulss xmm0,[f{symbol}]\nlbl{symbol}Skip:\n"
+            f"readmem(aob{symbol},7)\njmp lbl{symbol}Ret\n{symbol}:\ndd 1\n[DISABLE]\n"
+        )
+        return (
+            f'<CheatEntry><ID>{record_id}</ID><Description>"Enable"</Description>'
+            f'<VariableType>Auto Assembler Script</VariableType><AssemblerScript>{code}</AssemblerScript>'
+            '<CheatEntries>'
+            f'<CheatEntry><ID>{flag_id}</ID><Description>"Flag"</Description><VariableType>4 Bytes</VariableType>'
+            f'<Address>{symbol}</Address><DropDownList>0:Off\n1:On</DropDownList></CheatEntry>'
+            f'<CheatEntry><ID>{cheat_id}</ID><Description>"Cheat"</Description><VariableType>4 Bytes</VariableType>'
+            f'<Address>{address}</Address></CheatEntry>'
+            '</CheatEntries></CheatEntry>'
+        )
+
+    def group(record_id: int, body: str) -> str:
+        return (
+            f'<CheatEntry><ID>{record_id}</ID><Description>"Group"</Description><GroupHeader>1</GroupHeader>'
+            f'<CheatEntries>{body}</CheatEntries></CheatEntry>'
+        )
+
+    first = script(1, 2, 3, "bEnableA", "game.exe+10")
+    second = script(4, 5, 6, "bEnableB", "game.exe+20")
+    if grouped:
+        first, second = group(7, first), group(8, second)
+    return (
+        '<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45"><CheatEntries>'
+        f'{first}{second}</CheatEntries></CheatTable>\n'
+    ).encode("utf-8")
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_a_cheat_needs_the_script_it_sits_in_and_not_one_with_the_same_name(tmp_path: Path, grouped: bool):
+    """Which script creates a record is where it sits, never what the table calls it.
+
+    Two scripts called `Enable` are ordinary table content. Resolved by name, a
+    cheat under the second switched on the first, which does not create it, and
+    the flags either script declares on were held off from both branches.
+    """
+    from hashlib import sha256
+    from ce_decky.ct_inspector import inspect_table
+    from ce_decky.profiles import StartupPreference
+    from ce_decky.session_protocol import _startup_actions
+
+    data = _twin_scripts_table(grouped)
+    path = tmp_path / "twins.CT"
+    path.write_bytes(data)
+    inspection = inspect_table(path, sha256(data).hexdigest())
+    by_id = {control.id: control for control in inspection.controls}
+    assert by_id[3].path == by_id[6].path, "the two branches look the same by name"
+
+    actions = _startup_actions([StartupPreference(6, True, None)], inspection)
+    touched = {action.record_id for action in actions}
+    assert 4 in touched and 1 not in touched, "only the script the cheat sits in is switched on"
+    # The flag the second script declares on is held off; the first script's
+    # flag is nothing this plan starts.
+    assert (5, "value", "0") in {(action.record_id, action.kind, action.value) for action in actions}
+    assert 2 not in touched

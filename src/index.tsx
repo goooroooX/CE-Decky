@@ -3266,7 +3266,7 @@ function Content() {
     const released = unusedActiveScripts(controls, projected);
     const releasedRows = released.flatMap((scriptId) => {
       const script = controls.find((candidate) => candidate.id === scriptId);
-      return script ? [{ record_id: scriptId, active: false, value: null, path: script.path, label: controlRowLabel(script) }] : [];
+      return script ? [{ record_id: scriptId, active: false, value: null, structure: script.structure, label: controlRowLabel(script) }] : [];
     });
     // The scripts above carry the table author's own defaults, so every switch
     // under them that this press did not ask for is written to its off key in
@@ -3290,7 +3290,7 @@ function Content() {
             record_id: ancestor.id,
             active: true,
             value: null,
-            path: ancestor.path,
+            structure: ancestor.structure,
             label: controlRowLabel(ancestor),
           }]),
           {
@@ -3298,7 +3298,7 @@ function Content() {
             active,
             value: active ? valueToApply : null,
             switch_values: switchValuesFor(control),
-            path: control.path,
+            structure: control.structure,
             label: controlRowLabel(control),
           },
           ...heldOff.flatMap(({ control: held, value }) => held.id === null ? [] : [{
@@ -3306,7 +3306,7 @@ function Content() {
             active: null,
             value,
             switch_values: switchValuesFor(held),
-            path: held.path,
+            structure: held.structure,
             label: controlRowLabel(held),
             held_off: true,
           }]),
@@ -3324,7 +3324,7 @@ function Content() {
             // carried both keys all along, and a switch may not mean two
             // different things depending on which screen it was pressed from.
             switch_values: switchValuesFor(control),
-            path: control.path,
+            structure: control.structure,
             label: controlRowLabel(control),
           },
           ...releasedRows,
@@ -3453,7 +3453,7 @@ function Content() {
     // disable leaves before their enclosing scripts so every command still has
     // a live target when the bridge processes it.
     const recordIds = [...controls]
-      .sort((left, right) => right.path.length - left.path.length)
+      .sort((left, right) => right.structure.length - left.structure.length)
       .flatMap((control) => control.id === null ? [] : [control.id]);
     void runAction(async () => {
       dropLiveSnapshot();

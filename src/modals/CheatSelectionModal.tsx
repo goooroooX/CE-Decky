@@ -765,7 +765,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           active,
           value,
           switch_values: switchValuesFor(control),
-          path: control.path,
+          structure: control.structure,
           label: controlRowLabel(control),
         }];
       });
@@ -804,7 +804,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           active: null,
           value,
           switch_values: switchValuesFor(control),
-          path: control.path,
+          structure: control.structure,
           label: controlRowLabel(control),
           held_off: true,
         });

@@ -698,8 +698,8 @@ describe("runtime ACK client", () => {
       .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 7 });
 
     await applyRuntimeSelection(10, [
-      { record_id: 10, active: true, value: null, path: ["Parent", "Child"] },
-      { record_id: 20, active: true, value: null, path: ["Parent"] },
+      { record_id: 10, active: true, value: null, structure: ["Parent", "Child"] },
+      { record_id: 20, active: true, value: null, structure: ["Parent"] },
     ]);
 
     expect(api.writeRuntimeCommands.mock.calls[1][1].map((command: any) => command.record_id)).toEqual([20, 10]);
@@ -864,8 +864,8 @@ describe("nested MemoryRecord topology", () => {
       .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 7 });
 
     await applyRuntimeSelection(10, [
-      { record_id: 1, active: false, value: null, path: ["Script"] },
-      { record_id: 2, active: false, value: null, path: ["Script", "Child"] },
+      { record_id: 1, active: false, value: null, structure: ["Script"] },
+      { record_id: 2, active: false, value: null, structure: ["Script", "Child"] },
     ]);
 
     expect(activeCommands()).toEqual([2, 1]);
@@ -888,8 +888,8 @@ describe("nested MemoryRecord topology", () => {
       .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 7 });
 
     await applyRuntimeSelection(10, [
-      { record_id: 2, active: true, value: null, path: ["Script", "Child"] },
-      { record_id: 1, active: true, value: null, path: ["Script"] },
+      { record_id: 2, active: true, value: null, structure: ["Script", "Child"] },
+      { record_id: 1, active: true, value: null, structure: ["Script"] },
     ]);
 
     expect(activeCommands()).toEqual([1, 2]);
@@ -923,8 +923,8 @@ describe("nested MemoryRecord topology", () => {
       .mockResolvedValue({ ok: true, count: 2, next_generation: 8 });
 
     await applyRuntimeSelection(10, [
-      { record_id: 2, active: true, value: null, path: ["Script", "Child"] },
-      { record_id: 1, active: true, value: null, path: ["Script"] },
+      { record_id: 2, active: true, value: null, structure: ["Script", "Child"] },
+      { record_id: 1, active: true, value: null, structure: ["Script"] },
     ]);
 
     expect(activeCommands()).toEqual([1, 2]);
@@ -938,7 +938,7 @@ describe("nested MemoryRecord topology", () => {
     api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: 1, next_generation: 2 });
 
     await expect(applyRuntimeSelection(10, [
-      { record_id: 1, active: true, value: null, path: ["Top"] },
+      { record_id: 1, active: true, value: null, structure: ["Top"] },
     ])).rejects.toThrow(/does not exist in the running table/);
   });
 
@@ -961,8 +961,8 @@ describe("nested MemoryRecord topology", () => {
       .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 7 });
 
     await expect(applyRuntimeSelection(10, [
-      { record_id: 1, active: false, value: null, path: ["Script"] },
-      { record_id: 2, active: false, value: null, path: ["Script", "Child"] },
+      { record_id: 1, active: false, value: null, structure: ["Script"] },
+      { record_id: 2, active: false, value: null, structure: ["Script", "Child"] },
     ])).resolves.toBeTruthy();
   });
 
@@ -1026,7 +1026,7 @@ describe("nested MemoryRecord topology", () => {
       .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 3 });
 
     await expect(applyRuntimeSelection(10, [
-      { record_id: 2, active: false, value: null, path: ["Script", "Child"] },
+      { record_id: 2, active: false, value: null, structure: ["Script", "Child"] },
     ])).resolves.toBeTruthy();
   });
 });

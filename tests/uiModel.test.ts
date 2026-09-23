@@ -26,6 +26,7 @@ import {
   switchOffValues,
   switchValueFor,
   switchesToHoldOff,
+  inactiveAncestorControls,
   switchValuesFor,
   controlsMissingRequiredValue,
   missingRequiredValueReason,
@@ -88,7 +89,7 @@ function control(id: number | null, kind: TableControl["kind"], description = `C
   return {
     id,
     description,
-    path: ["Root", description],
+    path: ["Root", description], structure: ["Root", description],
     variable_type: kind === "script" ? "Auto Assembler Script" : "4 Bytes",
     kind,
     group_header: kind === "group",
@@ -371,12 +372,16 @@ describe("controller UI model", () => {
     // a parent Cheat Engine will never create.
     const parent = control(4, "script", "Master script");
     parent.path = ["Master script"];
+    parent.structure = ["Master script"];
     const twin = control(4, "script", "Master script twin");
     twin.path = ["Elsewhere"];
+    twin.structure = ["Elsewhere"];
     const child = control(5, "value", "Inside");
     child.path = ["Master script", "Inside"];
+    child.structure = ["Master script", "Inside"];
     const sibling = control(6, "value", "Outside");
     sibling.path = ["Outside"];
+    sibling.structure = ["Outside"];
 
     const safe = safeActionableControls(inspection([parent, twin, child, sibling], [4]));
     expect(safe.map((item) => item.id)).toEqual([6]);
@@ -392,14 +397,19 @@ describe("controller UI model", () => {
   it("exposes nested table groups as controller sections without hiding descendants", () => {
     const root = control(1, "group", "Root");
     root.path = ["Root"];
+    root.structure = ["Root"];
     const nested = control(2, "group", "Nested");
     nested.path = ["Root", "Nested"];
+    nested.structure = ["Root", "Nested"];
     const rootValue = control(3, "value", "Root value");
     rootValue.path = ["Root", "Root value"];
+    rootValue.structure = ["Root", "Root value"];
     const nestedValue = control(4, "value", "Nested value");
     nestedValue.path = ["Root", "Nested", "Nested value"];
+    nestedValue.structure = ["Root", "Nested", "Nested value"];
     const outside = control(5, "value", "Outside");
     outside.path = ["Outside"];
+    outside.structure = ["Outside"];
     const table = inspection([root, nested, rootValue, nestedValue, outside]);
     const safe = safeActionableControls(table);
     const sections = controlSections(table, safe);
@@ -468,6 +478,7 @@ describe("controller UI model", () => {
       group.path = path;
       const leaf = control(index * 2 + 2, "value", `Value ${index}`);
       leaf.path = [...path, `Value ${index}`];
+      leaf.structure = [...path, `Value ${index}`];
       return [group, leaf];
     });
     const table = inspection(controls);
@@ -497,6 +508,7 @@ describe("controller UI model", () => {
       group.path = path;
       const leaf = control(index * 2 + 2, "value", `Value ${index}`);
       leaf.path = [...path, `Value ${index}`];
+      leaf.structure = [...path, `Value ${index}`];
       return [group, leaf];
     });
     const table = inspection(controls);
@@ -550,7 +562,7 @@ describe("controller UI model", () => {
     // that reports itself on and is off. The user never typed a value here:
     // they pressed the switch, which is the only control such a record has.
     const flag = {
-      id: 4, description: "bEnableGodMode", path: ["bEnableGodMode"], variable_type: "4 Bytes",
+      id: 4, description: "bEnableGodMode", path: ["bEnableGodMode"], structure: ["bEnableGodMode"], variable_type: "4 Bytes",
       kind: "dropdown" as const, group_header: false, has_assembler_script: false,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]] as [string, string][],
       dropdown_read_only: false, switch_on_value: "1",
@@ -618,8 +630,10 @@ describe("controller UI model", () => {
   it("warns about configured child startup whose actionable parent is not explicitly enabled", () => {
     const parent = control(10, "script", "Parent script");
     parent.path = ["Parent script"];
+    parent.structure = ["Parent script"];
     const child = control(11, "value", "Child value");
     child.path = ["Parent script", "Child value"];
+    child.structure = ["Parent script", "Child value"];
     const controls = [parent, child];
 
     expect(startupParentWarnings(controls, [{ record_id: 11, active: true, value: null }])).toEqual([
@@ -1003,27 +1017,27 @@ describe("compact cheat rows", () => {
   };
 
   it("labels a row with its leaf name and keeps the group as context", () => {
-    const control = { ...base, path: ["Enable 1.0", "Outgoing Damage Scaling?", "Outgoing Damage %"] };
+    const control = { ...base, path: ["Enable 1.0", "Outgoing Damage Scaling?", "Outgoing Damage %"], structure: ["Enable 1.0", "Outgoing Damage Scaling?", "Outgoing Damage %"] };
     expect(controlRowLabel(control)).toBe("Outgoing Damage %");
     expect(controlRowContext(control)).toBe("Enable 1.0 \u203a Outgoing Damage Scaling?");
   });
 
   it("falls back to the description and never renders an empty row label", () => {
-    expect(controlRowLabel({ ...base, path: ["  "] })).toBe("Outgoing Damage %");
-    expect(controlRowLabel({ ...base, path: [], description: "" })).toBe("Record 7");
-    expect(controlRowContext({ ...base, path: ["Only"] })).toBe("");
+    expect(controlRowLabel({ ...base, path: ["  "], structure: ["  "] })).toBe("Outgoing Damage %");
+    expect(controlRowLabel({ ...base, path: [], structure: [], description: "" })).toBe("Record 7");
+    expect(controlRowContext({ ...base, path: ["Only"], structure: ["Only"] })).toBe("");
   });
 
   it("offers typed value editing only where the exact table supports it", () => {
-    expect(controlAcceptsTypedValue({ ...base, path: ["v"] })).toBe(true);
-    expect(controlAcceptsTypedValue({ ...base, path: ["s"], kind: "script" })).toBe(false);
-    expect(controlAcceptsTypedValue({ ...base, path: ["d"], kind: "dropdown" })).toBe(true);
-    expect(controlAcceptsTypedValue({ ...base, path: ["d"], kind: "dropdown", dropdown_read_only: true })).toBe(false);
+    expect(controlAcceptsTypedValue({ ...base, path: ["v"], structure: ["v"] })).toBe(true);
+    expect(controlAcceptsTypedValue({ ...base, path: ["s"], structure: ["s"], kind: "script" })).toBe(false);
+    expect(controlAcceptsTypedValue({ ...base, path: ["d"], structure: ["d"], kind: "dropdown" })).toBe(true);
+    expect(controlAcceptsTypedValue({ ...base, path: ["d"], structure: ["d"], kind: "dropdown", dropdown_read_only: true })).toBe(false);
   });
 
   it("draws a two-entry on/off list as a switch and nothing else", () => {
     const flag = {
-      ...base, path: ["bEnableGodMode"], kind: "dropdown" as const,
+      ...base, path: ["bEnableGodMode"], structure: ["bEnableGodMode"], kind: "dropdown" as const,
       dropdown_values: [["0", "Disabled"], ["1", "Enabled"]] as [string, string][],
       switch_on_value: "1",
     };
@@ -1041,7 +1055,7 @@ describe("compact cheat rows", () => {
 
   it("writes the key the author gave each side, whatever its number", () => {
     const reversed = {
-      ...base, path: ["Immortal"], kind: "dropdown" as const,
+      ...base, path: ["Immortal"], structure: ["Immortal"], kind: "dropdown" as const,
       dropdown_values: [["1040", "Yes"], ["2400", "No"]] as [string, string][],
       switch_on_value: "1040",
     };
@@ -1051,7 +1065,7 @@ describe("compact cheat rows", () => {
 
   it("keeps the list for anything the backend did not call a switch", () => {
     const choice = {
-      ...base, path: ["Body"], kind: "dropdown" as const,
+      ...base, path: ["Body"], structure: ["Body"], kind: "dropdown" as const,
       dropdown_values: [["0", "Male"], ["1", "Female"]] as [string, string][],
       switch_on_value: null,
     };
@@ -1064,17 +1078,17 @@ describe("compact cheat rows", () => {
   });
 
   it("names the switches a script would turn on by itself, and nothing else", () => {
-    const script = { ...base, id: 10, path: ["Enable"], kind: "script" as const, has_assembler_script: true };
+    const script = { ...base, id: 10, path: ["Enable"], structure: ["Enable"], kind: "script" as const, has_assembler_script: true };
     const flag = (id: number, name: string) => ({
-      ...base, id, path: ["Enable", name], kind: "dropdown" as const,
+      ...base, id, path: ["Enable", name], structure: ["Enable", name], kind: "dropdown" as const,
       dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][], switch_on_value: "1",
       declared_default: "1", switch_off_is_safe: true,
     });
     const chosen = flag(11, "God mode");
     const unasked = flag(12, "One hit kill");
-    const multiplier = { ...base, id: 13, path: ["Enable", "Damage"], kind: "value" as const };
+    const multiplier = { ...base, id: 13, path: ["Enable", "Damage"], structure: ["Enable", "Damage"], kind: "value" as const };
     const elsewhere = flag(14, "Other");
-    const held = switchesToHoldOff([script], [script, chosen, unasked, multiplier, { ...elsewhere, path: ["Other", "Other"] }], new Set([11]));
+    const held = switchesToHoldOff([script], [script, chosen, unasked, multiplier, { ...elsewhere, path: ["Other", "Other"], structure: ["Other", "Other"] }], new Set([11]));
     // The one the user asked for is left alone, a value record keeps its own
     // number, and a switch under a different script is not this script's doing.
     expect(held.map((item) => [item.control.id, item.value])).toEqual([[12, "0"]]);
@@ -1084,7 +1098,7 @@ describe("compact cheat rows", () => {
     const unreadable = { ...unasked, id: 16, declared_default: null };
     expect(switchesToHoldOff([script], [script, leftOff, unreadable], new Set())).toEqual([]);
     // A script with nothing under it asks for nothing.
-    expect(switchesToHoldOff([{ ...base, id: 20, path: ["Alone"], kind: "script" as const }], [script, chosen], new Set())).toEqual([]);
+    expect(switchesToHoldOff([{ ...base, id: 20, path: ["Alone"], structure: ["Alone"], kind: "script" as const }], [script, chosen], new Set())).toEqual([]);
   });
 
   it("leaves on a cheat whose own code was not read as surviving being switched off", () => {
@@ -1094,9 +1108,9 @@ describe("compact cheat rows", () => {
     // say a cheat table was involved. So the write only happens where the
     // backend read that code and found it survives, and what stays on is named
     // rather than counted.
-    const script = { ...base, id: 10, path: ["Enable"], kind: "script" as const, has_assembler_script: true };
+    const script = { ...base, id: 10, path: ["Enable"], structure: ["Enable"], kind: "script" as const, has_assembler_script: true };
     const flag = (id: number, name: string, safe: boolean) => ({
-      ...base, id, path: ["Enable", name], kind: "dropdown" as const,
+      ...base, id, path: ["Enable", name], structure: ["Enable", name], kind: "dropdown" as const,
       dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][], switch_on_value: "1",
       declared_default: "1", switch_off_is_safe: safe,
     });
@@ -1121,7 +1135,7 @@ describe("compact cheat rows", () => {
 
   it("counts what a table switches on by itself, and says nothing when it does not", () => {
     const flag = (id: number, declared: string | null) => ({
-      ...base, id, path: ["Enable", `Flag ${id}`], kind: "dropdown" as const,
+      ...base, id, path: ["Enable", `Flag ${id}`], structure: ["Enable", `Flag ${id}`], kind: "dropdown" as const,
       dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][],
       switch_on_value: "1", declared_default: declared,
     });
@@ -1134,7 +1148,7 @@ describe("compact cheat rows", () => {
     // A table that switches nothing on by itself has no finding to report, and
     // neither has one whose declarations could not be read at all.
     expect(scriptDefaultsOn(inspection([flag(1, "0"), flag(2, null)]))).toBe(null);
-    expect(scriptDefaultsOn(inspection([{ ...base, id: 9, path: ["Health"] }]))).toBe(null);
+    expect(scriptDefaultsOn(inspection([{ ...base, id: 9, path: ["Health"], structure: ["Health"] }]))).toBe(null);
     expect(scriptDefaultsOn(null)).toBe(null);
     // A record the picker will not draw is not counted on the screen that
     // promises how many the picker holds.
@@ -1293,7 +1307,7 @@ describe("choosing from a value list a real table declares", () => {
 
 describe("pinned controls on the panel", () => {
   const control = (id: number, leaf: string) => ({
-    id, description: leaf, path: ["Enable 1.0", leaf], variable_type: "4 Bytes", kind: "value" as const,
+    id, description: leaf, path: ["Enable 1.0", leaf], structure: ["Enable 1.0", leaf], variable_type: "4 Bytes", kind: "value" as const,
     group_header: false, has_assembler_script: false, dropdown_values: [] as [string, string][], dropdown_read_only: false,
   });
   const controls = [control(7, "Health"), control(8, "Ammo"), control(9, "Money")];
@@ -1330,7 +1344,7 @@ describe("pinned controls on the panel", () => {
       declared_default: "1",
       switch_off_is_safe: false,
     };
-    const safe = { ...flag, id: 12, description: "Damage", path: ["Enable 1.0", "Damage"], switch_off_is_safe: true };
+    const safe = { ...flag, id: 12, description: "Damage", path: ["Enable 1.0", "Damage"], structure: ["Enable 1.0", "Damage"], switch_off_is_safe: true };
     const rows = pinnedCheatRows([flag, safe], [11, 12], [
       { generation: 1, record_id: 11, ok: true, active: true, value: "1", error: null },
       { generation: 1, record_id: 12, ok: true, active: true, value: "1", error: null },
@@ -1350,7 +1364,7 @@ describe("pinned controls on the panel", () => {
 
 describe("value input a cheat cannot work without", () => {
   const base = {
-    id: 7, description: "Damage", path: ["Damage"], variable_type: "Float", kind: "value" as const,
+    id: 7, description: "Damage", path: ["Damage"], structure: ["Damage"], variable_type: "Float", kind: "value" as const,
     group_header: false, has_assembler_script: false, dropdown_values: [] as [string, string][],
     dropdown_read_only: false,
   };
@@ -1418,7 +1432,7 @@ describe("value input a cheat cannot work without", () => {
 
 describe("a cheat switched on without the value it needs", () => {
   const control = (id: number, kind: string, over: Record<string, unknown> = {}) => ({
-    id, description: `Cheat ${id}`, path: ["Enable", `Cheat ${id}`], variable_type: "4 Bytes",
+    id, description: `Cheat ${id}`, path: ["Enable", `Cheat ${id}`], structure: ["Enable", `Cheat ${id}`], variable_type: "4 Bytes",
     kind, group_header: false, has_assembler_script: false,
     dropdown_values: [], dropdown_read_only: false, ...over,
   }) as any;
@@ -1555,10 +1569,10 @@ describe("Executable-content review", () => {
   // A table builds its cheats inside scripts: `Enable 1.0` creates the records,
   // an inner script creates the ones under it, and the cheats are the leaves.
   const script = (id: number, path: string[]): TableControl => ({
-    ...control(id, "script", path[path.length - 1]), path,
+    ...control(id, "script", path[path.length - 1]), path, structure: path,
   });
   const leaf = (id: number, path: string[]): TableControl => ({
-    ...control(id, "value", path[path.length - 1]), path,
+    ...control(id, "value", path[path.length - 1]), path, structure: path,
   });
   const controls: TableControl[] = [
     script(1, ["Enable 1.0"]),
@@ -1572,7 +1586,7 @@ describe("Executable-content review", () => {
     // game and duplicates what CE Decky already did, so it belongs with the
     // machinery. But nothing is ever switched on through it, so it must not
     // join the enclosing scripts that Apply turns on to reach a cheat.
-    const attach: TableControl = { ...control(9, "script", "game attach (f2)"), path: ["game attach (f2)"], attach_only: true };
+    const attach: TableControl = { ...control(9, "script", "game attach (f2)"), path: ["game attach (f2)"], structure: ["game attach (f2)"], attach_only: true };
     const withAttach = [...controls, attach];
 
     expect([...scriptListedControlIds(withAttach)].sort((a, b) => a - b)).toEqual([1, 2, 9]);
@@ -1971,5 +1985,39 @@ describe("selfTestSummary", () => {
     expect(selfTestCheckLabel("system_journal")).toBe("System journal");
     expect(selfTestCheckLabel("cheat_engine_identity")).toBe("Cheat engine identity");
     expect(selfTestCheckLabel("")).toBe("unnamed check");
+  });
+});
+
+
+describe("records told apart by where they sit", () => {
+  // Two sibling scripts both called `Enable`, each with a flag it declares on
+  // and a cheat under it. By name the two branches are the same records.
+  const twin = (id: number, kind: TableControl["kind"], path: string[], structure: string[]): TableControl => ({
+    ...control(id, kind, path[path.length - 1]), path, structure,
+  });
+  const flag = (id: number, structure: string[]): TableControl => ({
+    ...twin(id, "dropdown", ["Enable", "Flag"], structure),
+    dropdown_values: [["0", "Off"], ["1", "On"]], switch_on_value: "1", declared_default: "1", switch_off_is_safe: true,
+  });
+  const firstScript = twin(1, "script", ["Enable"], ["0"]);
+  const secondScript = twin(4, "script", ["Enable"], ["1"]);
+  const controls = [
+    firstScript, flag(2, ["0", "0"]), twin(3, "value", ["Enable", "Cheat"], ["0", "1"]),
+    secondScript, flag(5, ["1", "0"]), twin(6, "value", ["Enable", "Cheat"], ["1", "1"]),
+  ];
+
+  it("switches on the script a cheat sits in, not one with the same name", () => {
+    const cheat = controls.find((item) => item.id === 6)!;
+    const off = new Map<number, boolean | null>([[1, false], [4, false]]);
+    expect(inactiveAncestorControls(cheat, controls, off).map((item) => item.id)).toEqual([4]);
+  });
+
+  it("holds off only the flags of the script this press starts", () => {
+    expect(switchesToHoldOff([secondScript], controls, new Set([6])).map((item) => item.control.id)).toEqual([5]);
+  });
+
+  it("keeps a script whose own cheat is on, whatever its twin has on", () => {
+    const active = new Map<number, boolean | null>([[1, true], [3, false], [4, true], [6, true]]);
+    expect(unusedActiveScripts(controls, active)).toEqual([1]);
   });
 });

@@ -235,7 +235,14 @@ export interface TableSourceInspection {
 export interface TableControl {
   id: number | null;
   description: string;
+  /** What the table calls this record and the groups above it, for showing only. */
   path: string[];
+  /**
+   * Where the record sits, one token per level: an equal prefix is the same
+   * record and nothing else. Two siblings may share a name, so every decision
+   * about which record encloses which is taken from this, never from `path`.
+   */
+  structure: string[];
   variable_type: string | null;
   kind: "group" | "script" | "dropdown" | "value";
   group_header: boolean;

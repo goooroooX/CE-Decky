@@ -79,6 +79,9 @@ class StartupAction:
     # descriptor so that whichever eligible record actually transitions can be
     # the one reported, rather than one chosen before startup ran.
     proof: bool = False
+    # Where the record sits, which is what decides which action encloses which;
+    # `path` names it. Not in the descriptor: only this plan reads it.
+    structure: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1573,12 +1576,16 @@ def _enclosing_script_ids(control, controls: dict[int, object]) -> list[int]:
 
     A Cheat Engine record inside a script does not exist until that script has
     run, so restoring a remembered child without its parents restores nothing.
+    Found by where they sit rather than by what they are called: two sibling
+    scripts may both be called `Enable`, and the child of the second is not
+    created by the first.
     """
     found: list[int] = []
-    for depth in range(1, len(control.path)):
-        prefix = tuple(control.path[:depth])
+    structure = tuple(control.structure)
+    for depth in range(1, len(structure)):
+        prefix = structure[:depth]
         for candidate_id, candidate in controls.items():
-            if candidate_id == control.id or tuple(candidate.path) != prefix:
+            if candidate_id == control.id or tuple(candidate.structure) != prefix:
                 continue
             if candidate.kind == "group" or candidate.group_header:
                 continue
@@ -1709,15 +1716,17 @@ def _script_default_switches(
     ]
     found: dict[int, object] = {}
     for script in switched_on:
-        script_path = getattr(script, "path", ())
+        # Below it by where it sits, never by name: a sibling script with the
+        # same name brings its own flags, not this one's.
+        script_at = tuple(getattr(script, "structure", ()))
         for record_id, control in controls.items():
             # A record whose ID this table uses twice is refused for the plan it
             # is named in, and this must not name one: an addition of ours would
             # then refuse a whole Auto-load the user's own selection could run.
             if record_id in named or record_id in ambiguous or control is script:
                 continue
-            path = getattr(control, "path", ())
-            if len(path) <= len(script_path) or tuple(path[:len(script_path)]) != tuple(script_path):
+            at = tuple(getattr(control, "structure", ()))
+            if len(at) <= len(script_at) or at[:len(script_at)] != script_at:
                 continue
             on = getattr(control, "switch_on_value", None)
             values = getattr(control, "dropdown_values", ())
@@ -1871,18 +1880,22 @@ def _startup_actions(preferences: Iterable[StartupPreference], inspection: Table
         if preference.value is not None:
             if control.dropdown_read_only and preference.value not in {item[0] for item in control.dropdown_values}:
                 raise ValueError(f"startup value for MemoryRecord {preference.record_id} is outside read-only dropdown")
-            actions.append(StartupAction(preference.record_id, "value", preference.value, control.path))
+            actions.append(StartupAction(
+                preference.record_id, "value", preference.value, control.path, structure=control.structure,
+            ))
         if preference.active is not None:
-            actions.append(StartupAction(preference.record_id, "active", "1" if preference.active else "0", control.path))
+            actions.append(StartupAction(
+                preference.record_id, "active", "1" if preference.active else "0", control.path, structure=control.structure,
+            ))
     kind_rank = {"value": 0, "active": 1}
-    actions.sort(key=lambda item: (len(item.path), tuple(part.casefold() for part in item.path), kind_rank[item.kind], item.record_id))
+    actions.sort(key=lambda item: (len(item.path), tuple(part.casefold() for part in item.path), item.structure, kind_rank[item.kind], item.record_id))
     # An activation with another activation of this plan nested inside it is the
     # enclosing script that cheat needs, not the cheat: switching it on proves
     # nothing on its own. What is left is what a successful startup may prove.
     activations = [action for action in actions if action.kind == "active" and action.value == "1"]
     enclosing = {
         action.record_id for action in activations
-        if any(len(other.path) > len(action.path) and other.path[:len(action.path)] == action.path
+        if any(len(other.structure) > len(action.structure) and other.structure[:len(action.structure)] == action.structure
                for other in activations)
     }
     eligible = {action.record_id for action in activations} - enclosing

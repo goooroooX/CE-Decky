@@ -741,17 +741,17 @@ export function startupParentWarnings(
   startup: readonly StartupPreference[],
 ): StartupParentWarning[] {
   const configured = new Map(startup.map((preference) => [preference.record_id, preference]));
-  const controlsByPath = new Map<string, TableControl[]>();
+  const controlsByPlace = new Map<string, TableControl[]>();
   for (const control of controls) {
     if (control.id === null) continue;
-    const key = JSON.stringify(control.path);
-    controlsByPath.set(key, [...(controlsByPath.get(key) ?? []), control]);
+    const key = JSON.stringify(control.structure);
+    controlsByPlace.set(key, [...(controlsByPlace.get(key) ?? []), control]);
   }
   const warnings: StartupParentWarning[] = [];
   for (const child of controls) {
     if (child.id === null || !configured.has(child.id)) continue;
-    for (let depth = 1; depth < child.path.length; depth += 1) {
-      const parents = controlsByPath.get(JSON.stringify(child.path.slice(0, depth))) ?? [];
+    for (let depth = 1; depth < child.structure.length; depth += 1) {
+      const parents = controlsByPlace.get(JSON.stringify(child.structure.slice(0, depth))) ?? [];
       for (const parent of parents) {
         if (parent.id === child.id || configured.get(parent.id!)?.active === true) continue;
         warnings.push({ childId: child.id, parentId: parent.id! });
@@ -799,20 +799,28 @@ export function stepPage(page: number, total: number, pageSize: number, directio
  * failure. A dependency that cannot be addressed makes the descendant
  * unactionable, exactly as the backend's startup plan now refuses it.
  */
+/** Whether `outer` encloses `inner`, by where they sit rather than by what they are called. */
+export function encloses(outer: readonly string[], inner: readonly string[]): boolean {
+  return outer.length < inner.length && outer.every((token, index) => inner[index] === token);
+}
+
+function sameRecordPlace(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((token, index) => right[index] === token);
+}
+
 function hasUnaddressableEnclosingScript(
   control: TableControl,
   controls: readonly TableControl[],
   ambiguous: ReadonlySet<number>,
 ): boolean {
-  for (let depth = 1; depth < control.path.length; depth += 1) {
-    const prefix = control.path.slice(0, depth);
+  for (let depth = 1; depth < control.structure.length; depth += 1) {
+    const prefix = control.structure.slice(0, depth);
     const ancestor = controls.find((candidate) =>
       candidate.id !== null
       && candidate.id !== control.id
       && candidate.kind !== "group"
       && !candidate.group_header
-      && candidate.path.length === prefix.length
-      && candidate.path.every((segment, index) => segment === prefix[index]),
+      && sameRecordPlace(candidate.structure, prefix),
     );
     if (ancestor && ancestor.id !== null && ambiguous.has(ancestor.id)) return true;
   }
@@ -1910,8 +1918,9 @@ function switchCandidates(
     if (script.id === null) continue;
     for (const control of controls) {
       if (control.id === null || control.id === script.id || requested.has(control.id)) continue;
-      if (control.path.length <= script.path.length) continue;
-      if (!script.path.every((segment, index) => control.path[index] === segment)) continue;
+      // Below it by where it sits: a sibling script with the same name brings
+      // its own flags, not this one's.
+      if (!encloses(script.structure, control.structure)) continue;
       // Only a flag this script declares as on: its address is a symbol the
       // script itself allocates, so it exists once the script has run, and
       // there is nothing to hold off about one the script leaves off anyway.
@@ -2552,13 +2561,13 @@ export function inactiveAncestorControl(
 export function enclosingControlIds(controls: readonly TableControl[]): Set<number> {
   const prefixes = new Set<string>();
   for (const control of controls) {
-    for (let depth = 1; depth < control.path.length; depth += 1) {
-      prefixes.add(JSON.stringify(control.path.slice(0, depth)));
+    for (let depth = 1; depth < control.structure.length; depth += 1) {
+      prefixes.add(JSON.stringify(control.structure.slice(0, depth)));
     }
   }
   const ids = new Set<number>();
   for (const control of controls) {
-    if (control.id !== null && prefixes.has(JSON.stringify(control.path))) ids.add(control.id);
+    if (control.id !== null && prefixes.has(JSON.stringify(control.structure))) ids.add(control.id);
   }
   return ids;
 }
@@ -2601,7 +2610,7 @@ export function unusedActiveScripts(
   const enclosing = enclosingControlIds(controls);
   const scripts = controls
     .filter((control): control is TableControl & { id: number } => control.id !== null && enclosing.has(control.id))
-    .sort((left, right) => right.path.length - left.path.length);
+    .sort((left, right) => right.structure.length - left.structure.length);
   const active = new Map(activeById);
   const released: number[] = [];
   for (const script of scripts) {
@@ -2609,8 +2618,7 @@ export function unusedActiveScripts(
     const used = controls.some((candidate) =>
       candidate.id !== null
       && candidate.id !== script.id
-      && candidate.path.length > script.path.length
-      && script.path.every((segment, index) => candidate.path[index] === segment)
+      && encloses(script.structure, candidate.structure)
       && active.get(candidate.id) === true);
     if (used) continue;
     active.set(script.id, false);
@@ -2633,13 +2641,12 @@ export function inactiveAncestorControls(
   activeById: ReadonlyMap<number, boolean | null>,
 ): TableControl[] {
   const chain: TableControl[] = [];
-  for (let depth = 1; depth < control.path.length; depth += 1) {
-    const prefix = control.path.slice(0, depth);
+  for (let depth = 1; depth < control.structure.length; depth += 1) {
+    const prefix = control.structure.slice(0, depth);
     const ancestor = controls.find((candidate) =>
       candidate.id !== null
       && candidate.id !== control.id
-      && candidate.path.length === prefix.length
-      && candidate.path.every((segment, index) => segment === prefix[index]),
+      && sameRecordPlace(candidate.structure, prefix),
     );
     if (ancestor && ancestor.id !== null && activeById.get(ancestor.id) === false) chain.push(ancestor);
   }
