@@ -1338,16 +1338,16 @@ def test_an_install_waits_at_its_boundary_until_its_owner_admits_it(tmp_path: Pa
     starts the installer before the owner has published the install.
     """
     monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_POLL_SECONDS", 0.01)
-    answers = iter([False, False, True])
+    answers = iter(["a stop is running", "a stop is running", None])
     seen: list[str] = []
     manager = _manager(tmp_path, FakeNetwork())
 
     def admit(commit):
         seen.append(str(manager._operation["state"]))
-        if not next(answers):
-            return False
-        commit()
-        return True
+        reason = next(answers)
+        if reason is None:
+            commit()
+        return reason
     manager._admit_install = admit
 
     async def scenario():
@@ -1366,7 +1366,7 @@ def test_an_install_its_owner_never_admits_is_not_installed(tmp_path: Path, spaw
     monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_WAIT_SECONDS", 0.05)
     monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_POLL_SECONDS", 0.01)
     manager = _manager(tmp_path, FakeNetwork())
-    manager._admit_install = lambda commit: False
+    manager._admit_install = lambda commit: "Cheat Engine is still being stopped in a game"
 
     async def scenario():
         started = await manager.start()

@@ -92,10 +92,11 @@ SYSTEM_INTERPRETERS = ("/usr/bin/python3", "/usr/local/bin/python3")
 # timeout; this is only the guarantee that a screen is answered at all.
 CHECK_JOIN_TIMEOUT_SECONDS = 90.0
 
-# How long a verified update waits at the install boundary for a Cheat Engine
-# stop to finish, and how often it asks. A stop is bounded by its quiesce wait
-# and its termination grace, about half a minute between them; one that has
-# not finished by this is not one to replace the backend underneath.
+# How long a verified update waits at the install boundary for what the owner
+# holds only in this process - a Cheat Engine stop, a hold not yet saved - and
+# how often it asks. A stop is bounded by its quiesce wait and its termination
+# grace, about half a minute between them; what has not cleared by this is not
+# something to replace the backend underneath.
 INSTALL_ADMISSION_WAIT_SECONDS = 60.0
 INSTALL_ADMISSION_POLL_SECONDS = 0.5
 
@@ -109,9 +110,9 @@ _SETTLED_STATES = frozenset({"failed", "cancelled"})
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 
 
-def _admit_always(commit: Callable[[], None]) -> bool:
+def _admit_always(commit: Callable[[], None]) -> str | None:
     commit()
-    return True
+    return None
 
 
 def system_interpreter() -> str | None:
@@ -140,12 +141,12 @@ class PluginUpdateManager:
         current_version: str,
         auto_check: Callable[[], bool],
         last_search_activity: Callable[[], float],
-        admit_install: Callable[[Callable[[], None]], bool] | None = None,
+        admit_install: Callable[[Callable[[], None]], str | None] | None = None,
     ) -> None:
         self.paths = paths
         # Asked at the one point after which this backend will be replaced. It
-        # runs `commit`, which publishes `installing`, and answers True only
-        # when the owner holds nothing a replacement would lose. The owner
+        # runs `commit`, which publishes `installing`, only when the owner holds
+        # nothing a replacement would lose, and otherwise answers why not. The owner
         # decides that and commits under its own lock, so what it refuses once
         # the install is published and what it makes the install wait for are
         # one decision.
@@ -1240,27 +1241,25 @@ class PluginUpdateManager:
     async def _await_install_admission(self, operation_id: str) -> None:
         """Publish `installing` only where the owner says this backend may be replaced.
 
-        A stop that has ended Cheat Engine and not yet written down what it
-        left is held only in this process, and the install replaces it. So the
-        update waits for it here, still cancellable, and gives up rather than
-        install over one that does not finish.
+        What the owner holds only in this process - a Cheat Engine stop that
+        has not yet written down what it left, a hold whose write failed - is
+        lost with it, and the install replaces it. So the update waits here,
+        still cancellable, says what it is waiting for, and gives up with that
+        reason rather than install over it.
         """
         def commit() -> None:
             self._set(operation_id, state="installing", message="Installing through Decky; Steam's interface will restart")
 
         deadline = time.monotonic() + INSTALL_ADMISSION_WAIT_SECONDS
-        waited = False
-        while not self._admit_install(commit):
-            if not waited:
-                waited = True
-                self._set(operation_id, message="Waiting for Cheat Engine to finish stopping before installing")
-                log_activity(self.logger, "info", "update.install_waiting_for_stop", operation=operation_id[:12])
+        waiting_for: str | None = None
+        while (reason := self._admit_install(commit)) is not None:
+            if reason != waiting_for:
+                waiting_for = reason
+                self._set(operation_id, message=f"Waiting to install: {reason}")
+                log_activity(self.logger, "info", "update.install_waiting", operation=operation_id[:12], reason=reason)
             if time.monotonic() >= deadline:
-                log_activity(self.logger, "warning", "update.install_refused_stop_in_progress", operation=operation_id[:12])
-                raise UpdateError(
-                    "Cheat Engine was still being stopped in a game, so the update was not installed; "
-                    "update again once it has stopped"
-                )
+                log_activity(self.logger, "warning", "update.install_refused", operation=operation_id[:12], reason=reason)
+                raise UpdateError(f"the update was not installed because {reason}; update again once that has cleared")
             await asyncio.sleep(INSTALL_ADMISSION_POLL_SECONDS)
 
     def replacement_committed(self) -> bool:

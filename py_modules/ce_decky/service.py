@@ -4630,21 +4630,39 @@ class PluginService:
                 del self._run_transitions[app_id]
                 raise
 
-    def _admit_plugin_install(self, commit: Callable[[], None]) -> bool:
-        """Let the updater cross into a replacement of this backend, or not yet.
+    def _admit_plugin_install(self, commit: Callable[[], None]) -> str | None:
+        """Let the updater cross into a replacement of this backend, or say why not yet.
 
-        A stop's transition exists only in this process until its verdict is
-        on disk, and the old Cheat Engine may already be gone: a replacement
-        then would leave neither the Cheat Engine nor the hold to refuse a start
-        over what it left. `commit` publishes the install under the same lock a
-        stop takes to begin, so no stop begins after it and none is running
-        when it happens.
+        Nothing whose authority exists only in this process may be lost to the
+        replacement. A stop's transition is that until its verdict is on disk,
+        and the old Cheat Engine may already be gone: a replacement then would
+        leave neither the Cheat Engine nor the hold to refuse a start over what
+        it left. A hold whose write failed is that too, for as long as it
+        stays unsaved, so the same holds are written again here and the install
+        waits while they still cannot be. A file that could not be read is not:
+        it refuses every start in the next backend exactly as it does in this
+        one. `commit` publishes the install under the same lock a stop takes to
+        begin, so no stop begins after it and none is running when it happens.
         """
         with self._mutation_lock:
             if self._run_transitions:
-                return False
-            commit()
-            return True
+                return "Cheat Engine is still being stopped in a game"
+            with self._run_holds_lock:
+                if self._run_holds_unsaved is not None and self._run_holds_unreadable is None:
+                    # Asked again on every poll of the wait, and the failure
+                    # was logged when it happened, so a retry that fails the
+                    # same way adds nothing to the log but its outcome.
+                    try:
+                        self.game_run_holds.save(self._run_holds)
+                    except (OSError, ValueError) as exc:
+                        self._run_holds_unsaved = str(exc)[:256] or type(exc).__name__
+                    else:
+                        self._run_holds_unsaved = None
+                        log_activity(self.logger, "info", "run_holds.saved_on_retry")
+                if self._run_holds_unsaved is not None:
+                    return "CE Decky could not save which games have to be restarted, and installing now would forget them"
+                commit()
+        return None
 
     def _end_run_transition(self, app_id: int, token: object) -> None:
         with self._mutation_lock:

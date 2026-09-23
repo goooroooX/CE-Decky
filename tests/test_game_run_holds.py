@@ -533,7 +533,7 @@ def test_no_update_replaces_the_backend_while_a_stop_is_deciding_what_it_left(tm
     committed: list[str] = []
     admit = service.plugin_updates._admit_install
 
-    async def scenario() -> tuple[bool, object]:
+    async def scenario() -> tuple[str | None, object]:
         ended, release = _paused_stop(service, monkeypatch, confirmed=False)
         stopping = asyncio.create_task(service.stop_ce_for_game(10))
         await ended.wait()
@@ -543,10 +543,10 @@ def test_no_update_replaces_the_backend_while_a_stop_is_deciding_what_it_left(tm
         return during, service._current_run_holds(10).get("dirty")
 
     during, hold = asyncio.run(scenario())
-    assert during is False and committed == []
+    assert during == "Cheat Engine is still being stopped in a game" and committed == []
     assert hold is not None
     # With the verdict held, the install goes ahead.
-    assert admit(lambda: committed.append("installing")) is True
+    assert admit(lambda: committed.append("installing")) is None
     assert committed == ["installing"]
 
 
@@ -578,3 +578,53 @@ def test_no_stop_begins_once_an_install_has_been_handed_on(tmp_path: Path, monke
     # Nothing installing: a stop is what it always was.
     monkeypatch.setattr(service.plugin_updates, "replacement_committed", lambda: False)
     assert asyncio.run(service.stop_ce_for_game(10))["stopped"] is True
+
+
+@pytest.mark.parametrize("hold_autoload, confirmed", [(False, False), (True, True)])
+def test_no_update_replaces_the_backend_while_a_hold_is_held_only_in_memory(
+    tmp_path: Path, monkeypatch, hold_autoload: bool, confirmed: bool,
+):
+    """A hold whose write failed is in force here and nowhere else.
+
+    The next backend reads the file, which does not have it: a dirty game would
+    admit a start over what the stop left, and a game the user stopped would
+    have Auto-load start it straight back. The install waits for the same holds
+    to be written, and goes ahead once they are.
+    """
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    saved = service.game_run_holds.save
+
+    def full_disk(_holds):
+        raise OSError("no space left on device")
+    monkeypatch.setattr(service.game_run_holds, "save", full_disk)
+    _stopping(service, confirmed=confirmed)
+    asyncio.run(service.stop_ce_for_game(10, None, hold_autoload))
+    kind = "stopped" if hold_autoload else "dirty"
+    assert kind in service._current_run_holds(10)
+    assert service._run_holds_unsaved is not None and service._run_transitions == {}
+    committed: list[str] = []
+    reason = service.plugin_updates._admit_install(lambda: committed.append("installing"))
+    assert reason is not None and "could not save which games" in reason and committed == []
+
+    monkeypatch.setattr(service.game_run_holds, "save", saved)
+    assert service.plugin_updates._admit_install(lambda: committed.append("installing")) is None
+    assert committed == ["installing"] and service._run_holds_unsaved is None
+    # What the next backend reads is the hold this one was keeping.
+    assert kind in _service(tmp_path)._current_run_holds(10)
+
+
+def test_a_hold_already_on_disk_does_not_hold_an_update(tmp_path: Path, monkeypatch):
+    """The next backend reads the same hold and goes on refusing, so nothing is lost."""
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    _stopping(service, confirmed=False)
+    asyncio.run(service.stop_ce_for_game(10))
+    assert "dirty" in service._current_run_holds(10)
+    assert service.plugin_updates._admit_install(lambda: None) is None
