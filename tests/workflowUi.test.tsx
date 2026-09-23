@@ -162,7 +162,12 @@ function renderContent() { const plugin = (pluginFactory as any)(); return rende
  * what its button does.
  */
 async function pressLocalFile() {
-  fireEvent.click(screen.getByRole("button", { name: "Manage" }));
+  // Pressed once it can be. A press on a Manage the panel still holds disabled
+  // while it loads does nothing at all, and on a slow CI runner that was the
+  // press this case made, so the picker it waited for never opened.
+  const manage = await screen.findByRole("button", { name: "Manage" });
+  await waitFor(() => expect((manage as HTMLButtonElement).disabled).toBe(false), { timeout: 4000 });
+  fireEvent.click(manage);
   // Waited for rather than read once. What the press opens depends on what the
   // panel has finished loading, and a case that opens it while the first status
   // read is still in flight found nothing there and threw - which on CI failed
@@ -172,7 +177,7 @@ async function pressLocalFile() {
     const found = [...modalState.nodes].reverse().find((node: any) => node?.props?.onOpenLocalFile);
     if (!found) throw new Error("the table picker did not open");
     return found;
-  });
+  }, { timeout: 4000 });
   await act(async () => {
     picker.props.onClose();
     picker.props.onOpenLocalFile();
