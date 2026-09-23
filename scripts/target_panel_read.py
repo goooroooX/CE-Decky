@@ -197,7 +197,8 @@ _READ = """
       rows.push({
         testid: "(untagged)",
         text: loose.map((el) => text(el)).join(" / ").slice(0, 300),
-        height: 0,
+        // Not one box, so no height of its own to report.
+        height: null,
         controls: loose.map(control),
         clipped: 0,
       });
@@ -940,7 +941,7 @@ def _print(answer: dict[str, Any], testid: str | None, metrics: bool) -> None:
             if testid and row.get("testid") != testid:
                 continue
             marks = []
-            if metrics:
+            if metrics and row.get("height") is not None:
                 marks.append(f"{row.get('height')}px")
             if row.get("clipped"):
                 marks.append(f"{row['clipped']} clipped")
