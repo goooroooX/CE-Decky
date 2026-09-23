@@ -32,6 +32,7 @@ from .ce_archive_import import (
 )
 from .ce_launch import (
     CELaunchSupervisor,
+    SpawnGate,
     capture_run_identities,
     run_identities_gone,
     game_target_states,
@@ -4889,7 +4890,7 @@ class PluginService:
                 # alive, so this is the only identity whose disappearance can
                 # prove the game itself is gone.
                 target_process=target_process,
-                commit=lambda spawn: self._commit_launch(prepared, automatic, spawn),
+                spawn_gate=self._spawn_gate(prepared, automatic),
             )
         finally:
             await drained_to_thread(self._release_launch_reservation, app_id)
@@ -5243,23 +5244,29 @@ class PluginService:
                 raise ValueError("prepared session changed while the launch was being authorized")
             self._assert_no_live_owned_launch(prepared.app_id, allow_reservation=True)
 
-    def _commit_launch(self, prepared, automatic: bool | None, spawn: Callable[[], dict[str, object]]) -> dict[str, object]:
-        """Spawn Cheat Engine only if this start is still one the game may have.
+    def _spawn_gate(self, prepared, automatic: bool | None) -> SpawnGate:
+        """What a start has to still be true of at the fork of Cheat Engine itself.
 
-        Admission happened before the session was prepared and the Proton tool
-        found, and authority can change in that time: Auto-load switched off,
-        a stop begun, a hold taken. All of those are taken under the mutation
-        lock, and so is this, around the spawn itself, so none of them can come
-        between the last check and the process appearing.
+        Admission happened before the session was prepared, the Proton tool
+        found and the launch published, and authority can change in all of
+        that: Auto-load switched off, a stop begun, a hold taken, the session
+        replaced. Each of those is taken under the mutation lock, and the
+        supervisor runs this under the same lock around the fork, so none of
+        them can come between the last check and the process appearing.
         """
-        with self._mutation_lock:
-            self._revalidate_launch_reservation(prepared)
+        def check() -> None:
+            current = self.session_store.load_current(prepared.app_id)
             try:
+                if current is None or current.session_id != prepared.session_id:
+                    raise ValueError("prepared session changed while Cheat Engine was being started")
                 self._admit_launch(prepared.app_id, automatic)
-            except ValueError:
-                log_activity(self.logger, "info", "launch.withdrawn_before_spawn", app_id=prepared.app_id)
+            except ValueError as exc:
+                log_activity(
+                    self.logger, "info", "launch.withdrawn_before_spawn", app_id=prepared.app_id,
+                    reason=str(exc)[:160],
+                )
                 raise
-            return spawn()
+        return SpawnGate(lock=self._mutation_lock, check=check)
 
     def _release_launch_reservation(self, app_id: int) -> None:
         with self._mutation_lock:

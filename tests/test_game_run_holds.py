@@ -794,6 +794,8 @@ def _launchable(service: PluginService, monkeypatch) -> None:
         _prepared(), Path("cheatengine.exe"), "b" * 64, "game.exe"))
     monkeypatch.setattr(service, "_revalidate_launch_reservation", lambda prepared: None)
     monkeypatch.setattr(service_module, "discover_proton_tools", lambda home: ())
+    # The session this start prepared is still the game's when it reaches the fork.
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: _prepared())
 
 
 def test_a_start_that_does_not_say_it_was_pressed_is_not_made_where_auto_load_is_off(tmp_path: Path, monkeypatch):
@@ -810,8 +812,12 @@ def test_a_start_that_does_not_say_it_was_pressed_is_not_made_where_auto_load_is
     _launchable(service, monkeypatch)
     spawned: list[bool | None] = []
 
-    async def start_attached(*_args, commit=None, **_kwargs):
-        return commit(lambda: spawned.append(True) or {"operation_id": "op", "app_id": 10, "state": "connected"})
+    async def start_attached(*_args, spawn_gate=None, **_kwargs):
+        # The supervisor's own shape: the gate is read under its lock, around the fork.
+        with spawn_gate.lock:
+            spawn_gate.check()
+            spawned.append(True)
+        return {"operation_id": "op", "app_id": 10, "state": "connected"}
     monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
 
     with pytest.raises(ValueError) as refused:
@@ -827,11 +833,13 @@ def test_a_start_that_does_not_say_it_was_pressed_is_not_made_where_auto_load_is
 
 @pytest.mark.parametrize("withdrawn_by", ["auto_load_off", "stop"])
 def test_an_auto_load_admitted_before_its_authority_went_is_not_spawned(tmp_path: Path, monkeypatch, withdrawn_by: str):
-    """Admission comes before the session and the Proton tool, and a start is not made on it alone.
+    """Admission comes before the session, the Proton tool and the launch, and a start is not made on it alone.
 
     Switching Auto-load off, or a Stop beginning, while an Auto-load is still
-    on its way to the spawn is the user withdrawing exactly that start; it is
-    checked again, under the same lock those take, around the spawn itself.
+    on its way to the fork is the user withdrawing exactly that start. The
+    service's gate is read again, under the same lock those take, around the
+    fork itself; `tests/test_ce_launch.py` holds the supervisor to reading it
+    there.
     """
     service = _service(tmp_path)
     _armed(service)
@@ -842,10 +850,14 @@ def test_an_auto_load_admitted_before_its_authority_went_is_not_spawned(tmp_path
         reached = asyncio.Event()
         release = asyncio.Event()
 
-        async def start_attached(*_args, commit=None, **_kwargs):
+        async def start_attached(*_args, spawn_gate=None, **_kwargs):
+            # Published, and on its way to the fork.
             reached.set()
             await release.wait()
-            return commit(lambda: spawned.append(True) or {"operation_id": "op", "app_id": 10, "state": "connected"})
+            with spawn_gate.lock:
+                spawn_gate.check()
+                spawned.append(True)
+            return {"operation_id": "op", "app_id": 10, "state": "connected"}
         monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
         launching = asyncio.create_task(service.launch_ce_for_game(10, None, True))
         await reached.wait()

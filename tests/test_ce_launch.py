@@ -3759,3 +3759,95 @@ def test_a_game_none_of_whose_programs_runs_has_an_empty_run(tmp_path):
     proc = tmp_path / "proc"
     _target_proc(proc, 4321, app_id=620, executable="other.exe", start_time=1000)
     assert _ce_launch.capture_run_identities(620, ["game.exe"], proc_root=proc) == ()
+
+
+def _unforked_start(tmp_path: Path, monkeypatch):
+    """A real attached start held between publishing its operation and forking.
+
+    `_verify_proton_tool` is the last thing `_spawn` does before the fork, so
+    it is where the start waits; the fork itself is recorded and refused, so a
+    start that gets through ends there instead of in Proton.
+    """
+    import threading
+    from ce_decky import ce_launch
+    from ce_decky.ce_launch import SpawnGate
+
+    supervisor, _executable = _supervisor(tmp_path)
+    reached, proceed = threading.Event(), threading.Event()
+    forks: list[bool] = []
+    lock = threading.Lock()
+    authority = {"withdrawn": False}
+
+    def verify(_tool):
+        reached.set()
+        proceed.wait(5)
+
+    async def fork(*_args, **_kwargs):
+        forks.append(lock.locked())
+        raise RuntimeError("forked")
+
+    def check():
+        if authority["withdrawn"]:
+            raise ValueError("Auto-load is switched off for this game or this table")
+
+    monkeypatch.setattr(ce_launch, "_verify_proton_tool", verify)
+    monkeypatch.setattr(ce_launch.asyncio, "create_subprocess_exec", fork)
+    plan = _plan(tmp_path, MODE_ATTACHED, app_id=220)
+    published = supervisor._begin(
+        plan, tmp_path / "status.txt", auto_stop=False, spawn_gate=SpawnGate(lock=lock, check=check),
+    )
+    return supervisor, published["operation_id"], reached, proceed, forks, authority
+
+
+def test_a_start_withdrawn_after_it_was_published_never_forks(tmp_path: Path, monkeypatch):
+    """Publishing the operation is not the start; the fork is, and the gate is read there."""
+    async def exercise():
+        supervisor, operation_id, reached, proceed, forks, authority = _unforked_start(tmp_path, monkeypatch)
+        await asyncio.to_thread(reached.wait, 5)
+        authority["withdrawn"] = True
+        proceed.set()
+        await asyncio.gather(supervisor._tasks[operation_id], return_exceptions=True)
+        return forks, supervisor.status(operation_id)
+
+    forks, status = asyncio.run(exercise())
+    assert forks == []
+    assert status["state"] == "failed"
+    assert "Auto-load is switched off" in str(status["error"])
+
+
+def test_a_start_the_gate_allows_forks_once_and_under_the_owners_lock(tmp_path: Path, monkeypatch):
+    async def exercise():
+        supervisor, operation_id, reached, proceed, forks, _authority = _unforked_start(tmp_path, monkeypatch)
+        await asyncio.to_thread(reached.wait, 5)
+        proceed.set()
+        await asyncio.gather(supervisor._tasks[operation_id], return_exceptions=True)
+        return forks
+
+    assert asyncio.run(exercise()) == [True]
+
+
+def test_a_stop_of_a_start_that_has_not_forked_asks_nothing_and_forks_nothing(tmp_path: Path, monkeypatch):
+    """There is no Cheat Engine to ask to put anything down, and none may appear after the stop.
+
+    The stop asks the start not to fork and waits for it to settle, rather than
+    cancelling it where it might be in the middle of a fork.
+    """
+    async def exercise():
+        supervisor, operation_id, reached, proceed, forks, _authority = _unforked_start(tmp_path, monkeypatch)
+        asked: list[int] = []
+
+        async def put_down(app_id):
+            asked.append(app_id)
+            return None
+        monkeypatch.setattr(supervisor, "_put_records_down", put_down)
+        await asyncio.to_thread(reached.wait, 5)
+        stopping = asyncio.create_task(supervisor.stop_for_app(220))
+        await asyncio.sleep(0.1)
+        proceed.set()
+        result = await stopping
+        return forks, asked, result, supervisor.status(operation_id)
+
+    forks, asked, result, status = asyncio.run(exercise())
+    assert forks == [] and asked == []
+    assert result["stopped"] is True and result["quiesce"]["cleanup_confirmed"] is True
+    assert status["state"] == "stopped"

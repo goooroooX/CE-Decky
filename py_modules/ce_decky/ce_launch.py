@@ -56,7 +56,7 @@ import stat
 import threading
 import time
 import uuid
-from typing import Callable, Collection, Iterable, Sequence
+from typing import Any, Callable, Collection, Iterable, Sequence
 
 from . import poll_counters
 from .activity_log import log_activity, log_failure
@@ -142,6 +142,11 @@ MAX_WINDOWS_LAUNCH_PATH_UNITS = 259
 SELF_TEST_TIMEOUT_SECONDS = 300.0
 HEARTBEAT_POLL_SECONDS = 0.5
 STOP_GRACE_SECONDS = 10.0
+# How long a stop waits for a start that has been published and not yet forked
+# to reach its fork or give up at it. Before the fork are a hash of the Proton
+# script and a read of the game's processes, each bounded well inside this; a
+# start still there after it is cancelled rather than waited for.
+SPAWN_SETTLE_SECONDS = 15.0
 # How often supervision of a recovered Cheat Engine looks at the game it was
 # recovered beside.
 #
@@ -192,6 +197,20 @@ def observed_anti_cheat(executables: Iterable[str]) -> str | None:
         if basename in KNOWN_ANTI_CHEAT_EXECUTABLES:
             return basename
     return None
+
+
+@dataclass(frozen=True)
+class SpawnGate:
+    """The owner's last word on a start, taken where the process is created.
+
+    `check` raises when the start may no longer happen, and it runs under
+    `lock`, the lock the owner takes to withdraw that authority, around the
+    call that forks Cheat Engine. Whatever withdraws the start therefore either
+    comes first and the process is never made, or comes after it exists and has
+    a process to stop.
+    """
+    lock: Any
+    check: Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -2501,13 +2520,12 @@ class CELaunchSupervisor:
         status_path: Path,
         bridge_sha256: str = "",
         target_process: str = "",
-        commit: Callable[[Callable[[], dict[str, object]]], dict[str, object]] | None = None,
+        spawn_gate: SpawnGate | None = None,
     ) -> dict[str, object]:
         """Start Cheat Engine in the running game.
 
-        `commit`, where given, is handed the spawn and runs it: the caller's
-        last word on whether this start may still happen, taken at the moment
-        the process would appear rather than when the start was admitted.
+        `spawn_gate`, where given, is asked again at the fork itself, after the
+        operation is published and everything before the spawn has run.
         """
         app_id = _app_id(app_id)
         async with self._launch_exclusion:
@@ -2517,7 +2535,7 @@ class CELaunchSupervisor:
                 descriptor_md5=descriptor_md5, descriptor_windows_path=descriptor_windows_path,
                 table_windows_path=table_windows_path, table_sha256=table_sha256,
                 ce_sha256=ce_sha256, status_path=status_path, bridge_sha256=bridge_sha256,
-                target_process=target_process, commit=commit,
+                target_process=target_process, spawn_gate=spawn_gate,
             )
 
     async def _start_attached_locked(
@@ -2538,7 +2556,7 @@ class CELaunchSupervisor:
         status_path: Path,
         bridge_sha256: str = "",
         target_process: str = "",
-        commit: Callable[[Callable[[], dict[str, object]]], dict[str, object]] | None = None,
+        spawn_gate: SpawnGate | None = None,
     ) -> dict[str, object]:
         if self.current_for_app(app_id) is not None or self.recover_owned_launch(app_id) is not None:
             # Also covers a launch that outlived a plugin reload: two Cheat
@@ -2610,12 +2628,10 @@ class CELaunchSupervisor:
             app_id=app_id,
             display=resolve_attached_display(observation, self.user_home),
         )
-        def spawn() -> dict[str, object]:
-            return self._begin(
-                plan, status_path, auto_stop=False, observation=observation, bridge_sha256=bridge_sha256,
-                target_process=target_process,
-            )
-        return commit(spawn) if commit is not None else spawn()
+        return self._begin(
+            plan, status_path, auto_stop=False, observation=observation, bridge_sha256=bridge_sha256,
+            target_process=target_process, spawn_gate=spawn_gate,
+        )
 
     async def stop(self, operation_id: str) -> dict[str, object]:
         operation_id = _uuid_text(operation_id)
@@ -2625,6 +2641,9 @@ class CELaunchSupervisor:
         if operation is None:
             raise ValueError("Cheat Engine launch operation does not exist")
         if task is not None and not task.done():
+            # Not cancelled in the middle of a fork: a start that has not forked
+            # is asked not to, and waited for, whichever route stops it.
+            await self._settle_unforked(operation_id)
             operation["stop_requested"] = True
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -2641,6 +2660,17 @@ class CELaunchSupervisor:
         if current is not None:
             if expected_session_id is not None and current["session_id"] != expected_session_id:
                 raise ValueError("owned session changed; refresh before revoking it")
+            if current.get("pid") is None and not await self._settle_unforked(str(current["operation_id"])):
+                # Nothing forked, so there is no Cheat Engine to ask to put
+                # anything down and nothing of it was in the game.
+                result = await self.stop(str(current["operation_id"]))
+                return {
+                    "stopped": True, "operation": result, "recovered": False,
+                    "quiesce": {
+                        "asked": False, "answered": False, "reason": "Cheat Engine had not started",
+                        "cleanup_confirmed": True, "records_unsettled": [],
+                    },
+                }
             quiesced = await self._put_records_down(app_id)
             result = await self.stop(str(current["operation_id"]))
             return {"stopped": True, "operation": result, "recovered": False, "quiesce": quiesced}
@@ -2656,6 +2686,35 @@ class CELaunchSupervisor:
                 self._exits[(app_id, str(recovered["session_id"]))] = time.time()
             self._clear_record(app_id, str(recovered["session_id"]))
         return {"stopped": stopped, "operation": None, "recovered": True, "quiesce": quiesced}
+
+    async def _settle_unforked(self, operation_id: str) -> bool:
+        """Ask a start that has not forked not to, and wait until it has settled.
+
+        Cancelling it instead could land in the middle of its fork, where
+        asyncio kills the one child it knows about and leaves the rest of
+        Proton's group running unowned. The start's gate reads the request
+        under the owner's lock around the fork itself, so this returns once the
+        start has either given up there or forked: `True` for a process that
+        now has to be stopped the ordinary way.
+        """
+        with self._state_lock:
+            if operation_id in self._processes:
+                return True
+            operation = self._operations.get(operation_id)
+            if operation is not None:
+                operation["stop_requested"] = True
+        deadline = time.monotonic() + SPAWN_SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            with self._state_lock:
+                task = self._tasks.get(operation_id)
+                if operation_id in self._processes:
+                    return True
+            if task is None or task.done():
+                return False
+            await asyncio.sleep(0.05)
+        log_activity(self.logger, "warning", "ce_launch.unforked_stop_timed_out", operation=operation_id[:12])
+        with self._state_lock:
+            return operation_id in self._processes
 
     async def _put_records_down(self, app_id: int) -> dict[str, object] | None:
         """Ask the session to switch its own cheats off, and stop either way.
@@ -3398,6 +3457,7 @@ class CELaunchSupervisor:
         observation: GameContainerObservation | None = None,
         bridge_sha256: str = "",
         target_process: str = "",
+        spawn_gate: SpawnGate | None = None,
     ) -> dict[str, object]:
         if self._closing:
             raise ValueError("plugin is unloading")
@@ -3426,7 +3486,7 @@ class CELaunchSupervisor:
                 self._run(
                     operation_id, plan, status_path,
                     auto_stop=auto_stop, observation=observation, bridge_sha256=bridge_sha256,
-                    target_process=target_process,
+                    target_process=target_process, spawn_gate=spawn_gate,
                 )
             )
             log_activity(
@@ -3452,6 +3512,7 @@ class CELaunchSupervisor:
         observation: GameContainerObservation | None,
         bridge_sha256: str = "",
         target_process: str = "",
+        spawn_gate: SpawnGate | None = None,
     ) -> None:
         retained = bytearray()
         log_path = None if auto_stop else self.launch_record_root / f"{plan.app_id}.log"
@@ -3472,7 +3533,18 @@ class CELaunchSupervisor:
                 and not auto_stop
                 and await asyncio.to_thread(game_target_state, plan.app_id, target_process) == "present"
             )
-            process = await self._spawn(plan, log_path)
+            if spawn_gate is not None:
+                # A stop that finds this start published and not yet forked
+                # asks it not to fork, and waits for the answer rather than
+                # cancelling it in the middle of one.
+                def check(owner: SpawnGate = spawn_gate) -> None:
+                    with self._state_lock:
+                        withdrawn = bool((self._operations.get(operation_id) or {}).get("stop_requested"))
+                    if withdrawn:
+                        raise ValueError("Cheat Engine was stopped before it started")
+                    owner.check()
+                spawn_gate = SpawnGate(lock=spawn_gate.lock, check=check)
+            process = await self._spawn(plan, log_path, spawn_gate)
             with self._state_lock:
                 self._processes[operation_id] = process
             self._set(operation_id, pid=process.pid, pgid=process.pid)
@@ -3709,12 +3781,19 @@ class CELaunchSupervisor:
                 operation=operation_id[:12], mode=plan.mode, app_id=plan.app_id,
                 cleanup_error=cleanup_error,
             )
-            self._set(
-                operation_id,
-                state="failed",
-                message="Cheat Engine could not be launched",
-                error=_safe_status_text(detail, 512),
-            )
+            with self._state_lock:
+                withdrawn = bool((self._operations.get(operation_id) or {}).get("stop_requested")) and not process_retained
+            if withdrawn:
+                # A stop asked for this before the fork, and got it: nothing
+                # started, which is the stop succeeding rather than a failure.
+                self._set(operation_id, state="stopped", message="Cheat Engine was stopped before it started", error=None)
+            else:
+                self._set(
+                    operation_id,
+                    state="failed",
+                    message="Cheat Engine could not be launched",
+                    error=_safe_status_text(detail, 512),
+                )
         finally:
             tail = bytes(retained) if retained else _tail_file(log_path)
             if tail:
@@ -3722,7 +3801,9 @@ class CELaunchSupervisor:
             with self._state_lock:
                 self._tasks.pop(operation_id, None)
 
-    async def _spawn(self, plan: CELaunchPlan, log_path: Path | None) -> asyncio.subprocess.Process:
+    async def _spawn(
+        self, plan: CELaunchPlan, log_path: Path | None, spawn_gate: SpawnGate | None = None,
+    ) -> asyncio.subprocess.Process:
         # Discovery is only a snapshot. Re-hash the exact Proton script at the
         # last boundary before execution so a changed installation cannot be
         # launched under the old identity.
@@ -3759,14 +3840,28 @@ class CELaunchSupervisor:
             os.close(descriptor)
             raise ValueError("owned Cheat Engine launch log is not a regular file")
         with os.fdopen(descriptor, "wb") as handle:
-            return await asyncio.create_subprocess_exec(
-                *plan.argv,
-                cwd=str(Path(plan.executable).parent),
-                env=launch_environment(plan),
-                stdout=handle,
-                stderr=asyncio.subprocess.STDOUT,
-                **options,
-            )
+            if spawn_gate is None:
+                return await asyncio.create_subprocess_exec(
+                    *plan.argv,
+                    cwd=str(Path(plan.executable).parent),
+                    env=launch_environment(plan),
+                    stdout=handle,
+                    stderr=asyncio.subprocess.STDOUT,
+                    **options,
+                )
+            # Held across the call: the fork happens inside it before its first
+            # suspension, and what is awaited after that is only the transport
+            # being wired to a process that already exists.
+            with spawn_gate.lock:
+                spawn_gate.check()
+                return await asyncio.create_subprocess_exec(
+                    *plan.argv,
+                    cwd=str(Path(plan.executable).parent),
+                    env=launch_environment(plan),
+                    stdout=handle,
+                    stderr=asyncio.subprocess.STDOUT,
+                    **options,
+                )
 
     async def _await_bridge(
         self,
