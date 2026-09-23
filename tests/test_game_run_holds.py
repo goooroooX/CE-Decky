@@ -117,7 +117,7 @@ def test_an_unconfirmed_stop_holds_that_game_and_no_other(tmp_path: Path, monkey
 
     # Every start in that game is refused by the backend itself.
     with pytest.raises(ValueError, match="Restart the game"):
-        asyncio.run(service.launch_ce_for_game(10))
+        asyncio.run(service.launch_ce_for_game(10, None, False))
     assert DIRTY_RUN_REFUSAL.endswith("Restart the game before starting a table in it.")
 
     # Proof that one game's run is over lifts that game's hold only.
@@ -226,13 +226,13 @@ def test_no_start_is_admitted_while_a_stop_is_still_deciding_what_it_left(tmp_pa
         await ended.wait()
         refusals: list[str] = []
         try:
-            await service.launch_ce_for_game(10)
+            await service.launch_ce_for_game(10, None, False)
         except ValueError as exc:
             refusals.append(str(exc))
         release.set()
         await stopping
         try:
-            await service.launch_ce_for_game(10)
+            await service.launch_ce_for_game(10, None, False)
         except Exception as exc:  # noqa: BLE001 - past admission, this launch fails on its fakes
             refusals.append(str(exc))
         return refusals
@@ -264,7 +264,7 @@ def test_a_hold_that_could_not_be_saved_is_still_in_force(tmp_path: Path, monkey
     assert public["dirty"] is not None
     assert "could not be saved" in public["error"]
     with pytest.raises(ValueError, match="Restart the game"):
-        asyncio.run(service.launch_ce_for_game(10))
+        asyncio.run(service.launch_ce_for_game(10, None, False))
 
 
 def test_a_hold_that_could_not_be_taken_at_all_is_still_taken(tmp_path: Path, monkeypatch):
@@ -277,7 +277,7 @@ def test_a_hold_that_could_not_be_taken_at_all_is_still_taken(tmp_path: Path, mo
     asyncio.run(service.stop_ce_for_game(10))
     assert service._public_run_holds(10)["dirty"] == {"since": service._current_run_holds(10)["dirty"].since, "unsettled": 1}
     with pytest.raises(ValueError, match="Restart the game"):
-        asyncio.run(service.launch_ce_for_game(10))
+        asyncio.run(service.launch_ce_for_game(10, None, False))
 
 
 def test_an_unreadable_record_holds_every_game_until_it_is_cleared(tmp_path: Path):
@@ -291,7 +291,7 @@ def test_an_unreadable_record_holds_every_game_until_it_is_cleared(tmp_path: Pat
     assert "could not be read" in public["error"]
     assert public["unreadable"] is True
     with pytest.raises(ValueError, match="could not read which games"):
-        asyncio.run(service.launch_ce_for_game(20))
+        asyncio.run(service.launch_ce_for_game(20, None, False))
     # Nothing here writes over it while it is unreadable.
     assert (paths.state_root / "game_run_holds.json").read_text() == "{not json"
     # Clearing it starts it over, and says so.
@@ -380,7 +380,7 @@ def test_a_stop_holds_the_game_on_what_its_session_was_pointed_at_whatever_chang
     assert hold.targets == ("game.exe", "other.exe")
     assert asked == [("game.exe", "other.exe")]
     with pytest.raises(ValueError, match="Restart the game"):
-        asyncio.run(service.launch_ce_for_game(10))
+        asyncio.run(service.launch_ce_for_game(10, None, False))
 
 
 def _paused_stop(service: PluginService, monkeypatch, *, confirmed: bool):
@@ -433,13 +433,13 @@ def test_a_second_stop_is_refused_and_cannot_end_the_first_ones_transition(tmp_p
             except asyncio.TimeoutError:
                 refusals.append("admitted")
         try:
-            await service.launch_ce_for_game(10)
+            await service.launch_ce_for_game(10, None, False)
         except ValueError as exc:
             refusals.append(str(exc))
         release.set()
         await stopping
         try:
-            await service.launch_ce_for_game(10)
+            await service.launch_ce_for_game(10, None, False)
         except ValueError as exc:
             return refusals, str(exc)
         return refusals, ""
@@ -786,3 +786,84 @@ def test_auto_load_is_refused_where_the_backend_has_it_switched_off(tmp_path: Pa
     service.profile_store.set_autoload(app_id=10, table_sha256="f" * 64, enabled=True)
     with pytest.raises(ValueError, match="table store directory is missing"):
         asyncio.run(service.launch_ce_for_game(10, None, True))
+
+
+def _launchable(service: PluginService, monkeypatch) -> None:
+    """Past everything before the spawn, so what a test decides is the admission."""
+    monkeypatch.setattr(service, "_attached_launch_inputs", lambda app_id, automatic=None: (
+        _prepared(), Path("cheatengine.exe"), "b" * 64, "game.exe"))
+    monkeypatch.setattr(service, "_revalidate_launch_reservation", lambda prepared: None)
+    monkeypatch.setattr(service_module, "discover_proton_tools", lambda home: ())
+
+
+def test_a_start_that_does_not_say_it_was_pressed_is_not_made_where_auto_load_is_off(tmp_path: Path, monkeypatch):
+    """A panel from before the question sends its Auto-load the way it sends a press.
+
+    Where the backend has Auto-load off, that request may be the Auto-load of
+    a panel that has not seen it switched off. Only a start that says it was
+    pressed is made.
+    """
+    from ce_decky.service import AUTOLOAD_OFF_REFUSAL, UNSTATED_AUTOLOAD_OFF_REFUSAL
+    service = _service(tmp_path)
+    _armed(service)
+    service.profile_store.set_autoload(app_id=10, table_sha256="f" * 64, enabled=False)
+    _launchable(service, monkeypatch)
+    spawned: list[bool | None] = []
+
+    async def start_attached(*_args, commit=None, **_kwargs):
+        return commit(lambda: spawned.append(True) or {"operation_id": "op", "app_id": 10, "state": "connected"})
+    monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
+
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(service.launch_ce_for_game(10, None))
+    assert str(refused.value) == UNSTATED_AUTOLOAD_OFF_REFUSAL
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(service.launch_ce_for_game(10, None, True))
+    assert str(refused.value) == AUTOLOAD_OFF_REFUSAL
+    assert spawned == []
+    asyncio.run(service.launch_ce_for_game(10, None, False))
+    assert spawned == [True]
+
+
+@pytest.mark.parametrize("withdrawn_by", ["auto_load_off", "stop"])
+def test_an_auto_load_admitted_before_its_authority_went_is_not_spawned(tmp_path: Path, monkeypatch, withdrawn_by: str):
+    """Admission comes before the session and the Proton tool, and a start is not made on it alone.
+
+    Switching Auto-load off, or a Stop beginning, while an Auto-load is still
+    on its way to the spawn is the user withdrawing exactly that start; it is
+    checked again, under the same lock those take, around the spawn itself.
+    """
+    service = _service(tmp_path)
+    _armed(service)
+    _launchable(service, monkeypatch)
+    spawned: list[bool] = []
+
+    async def scenario() -> str:
+        reached = asyncio.Event()
+        release = asyncio.Event()
+
+        async def start_attached(*_args, commit=None, **_kwargs):
+            reached.set()
+            await release.wait()
+            return commit(lambda: spawned.append(True) or {"operation_id": "op", "app_id": 10, "state": "connected"})
+        monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
+        launching = asyncio.create_task(service.launch_ce_for_game(10, None, True))
+        await reached.wait()
+        transition = None
+        if withdrawn_by == "auto_load_off":
+            service.profile_store.set_autoload(app_id=10, table_sha256="f" * 64, enabled=False)
+        else:
+            transition, _evidence = service._begin_run_transition(10)
+        release.set()
+        try:
+            await launching
+        except ValueError as exc:
+            return str(exc)
+        finally:
+            if transition is not None:
+                service._end_run_transition(10, transition)
+        return "spawned"
+
+    outcome = asyncio.run(scenario())
+    assert spawned == []
+    assert ("Auto-load is switched off" in outcome) if withdrawn_by == "auto_load_off" else ("still being stopped" in outcome)

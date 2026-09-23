@@ -56,7 +56,7 @@ import stat
 import threading
 import time
 import uuid
-from typing import Collection, Iterable, Sequence
+from typing import Callable, Collection, Iterable, Sequence
 
 from . import poll_counters
 from .activity_log import log_activity, log_failure
@@ -2501,7 +2501,14 @@ class CELaunchSupervisor:
         status_path: Path,
         bridge_sha256: str = "",
         target_process: str = "",
+        commit: Callable[[Callable[[], dict[str, object]]], dict[str, object]] | None = None,
     ) -> dict[str, object]:
+        """Start Cheat Engine in the running game.
+
+        `commit`, where given, is handed the spawn and runs it: the caller's
+        last word on whether this start may still happen, taken at the moment
+        the process would appear rather than when the start was admitted.
+        """
         app_id = _app_id(app_id)
         async with self._launch_exclusion:
             return await self._start_attached_locked(
@@ -2510,7 +2517,7 @@ class CELaunchSupervisor:
                 descriptor_md5=descriptor_md5, descriptor_windows_path=descriptor_windows_path,
                 table_windows_path=table_windows_path, table_sha256=table_sha256,
                 ce_sha256=ce_sha256, status_path=status_path, bridge_sha256=bridge_sha256,
-                target_process=target_process,
+                target_process=target_process, commit=commit,
             )
 
     async def _start_attached_locked(
@@ -2531,6 +2538,7 @@ class CELaunchSupervisor:
         status_path: Path,
         bridge_sha256: str = "",
         target_process: str = "",
+        commit: Callable[[Callable[[], dict[str, object]]], dict[str, object]] | None = None,
     ) -> dict[str, object]:
         if self.current_for_app(app_id) is not None or self.recover_owned_launch(app_id) is not None:
             # Also covers a launch that outlived a plugin reload: two Cheat
@@ -2602,10 +2610,12 @@ class CELaunchSupervisor:
             app_id=app_id,
             display=resolve_attached_display(observation, self.user_home),
         )
-        return self._begin(
-            plan, status_path, auto_stop=False, observation=observation, bridge_sha256=bridge_sha256,
-            target_process=target_process,
-        )
+        def spawn() -> dict[str, object]:
+            return self._begin(
+                plan, status_path, auto_stop=False, observation=observation, bridge_sha256=bridge_sha256,
+                target_process=target_process,
+            )
+        return commit(spawn) if commit is not None else spawn()
 
     async def stop(self, operation_id: str) -> dict[str, object]:
         operation_id = _uuid_text(operation_id)

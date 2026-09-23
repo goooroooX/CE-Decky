@@ -898,7 +898,7 @@ def test_one_launch_prepares_exactly_one_session_and_collects_superseded_ones(tm
     assert session_dirs() == {first["session_id"]}
 
     # The launch path owns session creation now: it prepares one, not a second.
-    prepared, _, _, target_process = service._attached_launch_inputs(10)
+    prepared, _, _, target_process = service._attached_launch_inputs(10, False)
     assert prepared.session_id != first["session_id"]
     # Supervision can only watch the game leave if the launch is handed the
     # exact process this profile confirmed.

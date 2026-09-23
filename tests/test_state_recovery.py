@@ -189,7 +189,7 @@ def test_launch_replaces_a_stale_readable_session_instead_of_refusing(tmp_path: 
 
     assert service.get_runtime_status(app_id)["session_stale_reason"] is not None
 
-    fresh, *_ = service._attached_launch_inputs(app_id)
+    fresh, *_ = service._attached_launch_inputs(app_id, False)
     assert fresh.session_id != prepared["session_id"]
     assert service.get_runtime_status(app_id)["session_stale_reason"] is None
     service._release_launch_reservation(app_id)
@@ -205,4 +205,4 @@ def test_launch_still_refuses_a_session_whose_execution_consent_was_revoked(tmp_
     service.set_execution_consent(911, table["sha256"], False)
 
     with pytest.raises(ValueError, match="execution consent"):
-        service._attached_launch_inputs(911)
+        service._attached_launch_inputs(911, False)

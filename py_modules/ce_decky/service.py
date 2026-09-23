@@ -260,6 +260,12 @@ AUTOLOAD_OFF_REFUSAL = (
     "Auto-load is switched off for this game or this table, so it does not start Cheat Engine. "
     "Start it yourself, or switch Auto-load on."
 )
+# The same unstated start where Auto-load is off: it may be the Auto-load of a
+# panel that has not seen it switched off, and it cannot say that it is not.
+UNSTATED_AUTOLOAD_OFF_REFUSAL = (
+    "This panel is from before CE Decky was updated, so it cannot say whether you asked for this start, and "
+    "Auto-load is off for this game. Close and reopen the panel, then start it again."
+)
 # A start that did not say whether it was pressed: a panel from before CE Decky
 # was updated, whose Auto-load and whose Start look the same from here.
 UNSTATED_START_REFUSAL = (
@@ -4605,7 +4611,9 @@ class PluginService:
         and a start is what lifts that hold. Only a start that says it was
         pressed (`automatic` is `False`) is let past it: one that says nothing
         comes from a panel older than the question, whose Auto-load and Start
-        look the same, and is refused as the Auto-load it may be.
+        look the same, and is refused as the Auto-load it may be. For the same
+        reason it is held to Auto-load's own rule below: where the backend has
+        Auto-load off, a start that cannot say it was pressed is not made.
         """
         if app_id in self._run_transitions:
             log_activity(self.logger, "info", "launch.refused_stop_in_progress", app_id=app_id)
@@ -4616,7 +4624,7 @@ class PluginService:
                 "CE Decky could not read which games have to be restarted before a table is started, so it starts "
                 "none. Clear it on Home to go on."
             )
-        if automatic:
+        if automatic is not False:
             # Auto-load as the backend has it, not as a panel last read it: a
             # panel that has not seen Auto-load switched off, here or from
             # another panel, still believes it on.
@@ -4631,9 +4639,10 @@ class PluginService:
             if reason is not None:
                 log_activity(
                     self.logger, "info", "launch.refused_autoload_off", app_id=app_id, reason=reason,
+                    intent="automatic" if automatic else "unstated",
                     table_sha=(profile.table_sha256 or "")[:12] if profile is not None else None,
                 )
-                raise ValueError(AUTOLOAD_OFF_REFUSAL)
+                raise ValueError(AUTOLOAD_OFF_REFUSAL if automatic else UNSTATED_AUTOLOAD_OFF_REFUSAL)
         holds = self._current_run_holds(app_id)
         if "dirty" in holds:
             log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
@@ -4880,6 +4889,7 @@ class PluginService:
                 # alive, so this is the only identity whose disappearance can
                 # prove the game itself is gone.
                 target_process=target_process,
+                commit=lambda spawn: self._commit_launch(prepared, automatic, spawn),
             )
         finally:
             await drained_to_thread(self._release_launch_reservation, app_id)
@@ -5232,6 +5242,24 @@ class PluginService:
             if current is None or current.session_id != prepared.session_id or self._session_stale_reason(current) is not None:
                 raise ValueError("prepared session changed while the launch was being authorized")
             self._assert_no_live_owned_launch(prepared.app_id, allow_reservation=True)
+
+    def _commit_launch(self, prepared, automatic: bool | None, spawn: Callable[[], dict[str, object]]) -> dict[str, object]:
+        """Spawn Cheat Engine only if this start is still one the game may have.
+
+        Admission happened before the session was prepared and the Proton tool
+        found, and authority can change in that time: Auto-load switched off,
+        a stop begun, a hold taken. All of those are taken under the mutation
+        lock, and so is this, around the spawn itself, so none of them can come
+        between the last check and the process appearing.
+        """
+        with self._mutation_lock:
+            self._revalidate_launch_reservation(prepared)
+            try:
+                self._admit_launch(prepared.app_id, automatic)
+            except ValueError:
+                log_activity(self.logger, "info", "launch.withdrawn_before_spawn", app_id=prepared.app_id)
+                raise
+            return spawn()
 
     def _release_launch_reservation(self, app_id: int) -> None:
         with self._mutation_lock:
