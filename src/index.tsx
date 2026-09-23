@@ -1908,7 +1908,9 @@ function Content() {
     }
   };
 
-  const ensureAttachedRuntime = async (game: GameSummary, process: string, report: StepReporter = () => undefined): Promise<RuntimeEnvelope> => {
+  const ensureAttachedRuntime = async (
+    game: GameSummary, process: string, report: StepReporter = () => undefined, automatic = false,
+  ): Promise<RuntimeEnvelope> => {
     report("Starting Cheat Engine");
     const capability = await refreshCELaunch(game.appId);
     if (!capability.ce_ready) throw new Error(capability.reason || "Cheat Engine is not ready.");
@@ -1921,8 +1923,12 @@ function Content() {
       proton: capability.observed_proton_tool?.tool_id ?? null,
       game_running: capability.game?.running ?? false,
       windows_executables: (capability.game?.windows_executables ?? []).join(","),
+      automatic,
     });
-    const started = await launchCEForGame(game.appId, capability.observed_proton_tool?.tool_id ?? null);
+    // Said to the backend rather than only checked here: the hold a Stop takes
+    // on Auto-load is the backend's, and a panel that read no hold a moment
+    // ago is not the authority on whether one is there now.
+    const started = await launchCEForGame(game.appId, capability.observed_proton_tool?.tool_id ?? null, automatic);
     // Adopt the owned operation before waiting on it, so Home can show and stop
     // a launch that is still waiting for the bridge.
     setCELaunchOperation(started);
@@ -3625,7 +3631,7 @@ function Content() {
         // has been said to have succeeded, against the table it inspected.
         const loaded: { inspection: TableInspection | null } = { inspection: null };
         await runAction(async () => {
-          const observed = await ensureAttachedRuntime(selectedGame, profile.target_process as string);
+          const observed = await ensureAttachedRuntime(selectedGame, profile.target_process as string, undefined, true);
           if (!observed.connected) throw new Error("Auto-load started Cheat Engine, but the bridge did not stay connected.");
           const autoloadInspection = inspection?.sha256 === profile.table_sha256
             ? inspection

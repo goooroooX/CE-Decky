@@ -5537,6 +5537,9 @@ describe("Launching the selected table", () => {
     // proven this one over.
     capability = { ...launch, operations: [], run_holds: { dirty: null, autoload_held: false } };
     await waitFor(() => expect(api.launchCEForGame).toHaveBeenCalled(), { timeout: 8000 });
+    // Said to the backend as Auto-load, which is what refuses it there while a
+    // Stop holds the game, whatever this panel read a moment before.
+    expect(api.launchCEForGame.mock.calls[0][2]).toBe(true);
   }, 15000);
 
   it("does not start the table again in a game a stop left unconfirmed", async () => {
@@ -5584,6 +5587,8 @@ describe("Launching the selected table", () => {
     // The backend launch transaction prepares the session; the controller must
     // not prepare a second one whose table snapshot Cheat Engine never opens.
     await waitFor(() => expect(api.launchCEForGame).toHaveBeenCalled());
+    // A press is a start by hand, which is what answers a Stop's hold.
+    expect(api.launchCEForGame.mock.calls[0][2]).toBe(false);
     expect(api.prepareSession).not.toHaveBeenCalled();
     // The already authorized table is reused; nothing is re-imported or re-consented.
     expect(api.importTable).not.toHaveBeenCalled();

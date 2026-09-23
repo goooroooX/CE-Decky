@@ -1116,6 +1116,7 @@ const readLocalLibrary = callable("local_library");
 const startCESelfTest = callable("start_ce_self_test");
 const pollCELaunch = callable("poll_ce_launch");
 callable("stop_ce_launch");
+/** `automatic` is Auto-load asking: the backend refuses it while the user's Stop holds the game, and never lifts that hold for it. */
 const launchCEForGame = callable("launch_ce_for_game");
 const stopCEForGame = callable("stop_ce_for_game");
 /** The user clears what holds this game from starting a table, having been told what it is. */
@@ -15386,7 +15387,7 @@ function Content() {
             logUiFailure("startup.left_on_unread", cause, { app_id: appId });
         }
     };
-    const ensureAttachedRuntime = async (game, process, report = () => undefined) => {
+    const ensureAttachedRuntime = async (game, process, report = () => undefined, automatic = false) => {
         report("Starting Cheat Engine");
         const capability = await refreshCELaunch(game.appId);
         if (!capability.ce_ready)
@@ -15401,8 +15402,12 @@ function Content() {
             proton: capability.observed_proton_tool?.tool_id ?? null,
             game_running: capability.game?.running ?? false,
             windows_executables: (capability.game?.windows_executables ?? []).join(","),
+            automatic,
         });
-        const started = await launchCEForGame(game.appId, capability.observed_proton_tool?.tool_id ?? null);
+        // Said to the backend rather than only checked here: the hold a Stop takes
+        // on Auto-load is the backend's, and a panel that read no hold a moment
+        // ago is not the authority on whether one is there now.
+        const started = await launchCEForGame(game.appId, capability.observed_proton_tool?.tool_id ?? null, automatic);
         // Adopt the owned operation before waiting on it, so Home can show and stop
         // a launch that is still waiting for the bridge.
         setCELaunchOperation(started);
@@ -16988,7 +16993,7 @@ function Content() {
                 // has been said to have succeeded, against the table it inspected.
                 const loaded = { inspection: null };
                 await runAction(async () => {
-                    const observed = await ensureAttachedRuntime(selectedGame, profile.target_process);
+                    const observed = await ensureAttachedRuntime(selectedGame, profile.target_process, undefined, true);
                     if (!observed.connected)
                         throw new Error("Auto-load started Cheat Engine, but the bridge did not stay connected.");
                     const autoloadInspection = inspection?.sha256 === profile.table_sha256

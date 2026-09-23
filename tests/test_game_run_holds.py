@@ -628,3 +628,70 @@ def test_a_hold_already_on_disk_does_not_hold_an_update(tmp_path: Path, monkeypa
     asyncio.run(service.stop_ce_for_game(10))
     assert "dirty" in service._current_run_holds(10)
     assert service.plugin_updates._admit_install(lambda: None) is None
+
+
+
+def test_auto_load_is_refused_by_the_users_stop_in_the_backend_itself(tmp_path: Path, monkeypatch):
+    """The panel checks the hold first, but it is not the authority.
+
+    A panel left over from a reload, or an Auto-load that read no hold just
+    before another panel's Stop, reaches the same launch a press does. Were it
+    admitted it would start Cheat Engine behind the Stop and, being a start,
+    lift the hold that says not to.
+    """
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    _stopping(service, confirmed=True)
+    asyncio.run(service.stop_ce_for_game(10, None, True))
+    assert service._public_run_holds(10)["autoload_held"] is True
+
+    with pytest.raises(ValueError, match="because you stopped it"):
+        asyncio.run(service.launch_ce_for_game(10, None, True))
+    assert service._public_run_holds(10)["autoload_held"] is True
+
+    # A start by hand is admitted past it, and is what answers it.
+    started = {"operation_id": "op", "app_id": 10, "state": "connected"}
+    monkeypatch.setattr(service, "_attached_launch_inputs", lambda app_id, automatic=False: (
+        _prepared(), Path("cheatengine.exe"), "b" * 64, "game.exe"))
+    monkeypatch.setattr(service, "_revalidate_launch_reservation", lambda prepared: None)
+    monkeypatch.setattr(service_module, "discover_proton_tools", lambda home: ())
+
+    async def start_attached(*_args, **_kwargs):
+        return started
+    monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
+    assert asyncio.run(service.launch_ce_for_game(10)) == started
+    assert service._public_run_holds(10)["autoload_held"] is False
+
+
+def test_a_start_by_hand_lifts_only_the_stop_hold_it_answered(tmp_path: Path, monkeypatch):
+    """A Stop taken while a start is still under way is about what that start runs, and stays."""
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    _stopping(service, confirmed=True)
+    monkeypatch.setattr(service, "_attached_launch_inputs", lambda app_id, automatic=False: (
+        _prepared(), Path("cheatengine.exe"), "b" * 64, "game.exe"))
+    monkeypatch.setattr(service, "_revalidate_launch_reservation", lambda prepared: None)
+    monkeypatch.setattr(service_module, "discover_proton_tools", lambda home: ())
+
+    async def start_attached(*_args, **_kwargs):
+        # The user's Stop, from another panel, while this start is under way.
+        service._hold_run(10, "stopped", 0, ("game.exe",))
+        return {"operation_id": "op", "app_id": 10, "state": "connected"}
+    monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
+    asyncio.run(service.launch_ce_for_game(10))
+    assert service._public_run_holds(10)["autoload_held"] is True
+
+
+def _prepared():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        app_id=10, session_id="session", descriptor_path="/tmp/d/descriptor.json", descriptor_sha256="a" * 64,
+        descriptor_md5="c" * 32, descriptor_windows_path="Z:\\tmp\\d\\descriptor.json", table_sha256="d" * 64,
+        ce_sha256="e" * 64, status_path="/tmp/d/status.json",
+    )
