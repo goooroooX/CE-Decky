@@ -330,10 +330,13 @@ class PluginService:
         # it, because doing so would quietly drop the games it did hold.
         self._run_holds_unreadable: str | None = None
         self._run_holds_unsaved: str | None = None
-        # Games a stop is running in. Set before the stop begins and cleared once
-        # its verdict is held, so no start is admitted in the gap between the old
-        # Cheat Engine ending and the hold that says what it left.
-        self._run_transitions: set[int] = set()
+        # Games a stop is running in, each owned by the one stop that began it.
+        # Set before the stop begins and cleared by that stop once its verdict is
+        # held, so no start is admitted in the gap between the old Cheat Engine
+        # ending and the hold that says what it left. One owner, because a second
+        # stop that found nothing left to end would otherwise clear the first's
+        # entry while the first is still deciding what to hold.
+        self._run_transitions: dict[int, object] = {}
         try:
             self._run_holds = self.game_run_holds.load()
         except (OSError, ValueError) as exc:
@@ -4183,6 +4186,20 @@ class PluginService:
             if not isinstance(commands, list):
                 raise ValueError("commands must be a list")
             parsed = [self._runtime_command(item) for item in commands]
+            # A stop has read which programs this session touched before it ends
+            # anything, and holds the game on that. A command that moves the
+            # bridge or changes the game while it runs would be one it knows
+            # nothing about, so only the ones that read are let through.
+            if app_id in self._run_transitions and any(
+                command.kind not in {"query", "list_processes"} for command in parsed
+            ):
+                log_activity(
+                    self.logger, "info", "runtime.refused_stop_in_progress", app_id=app_id,
+                    commands=",".join(sorted({command.kind for command in parsed})),
+                )
+                raise ValueError(
+                    "Cheat Engine is being stopped in this game, so no cheat is changed and no program attached until it has stopped."
+                )
             prepared = self.session_store.load_current(app_id)
             if prepared is None:
                 raise ValueError("no prepared session exists for AppID")
@@ -4579,6 +4596,34 @@ class PluginService:
             log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
             raise ValueError(DIRTY_RUN_REFUSAL)
 
+    def _begin_run_transition(self, app_id: int) -> tuple[object, dict[str, tuple[str, ...] | None]]:
+        """Begin the one stop this game may have now, and read what it is about.
+
+        Both stop routes take this, and a second stop in a game already being
+        stopped is refused rather than run beside the first: it would find
+        nothing left to end, and nothing it could do is owed while the first is
+        still deciding what to hold. The token is what lets only the stop that
+        began a transition end it, and a stop that could not read its evidence
+        leaves none behind, or no start or stop would be admitted in that game
+        again until a reload.
+        """
+        with self._mutation_lock:
+            if app_id in self._run_transitions:
+                log_activity(self.logger, "info", "stop.refused_stop_in_progress", app_id=app_id)
+                raise ValueError("Cheat Engine is already being stopped in this game. Try again once it has stopped.")
+            token = object()
+            self._run_transitions[app_id] = token
+            try:
+                return token, self._stop_evidence(app_id)
+            except BaseException:
+                del self._run_transitions[app_id]
+                raise
+
+    def _end_run_transition(self, app_id: int, token: object) -> None:
+        with self._mutation_lock:
+            if self._run_transitions.get(app_id) is token:
+                del self._run_transitions[app_id]
+
     def _stop_evidence(self, app_id: int) -> dict[str, tuple[str, ...] | None]:
         """Which programs a stop's holds are about, read before it ends anything.
 
@@ -4683,16 +4728,13 @@ class PluginService:
         app_id = before.get("app_id") if before.get("mode") == "attached" else None
         if isinstance(app_id, bool) or not isinstance(app_id, int):
             return await self.ce_launch.stop(operation_id)
-        with self._mutation_lock:
-            self._run_transitions.add(app_id)
-            evidence = self._stop_evidence(app_id)
+        transition, evidence = self._begin_run_transition(app_id)
         try:
             result = await self.ce_launch.stop(operation_id)
             await drained_to_thread(self._hold_after_stop, app_id, {"stopped": True, "quiesce": None}, False, evidence)
             return result
         finally:
-            with self._mutation_lock:
-                self._run_transitions.discard(app_id)
+            self._end_run_transition(app_id, transition)
 
     async def launch_ce_for_game(self, app_id: int, proton_tool_id: str | None = None) -> dict[str, object]:
         """Start Cheat Engine inside the running game's own compatibility prefix.
@@ -4960,17 +5002,14 @@ class PluginService:
             raise ValueError("AppID must be an integer")
         # Before anything is stopped: from here until the verdict is held, no
         # start in this game is admitted.
-        with self._mutation_lock:
-            self._run_transitions.add(app_id)
-            evidence = self._stop_evidence(app_id)
+        transition, evidence = self._begin_run_transition(app_id)
         try:
             result = await self._stop_ce_for_game(app_id, table_sha256)
             if result.get("stopped"):
                 await drained_to_thread(self._hold_after_stop, app_id, result, hold_autoload, evidence)
             return result
         finally:
-            with self._mutation_lock:
-                self._run_transitions.discard(app_id)
+            self._end_run_transition(app_id, transition)
 
     def _hold_after_stop(
         self, app_id: int, result: dict[str, object], hold_autoload: bool,

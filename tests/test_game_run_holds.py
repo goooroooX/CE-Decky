@@ -381,3 +381,138 @@ def test_a_stop_holds_the_game_on_what_its_session_was_pointed_at_whatever_chang
     assert asked == [("game.exe", "other.exe")]
     with pytest.raises(ValueError, match="Restart the game"):
         asyncio.run(service.launch_ce_for_game(10))
+
+
+def _paused_stop(service: PluginService, monkeypatch, *, confirmed: bool):
+    """Both stop routes end Cheat Engine and then wait on `release` before their verdict."""
+    ended = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stop_for_app(app_id: int, **_kwargs):
+        ended.set()
+        await release.wait()
+        return {"stopped": True, "operation": None, "recovered": False,
+                "quiesce": {"asked": True, "answered": True, "reason": None, "cleanup_confirmed": confirmed}}
+
+    async def stop(operation_id: str):
+        ended.set()
+        await release.wait()
+        return {"mode": "attached", "app_id": 10, "state": "stopped"}
+    service.ce_launch.stop_for_app = stop_for_app  # type: ignore[method-assign]
+    monkeypatch.setattr(service.ce_launch, "stop", stop)
+    monkeypatch.setattr(service.ce_launch, "status", lambda operation_id: {"mode": "attached", "app_id": 10})
+    return ended, release
+
+
+@pytest.mark.parametrize("first", ["game", "operation"])
+def test_a_second_stop_is_refused_and_cannot_end_the_first_ones_transition(tmp_path: Path, monkeypatch, first: str):
+    """Two panels can both press Stop, and only the first one owns the stop.
+
+    The second finds nothing left to end. Were it let in, it would clear the
+    game's transition on its way out while the first is still deciding what to
+    hold, and a start admitted then would go into a game about to be held dirty.
+    """
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    routes = {"game": lambda: service.stop_ce_for_game(10), "operation": lambda: service.stop_ce_launch("op")}
+
+    async def scenario() -> tuple[list[str], str]:
+        ended, release = _paused_stop(service, monkeypatch, confirmed=False)
+        stopping = asyncio.create_task(routes[first]())
+        await ended.wait()
+        refusals: list[str] = []
+        for second in ("game", "operation"):
+            # Admitted, it would wait on the same release as the first.
+            try:
+                await asyncio.wait_for(routes[second](), 1)
+            except ValueError as exc:
+                refusals.append(str(exc))
+            except asyncio.TimeoutError:
+                refusals.append("admitted")
+        try:
+            await service.launch_ce_for_game(10)
+        except ValueError as exc:
+            refusals.append(str(exc))
+        release.set()
+        await stopping
+        try:
+            await service.launch_ce_for_game(10)
+        except ValueError as exc:
+            return refusals, str(exc)
+        return refusals, ""
+
+    refusals, after = asyncio.run(scenario())
+    assert [reason for reason in refusals[:2] if "already being stopped" in reason] == refusals[:2]
+    assert "still being stopped" in refusals[2]
+    assert service._run_transitions == {}
+    assert after == DIRTY_RUN_REFUSAL
+
+
+def test_nothing_is_switched_in_a_game_while_it_is_being_stopped(tmp_path: Path, monkeypatch):
+    """What a stop holds the game on is read before it ends anything.
+
+    A retried attach accepted after that moves the bridge onto a program the
+    stop knows nothing about and starts the table there, and a switched cheat
+    changes the game it is about to call clean or dirty. Neither reaches the
+    control file; a read still may.
+    """
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    # No session record for this fake, so the stop names the profile's program.
+    service.profile_store.upsert(app_id=10, name="Game", is_shortcut=False, table_sha256=None, target_process="game.exe")
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: None)
+    written: list[object] = []
+    monkeypatch.setattr(service.session_store, "write_commands", lambda prepared, commands: written.append(commands))
+
+    async def scenario() -> list[str]:
+        ended, release = _paused_stop(service, monkeypatch, confirmed=False)
+        stopping = asyncio.create_task(service.stop_ce_for_game(10))
+        await ended.wait()
+        refusals: list[str] = []
+        for command in (
+            {"generation": 5, "kind": "retry_attach", "value": "other.exe", "target_pid": 4343},
+            {"generation": 5, "kind": "set_active", "record_id": 1, "value": "1"},
+            {"generation": 5, "kind": "set_value", "record_id": 1, "value": "99"},
+            {"generation": 5, "kind": "query", "record_id": 1},
+            {"generation": 5, "kind": "list_processes"},
+        ):
+            try:
+                service.write_runtime_commands(10, [command])
+            except ValueError as exc:
+                refusals.append(str(exc))
+        release.set()
+        await stopping
+        return refusals
+
+    refusals = asyncio.run(scenario())
+    assert all("no cheat is changed and no program attached" in reason for reason in refusals[:3])
+    # The reads are past the stop's refusal: here they fail on the session this
+    # fake does not have, which is a later check than the one under test.
+    assert refusals[3:] == ["no prepared session exists for AppID"] * 2
+    assert written == []
+    assert service._current_run_holds(10)["dirty"].targets == ("game.exe",)
+
+
+def test_a_stop_that_could_not_read_what_it_is_about_leaves_the_game_unmarked(tmp_path: Path, monkeypatch):
+    """The game is marked before the stop reads its session, and the read can fail.
+
+    A mark left behind by a stop that never ran would refuse every start and
+    every stop in that game until the plugin was reloaded.
+    """
+    service = _service(tmp_path)
+    _stopping(service, confirmed=True)
+    failures = iter([OSError("record went away")])
+
+    def evidence(app_id: int):
+        raise next(failures)
+    monkeypatch.setattr(service, "_stop_evidence", evidence)
+    with pytest.raises(OSError):
+        asyncio.run(service.stop_ce_for_game(10))
+    assert service._run_transitions == {}
+    monkeypatch.setattr(service, "_stop_evidence", lambda app_id: {"dirty": (), "stopped": ()})
+    assert asyncio.run(service.stop_ce_for_game(10))["stopped"] is True
