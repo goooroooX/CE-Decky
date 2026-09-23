@@ -5472,6 +5472,28 @@ describe("Launching the selected table", () => {
     return snapshot;
   }
 
+  it("stops asking once the backend says Auto-load is off", async () => {
+    // A panel that has not seen Auto-load switched off still believes it on,
+    // and the backend refuses that Auto-load. The panel reads its status again
+    // on that failure and stops there, rather than asking on every retry of its
+    // backoff. The refusal arrives after the panel's one catch-up read, so it
+    // is the refusal and not that read that has to teach it.
+    let armed = true;
+    api.getStatus.mockImplementation(async () => (armed ? status(true) : withoutAutoload()));
+    api.getRuntimeStatus.mockResolvedValue(noRuntime());
+    api.launchCEForGame.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+      armed = false;
+      throw new Error("Auto-load is switched off for this game or this table, so it does not start Cheat Engine. Start it yourself, or switch Auto-load on.");
+    });
+    renderContent();
+    await waitFor(() => expect(api.launchCEForGame).toHaveBeenCalledTimes(1), { timeout: 6000 });
+    // Well past the first retry of the backoff, which comes 4 s after the
+    // refusal, so a slow runner cannot hide a second attempt.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 9000)); });
+    expect(api.launchCEForGame).toHaveBeenCalledTimes(1);
+  }, 20000);
+
   it("names the cheats a start left on that nobody chose", async () => {
     // A script startup started brings its author's defaults, and the ones whose
     // code was not read as surviving being written off stay on beside the cheat

@@ -3,7 +3,7 @@ import { ButtonItem, NavEntryPositionPreferences, PanelSection, PanelSectionRow,
 import { useRef } from "react";
 import { CheatRow } from "./CheatRow";
 import { CompatibilityMark } from "./CompatibilityMark";
-import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, UPDATE_ACTION_CLASS } from "./PanelDensity";
+import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, SwitchBox, UPDATE_ACTION_CLASS } from "./PanelDensity";
 import { HEXPAW_DATA_URI } from "../assets/hexpaw";
 import { leadWithCause } from "../errors";
 import type { BlockedMark, PinnedCheatRow } from "../uiModel";
@@ -680,14 +680,15 @@ export function HomePanel(props: Props) {
               whose table went missing could never be disarmed from Game Mode,
               and the old intent came back the moment the table was repaired.
               Switching automatic execution off always reduces authority. */}
-          <ToggleField
+          {/* Marked so a device session can read and press it by name. */}
+          <SwitchBox name="Auto-load" checked={autoloadEnabled} testId="autoload-row" style={CONTENTS_ONLY}><ToggleField
             label="Load last table & cheats"
             description={autoloadBlockedReason ?? "This exact game and table SHA only."}
             checked={autoloadEnabled}
             disabled={workflowBlocked || (autoloadBlockedReason !== null && !autoloadEnabled)}
             onChange={traceUiAction("home_panel.load_last_table_cheats", onAutoloadChange, (enabled) => ({ app_id: game?.appId, table_sha: table?.sha256, enabled }))}
             bottomSeparator="none"
-          />
+          /></SwitchBox>
         </PanelSectionRow>
       </PanelSection>
     </DensePanel>

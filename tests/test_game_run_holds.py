@@ -631,6 +631,14 @@ def test_a_hold_already_on_disk_does_not_hold_an_update(tmp_path: Path, monkeypa
 
 
 
+def _armed(service: PluginService, app_id: int = 10) -> None:
+    """A profile whose Auto-load is on for its consented table, as Auto-load needs."""
+    sha = "f" * 64
+    service.profile_store.upsert(app_id=app_id, name="Game", is_shortcut=False, table_sha256=sha, target_process="game.exe")
+    service.profile_store.set_execution_consent(app_id=app_id, table_sha256=sha, consent=True)
+    service.profile_store.set_autoload(app_id=app_id, table_sha256=sha, enabled=True)
+
+
 def test_auto_load_is_refused_by_the_users_stop_in_the_backend_itself(tmp_path: Path, monkeypatch):
     """The panel checks the hold first, but it is not the authority.
 
@@ -644,6 +652,7 @@ def test_auto_load_is_refused_by_the_users_stop_in_the_backend_itself(tmp_path: 
     monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
     monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
     monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    _armed(service)
     _stopping(service, confirmed=True)
     asyncio.run(service.stop_ce_for_game(10, None, True))
     assert service._public_run_holds(10)["autoload_held"] is True
@@ -721,6 +730,7 @@ def test_a_start_that_does_not_say_it_was_pressed_is_not_let_past_a_stop(tmp_pat
     monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
     monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
     monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    _armed(service)
     _stopping(service, confirmed=True)
     asyncio.run(service.stop_ce_for_game(10, None, True))
 
@@ -744,3 +754,35 @@ def test_a_start_that_does_not_say_it_was_pressed_is_not_let_past_a_stop(tmp_pat
     monkeypatch.setattr(service.ce_launch, "start_attached", start_attached)
     asyncio.run(plugin.launch_ce_for_game(10, None, False))
     assert service._public_run_holds(10)["autoload_held"] is False
+
+
+
+def test_auto_load_is_refused_where_the_backend_has_it_switched_off(tmp_path: Path, monkeypatch):
+    """A panel that has not seen Auto-load switched off still believes it on.
+
+    Seen on the device: Auto-load was switched off from outside the panel, a
+    stop that held nothing followed, and the panel's own Auto-load started
+    Cheat Engine straight back because the backend took its word for it.
+    """
+    from ce_decky.service import AUTOLOAD_OFF_REFUSAL
+    service = _service(tmp_path)
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(service.launch_ce_for_game(10, None, True))
+    assert str(refused.value) == AUTOLOAD_OFF_REFUSAL
+    _armed(service)
+    service.profile_store.set_autoload(app_id=10, table_sha256="f" * 64, enabled=False)
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(service.launch_ce_for_game(10, None, True))
+    assert str(refused.value) == AUTOLOAD_OFF_REFUSAL
+    # Armed, but the consent is for no table any more.
+    service.profile_store.set_autoload(app_id=10, table_sha256="f" * 64, enabled=True)
+    service.profile_store.set_execution_consent(app_id=10, table_sha256="f" * 64, consent=False)
+    with pytest.raises(ValueError) as refused:
+        asyncio.run(service.launch_ce_for_game(10, None, True))
+    assert str(refused.value) == AUTOLOAD_OFF_REFUSAL
+    service.profile_store.set_execution_consent(app_id=10, table_sha256="f" * 64, consent=True)
+    # Switched on, it is past this check and meets the next one, which is this
+    # fake's missing table.
+    service.profile_store.set_autoload(app_id=10, table_sha256="f" * 64, enabled=True)
+    with pytest.raises(ValueError, match="table store directory is missing"):
+        asyncio.run(service.launch_ce_for_game(10, None, True))

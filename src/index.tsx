@@ -3676,6 +3676,10 @@ function Content() {
         // Auto-load stayed inert after the condition became healthy and the
         // user had to press Load table & start CE by hand. Retry a bounded
         // number of times on a backoff instead, and never in a tight loop.
+        // What this panel believes about Auto-load is read again first: the
+        // backend refuses an Auto-load its own profile has switched off, and a
+        // panel that had not seen that would otherwise ask again on every retry.
+        void refreshStatus().catch((cause) => logUiFailure("autoload.status_refresh_failed", cause, { app_id: selectedGame.appId }));
         const previous = autoloadRetryRef.current;
         const attempts = previous?.key === key ? previous.attempts + 1 : 1;
         autoloadRetryRef.current = { key, attempts };
@@ -3694,7 +3698,7 @@ function Content() {
     // body takes its own fresh observation. It is here because the transition
     // this exists for - a launcher first, the game seconds later - changes no
     // other dependency, and without it Auto-load slept through it.
-  }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, autoloadRunHeld, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, clearAutoloadRetry, refreshCELaunch, runAction, captureLiveSnapshot]);
+  }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, autoloadRunHeld, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, clearAutoloadRetry, refreshCELaunch, refreshStatus, runAction, captureLiveSnapshot]);
 
   const pickCE = async (): Promise<boolean> => {
     if (!status) return false;

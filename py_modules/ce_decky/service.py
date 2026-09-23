@@ -256,6 +256,10 @@ AUTOLOAD_HELD_REFUSAL = (
     "Auto-load does not start Cheat Engine again in this game until it is restarted, because you stopped it. "
     "Start it yourself to go on now."
 )
+AUTOLOAD_OFF_REFUSAL = (
+    "Auto-load is switched off for this game or this table, so it does not start Cheat Engine. "
+    "Start it yourself, or switch Auto-load on."
+)
 # A start that did not say whether it was pressed: a panel from before CE Decky
 # was updated, whose Auto-load and whose Start look the same from here.
 UNSTATED_START_REFUSAL = (
@@ -4612,6 +4616,24 @@ class PluginService:
                 "CE Decky could not read which games have to be restarted before a table is started, so it starts "
                 "none. Clear it on Home to go on."
             )
+        if automatic:
+            # Auto-load as the backend has it, not as a panel last read it: a
+            # panel that has not seen Auto-load switched off, here or from
+            # another panel, still believes it on.
+            profile = self.profile_store.get(app_id)
+            reason = (
+                "no_profile" if profile is None
+                else "autoload_off" if not profile.autoload_enabled
+                else "no_table" if not profile.table_sha256
+                else "no_consent" if profile.execution_consent_sha256 != profile.table_sha256
+                else None
+            )
+            if reason is not None:
+                log_activity(
+                    self.logger, "info", "launch.refused_autoload_off", app_id=app_id, reason=reason,
+                    table_sha=(profile.table_sha256 or "")[:12] if profile is not None else None,
+                )
+                raise ValueError(AUTOLOAD_OFF_REFUSAL)
         holds = self._current_run_holds(app_id)
         if "dirty" in holds:
             log_activity(self.logger, "info", "launch.refused_dirty_run", app_id=app_id)
