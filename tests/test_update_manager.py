@@ -1328,3 +1328,53 @@ def test_a_recovery_for_a_version_this_device_already_runs_is_retired(tmp_path: 
     assert unreadable.snapshot()["recovery"] is None
     unreadable.maintain()
     assert unreadable.kept_archive_path.is_file(), "nothing is deleted on a record this cannot read"
+
+
+def test_an_install_waits_at_its_boundary_until_its_owner_admits_it(tmp_path: Path, spawned, monkeypatch):
+    """The backend is replaced once `installing` is published, so its owner decides when.
+
+    A Cheat Engine stop that has not yet written down what it left exists only
+    in this process: the update waits for it, still cancellable, and never
+    starts the installer before the owner has published the install.
+    """
+    monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_POLL_SECONDS", 0.01)
+    answers = iter([False, False, True])
+    seen: list[str] = []
+    manager = _manager(tmp_path, FakeNetwork())
+
+    def admit(commit):
+        seen.append(str(manager._operation["state"]))
+        if not next(answers):
+            return False
+        commit()
+        return True
+    manager._admit_install = admit
+
+    async def scenario():
+        started = await manager.start()
+        assert manager.replacement_committed() is False
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    assert asyncio.run(scenario())["state"] == "installing"
+    assert seen == ["downloading"] * 3
+    assert len(spawned) == 1
+    assert manager.replacement_committed() is True
+
+
+def test_an_install_its_owner_never_admits_is_not_installed(tmp_path: Path, spawned, monkeypatch):
+    monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(update_manager, "INSTALL_ADMISSION_POLL_SECONDS", 0.01)
+    manager = _manager(tmp_path, FakeNetwork())
+    manager._admit_install = lambda commit: False
+
+    async def scenario():
+        started = await manager.start()
+        await asyncio.gather(manager._task, return_exceptions=True)
+        return manager.status(started["operation_id"])
+
+    status = asyncio.run(scenario())
+    assert status["state"] == "failed"
+    assert "still being stopped" in status["error"]
+    assert spawned == []
+    assert manager.replacement_committed() is False

@@ -92,6 +92,13 @@ SYSTEM_INTERPRETERS = ("/usr/bin/python3", "/usr/local/bin/python3")
 # timeout; this is only the guarantee that a screen is answered at all.
 CHECK_JOIN_TIMEOUT_SECONDS = 90.0
 
+# How long a verified update waits at the install boundary for a Cheat Engine
+# stop to finish, and how often it asks. A stop is bounded by its quiesce wait
+# and its termination grace, about half a minute between them; one that has
+# not finished by this is not one to replace the backend underneath.
+INSTALL_ADMISSION_WAIT_SECONDS = 60.0
+INSTALL_ADMISSION_POLL_SECONDS = 0.5
+
 # The states an update is over in. `installing` is deliberately not one of
 # them: the install is happening in another process and this plugin is being
 # replaced, so a second start would download again and spawn a second installer
@@ -100,6 +107,11 @@ CHECK_JOIN_TIMEOUT_SECONDS = 90.0
 _SETTLED_STATES = frozenset({"failed", "cancelled"})
 
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _admit_always(commit: Callable[[], None]) -> bool:
+    commit()
+    return True
 
 
 def system_interpreter() -> str | None:
@@ -128,8 +140,16 @@ class PluginUpdateManager:
         current_version: str,
         auto_check: Callable[[], bool],
         last_search_activity: Callable[[], float],
+        admit_install: Callable[[Callable[[], None]], bool] | None = None,
     ) -> None:
         self.paths = paths
+        # Asked at the one point after which this backend will be replaced. It
+        # runs `commit`, which publishes `installing`, and answers True only
+        # when the owner holds nothing a replacement would lose. The owner
+        # decides that and commits under its own lock, so what it refuses once
+        # the install is published and what it makes the install wait for are
+        # one decision.
+        self._admit_install = admit_install or _admit_always
         self.network = network
         self.logger = logger
         self.current_version = current_version
@@ -1143,7 +1163,7 @@ class PluginUpdateManager:
             self._offer = offer
             self._set(operation_id, state="downloading", version=offer.version, message=f"Downloading {offer.archive_name}")
             archive, digest = await self._fetch_verified_archive(offer)
-            self._set(operation_id, state="installing", message="Installing through Decky; Steam's interface will restart")
+            await self._await_install_admission(operation_id)
             self._spawn_runner(offer, archive, digest, operation_id)
         except asyncio.CancelledError:
             _discard(archive)
@@ -1216,6 +1236,46 @@ class PluginUpdateManager:
             version=offer.version, bytes=destination.stat().st_size, sha256=digest[:12],
         )
         return destination, digest
+
+    async def _await_install_admission(self, operation_id: str) -> None:
+        """Publish `installing` only where the owner says this backend may be replaced.
+
+        A stop that has ended Cheat Engine and not yet written down what it
+        left is held only in this process, and the install replaces it. So the
+        update waits for it here, still cancellable, and gives up rather than
+        install over one that does not finish.
+        """
+        def commit() -> None:
+            self._set(operation_id, state="installing", message="Installing through Decky; Steam's interface will restart")
+
+        deadline = time.monotonic() + INSTALL_ADMISSION_WAIT_SECONDS
+        waited = False
+        while not self._admit_install(commit):
+            if not waited:
+                waited = True
+                self._set(operation_id, message="Waiting for Cheat Engine to finish stopping before installing")
+                log_activity(self.logger, "info", "update.install_waiting_for_stop", operation=operation_id[:12])
+            if time.monotonic() >= deadline:
+                log_activity(self.logger, "warning", "update.install_refused_stop_in_progress", operation=operation_id[:12])
+                raise UpdateError(
+                    "Cheat Engine was still being stopped in a game, so the update was not installed; "
+                    "update again once it has stopped"
+                )
+            await asyncio.sleep(INSTALL_ADMISSION_POLL_SECONDS)
+
+    def replacement_committed(self) -> bool:
+        """Whether an install that will replace this backend has been handed on.
+
+        This process's own `installing` operation, or one a backend before it
+        handed to a runner that is still going, read the way the readiness
+        report reads it: nothing written, nothing removed.
+        """
+        if self._operation is None:
+            self._adopt_pending_install(self._stored().get("install"), persist=False)
+            if self._operation is not None and self.result_path.is_file():
+                return False
+        operation = self._operation
+        return operation is not None and operation.get("state") == "installing"
 
     def _spawn_runner(self, offer: ReleaseOffer, archive: Path, digest: str, operation_id: str) -> None:
         """Hand the install to a process Decky stopping this one cannot take.

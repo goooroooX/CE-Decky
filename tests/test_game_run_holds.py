@@ -516,3 +516,65 @@ def test_a_stop_that_could_not_read_what_it_is_about_leaves_the_game_unmarked(tm
     assert service._run_transitions == {}
     monkeypatch.setattr(service, "_stop_evidence", lambda app_id: {"dirty": (), "stopped": ()})
     assert asyncio.run(service.stop_ce_for_game(10))["stopped"] is True
+
+
+def test_no_update_replaces_the_backend_while_a_stop_is_deciding_what_it_left(tmp_path: Path, monkeypatch):
+    """The transition and the verdict it waits for live in this process until the hold is on disk.
+
+    An install replaces the process. Crossing into one while a stop has ended
+    Cheat Engine and not yet held the game would leave neither, and the next
+    backend would admit a start over what the stop left.
+    """
+    service = _service(tmp_path)
+    monkeypatch.setattr(service_module, "capture_run_identities", lambda app_id, names: (_identity(),))
+    monkeypatch.setattr(service_module, "run_identities_gone", lambda identities: False)
+    monkeypatch.setattr(service, "_session_targets", lambda prepared: ("game.exe",))
+    monkeypatch.setattr(service.session_store, "load_current", lambda app_id: object())
+    committed: list[str] = []
+    admit = service.plugin_updates._admit_install
+
+    async def scenario() -> tuple[bool, object]:
+        ended, release = _paused_stop(service, monkeypatch, confirmed=False)
+        stopping = asyncio.create_task(service.stop_ce_for_game(10))
+        await ended.wait()
+        during = admit(lambda: committed.append("installing"))
+        release.set()
+        await stopping
+        return during, service._current_run_holds(10).get("dirty")
+
+    during, hold = asyncio.run(scenario())
+    assert during is False and committed == []
+    assert hold is not None
+    # With the verdict held, the install goes ahead.
+    assert admit(lambda: committed.append("installing")) is True
+    assert committed == ["installing"]
+
+
+def test_no_stop_begins_once_an_install_has_been_handed_on(tmp_path: Path, monkeypatch):
+    """Past that point this backend can be replaced at any moment, so no transition may start in it.
+
+    The next backend recovers the Cheat Engine this one owned and stops it with
+    a transaction of its own.
+    """
+    service = _service(tmp_path)
+    reached: list[str] = []
+
+    async def stop_for_app(app_id: int, **_kwargs):
+        reached.append("stop_for_app")
+        return {"stopped": True, "operation": None, "recovered": False, "quiesce": None}
+
+    async def stop(operation_id: str):
+        reached.append("stop")
+        return {"mode": "attached", "app_id": 10, "state": "stopped"}
+    service.ce_launch.stop_for_app = stop_for_app  # type: ignore[method-assign]
+    monkeypatch.setattr(service.ce_launch, "stop", stop)
+    monkeypatch.setattr(service.ce_launch, "status", lambda operation_id: {"mode": "attached", "app_id": 10})
+    monkeypatch.setattr(service.plugin_updates, "replacement_committed", lambda: True)
+    with pytest.raises(ValueError, match="installing an update"):
+        asyncio.run(service.stop_ce_for_game(10))
+    with pytest.raises(ValueError, match="installing an update"):
+        asyncio.run(service.stop_ce_launch("op"))
+    assert reached == [] and service._run_transitions == {}
+    # Nothing installing: a stop is what it always was.
+    monkeypatch.setattr(service.plugin_updates, "replacement_committed", lambda: False)
+    assert asyncio.run(service.stop_ce_for_game(10))["stopped"] is True

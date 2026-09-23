@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 import asyncio
 import os
 import re
@@ -394,6 +394,7 @@ class PluginService:
             current_version=__version__,
             auto_check=self._update_auto_check_enabled,
             last_search_activity=self.provider_catalog.last_search_activity,
+            admit_install=self._admit_plugin_install,
         )
         self.bridge_source = Path(__file__).with_name("ce_decky_bridge.lua")
         # The panel polls runtime status and re-inspects the active table
@@ -4611,6 +4612,16 @@ class PluginService:
             if app_id in self._run_transitions:
                 log_activity(self.logger, "info", "stop.refused_stop_in_progress", app_id=app_id)
                 raise ValueError("Cheat Engine is already being stopped in this game. Try again once it has stopped.")
+            # Past this, the backend that would hold the stop until its verdict
+            # is written down can be replaced at any moment. The next one
+            # recovers the Cheat Engine this one owned, and stops it with a
+            # transaction of its own.
+            if self.plugin_updates.replacement_committed():
+                log_activity(self.logger, "info", "stop.refused_update_installing", app_id=app_id)
+                raise ValueError(
+                    "CE Decky is installing an update and is about to restart, so Cheat Engine is not stopped now. "
+                    "Stop it again once CE Decky is back."
+                )
             token = object()
             self._run_transitions[app_id] = token
             try:
@@ -4618,6 +4629,22 @@ class PluginService:
             except BaseException:
                 del self._run_transitions[app_id]
                 raise
+
+    def _admit_plugin_install(self, commit: Callable[[], None]) -> bool:
+        """Let the updater cross into a replacement of this backend, or not yet.
+
+        A stop's transition exists only in this process until its verdict is
+        on disk, and the old Cheat Engine may already be gone: a replacement
+        then would leave neither the Cheat Engine nor the hold to refuse a start
+        over what it left. `commit` publishes the install under the same lock a
+        stop takes to begin, so no stop begins after it and none is running
+        when it happens.
+        """
+        with self._mutation_lock:
+            if self._run_transitions:
+                return False
+            commit()
+            return True
 
     def _end_run_transition(self, app_id: int, token: object) -> None:
         with self._mutation_lock:
