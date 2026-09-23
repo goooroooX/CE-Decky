@@ -195,7 +195,7 @@ _READ = """
     const loose = Array.from(panel.querySelectorAll("button")).filter((el) => !el.closest("[data-testid]"));
     if (loose.length) {
       rows.push({
-        testid: "(untagged)",
+        testid: "untagged-controls",
         text: loose.map((el) => text(el)).join(" / ").slice(0, 300),
         // Not one box, so no height of its own to report.
         height: null,
@@ -422,7 +422,9 @@ _PRESS = r"""
     const boxes = panels[depth];
     const within = [];
     for (const box of boxes) {
-      if (scope === null) { within.push(box); continue; }
+      // The buttons the reader lists as `untagged-controls` are in no row, so
+      // that scope is the whole surface with every row's controls left out.
+      if (scope === null || scope === "untagged-controls") { within.push(box); continue; }
       if (box.getAttribute && box.getAttribute("data-testid") === scope) within.push(box);
       for (const inner of Array.from(box.querySelectorAll('[data-testid="' + scope + '"]'))) within.push(inner);
     }
@@ -445,6 +447,7 @@ _PRESS = r"""
         })));
       for (const { node: button, label } of pressable) {
         if (label !== wanted) continue;
+        if (scope === "untagged-controls" && button.closest("[data-testid]")) continue;
         // Only what is actually drawn. A modal Steam has closed can stay in the
         // document with no box at all, and its buttons still carry their
         // handlers: a press that landed on one of those would run a screen the

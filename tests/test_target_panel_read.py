@@ -26,6 +26,12 @@ def test_a_bare_name_is_looked_for_everywhere():
 def test_a_test_id_in_front_names_the_one_row_to_look_in():
     assert panel_read.press_target("table-row:Search") == ("table-row", "Search")
     assert panel_read.press_target("imported-table-33a60e6b:Use") == ("imported-table-33a60e6b", "Use")
+    # The row the reader lists the buttons of no row under takes a scope too,
+    # which it did not while it was spelled `(untagged)`.
+    assert panel_read.press_target("untagged-controls:Load table & start CE") == (
+        "untagged-controls", "Load table & start CE",
+    )
+    assert "untagged-controls" in panel_read._READ and "untagged-controls" in panel_read._PRESS
 
 
 def test_a_control_whose_own_wording_carries_a_colon_keeps_it():
