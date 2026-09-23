@@ -115,7 +115,7 @@ _READ = """
     checked: el.getAttribute("data-checked") === "true",
     unknown: el.getAttribute("data-checked") === "unknown" ? true : undefined,
   }));
-  const controls = (row) => switches(row).concat(Array.from(row.querySelectorAll("button, input, select")).map((el) => {
+  const control = (el) => {
     const tag = el.tagName.toLowerCase();
     const label = tag === "button" ? text(el) : (el.getAttribute("aria-label") || el.getAttribute("placeholder") || "");
     const item = { kind: tag, label };
@@ -132,7 +132,8 @@ _READ = """
     }
     if (el === document.activeElement) item.focused = true;
     return item;
-  }));
+  };
+  const controls = (row) => switches(row).concat(Array.from(row.querySelectorAll("button, input, select")).map(control));
   // How far down the page a window may actually be seen. Steam paints its own
   // bar along the bottom, over whatever is behind it, so a window that fits the
   // page is still cut when it reaches past this. Asked of the page rather than
@@ -186,6 +187,20 @@ _READ = """
         break;
       }
       footerHost = footerHost.parentElement;
+    }
+    // Buttons that sit in no row at all. Steam's full-width buttons carry no
+    // test id, so `Load table & start CE` and `Configure cheats` were pressable
+    // by name and yet absent from every read, which cost a session a search
+    // through the source to learn they were there.
+    const loose = Array.from(panel.querySelectorAll("button")).filter((el) => !el.closest("[data-testid]"));
+    if (loose.length) {
+      rows.push({
+        testid: "(untagged)",
+        text: loose.map((el) => text(el)).join(" / ").slice(0, 300),
+        height: 0,
+        controls: loose.map(control),
+        clipped: 0,
+      });
     }
     // The window this surface is drawn in, rather than the surface itself.
     // What a modal here puts below its dense block - the footer, a refusal, the
