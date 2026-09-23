@@ -16955,6 +16955,12 @@ function Content() {
         const key = `${selectedGame.appId}:${profile.table_sha256}:${profile.target_process}`;
         if (autoloadAttemptRef.current === key)
             return;
+        // A retry that is waiting out its backoff is the next attempt, and the end
+        // of the attempt that scheduled it is not a reason to make it now. Only
+        // for the same game, table and target: another one's backoff is no reason
+        // to keep this one waiting.
+        if (autoloadRetryTimerRef.current !== null && autoloadRetryRef.current?.key === key)
+            return;
         autoloadAttemptRef.current = key;
         void (async () => {
             try {
@@ -17058,15 +17064,23 @@ function Content() {
                 autoloadRetryTimerRef.current = null;
                 if (attempts < AUTOLOAD_RETRY_DELAYS_MS.length + 1) {
                     autoloadAttemptRef.current = null;
-                    autoloadRetryTimerRef.current = setTimeout(() => setAutoloadRetryTick(tick => tick + 1), AUTOLOAD_RETRY_DELAYS_MS[attempts - 1]);
+                    autoloadRetryTimerRef.current = setTimeout(() => {
+                        autoloadRetryTimerRef.current = null;
+                        setAutoloadRetryTick(tick => tick + 1);
+                    }, AUTOLOAD_RETRY_DELAYS_MS[attempts - 1]);
                 }
             }
         })();
+        // `busy` is a wake-up too. The body steps aside while another action runs,
+        // and switching Auto-load on is one: the switch reads status and then the
+        // launch state, and this ran in between, found the panel busy and stepped
+        // aside, with nothing left to change once the switch finished. Seen on the
+        // device: Auto-load started nothing until the panel was opened again.
         // `targetProvenAbsent` is a wake-up rather than something this reads: the
         // body takes its own fresh observation. It is here because the transition
         // this exists for - a launcher first, the game seconds later - changes no
         // other dependency, and without it Auto-load slept through it.
-    }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, autoloadRunHeld, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, clearAutoloadRetry, refreshCELaunch, refreshStatus, runAction, captureLiveSnapshot]);
+    }, [selectedGame?.appId, profile?.autoload_enabled, profile?.table_sha256, profile?.target_process, profile?.execution_consent_sha256, status?.ce.valid, activeTable?.sha256, ceRunning, ownership.blockedReason, antiCheatReason, ceLaunchGame?.running, targetProvenAbsent, autoloadRunHeld, runtime?.connected, inspection?.sha256, managedCE, managedSetupPending, autoloadRetryTick, busy, clearAutoloadRetry, refreshCELaunch, refreshStatus, runAction, captureLiveSnapshot]);
     const pickCE = async () => {
         if (!status)
             return false;

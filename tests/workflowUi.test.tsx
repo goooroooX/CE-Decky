@@ -5494,6 +5494,37 @@ describe("Launching the selected table", () => {
     expect(api.launchCEForGame).toHaveBeenCalledTimes(1);
   }, 20000);
 
+  it("starts the table when Auto-load is switched on in a game already running", async () => {
+    // Auto-load starts the table whenever the game runs without it. Switched on
+    // from the panel with nothing holding it, it found the panel busy with the
+    // switch itself, and nothing it waits on changed once that finished: on the
+    // device it started nothing until the panel was closed and opened again.
+    let armed = false;
+    api.getStatus.mockImplementation(async () => (armed ? status(true) : withoutAutoload()));
+    api.setAutoload.mockImplementation(async () => { armed = true; return status(true).profiles[0]; });
+    // A real launch-state read takes a moment, and the switch waits for one
+    // after its status read: that moment is when Auto-load sees it on.
+    api.getCELaunchCapability.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return launch;
+    });
+    api.getRuntimeStatus.mockResolvedValue(noRuntime());
+    api.launchCEForGame.mockResolvedValue({
+      operation_id: "op", app_id: 10, mode: "attached", state: "connected",
+      session_id: "session", message: "connected", error: null,
+    });
+    renderContent();
+    await screen.findByText("Game.CT");
+    // Past everything the panel loads when it opens, so only the switch can
+    // wake Auto-load.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 4000)); });
+    expect(api.launchCEForGame).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByLabelText("Load last table & cheats"));
+    await waitFor(() => expect(api.setAutoload).toHaveBeenCalledWith(10, SHA, true));
+    await waitFor(() => expect(api.launchCEForGame).toHaveBeenCalled(), { timeout: 5000 });
+    expect(api.launchCEForGame.mock.calls[0][2]).toBe(true);
+  }, 20000);
+
   it("names the cheats a start left on that nobody chose", async () => {
     // A script startup started brings its author's defaults, and the ones whose
     // code was not read as surviving being written off stay on beside the cheat
@@ -5795,7 +5826,11 @@ describe("Launching the selected table", () => {
       renderContent();
 
       await vi.waitFor(() => expect(api.launchCEForGame).toHaveBeenCalledTimes(1));
-      await vi.advanceTimersByTimeAsync(5000);
+      // Not before its backoff: the end of the failed attempt wakes Auto-load
+      // too, and that is not a reason to ask again at once.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(api.launchCEForGame).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(4000);
       await vi.waitFor(() => expect(api.launchCEForGame).toHaveBeenCalledTimes(2));
     } finally {
       vi.useRealTimers();
