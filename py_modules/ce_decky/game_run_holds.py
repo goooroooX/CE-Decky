@@ -62,11 +62,12 @@ class GameRunHolds:
         self.path = path
 
     def load(self) -> dict[int, dict[str, RunHold]]:
-        """Every hold on disk, or none where the file cannot be read.
+        """Every hold on disk; nothing where there is no file at all.
 
-        An unreadable file is read as holding nothing and the caller is told,
-        because the other reading refuses every start in every game with nothing
-        the user can do about it.
+        A file that is there and cannot be read raises rather than reading as
+        holding nothing, because it may hold a game still running what a stop
+        left in it. The service refuses every start on that until the user
+        clears it on Home.
         """
         raw = load_json(self.path, None, max_bytes=MAX_BYTES)
         if raw is None:

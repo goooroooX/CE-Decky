@@ -164,7 +164,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Can this device's own 7-Zip open what the production adapter hands it | `scripts/target_archive_probe.py` |
 | Does the device reach a provider over TLS through the production transport | `scripts/target_tls_probe.py` |
 | Make the live backend do something, rather than reading what it holds | `scripts/target_plugin_rpc.py`; one bounded call through Decky's own socket, for behaviour that only exists in the loaded process |
-| What does this plugin hold for a game right now: selected and previous table SHA, consent, auto-load, pins, remembered state, sessions, owned launches, and which AppIDs are running | `scripts/target_state_probe.py` |
+| What does this plugin hold for a game right now: selected and previous table SHA, consent, auto-load, pins, remembered state, sessions, owned launches, which games a stop holds, and which AppIDs are running | `scripts/target_state_probe.py` |
 | What do the provider caches hold: how much of the FearLess listing is indexed, how stale it is, how much it still owes, and whether its background pass is armed | `scripts/target_state_probe.py`, in `provider_caches` |
 | Which Decky paths and versions does the live plugin process report | `scripts/target_decky_env_probe.py`, when procfs permits it; never installation authority |
 | What has the backend been doing, in its own log | `scripts/target_plugin_log.py`; Decky names a file per plugin load and keeps the last few, so the newest is found here rather than by `ls -t` and a guess |

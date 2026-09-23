@@ -297,3 +297,23 @@ def test_an_unreadable_profile_store_claims_no_profile_for_a_running_game(tmp_pa
     assert report["profiles"] == []
     assert report["profiles_reported"] == 0
     assert report["profile_state_error"]
+
+
+def test_the_report_says_which_games_a_stop_holds(tmp_path: Path):
+    """The holds a stop takes are what the device checks after one, and nothing else read them."""
+    from ce_decky.game_run_holds import GameRunHolds, new_hold
+    home, settings = _target_home(tmp_path)
+    state = home / ".cheat-engine-decky" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    GameRunHolds(state / "game_run_holds.json").save({
+        10: {"dirty": new_hold(10, "dirty", ("game.exe",), None, 2), "stopped": new_hold(10, "stopped", ("game.exe",), None)},
+    })
+    report = target_state_probe.probe(home, settings, None, tmp_path / "proc")
+    assert [(item["app_id"], item["kind"], item["unsettled"], item["targets"]) for item in report["run_holds"]] == [
+        (10, "dirty", 2, ["game.exe"]), (10, "stopped", 0, ["game.exe"]),
+    ]
+    assert report["run_holds_error"] is None
+    # A file the backend refuses every start on is said to be one.
+    (state / "game_run_holds.json").write_text('{"schema": 99}')
+    report = target_state_probe.probe(home, settings, None, tmp_path / "proc")
+    assert report["run_holds"] == [] and report["run_holds_error"]

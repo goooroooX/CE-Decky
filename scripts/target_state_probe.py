@@ -33,6 +33,7 @@ if str(MODULE_ROOT) not in sys.path:
 
 from ce_decky.ce_launch import CELaunchSupervisor, observe_running_app_ids  # noqa: E402
 from ce_decky.config import ConfigStore  # noqa: E402
+from ce_decky.game_run_holds import GameRunHolds  # noqa: E402
 from ce_decky.profiles import GameProfile, ProfileStore  # noqa: E402
 from ce_decky.session_protocol import SessionStore  # noqa: E402
 
@@ -449,6 +450,28 @@ def probe(home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = 
         inventory = {"apps": [], "total_sessions": 0, "errors": []}
         session_inventory_error = str(exc)[:512]
 
+    # Which games a stop holds, as the file has them. The backend's own view is
+    # this plus any hold it could not save, which only its capability answer
+    # carries; `run_holds_error` is a file the backend refuses every start on.
+    try:
+        run_holds = [
+            {
+                "app_id": held_app,
+                "kind": kind,
+                "since": hold.since,
+                "age_minutes": round((time.time() - hold.since) / 60, 1),
+                "unsettled": hold.unsettled,
+                "targets": list(hold.targets) if hold.targets is not None else None,
+                "processes": None if hold.identities is None else len(hold.identities),
+            }
+            for held_app, kinds in sorted(GameRunHolds(state_root / "game_run_holds.json").load().items())
+            for kind, hold in sorted(kinds.items())
+        ]
+        run_holds_error: str | None = None
+    except (OSError, ValueError) as exc:
+        run_holds = []
+        run_holds_error = str(exc)[:512]
+
     try:
         installer_processes = _managed_installer_processes(proc_root)
         installer_process_error: str | None = None
@@ -489,6 +512,8 @@ def probe(home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = 
         "running_app_ids_error": running_error,
         "session_inventory": inventory,
         "session_inventory_error": session_inventory_error,
+        "run_holds": run_holds,
+        "run_holds_error": run_holds_error,
         "managed_installer_processes": installer_processes,
         "managed_installer_process_error": installer_process_error,
         # What the provider caches hold, which is the other half of "why did
