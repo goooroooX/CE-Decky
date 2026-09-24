@@ -13858,6 +13858,8 @@ function Content() {
     const blockedGenerationRef = SP_REACT.useRef(0);
     const gameGenerationRef = SP_REACT.useRef(0);
     const selectionSourceRef = SP_REACT.useRef(null);
+    // Running AppIDs the library could not resolve, logged once per set.
+    const unresolvedRunningLoggedRef = SP_REACT.useRef("");
     const managedOwnerRef = SP_REACT.useRef(null);
     const managedCancelRef = SP_REACT.useRef(false);
     const [managedCancelling, setManagedCancelling] = SP_REACT.useState(false);
@@ -14624,6 +14626,17 @@ function Content() {
             }
             runningGamesRef.current = snapshot.games;
             setRunningGames(snapshot);
+            // An unresolved running AppID keeps the detector from selecting or restoring anything.
+            const unresolvedRunningKey = (snapshot.unresolvedAppIds ?? []).join(",");
+            if (unresolvedRunningKey !== unresolvedRunningLoggedRef.current) {
+                unresolvedRunningLoggedRef.current = unresolvedRunningKey;
+                if (unresolvedRunningKey) {
+                    logUiWarning("games.running_unresolved", {
+                        app_ids: unresolvedRunningKey,
+                        resolved_app_ids: snapshot.games.map((candidate) => candidate.appId).join(","),
+                    });
+                }
+            }
             // A running game supersedes a game the user picked by hand while nothing
             // was running, so that pick must not be restored on any later remount.
             if (snapshot.games.length > 0)
@@ -15407,6 +15420,7 @@ function Content() {
         // never opened; both were retained.
         logUi("panel.launch_requested", {
             app_id: game.appId, process,
+            steam_app_ids: (capability.game?.steam_app_ids ?? []).join(","),
             proton: capability.observed_proton_tool?.tool_id ?? null,
             game_running: capability.game?.running ?? false,
             windows_executables: (capability.game?.windows_executables ?? []).join(","),
