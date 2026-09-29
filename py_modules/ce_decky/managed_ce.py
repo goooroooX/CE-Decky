@@ -242,6 +242,16 @@ def discover_steam_library_roots(user_home: Path) -> tuple[list[Path], list[Path
     return sorted(steam_roots, key=str), sorted(libraries, key=str)
 
 
+# The system compatibility tool directories Steam reads beside the user's own,
+# where a distribution package installs its Proton. `STEAM_EXTRA_COMPAT_TOOLS_PATHS`
+# is not read: it belongs to the Steam client's environment, which this backend
+# does not share.
+SYSTEM_COMPAT_TOOL_ROOTS: tuple[Path, ...] = (
+    Path("/usr/share/steam/compatibilitytools.d"),
+    Path("/usr/local/share/steam/compatibilitytools.d"),
+)
+
+
 def discover_proton_tools(user_home: Path) -> list[ProtonTool]:
     """Discover exact installed Proton scripts; the controller chooses one identity."""
     steam_roots, libraries = discover_steam_library_roots(user_home)
@@ -253,12 +263,13 @@ def discover_proton_tools(user_home: Path) -> list[ProtonTool]:
             for item in _bounded_directories(common, 512):
                 if item.name.casefold().startswith("proton") and (item / "proton").is_file():
                     candidates.append((item, "steam-library"))
-    for root in steam_roots:
-        custom = root / "compatibilitytools.d"
+    custom_roots = [(root / "compatibilitytools.d", "compatibilitytools.d") for root in steam_roots]
+    custom_roots += [(root, "system-compatibilitytools.d") for root in SYSTEM_COMPAT_TOOL_ROOTS]
+    for custom, source in custom_roots:
         if custom.is_dir():
             for item in _bounded_directories(custom, 256):
                 if (item / "proton").is_file():
-                    candidates.append((item, "compatibilitytools.d"))
+                    candidates.append((item, source))
 
     tools: dict[str, ProtonTool] = {}
     for root, source in candidates:
