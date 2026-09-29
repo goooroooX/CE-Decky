@@ -154,7 +154,7 @@ def test_resolve_game_mode_display_rejects_ambiguous_or_unbacked_values(tmp_path
 
 def test_observe_game_container_reports_the_running_game_environment(tmp_path: Path):
     proc = tmp_path / "proc"
-    _proc(proc, 10, {"SteamAppId": "1", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/220"})
+    _proc(proc, 10, {"SteamAppId": "1", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/1"})
     _proc(
         proc,
         20,

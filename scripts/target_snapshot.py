@@ -104,6 +104,10 @@ def _compatibility_tools(home: Path) -> list[dict[str, object]]:
         home / ".steam/steam/steamapps/common",
         home / ".local/share/Steam/compatibilitytools.d",
         home / ".steam/steam/compatibilitytools.d",
+        # Where a distribution package installs its Proton; the production
+        # discovery reads the same two, and a game can be running under one.
+        Path("/usr/share/steam/compatibilitytools.d"),
+        Path("/usr/local/share/steam/compatibilitytools.d"),
     ]
     items: list[dict[str, object]] = []
     seen: set[str] = set()
