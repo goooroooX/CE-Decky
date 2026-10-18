@@ -2,7 +2,7 @@
 
 The compact entry point for coding agents. Everything else this project holds is in `docs/`, and **Authority and reading routes** below says which document owns what and which one wins.
 
-Current development version: **0.9.29 — 2026-09-23**
+Current development version: **0.9.30 — 2026-10-19**
 
 ## Start here
 
@@ -125,7 +125,7 @@ An entry states what is true of the device now, not how the change came about. A
 | Prototype | only its README commands |
 | Target integration | local regressions plus exact on-target evidence |
 
-GitHub Actions (`.github/workflows/ci.yml`) is the authoritative complete Linux gate, and green exact-head CI is what makes a pushed production, build, dependency, test, packaging, or release change ready. It is two jobs: `validate` runs the release profile, and `store-artifact` builds and checks the archive the official Decky Store would ship, which is a different build path and the one a submission is judged by.
+GitHub Actions (`.github/workflows/ci.yml`) is the authoritative complete Linux gate, and green exact-head CI is what makes a pushed production, build, dependency, test, packaging, or release change ready. `validate` runs the release profile; `decky-runtime` checks that exact package in the pinned Decky executable and focused Python 3.14 cases; `store-artifact` builds and checks the archive the official Decky Store would ship, which is a different build path and the one a submission is judged by. The optional upstream watch is separate: its candidate results never move the supported runtime pin or replace these required checks.
 
 Wait for CI on the head you pushed, in the foreground, and report what it said. One documented command does that wait and proves the run belongs to the exact head; it is in `docs/DEVELOPMENT.md` beside the inspection commands, and assembling one out of a run listing and a watcher spends calls on a question already answered there. A push is not the end of the work: until green exact-head CI is read the head is pushed, not ready, and a red run is the finding. Documentation-only changes need repository QA rather than CI.
 
@@ -183,6 +183,8 @@ The rows are the questions, because that is what an agent is holding when it nee
 | What does a table scan for, and does this game's program hold it | `scripts/ct_scan_survey.py`; `--tables` over a directory reports what the production parser read out of real tables and what it refused, with the reason and an example of each, and `--table` and `--executable` runs the check the panel runs and prints which patterns are present, which are missing and what it cost. `--tables` with `--repair-coverage` answers how much of a corpus the repair can produce a proven table for, and how much of that a user can be offered. Read only: no table is stored and no game is started |
 | What version do real Windows executables declare, and what does reading one cost | `scripts/pe_version_survey.py`; it walks a directory of `.exe` through the production version reader and reports, per file, the version, the size of the resource section, how far into it the directory walk reached and how many spans the read cost |
 | One bounded read-only snapshot of the host, for a report | `scripts/target_snapshot.py` |
+| Does this exact plugin ZIP work inside this exact Decky runtime, without starting a live service | `scripts/decky_compat_probe.py`; inputs and the reviewed local-runtime restriction are in `docs/DEVELOPMENT.md` |
+| Has CI already checked a Decky version, and how is the three-day upstream watch operated | `scripts/decky_compat_monitor.py`; its ledger and native failed-workflow notifications are in `docs/DEVELOPMENT.md` |
 | Routed repository QA, and pinned browser UI QA | `scripts/qa.py`, `scripts/browser_harness.py` |
 | What are the providers actually serving, and what is in real tables | `scripts/provider_probe.py`, `scripts/provider_search_survey.py`, `scripts/provider_corpus_survey.py` |
 | Add a changelog entry to the current version without anchoring an edit on text that changes every round | `python scripts/changelog.py add` |

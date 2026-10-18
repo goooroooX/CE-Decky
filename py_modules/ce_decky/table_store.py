@@ -807,9 +807,13 @@ class TableStore:
 
     def list_tables_with_errors(self) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
         """Return usable entries plus bounded corruption diagnostics."""
-        if not self.meta_root.exists():
+        try:
+            self.meta_root.lstat()
+        except FileNotFoundError:
             return [], []
-        self._ensure_roots(self.meta_root)
+        except OSError as exc:
+            raise ValueError("table metadata catalog is unreadable") from exc
+        self._ensure_roots(self.meta_root, create=False)
         paths: list[Path] = []
         try:
             with os.scandir(self.meta_root) as entries:

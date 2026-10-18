@@ -17,6 +17,10 @@ The root is intentionally the repository control plane, not a document folder. K
   and `_markupbase` compatibility assets for Decky's stripped PyInstaller
   runtime; keep their pinned source, license, package smoke, and
   import-on-missing behavior synchronized;
+- `py_modules/stdlib_fallback/python314/pathlib_types.py` is verbatim CPython
+  3.14.8 `Lib/pathlib/types.py`. `ce_decky/runtime_compat.py` loads only this
+  missing submodule on Python 3.14 before anyio/httpcore import; a native module
+  and parent package stay authoritative. Its full license ships from defaults;
 - `rollup.config.js`, `tsconfig*.json`, `pytest.ini`, and `requirements-dev.txt` use normal tool discovery and short commands;
 - `.editorconfig`, `.gitattributes`, and `.gitignore` must cover the entire tree and keep Windows-to-SteamOS text handling predictable;
 - `README.md`, `AGENTS.md`, `CHANGELOG.md`, and `LICENSE` must be easy to discover and are also release/legal entry points;
@@ -151,6 +155,7 @@ python3 scripts/target_panel_read.py --press 'imported-table-33a60e6b:Use'   # r
 python3 scripts/target_panel_read.py --press 'cheat-row-1337099264:active'   # a switch, by the name of the control
 python3 scripts/target_panel_read.py --choose '<game name> · non-Steam'      # one option of a dropdown, through Steam's menu
 python3 scripts/target_panel_read.py --describe review-findings             # one row's whole text and every control in it
+python3 scripts/target_panel_read.py --press table-code-footer:Back          # navigation beside a modal's dense block
 python3 scripts/target_panel_read.py --wait-for 'runtime-row:Connected' --wait-seconds 60
 ```
 
@@ -225,7 +230,7 @@ python scripts/qa.py --profile release
 GitHub Actions is the authoritative complete Linux backend gate for pushed production, build, dependency, test, packaging, and release changes. Inspect it without leaving the terminal:
 
 ```bash
-gh run list --branch <branch> --limit 1 --json headSha,status,conclusion,databaseId
+gh run list --workflow ci.yml --branch <branch> --limit 1 --json headSha,status,conclusion,databaseId
 gh run view <run-id> --log-failed
 ```
 
@@ -238,7 +243,7 @@ was red; a push otherwise ends the work without waiting. When they have asked
 for the wait, one command does it rather than a series of them:
 
 ```bash
-until gh run list --branch <branch> --limit 5 --json headSha,status,conclusion \
+until gh run list --workflow ci.yml --branch <branch> --limit 5 --json headSha,status,conclusion \
   -q '.[] | select(.headSha == "<exact-head>" and .status == "completed") | .conclusion' \
   | grep .; do sleep 20; done
 ```
@@ -249,6 +254,109 @@ one because a run started after this one, for a head that is not this one,
 would otherwise hide it forever.
 
 The runner prints, for the first stage that failed and for the first stage that could not run, the names of the cases that failed and the runner's own account of the first of them - the assertion, its diff and the file and line it is on - each headed by its stage key and followed by its rerun command. It reads from each runner's own banner rather than from the end of the log: `pytest` finishes with a summary a tail reaches, `vitest` finishes with a count and a footer while the assertion is hundreds of lines earlier, and reading a frontend failure used to mean running the same selection a second time with a filter on the output. A stage that is not a test run, or one that died before it could report, keeps its tail, because there the last thing said is the whole of what happened. Both are needed here: a stage that could not run is what a collection error looks like, its cause is nowhere else in a CI log, and the run directory holding `qa-failures.json` is thrown away with the runner. Reproduce the exact selection through `scripts/qa.py` before editing; do not replace a red required gate with a narrower one. If `gh` is unavailable, use the repository's existing Git credential for read-only GitHub REST calls and never print the token. Documentation-only changes need repository QA, not a CI wait.
+
+## Decky runtime compatibility and upstream watch
+
+`scripts/decky_compat_probe.py` takes an exact plugin ZIP and official Linux
+x86-64 Decky executable. It verifies the executable SHA-256, validates the ZIP
+through the existing package probe, unpacks it into temporary storage, and
+executes `scripts/decky_compat_payload.py` in that runtime. The child exercises
+the packaged import graph, real asynchronous HTTP and streaming download with
+a local fixture, parsers, compression, offline tables and real access-denial
+state refusals. It also starts an innocuous system child through the production
+clean environment and proves a cancelled worker is drained on a healthy loop;
+that does not exercise Decky's real unload sequence. It creates no plugin
+instance, launches no Cheat Engine and reads no user state. Expected structured
+results and the process exit must agree.
+
+```bash
+python scripts/decky_compat_probe.py --plugin <exact-plugin.zip> --decky <exact-PluginLoader> --sha256 <runtime-sha256> --version <Decky-tag> --output build/decky-compatibility.json
+```
+
+Only the reviewed digest in `scripts/decky_compat_pin.json` may run locally.
+Unknown candidate executables require disposable GitHub CI; the PyInstaller
+resource-tracker diversion is a diagnostic route, not a Decky API. The child has
+a temporary home, a clean environment, bounded execution/output and an owned
+process group. `--python` is an ordinary Python control and supplies no frozen
+Decky evidence. PASS covers the named backend/artifact checks, not real QAM
+rendering, controller navigation, Decky lifecycle or every Proton workflow.
+`tests/test_decky_compat_probe.py` runs the real packaged pair and a deliberately
+broken variant when `CE_DECKY_COMPAT_PLUGIN_DIR` and `CE_DECKY_COMPAT_RUNTIME`
+are supplied; `CE_DECKY_REQUIRE_FROZEN=1` refuses missing inputs. Ordinary
+validation remains `python scripts/qa.py`, including these tests.
+
+CI retains the Python 3.11 release and Store gates and shares the already-built
+package with a focused Python 3.14 job and the pinned actual Decky runtime.
+The same job checks the prior v3.2.8 frozen runtime as a compatibility baseline;
+fetch it with `scripts/decky_compat_monitor.py fetch-pin --baseline --output
+<previous-PluginLoader>`. Its exact digest is also pinned, and its diagnostic
+entry route is exercised only in disposable CI. Set
+`CE_DECKY_COMPAT_BASELINE_RUNTIME` to that path for the baseline test.
+No second frontend/package build is introduced. The new `decky-runtime` job
+must pass before publication. Required CI never moves its supported pin based
+on a new upstream release.
+
+`.github/workflows/decky-compatibility.yml` separately watches official Decky
+stable and prerelease tags. A daily UTC timer consults a durable 72-hour
+deadline; only a due run scans. The next daily timer after the deadline performs
+discovery, so timer alignment can add up to a day beyond 72 hours, before GitHub
+scheduling delays. `scripts/decky_compat_monitor.py` coordinates it with
+standard-library-only GitHub REST calls. `prepare` claims inputs,
+`execute` probes them in a separate read-only job, `finalize` saves results and
+the summary, and `status` exits nonzero only for new FAIL/INCOMPLETE results.
+Each full tag has at most one bounded attempt, including manual reruns;
+promotion, replacement assets or changes to our tests do not reset its history.
+Ordinary product CI can still test old supported versions after a repair.
+
+The permanent JSON ledger is `decky-compatibility.json` on the dedicated
+`compatibility-monitor-state` branch. Claims and final attention reservations
+are saved before execution or an intentional failing exit, using the expected
+blob SHA to reject races. Terminal results survive artifact expiry. Missing or
+unreadable initialized state fails visibly; never reset it to empty. A crash
+after a claim becomes INCOMPLETE once its original run attempt is proven over;
+there is no automatic retry. At most eight unseen versions are attempted per
+due batch; further pending versions stay in the ledger for later batches.
+The bounded ledger refuses further writes at 512 KiB rather than discarding
+history. Coordinator jobs alone receive contents-write; this permission is not
+branch-scoped, so writes are hard-constrained to that branch and file. The
+prepare job also needs actions-read to establish interrupted attempt completion.
+Normal CI and candidate execution retain read-only permissions and no persisted
+checkout credentials. No issues, SMTP credentials or mail service are involved.
+
+Enable only after publishing the repaired plugin:
+
+1. In GitHub account Settings > Notifications > System > Actions, select Email
+   and Only notify for failed workflows. This account-wide choice also silences
+   successful ordinary-CI mail. Ensure the intended account created, last edited
+   the cron, or re-enabled the schedule; GitHub uses that actor as recipient.
+2. Run this workflow manually on `main` with `initialize=true`. This one-time
+   operation creates the state branch and baselines existing releases silently;
+   an existing branch is refused, never reinitialized.
+3. Set repository variable `DECKY_COMPAT_MONITOR_ENABLED=true`. Until then,
+   scheduled jobs are skipped. Set it false to stop recurring work while keeping
+   the ledger. No remote activation is part of a local-only commit.
+4. Verify receipt of one separately agreed failing setup run. GitHub supplies
+   the failure email and run link; the detailed cause/action is in the run
+   summary, not a custom email body. No test mail is sent implicitly.
+
+PASS and no-new-version runs are silent. A new incompatibility or an incomplete
+verification fails the batch after results/diagnostics are saved. Old results
+do not fail later scans again; silence is not evidence that a check ran or that
+an old incompatibility was repaired. Infrastructure failures also fail visibly
+and can cause additional native mail; GitHub controls actual delivery, so no
+literal mailbox-count guarantee is possible. One batch may report several new
+versions in one workflow email. The monitor changes no device, pin or release.
+Triage an actual failure against a valid baseline, repair minimally, add a
+regression and check supported and candidate runtimes before publication.
+
+GitHub may delay/drop scheduled runs and disables inactive public-repository
+schedules after 60 days without activity. Check the Actions page and re-enable
+when necessary; ledger commits are not a proven exemption. Native notification,
+schedule, Contents API and workflow-attempt API contracts are documented at
+https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs,
+https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule,
+https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents and
+https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run-attempt.
 
 ## UI test strategy
 

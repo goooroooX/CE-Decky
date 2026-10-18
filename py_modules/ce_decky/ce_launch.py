@@ -2387,7 +2387,14 @@ class CELaunchSupervisor:
         path = self._record_path(app_id)
         record = self._read_record(app_id)
         if record is None:
-            state = "invalid" if path.exists() or path.is_symlink() else "absent"
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                state = "absent"
+            except OSError as exc:
+                raise ValueError("the owned Cheat Engine launch record is unreadable") from exc
+            else:
+                state = "invalid"
             return {"state": state, "record": None}
         descriptor = str(record["descriptor_windows_path"])
         digest = str(record["descriptor_sha256"])

@@ -56,11 +56,13 @@ REQUIRED_MEMBERS = (
     "THIRD_PARTY_NOTICES.md",
     "licenses/LGPL-2.1.txt",
     "licenses/CPython-3.11.7.txt",
+    "licenses/CPython-3.14.8.txt",
     "py_modules/ce_decky/plugin.py",
     "py_modules/ce_decky/managed_ce_manifest.json",
     "py_modules/ce_decky/ce_decky_bridge.lua",
     "py_modules/stdlib_fallback/xml/etree/ElementTree.py",
     "py_modules/stdlib_fallback/html/parser.py",
+    "py_modules/stdlib_fallback/python314/pathlib_types.py",
     # The whole reason the vendor tree is committed.
     "py_modules/vendor/httpx/__init__.py",
     "py_modules/vendor/bs4/__init__.py",

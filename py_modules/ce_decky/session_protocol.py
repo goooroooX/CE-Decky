@@ -454,15 +454,13 @@ class SessionStore:
     def load_current(self, app_id: int) -> PreparedSession | None:
         app_id = _positive_int(app_id, "AppID")
         current_path = self.root / str(app_id) / "current.json"
-        # Check the link itself before exists(): a dangling symlink must be treated
-        # as corrupt managed state, not as an absent current session.
-        if current_path.is_symlink():
-            raise ValueError("current session pointer is not a regular file")
-        if not current_path.exists():
+        missing = object()
+        try:
+            raw = load_json(current_path, missing, max_bytes=64 * 1024)
+        except OSError as exc:
+            raise ValueError("current session pointer is unreadable") from exc
+        if raw is missing:
             return None
-        if not current_path.is_file():
-            raise ValueError("current session pointer is not a regular file")
-        raw = load_json(current_path, None, max_bytes=64 * 1024)
         pointer_schema = raw.get("schema") if isinstance(raw, dict) else None
         if (
             not isinstance(raw, dict)
@@ -512,11 +510,15 @@ class SessionStore:
 
     def inventory(self) -> dict[str, object]:
         """Return bounded, read-only diagnostics for prepared session state."""
-        if self.root.is_symlink():
-            raise ValueError("managed session root must not be a symlink")
-        if not self.root.exists():
+        try:
+            mode = self.root.lstat().st_mode
+        except FileNotFoundError:
             return {"apps": [], "total_sessions": 0, "errors": []}
-        if not self.root.is_dir():
+        except OSError as exc:
+            raise ValueError("managed session root is unreadable") from exc
+        if stat.S_ISLNK(mode):
+            raise ValueError("managed session root must not be a symlink")
+        if not stat.S_ISDIR(mode):
             raise ValueError("managed session root is not a directory")
 
         apps: list[dict[str, object]] = []

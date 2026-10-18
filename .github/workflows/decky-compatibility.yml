@@ -1,0 +1,127 @@
+name: CE Decky - Decky compatibility - action required on failure
+
+on:
+  schedule:
+    # Daily timer; the durable ledger permits discovery only once per 72 hours.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+    inputs:
+      initialize:
+        description: "First activation only: snapshot existing Decky releases without testing or emailing them"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: decky-compatibility-monitor
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main' && (vars.DECKY_COMPAT_MONITOR_ENABLED == 'true' || inputs.initialize == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      has_work: ${{ steps.prepare.outputs.has_work }}
+      attempt: ${{ steps.prepare.outputs.attempt }}
+      has_finalize: ${{ steps.prepare.outputs.has_finalize }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Initialize permanent history explicitly
+        if: inputs.initialize == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/decky_compat_monitor.py initialize
+      - name: Claim due discovery and unseen versions
+        id: prepare
+        if: inputs.initialize != true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/decky_compat_monitor.py prepare
+      - name: Preserve the exact claimed plan
+        if: steps.prepare.outputs.has_finalize == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: decky-compatibility-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/decky-monitor/plan.json
+          retention-days: 7
+          if-no-files-found: error
+
+  probe:
+    needs: prepare
+    if: needs.prepare.outputs.has_work == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: decky-compatibility-plan-${{ github.run_id }}-${{ needs.prepare.outputs.attempt }}
+          path: build/decky-monitor
+      - name: Execute each original claim once without write credentials
+        run: python scripts/decky_compat_monitor.py execute
+      - name: Preserve bounded structured outcomes even after an interrupted batch
+        if: always() && github.run_attempt == needs.prepare.outputs.attempt
+        uses: actions/upload-artifact@v4
+        with:
+          name: decky-compatibility-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/decky-monitor/results.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  finalize:
+    needs: [prepare, probe]
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.has_finalize == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: decky-compatibility-plan-${{ github.run_id }}-${{ needs.prepare.outputs.attempt }}
+          path: build/decky-monitor
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.has_work == 'true'
+        # A missing result is saved as INCOMPLETE by finalize, never as PASS.
+        continue-on-error: true
+        with:
+          name: decky-compatibility-results-${{ github.run_id }}-${{ needs.prepare.outputs.attempt }}
+          path: build/decky-monitor
+      - name: Persist results and actionable summary
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/decky_compat_monitor.py finalize --output build/decky-monitor/summary.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decky-compatibility-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/decky-monitor/summary.md
+          retention-days: 7
+          if-no-files-found: error
+      - name: Fail only for newly reportable attention results
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/decky_compat_monitor.py status

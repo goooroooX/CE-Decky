@@ -113,6 +113,13 @@ import _markupbase
 assert pathlib.Path(etree.__file__).is_relative_to(fallback)
 assert pathlib.Path(html.parser.__file__).is_relative_to(fallback)
 assert pathlib.Path(_markupbase.__file__).is_relative_to(fallback)
+import asyncio
+import httpcore._synchronization as synchronization
+assert synchronization.anyio is not None, "packaged async HTTP backend is unavailable"
+async def check_backend():
+    async with synchronization.AsyncLock():
+        pass
+asyncio.run(check_backend())
 """
     with tempfile.TemporaryDirectory(prefix="ce-decky-package-") as temporary:
         with zipfile.ZipFile(archive) as packed:

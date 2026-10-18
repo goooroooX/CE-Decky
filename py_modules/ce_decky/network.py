@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+import importlib
 import ipaddress
 import os
 import socket
@@ -27,6 +28,16 @@ MAX_FORM_FIELDS = 32
 
 class NetworkError(RuntimeError):
     pass
+
+
+def _require_async_backend() -> None:
+    # httpcore catches this ImportError and replaces it with an extras-install
+    # message. Keep the original module identity, at operation time so offline
+    # table use never depends on a functioning optional network backend.
+    try:
+        importlib.import_module("anyio")
+    except ImportError as exc:
+        raise NetworkError(f"async HTTP backend is unavailable: {exc}") from exc
 
 
 class ResponseTooLarge(NetworkError):
@@ -370,6 +381,7 @@ class NetworkClient:
             return response
 
     async def _download_one(self, url: str, headers: Mapping[str, str], destination: Path, max_bytes: int) -> NetworkResponse:
+        _require_async_backend()
         async with self._client.stream("GET", url, headers=headers) as response:
             normalized_headers = {key.casefold(): value for key, value in response.headers.items()}
             length = normalized_headers.get("content-length")
@@ -417,6 +429,7 @@ class NetworkClient:
         method: str = "GET",
         data: Mapping[str, str] | None = None,
     ) -> NetworkResponse:
+        _require_async_backend()
         async with self._client.stream(method, url, headers=headers, data=data) as response:
             length = response.headers.get("content-length")
             if length is not None:

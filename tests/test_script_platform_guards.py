@@ -28,6 +28,7 @@ EXEMPT = {
     "host_platform.py": "it is the module that answers the question",
     "browser_harness.py": "current_pin refuses a non-Linux host by name before any download",
     "browser_probe.py": "it is only ever started by browser_harness, which has already refused the host",
+    "decky_compat_probe.py": "probe returns structured INCOMPLETE on non-Linux hosts before any child process; it reads no target state",
 }
 
 

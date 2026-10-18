@@ -52,6 +52,27 @@ def _archive(result: dict[str, object]) -> zipfile.ZipFile:
     return zipfile.ZipFile(Path(str(result["path"])))
 
 
+def test_runtime_import_diagnostics_reach_the_existing_bounded_log_member(tmp_path: Path):
+    from ce_decky.activity_log import log_activity
+    service, paths = _service(tmp_path)
+    logger = logging.getLogger("runtime-support-bundle-test")
+    handler = logging.FileHandler(paths.log_dir / "runtime.log", encoding="utf-8")
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        log_activity(logger, "info", "backend.initialize_started", python="3.14.8", decky="v3.3.0", pathlib_types_fallback=True)
+        handler.flush()
+        with _archive(service.create_support_bundle([], 0)) as archive:
+            record = archive.read("logs/plugin/runtime.log")
+        assert b"python=3.14.8" in record and b"decky=v3.3.0" in record
+        assert b"pathlib_types_fallback=true" in record
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        logger.setLevel(previous_level)
+
+
 def test_bundle_collects_exact_artifact_resolution_provenance(tmp_path: Path):
     service, _ = _service(tmp_path)
     service.artifact_resolutions.record("vgtimes", "game-a:file-1", "a" * 64, "b" * 64)

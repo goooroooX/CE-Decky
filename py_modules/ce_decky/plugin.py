@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
 import decky
 
 from . import poll_counters
 from . import __version__
+from . import runtime_compat
 from .activity_log import configure_dependency_logging, log_activity, log_failure
 from .operations import OperationRegistry
 from .paths import PluginPaths
@@ -63,7 +66,11 @@ class Plugin:
         # that can fail or block, and the record that says what it was doing
         # comes after it. `backend.initialized` at the end answers a load that
         # worked; this answers one that never got there.
-        log_activity(decky.logger, "info", "backend.initialize_started", version=__version__)
+        log_activity(
+            decky.logger, "info", "backend.initialize_started", version=__version__,
+            python=sys.version.split()[0], decky=os.environ.get("DECKY_VERSION", "unknown"),
+            pathlib_types_fallback=runtime_compat.PATHLIB_TYPES_FALLBACK_USED,
+        )
         try:
             paths = PluginPaths.from_environment()
             self.service = GuardedPluginService(paths, decky.logger)

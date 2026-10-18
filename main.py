@@ -8,6 +8,10 @@ for _path in (_PY_MODULES, _VENDOR):
     if _path.is_dir():
         sys.path.insert(0, str(_path))
 
+from ce_decky.runtime_compat import ensure_pathlib_types
+
+ensure_pathlib_types()
+
 
 def _ensure_decky_stdlib() -> None:
     """Supply pure-Python CPython modules omitted by Decky's runtime."""

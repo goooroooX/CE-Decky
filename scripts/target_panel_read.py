@@ -169,9 +169,8 @@ _READ = """
     // as a row of this surface so it is pressed by name like any other.
     let footerHost = panel.parentElement;
     for (let hop = 0; footerHost && hop < MAX_DEPTH; hop++) {
-      // Any of this plugin's own action groups, which all end in `-actions`:
-      // the shared modal footer, and the ones a screen names for itself.
-      const footer = footerHost.querySelector('[data-testid$="-actions"]');
+      // Action groups and paged navigation both sit outside the dense block.
+      const footer = footerHost.querySelector('[data-testid$="-actions"], [data-testid$="-footer"]');
       // One inside the block is already one of its rows: a panel's own action
       // row would otherwise be reported twice, once as itself and once as this
       // screen's footer.
@@ -413,7 +412,7 @@ _PRESS = r"""
   const panels = Array.from(document.querySelectorAll(".ce-decky-dense")).map((panel) => {
     const boxes = [panel];
     for (let host = panel.parentElement, hop = 0; host && hop < 6; host = host.parentElement, hop++) {
-      const footer = host.querySelector('[data-testid$="-actions"]');
+      const footer = host.querySelector('[data-testid$="-actions"], [data-testid$="-footer"]');
       if (footer && !panel.contains(footer)) { boxes.push(footer); break; }
     }
     return boxes;

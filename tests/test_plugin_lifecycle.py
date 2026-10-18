@@ -19,7 +19,7 @@ def _plugin_module(monkeypatch):
     return importlib.import_module("ce_decky.plugin")
 
 
-def test_each_entry_point_works_called_on_a_loop_of_its_own(monkeypatch, tmp_path: Path):
+def test_each_entry_point_works_called_on_a_loop_of_its_own(monkeypatch, tmp_path: Path, caplog):
     """Load, read and unload, each on a loop that is closed before the next.
 
     Deliberately not the host's shape, and the name says so. Decky runs one
@@ -48,7 +48,10 @@ def test_each_entry_point_works_called_on_a_loop_of_its_own(monkeypatch, tmp_pat
         monkeypatch.setenv(key, value)
 
     plugin = module.Plugin()
-    asyncio.run(plugin._main())
+    with caplog.at_level(logging.INFO, logger="fake-decky"):
+        asyncio.run(plugin._main())
+    startup = next(record.message for record in caplog.records if "event=backend.initialize_started" in record.message)
+    assert "python=" in startup and "decky=" in startup and "pathlib_types_fallback=" in startup
     status = asyncio.run(plugin.get_status())
     assert status["version"] == __version__
     assert status["features"]["launch_integration"] is True

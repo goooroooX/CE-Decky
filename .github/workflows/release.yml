@@ -46,6 +46,32 @@ jobs:
       - name: Run release validation and build archives
         run: python scripts/qa.py --profile release
 
+      - name: Set up Python 3.14 for focused compatibility checks
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Restore Python compatibility-test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Fetch the reviewed supported Decky executable
+        run: |
+          python scripts/decky_compat_monitor.py fetch-pin --output build/decky-runtime/PluginLoader
+          python scripts/decky_compat_monitor.py fetch-pin --baseline --output build/decky-runtime/previous-PluginLoader
+
+      - name: Verify the exact release package in the actual Decky runtime
+        env:
+          CE_DECKY_COMPAT_PLUGIN_DIR: artifacts
+          CE_DECKY_COMPAT_RUNTIME: build/decky-runtime/PluginLoader
+          CE_DECKY_REQUIRE_FROZEN: "1"
+          CE_DECKY_COMPAT_BASELINE_RUNTIME: build/decky-runtime/previous-PluginLoader
+        run: >-
+          python scripts/qa.py
+          --pytest tests/test_runtime_compat.py
+          --pytest tests/test_runtime_state_access.py
+          --pytest tests/test_network_prod.py
+          --pytest tests/test_decky_compat_probe.py
+
       - name: Write release checksums
         shell: bash
         run: |

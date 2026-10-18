@@ -2,6 +2,12 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.30 — 2026-10-19
+
+- [New] An opt-in CI watch checks new stable and prerelease Decky versions once, every three days, using the latest published CE Decky package. It retains results and prevents repeated automatic checks or alerts for a processed version; new failures and incomplete checks use native failed-workflow emails. Required CI also checks the packaged plugin in the pinned Decky runtime and exercises Python 3.14 compatibility.
+- [Fixed] Search and downloads work with Decky's Python 3.14 runtime when its frozen standard library omits pathlib.types. Complete standard libraries keep their native module, and a missing network dependency reports its original cause without disabling local tables.
+- [Fixed] Unreadable session pointers, session inventories, table catalogs and owned Cheat Engine launch records are no longer mistaken for missing state on Python 3.14. Access failures preserve existing data and ownership protection.
+
 ## 0.9.29 — 2026-09-23
 
 - [Changed] CE Decky updates itself only while no game is running. It still checks for and offers an update during a game, and Update stays on Home and in Advanced, but pressing it while a game runs, or while CE Decky cannot tell whether one does, says to close the game first and changes nothing. An update whose download finishes after a game has started waits for it to close before installing, as it does for a Cheat Engine stop to finish and for a record of which games have to be restarted that it could not save. Once an update is installing, Cheat Engine is not started and a stop is refused until CE Decky is back.

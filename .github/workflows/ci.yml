@@ -72,6 +72,50 @@ jobs:
       - name: Run release-equivalent validation and packaging
         run: python scripts/qa.py --profile release
 
+      - name: Share this exact package with the Decky runtime check
+        uses: actions/upload-artifact@v4
+        with:
+          name: ce-decky-runtime-input-${{ github.event.pull_request.head.sha || github.sha }}
+          path: artifacts/CE-Decky-v*.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  decky-runtime:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: ce-decky-runtime-input-${{ github.event.pull_request.head.sha || github.sha }}
+          path: artifacts
+      - name: Restore only Python test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Fetch the reviewed supported Decky executable
+        run: |
+          python scripts/decky_compat_monitor.py fetch-pin --output build/decky-runtime/PluginLoader
+          python scripts/decky_compat_monitor.py fetch-pin --baseline --output build/decky-runtime/previous-PluginLoader
+      - name: Check Python 3.14 behavior and the actual frozen Decky package
+        env:
+          CE_DECKY_COMPAT_PLUGIN_DIR: artifacts
+          CE_DECKY_COMPAT_RUNTIME: build/decky-runtime/PluginLoader
+          CE_DECKY_REQUIRE_FROZEN: "1"
+          CE_DECKY_COMPAT_BASELINE_RUNTIME: build/decky-runtime/previous-PluginLoader
+        run: >-
+          python scripts/qa.py
+          --pytest tests/test_runtime_compat.py
+          --pytest tests/test_runtime_state_access.py
+          --pytest tests/test_network_prod.py
+          --pytest tests/test_decky_compat_probe.py
+
   store-artifact:
     # The official Decky Store builds a different archive than `release` packages,
     # and the failures that are specific to it are invisible to every other job.

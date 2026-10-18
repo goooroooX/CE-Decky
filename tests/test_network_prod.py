@@ -25,6 +25,38 @@ def test_default_user_agent_tracks_backend_version():
 
 
 @pytest.mark.asyncio
+async def test_async_backend_failure_keeps_original_cause_without_blocking_offline_use(monkeypatch, tmp_path):
+    from ce_decky import network
+    from ce_decky.table_store import TableStore
+    client = NetworkClient(ssl.create_default_context())
+    original = network.importlib.import_module
+
+    def broken(name, *args, **kwargs):
+        if name == "anyio":
+            raise ModuleNotFoundError("No module named 'pathlib.types'", name="pathlib.types")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(network.importlib, "import_module", broken)
+    try:
+        for operation in (
+            client._one("https://example.com/", {}, 16),
+            client._download_one("https://example.com/", {}, tmp_path / "download", 16),
+        ):
+            with pytest.raises(NetworkError, match="pathlib.types") as error:
+                await operation
+            assert isinstance(error.value.__cause__, ModuleNotFoundError)
+        assert not (tmp_path / "download").exists()
+        source = tmp_path / "offline.CT"
+        source.write_bytes(b"<CheatTable><CheatEntries /></CheatTable>")
+        store = TableStore(tmp_path / "tables")
+        table = store.import_ct(str(source))
+        assert store.verified_blob(table.sha256).read_bytes() == source.read_bytes()
+        assert store.list_tables()[0]["sha256"] == table.sha256
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_redirect_cookie_referer_and_bounded_body(monkeypatch):
     _public_dns(monkeypatch)
     seen = []

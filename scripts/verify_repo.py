@@ -40,6 +40,7 @@ REQUIRED = [
     "defaults/THIRD_PARTY_NOTICES.md",
     "defaults/licenses/LGPL-2.1.txt",
     "defaults/licenses/CPython-3.11.7.txt",
+    "defaults/licenses/CPython-3.14.8.txt",
     "requirements-dev.txt",
     "requirements-runtime.lock",
     "package.json",
@@ -67,6 +68,7 @@ REQUIRED = [
     "py_modules/stdlib_fallback/html/entities.py",
     "py_modules/stdlib_fallback/html/parser.py",
     "py_modules/stdlib_fallback/_markupbase.py",
+    "py_modules/stdlib_fallback/python314/pathlib_types.py",
     # Committed on purpose: the Store builder installs no Python dependencies,
     # so these are the shipped runtime rather than build output.
     "py_modules/vendor/httpx/__init__.py",
@@ -751,6 +753,7 @@ def _verify_ci_source_snapshot() -> None:
 # the reason has to be that something already documented is what runs it.
 UNDOCUMENTED_HELPERS = {
     "browser_probe.py": "started only by browser_harness.py, which is the documented entrypoint",
+    "decky_compat_payload.py": "started only by decky_compat_probe.py inside a disposable runtime",
     "frontend_source_digest.py": "run by package_plugin.py, whose own command is documented",
     "steam_user.py": "a module the provider surveys import; it has no command of its own",
     "test_ts_core.mjs": "a stage runner qa.py invokes; it has no command of its own",
@@ -1349,6 +1352,7 @@ def main() -> None:
                 "CE-Decky/THIRD_PARTY_NOTICES.md",
                 "CE-Decky/licenses/LGPL-2.1.txt",
                 "CE-Decky/licenses/CPython-3.11.7.txt",
+                "CE-Decky/licenses/CPython-3.14.8.txt",
                 "CE-Decky/py_modules/ce_decky/plugin.py",
                 "CE-Decky/py_modules/ce_decky/game_identity.py",
                 "CE-Decky/py_modules/ce_decky/managed_ce.py",
@@ -1362,6 +1366,7 @@ def main() -> None:
                 "CE-Decky/py_modules/stdlib_fallback/html/entities.py",
                 "CE-Decky/py_modules/stdlib_fallback/html/parser.py",
                 "CE-Decky/py_modules/stdlib_fallback/_markupbase.py",
+                "CE-Decky/py_modules/stdlib_fallback/python314/pathlib_types.py",
             }
             missing_members = required_members - names
             if missing_members:

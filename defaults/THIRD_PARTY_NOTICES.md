@@ -37,7 +37,14 @@ Build/runtime interfaces intentionally follow the official Decky toolchain:
   `licenses/CPython-3.11.7.txt`. Upstream:
   `https://github.com/python/cpython/tree/v3.11.7/Lib`.
 
-These pure-Python runtime packages are hash-locked in
+- CPython 3.14.8 `Lib/pathlib/types.py`: copied verbatim from tag `v3.14.8`
+  into `py_modules/stdlib_fallback/python314/pathlib_types.py`, under the PSF
+  License Version 2 and the notices in the full upstream license retained at
+  `licenses/CPython-3.14.8.txt`. Loaded only when Python 3.14 lacks the exact
+  `pathlib.types` module; it does not replace a native module or parent package.
+  Upstream: `https://github.com/python/cpython/blob/v3.14.8/Lib/pathlib/types.py`.
+
+The PyPI runtime distributions are hash-locked in
 `requirements-runtime.lock`. Packaging vendors their installed distributions,
 including each distribution's `.dist-info` metadata and license files, into the
 plugin ZIP. CE Decky does not install packages at runtime on SteamOS.
