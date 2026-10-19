@@ -1462,8 +1462,15 @@ class PluginService:
             pending = self._compatibility_pending.get(app_id)
             if pending is None:
                 return
-            if pending["session"] != session or not envelope.get("connected"):
+            if (pending["session"] != session or not envelope.get("session_current")
+                    or envelope.get("terminal_reason")):
                 self._compatibility_pending.pop(app_id, None)
+                return
+            # A heartbeat that is late is not a session that ended. Switching a
+            # script on can keep the bridge from writing its status for longer
+            # than the heartbeat lasts: on the target a cheat that switched on
+            # and read back on lost its proof to that pause alone.
+            if not envelope.get("connected"):
                 return
             status = envelope.get("status") or {}
             if not status.get("attached") or status.get("table_load_state") != "loaded":

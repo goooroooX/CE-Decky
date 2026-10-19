@@ -1,3 +1,3 @@
 """CE Decky backend package."""
 
-__version__ = "0.9.30"
+__version__ = "0.9.31"

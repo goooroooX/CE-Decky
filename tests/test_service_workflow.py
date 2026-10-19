@@ -1019,6 +1019,46 @@ def test_working_evidence_requires_accepted_activation_and_later_readback(tmp_pa
         assert saved.focus_error == "Ex unavailable"
 
 
+def test_working_evidence_survives_a_heartbeat_that_lapses_while_the_cheat_switches_on(tmp_path, monkeypatch):
+    """Activating a script holds Cheat Engine's main thread past the heartbeat.
+
+    On the target a cheat switched on and read back on, and the table still
+    earned no mark: the one status read taken during that pause said the bridge
+    was not connected, and that alone discarded the pending proof.
+    """
+    from dataclasses import replace
+    from ce_decky.service import RUNTIME_HEARTBEAT_TTL_SECONDS
+    from ce_decky.session_protocol import RuntimeResult
+    service = _service(tmp_path)
+    _import_fake_ce(service)
+    source = tmp_path / "working.CT"
+    _write_ct(source)
+    digest = service.import_table(str(source))["sha256"]
+    service.save_profile(10, "Game", False, digest, "game.exe")
+    service.set_execution_consent(10, digest, True)
+    prepared = service.prepare_session(10)
+    status = RuntimeStatus(prepared["session_id"], 10, prepared["ce_sha256"], digest,
+                           prepared["descriptor_sha256"], 1, True, "game.exe", 123, (), (),
+                           table_load_state="loaded")
+    path = Path(prepared["status_path"])
+    path.write_bytes(render_status(status))
+    monkeypatch.setattr(service, "_game_fingerprint", lambda profile: {"pe_version": "1", "steam_build_id": None})
+    service.write_runtime_commands(10, [{"generation": 1, "kind": "set_active", "record_id": 1, "value": "1"}])
+
+    lapsed = time.time() - RUNTIME_HEARTBEAT_TTL_SECONDS - 2
+    os.utime(path, (lapsed, lapsed))
+    assert service.get_runtime_status(10)["connected"] is False
+
+    status = replace(status, results=(RuntimeResult(1, 1, True, True, None, None),))
+    path.write_bytes(render_status(status))
+    service.get_runtime_status(10)
+    service.write_runtime_commands(10, [{"generation": 2, "kind": "query", "record_id": 1}])
+    status = replace(status, results=(RuntimeResult(2, 1, True, True, None, None),))
+    path.write_bytes(render_status(status))
+    assert service.confirm_table_working(10, digest, prepared["session_id"], 1) is True
+    assert len(service.get_status()["table_compatibility"]["entries"]) == 1
+
+
 def test_a_closed_game_is_still_comparable_from_the_path_its_evidence_recorded(tmp_path, monkeypatch):
     """The case a non-Steam shortcut is always in once the game stops.
 

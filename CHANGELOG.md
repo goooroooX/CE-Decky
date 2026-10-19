@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.31 — 2026-10-20
+
+- [Fixed] A table earns its green check when a cheat switches on and reads back on, even when Cheat Engine goes quiet for more than three seconds while switching it on. CE Decky then briefly saw Cheat Engine as disconnected, and that pause alone threw the proof away, so a table that worked stayed unmarked with no error. A pause is now waited out; a new session or a Cheat Engine that has exited still discards the proof.
+
 ## 0.9.30 — 2026-10-19
 
 - [New] An opt-in daily CI watch checks whether the latest published CE Decky release, however old, still works in Decky's latest stable release and newest prerelease. Each new pair of a Decky runtime and a CE Decky release is tested once, with the probe from that release's own tag and beside a control run in the Decky it was released for, so a Decky regression is told apart from a broken check. A new problem fails the run and arrives as GitHub's own failed-workflow mail, the current answer for every pair is on `STATUS.md` on the monitor's branch, and any pair can be tested again by hand. Required CI also checks the packaged plugin in the pinned Decky runtime and exercises Python 3.14 compatibility.
