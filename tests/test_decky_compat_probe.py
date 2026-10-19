@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import zipfile
 
@@ -16,6 +18,31 @@ def test_changed_runtime_bytes_are_refused_before_execution(tmp_path):
     plugin.write_bytes(b"not a zip")
     result = compat.probe(plugin, runtime, expected_sha="0" * 64, version="v3.3.0")
     assert result["status"] == "INCOMPLETE" and "digest mismatch" in result["error"]
+
+
+def test_command_line_and_result_are_frozen_for_the_monitor(tmp_path):
+    """The monitor runs the probe from each published release's own tag.
+
+    So these arguments and these result fields are a contract with every
+    release already published: renaming one stops the watch from testing them.
+    """
+    script = Path(compat.__file__)
+    help_text = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True,
+                               check=True, timeout=30).stdout
+    for flag in ("--plugin", "--decky", "--sha256", "--version", "--output"):
+        assert flag in help_text
+    runtime = tmp_path / "runtime"
+    runtime.write_bytes(b"runtime")
+    plugin = tmp_path / "plugin.zip"
+    plugin.write_bytes(b"plugin")
+    output = tmp_path / "result.json"
+    completed = subprocess.run([sys.executable, str(script), "--plugin", str(plugin), "--decky", str(runtime),
+                                "--sha256", "0" * 64, "--version", "v0.0.0", "--output", str(output)],
+                               capture_output=True, timeout=30)
+    result = json.loads(output.read_text())
+    assert completed.returncode == 2 and result["status"] == "INCOMPLETE" and isinstance(result["error"], str)
+    assert result["decky_sha256"] == hashlib.sha256(b"runtime").hexdigest()
+    assert result["plugin_sha256"] == hashlib.sha256(b"plugin").hexdigest()
 
 
 def test_unknown_binary_cannot_start_a_second_loader_on_a_device(monkeypatch, tmp_path):

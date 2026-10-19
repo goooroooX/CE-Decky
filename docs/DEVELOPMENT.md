@@ -296,67 +296,116 @@ No second frontend/package build is introduced. The new `decky-runtime` job
 must pass before publication. Required CI never moves its supported pin based
 on a new upstream release.
 
-`.github/workflows/decky-compatibility.yml` separately watches official Decky
-stable and prerelease tags. A daily UTC timer consults a durable 72-hour
-deadline; only a due run scans. The next daily timer after the deadline performs
-discovery, so timer alignment can add up to a day beyond 72 hours, before GitHub
-scheduling delays. `scripts/decky_compat_monitor.py` coordinates it with
-standard-library-only GitHub REST calls. `prepare` claims inputs,
-`execute` probes them in a separate read-only job, `finalize` saves results and
-the summary, and `status` exits nonzero only for new FAIL/INCOMPLETE results.
-Each full tag has at most one bounded attempt, including manual reruns;
-promotion, replacement assets or changes to our tests do not reset its history.
-Ordinary product CI can still test old supported versions after a repair.
+`.github/workflows/decky-compatibility.yml` answers a different question from
+required CI: whether the latest published CE Decky release, however old, still
+works in the Decky its users are moving to. It is tied to no CE Decky tag and
+runs on a daily timer. `scripts/decky_compat_monitor.py` coordinates it with
+standard-library-only GitHub REST calls.
 
-The permanent JSON ledger is `decky-compatibility.json` on the dedicated
-`compatibility-monitor-state` branch. Claims and final attention reservations
-are saved before execution or an intentional failing exit, using the expected
-blob SHA to reject races. Terminal results survive artifact expiry. Missing or
-unreadable initialized state fails visibly; never reset it to empty. A crash
-after a claim becomes INCOMPLETE once its original run attempt is proven over;
-there is no automatic retry. At most eight unseen versions are attempted per
-due batch; further pending versions stay in the ledger for later batches.
-The bounded ledger refuses further writes at 512 KiB rather than discarding
-history. Coordinator jobs alone receive contents-write; this permission is not
-branch-scoped, so writes are hard-constrained to that branch and file. The
-prepare job also needs actions-read to establish interrupted attempt completion.
-Normal CI and candidate execution retain read-only permissions and no persisted
-checkout credentials. No issues, SMTP credentials or mail service are involved.
+The unit is a pair of exact artifacts: one Decky runtime (tag and `PluginLoader`
+SHA-256) and one CE Decky release (version and ZIP SHA-256). The current pairs
+are the latest published CE Decky release against Decky's latest stable release
+and its newest prerelease, when that prerelease is newer. A new Decky release, a
+replaced Decky executable under an existing tag and a new CE Decky release each
+make a new pair, and each pair is tested once. A day with no new pair costs a
+few API reads. A Decky release whose executable is not attached yet is a pair
+that waits. The pair key carries a channel, `github`, because GitHub Releases
+are the only place CE Decky is published; it is not listed in the Decky Store.
 
-Enable only after publishing the repaired plugin:
+`discover` reads everything first and writes the ledger only after: the latest
+CE Decky release, its `SHA256SUMS`, the archive itself checked by
+`gh attestation verify` against this repository's `release.yml`, and Decky's
+release feed. A failed read leaves the ledger as it was, and fails the run, so
+an outage of GitHub's own API is one mail a day while it lasts; only a pair's
+downloads are retried silently, below. Each untested pair
+becomes one `probe` job, named `probe (Decky <tag> × CE Decky <version>)`, so
+the failure mail names what broke. That job has read-only permission and no
+token, because it runs unreviewed Decky executables. It checks out the CE Decky
+release's own tag and runs the probe from that tag: the probe reaches into the
+plugin's internals, and only the copy written with a release knows that
+release, so a newer probe never produces a false failure for an older release.
+That makes the probe's arguments and result fields a contract with every
+published release; `tests/test_decky_compat_probe.py` holds them. Beside the
+candidate run, the same probe runs in the Decky that release pinned in its own
+`scripts/decky_compat_pin.json`, which is the control:
+
+| Control (pinned Decky) | Candidate | Recorded as |
+|---|---|---|
+| PASS | PASS | `COMPATIBLE` |
+| PASS | FAIL | `BROKEN`: this Decky breaks this release |
+| PASS | INCOMPLETE | `UNVERIFIABLE`: the probe cannot run in this Decky |
+| anything else | anything | `PROBE_BROKEN`: the probe or runner broke, not the plugin |
+| none, the candidate is the pin | PASS / other | `COMPATIBLE` / `PROBE_BROKEN` |
+
+A release whose tag has no probe, 0.9.29 and older, is `UNSUPPORTED`. A pair
+whose inputs could not be downloaded is not judged: it stays untested and the
+next run asks again. `STATUS.md` on the ledger branch lists the current pairs,
+their result, when and by which run, and each pair's key. That page is the
+current answer; a failure mail is only the moment something changed.
+
+A run fails, and GitHub sends its failed-workflow mail, when a new pair is
+anything but `COMPATIBLE`, and when a current pair has waited three days
+without a result, which is then repeated at most every three days. A problem
+already recorded stays silent on later runs and stays on `STATUS.md`. Running
+the workflow by hand with `retest` set to a key from `STATUS.md`, or to
+`current`, tests those pairs again; nothing else repeats one, and a repeat
+keeps the earlier answers in that pair's history. No issues, SMTP credentials
+or mail service are involved. The monitor never moves the pin required CI uses:
+a `COMPATIBLE` new Decky says the pin can be moved, by a reviewed change.
+
+State lives in this repository, on the dedicated `compatibility-monitor-state`
+branch, because nothing else GitHub offers a workflow outlives it: artifacts
+expire and caches are evicted. The branch shares no history with `main` and
+holds three files: `decky-compatibility.json`, the ledger the workflow reads;
+`STATUS.md`; and a `README.md` saying what the branch is. It is never merged,
+rebased or turned into a pull request. Every write is one commit holding the
+ledger and the page together, made only when either changed, so the page
+always describes the ledger it was committed with. Each commit says what
+changed, `Track Decky v3.4.0 × CE Decky 0.9.30` or `Record BROKEN for ...`, so
+the branch's history is the monitor's log. The ref only fast-forwards from the
+commit the run read, so a writer holding an older ledger is refused rather
+than writing over a newer one.
+
+Missing or unreadable state fails visibly; never reset it to empty. The ledger
+refuses writes at 512 KiB rather than discarding history. `discover` and
+`record` alone receive contents-write, and because that permission is not
+branch-scoped, the coordinator refuses every write but a tree of the branch's
+own three files, a commit with at most one parent, and a fast-forward of that
+one branch, and refuses to follow a redirect with its token. `discover` also
+reads attestations. Every checkout keeps no credentials.
+
+Enable only after publishing a release that carries the probe, 0.9.30 or newer:
 
 1. In GitHub account Settings > Notifications > System > Actions, select Email
    and Only notify for failed workflows. This account-wide choice also silences
    successful ordinary-CI mail. Ensure the intended account created, last edited
    the cron, or re-enabled the schedule; GitHub uses that actor as recipient.
-2. Run this workflow manually on `main` with `initialize=true`. This one-time
-   operation creates the state branch and baselines existing releases silently;
-   an existing branch is refused, never reinitialized.
-3. Set repository variable `DECKY_COMPAT_MONITOR_ENABLED=true`. Until then,
+2. Run this workflow manually on `main` with `initialize=true`. It creates the
+   state branch as one commit with no parent, holding an empty ledger, and
+   tests nothing; an existing branch is refused, never reinitialized.
+3. In Settings > Rules > Rulesets, add a branch ruleset targeting
+   `compatibility-monitor-state` with Restrict deletions and Block force
+   pushes. The monitor only fast-forwards the branch, so neither rule gets in
+   its way, and losing the branch would lose the record of what was tested.
+4. Set repository variable `DECKY_COMPAT_MONITOR_ENABLED=true`. Until then,
    scheduled jobs are skipped. Set it false to stop recurring work while keeping
-   the ledger. No remote activation is part of a local-only commit.
-4. Verify receipt of one separately agreed failing setup run. GitHub supplies
-   the failure email and run link; the detailed cause/action is in the run
-   summary, not a custom email body. No test mail is sent implicitly.
+   the ledger. The first scheduled run tests the current pairs.
 
-PASS and no-new-version runs are silent. A new incompatibility or an incomplete
-verification fails the batch after results/diagnostics are saved. Old results
-do not fail later scans again; silence is not evidence that a check ran or that
-an old incompatibility was repaired. Infrastructure failures also fail visibly
-and can cause additional native mail; GitHub controls actual delivery, so no
-literal mailbox-count guarantee is possible. One batch may report several new
-versions in one workflow email. The monitor changes no device, pin or release.
-Triage an actual failure against a valid baseline, repair minimally, add a
-regression and check supported and candidate runtimes before publication.
+Coverage is what the probe covers: the packaged import graph, real asynchronous
+HTTP and downloads, parsers, offline tables and state refusals in the frozen
+runtime. Decky's own plugin loading, RPC and unload, the Quick Access Menu,
+controller navigation and Proton are not exercised, so `COMPATIBLE` is not a
+promise about them.
 
 GitHub may delay/drop scheduled runs and disables inactive public-repository
 schedules after 60 days without activity. Check the Actions page and re-enable
 when necessary; ledger commits are not a proven exemption. Native notification,
-schedule, Contents API and workflow-attempt API contracts are documented at
+schedule, Git database and attestation contracts are documented at
 https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs,
 https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule,
-https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents and
-https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run-attempt.
+https://docs.github.com/en/rest/git/trees, https://docs.github.com/en/rest/git/commits,
+https://docs.github.com/en/rest/git/refs#update-a-reference and
+https://cli.github.com/manual/gh_attestation_verify.
 
 ## UI test strategy
 

@@ -1,15 +1,24 @@
 name: CE Decky - Decky compatibility - action required on failure
 
+# Whether the latest published CE Decky release still works in Decky's latest
+# stable release and newest prerelease. Each new pair of exact artifacts is
+# tested once; a failed run means a new problem, and STATUS.md on the ledger
+# branch is the current answer. docs/DEVELOPMENT.md is the procedure.
+
 on:
   schedule:
-    # Daily timer; the durable ledger permits discovery only once per 72 hours.
+    # Daily. A run with no new pair costs a handful of API reads.
     - cron: "23 7 * * *"
   workflow_dispatch:
     inputs:
       initialize:
-        description: "First activation only: snapshot existing Decky releases without testing or emailing them"
+        description: "First activation only: create the empty ledger branch"
         type: boolean
         default: false
+      retest:
+        description: "Test again: 'current' for every current pair, or one pair key from STATUS.md"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -19,17 +28,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  discover:
     if: github.ref == 'refs/heads/main' && (vars.DECKY_COMPAT_MONITOR_ENABLED == 'true' || inputs.initialize == true)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write
-      actions: read
+      attestations: read
     outputs:
-      has_work: ${{ steps.prepare.outputs.has_work }}
-      attempt: ${{ steps.prepare.outputs.attempt }}
-      has_finalize: ${{ steps.prepare.outputs.has_finalize }}
+      matrix: ${{ steps.discover.outputs.matrix }}
+      has_work: ${{ steps.discover.outputs.has_work }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,58 +45,65 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - name: Initialize permanent history explicitly
+      - name: Create the empty ledger branch
         if: inputs.initialize == true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/decky_compat_monitor.py initialize
-      - name: Claim due discovery and unseen versions
-        id: prepare
+      - name: Find the pairs that have not been tested
+        id: discover
         if: inputs.initialize != true
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/decky_compat_monitor.py prepare
-      - name: Preserve the exact claimed plan
-        if: steps.prepare.outputs.has_finalize == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: decky-compatibility-plan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/decky-monitor/plan.json
-          retention-days: 7
-          if-no-files-found: error
+          RETEST: ${{ inputs.retest }}
+        run: python scripts/decky_compat_monitor.py discover
 
   probe:
-    needs: prepare
-    if: needs.prepare.outputs.has_work == 'true'
+    needs: discover
+    if: needs.discover.outputs.has_work == 'true'
+    name: probe (Decky ${{ matrix.pair.decky.tag }} × CE Decky ${{ matrix.pair.plugin.version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    # Unreviewed Decky executables run here: no write permission, no token.
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out the monitor
+        uses: actions/checkout@v7
         with:
+          path: coordinator
+          persist-credentials: false
+      - name: Check out the release under test, whose own probe tests it
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.pair.plugin.tag }}
+          path: release
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - uses: actions/download-artifact@v4
-        with:
-          name: decky-compatibility-plan-${{ github.run_id }}-${{ needs.prepare.outputs.attempt }}
-          path: build/decky-monitor
-      - name: Execute each original claim once without write credentials
-        run: python scripts/decky_compat_monitor.py execute
-      - name: Preserve bounded structured outcomes even after an interrupted batch
-        if: always() && github.run_attempt == needs.prepare.outputs.attempt
+      - name: Test this pair beside its pinned control
+        env:
+          PAIR: ${{ toJSON(matrix.pair) }}
+        run: python coordinator/scripts/decky_compat_monitor.py probe --release-tree release --output build/decky-monitor/result.json
+      - name: Keep the result for the recorder
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: decky-compatibility-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/decky-monitor/results.json
+          name: decky-compatibility-result-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+          path: build/decky-monitor/result.json
           retention-days: 7
           if-no-files-found: warn
 
-  finalize:
-    needs: [prepare, probe]
-    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.has_finalize == 'true'
+  record:
+    needs: [discover, probe]
+    # Runs after failed probes too, which are the results worth keeping; a run
+    # someone cancelled writes nothing.
+    if: ${{ !cancelled() && needs.discover.result == 'success' && inputs.initialize != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -101,27 +116,14 @@ jobs:
         with:
           python-version: "3.11"
       - uses: actions/download-artifact@v4
-        with:
-          name: decky-compatibility-plan-${{ github.run_id }}-${{ needs.prepare.outputs.attempt }}
-          path: build/decky-monitor
-      - uses: actions/download-artifact@v4
-        if: needs.prepare.outputs.has_work == 'true'
-        # A missing result is saved as INCOMPLETE by finalize, never as PASS.
+        if: needs.discover.outputs.has_work == 'true'
+        # A pair without a result stays untested and is asked for again.
         continue-on-error: true
         with:
-          name: decky-compatibility-results-${{ github.run_id }}-${{ needs.prepare.outputs.attempt }}
-          path: build/decky-monitor
-      - name: Persist results and actionable summary
+          pattern: decky-compatibility-result-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: build/decky-monitor/results
+      - name: Save results and publish STATUS.md
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/decky_compat_monitor.py finalize --output build/decky-monitor/summary.md
-      - uses: actions/upload-artifact@v4
-        with:
-          name: decky-compatibility-report-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/decky-monitor/summary.md
-          retention-days: 7
-          if-no-files-found: error
-      - name: Fail only for newly reportable attention results
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/decky_compat_monitor.py status
+          PLAN: ${{ needs.discover.outputs.matrix }}
+        run: python scripts/decky_compat_monitor.py record --results build/decky-monitor/results

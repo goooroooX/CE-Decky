@@ -184,7 +184,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | What version do real Windows executables declare, and what does reading one cost | `scripts/pe_version_survey.py`; it walks a directory of `.exe` through the production version reader and reports, per file, the version, the size of the resource section, how far into it the directory walk reached and how many spans the read cost |
 | One bounded read-only snapshot of the host, for a report | `scripts/target_snapshot.py` |
 | Does this exact plugin ZIP work inside this exact Decky runtime, without starting a live service | `scripts/decky_compat_probe.py`; inputs and the reviewed local-runtime restriction are in `docs/DEVELOPMENT.md` |
-| Has CI already checked a Decky version, and how is the three-day upstream watch operated | `scripts/decky_compat_monitor.py`; its ledger and native failed-workflow notifications are in `docs/DEVELOPMENT.md` |
+| Does the latest published CE Decky still work in Decky's latest releases, and how is that daily watch operated | `scripts/decky_compat_monitor.py`; its pairs, ledger, `STATUS.md`, `retest` and native failed-workflow notifications are in `docs/DEVELOPMENT.md` |
 | Routed repository QA, and pinned browser UI QA | `scripts/qa.py`, `scripts/browser_harness.py` |
 | What are the providers actually serving, and what is in real tables | `scripts/provider_probe.py`, `scripts/provider_search_survey.py`, `scripts/provider_corpus_survey.py` |
 | Add a changelog entry to the current version without anchoring an edit on text that changes every round | `python scripts/changelog.py add` |
