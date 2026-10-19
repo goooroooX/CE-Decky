@@ -305,6 +305,9 @@ def test_workflow_keeps_candidate_execution_read_only_and_version_matched():
     record_job = source.split("  record:\n", 1)[1]
     assert "!cancelled()" in record_job and "always()" not in record_job and "github.run_attempt" in record_job
     assert "issues: write" not in source and "cancel-in-progress: false" in source
+    # The timer waits for the switch; a run started by hand never does.
+    discover_job = source.split("  discover:\n", 1)[1].split("  probe:\n", 1)[0]
+    assert "github.event_name == 'workflow_dispatch' || vars.DECKY_COMPAT_MONITOR_ENABLED == 'true'" in discover_job
 
 
 # The monitor branch ----------------------------------------------------------------

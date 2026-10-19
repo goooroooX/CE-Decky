@@ -29,7 +29,9 @@ concurrency:
 
 jobs:
   discover:
-    if: github.ref == 'refs/heads/main' && (vars.DECKY_COMPAT_MONITOR_ENABLED == 'true' || inputs.initialize == true)
+    # The timer runs only once the watch is switched on; a run started by hand
+    # always runs, so the whole chain can be checked before it is.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.DECKY_COMPAT_MONITOR_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -394,7 +394,9 @@ Enable only after publishing a release that carries the probe, 0.9.30 or newer:
    its way, and losing the branch would lose the record of what was tested.
 4. Set repository variable `DECKY_COMPAT_MONITOR_ENABLED=true`. Until then,
    scheduled jobs are skipped. Set it false to stop recurring work while keeping
-   the ledger. The first scheduled run tests the current pairs.
+   the ledger. The first scheduled run tests the current pairs. A run started
+   by hand always runs, switched on or not, which is how the whole chain is
+   checked before the timer is trusted with it.
 
 Coverage is what the probe covers: the packaged import graph, real asynchronous
 HTTP and downloads, parsers, offline tables and state refusals in the frozen
