@@ -833,8 +833,11 @@ def test_stable_tag_is_refused_while_work_is_still_unverified(tmp_path, monkeypa
     monkeypatch.undo()
 
     # And that a tag is refused for what that read returns, without needing the
-    # repository to be in either state.
+    # repository to be in either state. Release notes are their own rule, owed
+    # only by a version that is released, so this version having none yet is
+    # set aside here and proven by the test below.
     monkeypatch.setattr(check_release, "_unverified_subjects", lambda: ["A pretend subject"])
+    monkeypatch.setattr(check_release, "_release_notes", lambda tag: None)
     monkeypatch.setattr(sys, "argv", ["check_release.py", "--tag", f"v{version}"])
     with pytest.raises(SystemExit) as refused:
         check_release.main()
@@ -844,17 +847,54 @@ def test_stable_tag_is_refused_while_work_is_still_unverified(tmp_path, monkeypa
     # The real tree then agrees with its own section either way: a row refuses
     # the tag, an empty section permits it.
     unverified = check_release._unverified_subjects()
-    tagged = subprocess.run(
-        [sys.executable, str(root / "scripts" / "check_release.py"), "--tag", f"v{version}"],
-        capture_output=True, text=True,
-    )
-    assert tagged.returncode == (1 if unverified else 0)
+    monkeypatch.setattr(check_release, "_release_notes", lambda tag: None)
+    monkeypatch.setattr(sys, "argv", ["check_release.py", "--tag", f"v{version}"])
+    if unverified:
+        with pytest.raises(SystemExit, match="still unverified"):
+            check_release.main()
+    else:
+        check_release.main()
+    monkeypatch.undo()
 
     # Metadata validation without a tag is unaffected.
     assert subprocess.run(
         [sys.executable, str(root / "scripts" / "check_release.py")],
         capture_output=True, text=True,
     ).returncode == 0
+
+
+def test_a_tag_is_refused_without_its_release_notes(tmp_path, monkeypatch):
+    """The release description is a reviewed file, and a tag cannot go without one.
+
+    Owed only when a version is tagged: one that is never released needs none,
+    so this is proven against a written tree rather than the real one.
+    """
+    from scripts import check_release
+
+    root = Path(__file__).resolve().parents[1]
+    version = json.loads((root / "package.json").read_text(encoding="utf-8"))["version"]
+
+    monkeypatch.setattr(check_release, "ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="missing release notes for v1.2.3"):
+        check_release._release_notes("v1.2.3")
+    notes = tmp_path / "docs" / "release-notes"
+    notes.mkdir(parents=True)
+    (notes / "v1.2.3.md").write_text(" \n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="is empty"):
+        check_release._release_notes("v1.2.3")
+    (notes / "v1.2.3.md").write_text("# CE Decky 1.2.3\n", encoding="utf-8")
+    assert check_release._release_notes("v1.2.3") == notes / "v1.2.3.md"
+    monkeypatch.undo()
+
+    # And validating a tag asks for them.
+    def refuse(tag: str):
+        raise SystemExit(f"notes asked for {tag}")
+
+    monkeypatch.setattr(check_release, "_release_notes", refuse)
+    monkeypatch.setattr(check_release, "_unverified_subjects", lambda: [])
+    monkeypatch.setattr(sys, "argv", ["check_release.py", "--tag", f"v{version}"])
+    with pytest.raises(SystemExit, match=f"notes asked for v{version}"):
+        check_release.main()
 
 
 def test_every_test_the_router_names_by_hand_exists():

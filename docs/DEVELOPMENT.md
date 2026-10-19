@@ -649,13 +649,14 @@ To prepare a release without publishing it:
 
 1. Confirm the synchronized development version and date in `package.json`, `AGENTS.md`, and `CHANGELOG.md`.
 2. Confirm the newest changelog heading is `## x.y.z — YYYY-MM-DD` and contains only concise labeled outcomes.
-3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is for somebody deciding whether to install the release: what is new, what is fixed, how to install it, one line per change. `docs/release-notes/README.md` states the shape, and `scripts/check_release.py` refuses a tag whose file is missing or empty.
+3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is for somebody deciding whether to install the release: what is new, what is fixed, how to install it, one line per change. `docs/release-notes/README.md` states the shape, and `scripts/check_release.py` refuses a tag whose file is missing or empty. Only a version that is released needs one: a version that is skipped keeps its changelog entries and gets no file and no tag.
 4. Run `python scripts/qa.py --profile release --bootstrap`; omit `--bootstrap` when lock fingerprints are already current.
 5. Review the package contents and checksums.
+6. Run `python scripts/check_release.py --tag v<version>`. It is the check the release workflow runs first, so missing or empty release notes, a row left under **Still worth checking** in `docs/FIELD_NOTES.md`, or a pre-release notice left in `README.md` is found here rather than after the tag is pushed.
 
 Only after explicit user approval, create and push the exact tag `v<version>`. `.github/workflows/release.yml` then:
 
-- rejects a tag that differs from `package.json` or lacks its changelog heading;
+- rejects a tag that differs from `package.json`, lacks its changelog heading or its release notes;
 - restores pinned dependencies from `pnpm-lock.yaml`;
 - runs the full gate and its deterministic packaging;
 - creates the plugin ZIP and `SHA256SUMS`; the reviewed repository tag is the source authority;
