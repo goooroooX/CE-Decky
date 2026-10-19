@@ -101,6 +101,10 @@ jobs:
           printf '\n' >> release-body.md
           gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f tag_name="$GITHUB_REF_NAME" -q .body >> release-body.md
+          # The title is the tag, set here: a release published without one is
+          # shown under a title GitHub makes up, which for v0.9.30 was the
+          # subject of an unrelated CI commit the tag happened to point at.
           gh release create "$GITHUB_REF_NAME" \
             artifacts/*.zip artifacts/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" \
             --verify-tag --notes-file release-body.md "${prerelease[@]}"

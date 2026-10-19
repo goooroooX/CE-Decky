@@ -57,3 +57,10 @@ def test_the_release_validates_before_it_publishes(step: str) -> None:
     workflow = _workflow()
     assert step in workflow
     assert workflow.index(step) < workflow.index("gh release create")
+
+
+def test_the_release_is_titled_by_its_tag() -> None:
+    # Without a title GitHub shows one it makes up; v0.9.30 went out headed by
+    # the subject of the CI commit its tag pointed at.
+    create = _workflow().split("gh release create", 1)[1].split("\n\n", 1)[0]
+    assert '--title "$GITHUB_REF_NAME"' in create
