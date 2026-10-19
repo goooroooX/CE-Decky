@@ -1077,3 +1077,18 @@ def test_a_pytest_selection_that_collected_nothing_says_so_rather_than_a_number(
 
     assert result["status"] == "failed"
     assert result["reason"] == "--name matched no test, so nothing ran"
+
+
+def test_user_bin_is_reached_without_shadowing_system_tools(monkeypatch, tmp_path: Path):
+    user_bin = tmp_path / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    monkeypatch.setattr(qa.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    qa._include_user_bin()
+    assert os.environ["PATH"].split(os.pathsep) == ["/usr/bin", "/bin", str(user_bin)]
+    qa._include_user_bin()
+    assert os.environ["PATH"].split(os.pathsep).count(str(user_bin)) == 1
+    user_bin.rmdir()
+    monkeypatch.setenv("PATH", "/usr/bin")
+    qa._include_user_bin()
+    assert os.environ["PATH"] == "/usr/bin"

@@ -234,6 +234,11 @@ gh run list --workflow ci.yml --branch <branch> --limit 1 --json headSha,status,
 gh run view <run-id> --log-failed
 ```
 
+On SteamOS `gh`, like Node, is installed into `~/.local/bin`, which a
+non-login shell does not have on PATH: prefix these with
+`PATH="$HOME/.local/bin:$PATH"`. `qa.py` adds that directory to its own PATH,
+and `qa.py --check-env` names where it found `node` and `gh`.
+
 The first is what proves a green run belongs to the exact head, which is the
 only thing `AGENTS.md` treats as ready: a plain `gh run list` prints no commit,
 so it cannot answer that. On a pull request the required run is the

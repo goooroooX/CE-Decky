@@ -322,6 +322,26 @@ def _bootstrap_python() -> Path:
     return python
 
 
+def _include_user_bin() -> None:
+    """Reach tools installed for this user alone, whatever shell started the run.
+
+    SteamOS takes no packages into its read-only image, so Node, pnpm and gh
+    are installed into `~/.local/bin`, and a non-login shell, which is what an
+    agent or a timer starts, does not have that on PATH. The frontend stages
+    then reported Node missing on a host that had it. Appended rather than
+    prepended, so it never shadows a tool the system already provides; the
+    stages' own children find `node` by name, which is why this is PATH and
+    not a lookup.
+    """
+    try:
+        user_bin = Path.home() / ".local" / "bin"
+    except RuntimeError:  # no home to speak of, so no user tools in it either
+        return
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    if user_bin.is_dir() and str(user_bin) not in entries:
+        os.environ["PATH"] = os.pathsep.join([*filter(None, entries), str(user_bin)])
+
+
 def _node() -> str | None:
     return shutil.which("node")
 
@@ -1368,6 +1388,7 @@ def _check_environment() -> int:
         "python": f"{python} ({platform.python_version()})",
         "python_dev": "ready" if _python_has(python, ("pytest", "httpx", "bs4", "defusedxml")) else "missing",
         "node": _node() or "not detected (needed only for frontend)",
+        "gh": shutil.which("gh") or "not detected (needed only to read CI)",
         "frontend": "ready" if _frontend_ready() else "not restored",
         "browser": discover_browser() or "not detected",
         "lua": _lua() or "not detected (bridge conformance is skipped)",
@@ -1400,6 +1421,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-env", action="store_true", help="detect tools without installing or testing")
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args(argv)
+    _include_user_bin()
     if args.check_env:
         return _check_environment()
 
