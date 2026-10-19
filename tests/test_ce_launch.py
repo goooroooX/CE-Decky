@@ -1451,6 +1451,38 @@ def test_descriptor_sweep_retains_same_user_process_when_environ_is_denied(tmp_p
     ) == ("unreadable", (901,))
 
 
+@pytest.mark.parametrize("settles", [True, False])
+def test_an_unreadable_descriptor_scan_is_waited_out_and_never_signalled(tmp_path: Path, monkeypatch, settles):
+    """A game that has just exited takes its Wine session down with it.
+
+    On the target the scan answered unreadable while those processes went, and
+    the stop gave up on that first answer: Cheat Engine had stopped with the
+    game, and the panel said it could not be launched. The process an
+    unreadable scan names may be someone else's, so it is never signalled.
+    """
+    import ce_decky.ce_launch as ce_launch_module
+    paths = PluginPaths.for_tests(tmp_path)
+    supervisor = CELaunchSupervisor(paths.user_home, paths.ce_root, paths.state_root, logging.getLogger("test"))
+    answers = [("unreadable", (901,)), ("unreadable", (901,))]
+    if settles:
+        answers.append(("gone", ()))
+
+    def scan(*_args, **_kwargs):
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    signalled: list[int] = []
+    monkeypatch.setattr(ce_launch_module, "owned_descriptor_pids", scan)
+    monkeypatch.setattr(ce_launch_module, "STOP_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(ce_launch_module.os, "kill", lambda pid, _signal: signalled.append(pid))
+    sweep = supervisor._sweep_escaped_descriptor(DESCRIPTOR, DIGEST, "/ce/cheatengine-x86_64.exe")
+    if settles:
+        asyncio.run(sweep)
+    else:
+        with pytest.raises(RuntimeError, match="could not be proven gone"):
+            asyncio.run(sweep)
+    assert signalled == []
+
+
 def test_descriptor_sweep_skips_only_a_positively_foreign_denied_process(tmp_path: Path, monkeypatch):
     proc = tmp_path / "proc"
     _proc(proc, 901, {}, argv=["/usr/bin/chromium", "--type=renderer"])

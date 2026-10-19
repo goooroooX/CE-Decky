@@ -5,6 +5,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 ## 0.9.31 — 2026-10-20
 
 - [Fixed] A table earns its green check when a cheat switches on and reads back on, even when Cheat Engine goes quiet for more than three seconds while switching it on. CE Decky then briefly saw Cheat Engine as disconnected, and that pause alone threw the proof away, so a table that worked stayed unmarked with no error. A pause is now waited out; a new session or a Cheat Engine that has exited still discards the proof.
+- [Fixed] When a game exits or crashes with Cheat Engine attached, CE Decky no longer reports "Cheat Engine could not be launched" and "cleanup remains blocked" about a Cheat Engine that stopped with the game. The check that no Cheat Engine of its own is left behind could not read the game's Wine processes while they were exiting, and gave up on that first answer; it now waits up to ten seconds for a clear one, and still keeps hold of the launch if none arrives.
 
 ## 0.9.30 — 2026-10-19
 

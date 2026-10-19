@@ -4102,13 +4102,18 @@ class CELaunchSupervisor:
             )
             if state == "gone":
                 return
-            if state == "unreadable":
-                raise RuntimeError("owned Cheat Engine identity could not be proven gone")
-            for pid in pids:
-                try:
-                    os.kill(pid, signal_number)
-                except (ProcessLookupError, PermissionError, OSError):
-                    continue
+            # An unreadable scan names a process that may be someone else's, so
+            # only a match is signalled.
+            if state == "matched":
+                for pid in pids:
+                    try:
+                        os.kill(pid, signal_number)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        continue
+            # Unreadable is waited out rather than final: a game that has just
+            # exited takes its Wine session down with it, and on the target the
+            # scan answered unreadable as those processes went, and gone later.
+            # One that never settles inside the bound still keeps ownership.
             deadline = time.monotonic() + STOP_GRACE_SECONDS
             while time.monotonic() < deadline:
                 state, _ = await asyncio.to_thread(
@@ -4119,9 +4124,9 @@ class CELaunchSupervisor:
                 )
                 if state == "gone":
                     return
-                if state == "unreadable":
-                    raise RuntimeError("owned Cheat Engine identity could not be proven gone")
                 await asyncio.sleep(0.2)
+            if state == "unreadable":
+                raise RuntimeError("owned Cheat Engine identity could not be proven gone")
         raise RuntimeError("an owned Cheat Engine carrying this exact descriptor is still running")
 
     def _set(self, operation_id: str, **values: object) -> None:
