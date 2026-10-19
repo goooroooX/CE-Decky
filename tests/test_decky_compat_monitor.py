@@ -180,6 +180,17 @@ def test_pair_runs_the_release_trees_own_probe_beside_its_pinned_control(release
     assert monitor.valid_result(result)
 
 
+def test_relative_work_directory_reaches_the_probe_running_in_the_release_tree(release_tree, tmp_path, monkeypatch):
+    # The workflow passes build/decky-monitor/... relative to its workspace,
+    # and the release's probe runs with the release checkout as its directory.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    pinned = decky("v3.3.0", sha=SHAS["baseline"], size=len(BYTES["baseline"]))
+    result = monitor.run_pair(_pair(pinned), release_tree, Path("build/decky-monitor/work"))
+    assert result["outcome"] == "COMPATIBLE", result
+
+
 def test_candidate_that_is_the_release_pin_runs_once(release_tree, tmp_path):
     pinned = decky("v3.3.0", sha=SHAS["baseline"], size=len(BYTES["baseline"]))
     result = monitor.run_pair(_pair(pinned), release_tree, tmp_path / "work")

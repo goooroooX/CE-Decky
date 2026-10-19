@@ -544,6 +544,10 @@ def run_pair(pair, tree, work):
     """Test one pair. Returns a result whose outcome is RETRY when inputs could not be fetched."""
     if not valid_pair(pair):
         raise MonitorError("the pair to test is invalid")
+    # The release's probe runs in the release tree, so every path handed to it
+    # has to mean the same thing from there: a relative one named a file inside
+    # the release checkout, which the first run on GitHub reported as missing.
+    work = work.resolve()
     result = {"key": pair["key"], "probe_revision": tree_revision(tree), "control": None, "candidate": None}
     script = tree / "scripts" / "decky_compat_probe.py"
     pin_path = tree / "scripts" / "decky_compat_pin.json"
