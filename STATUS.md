@@ -8,7 +8,7 @@ These are backend and package checks on Linux x86-64; the Quick Access Menu, con
 
 | CE Decky | Decky | Result | Checked | Detail | Key |
 |---|---|---|---|---|---|
-| 0.9.30 | [v3.3.0](https://github.com/SteamDeckHomebrew/decky-loader/releases/tag/v3.3.0) (stable) | PENDING | waiting since 2026-10-19 12:30 UTC | Not tested yet. | `github/0.9.30/d8d2f2b0df6ab119+v3.3.0/e80d03e641d1766a` |
+| 0.9.30 | [v3.3.0](https://github.com/SteamDeckHomebrew/decky-loader/releases/tag/v3.3.0) (stable) | PROBE_BROKEN | [2026-10-19 12:31 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/39252615025/attempts/1) | The probe of CE Decky 0.9.30 no longer passes in its own pinned Decky v3.3.0, so this run cannot judge Decky v3.3.0: the release's probe wrote no bounded result | `github/0.9.30/d8d2f2b0df6ab119+v3.3.0/e80d03e641d1766a` |
 
 ## Earlier pairs
 
