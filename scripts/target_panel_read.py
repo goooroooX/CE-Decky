@@ -170,11 +170,13 @@ _READ = """
     let footerHost = panel.parentElement;
     for (let hop = 0; footerHost && hop < MAX_DEPTH; hop++) {
       // Action groups and paged navigation both sit outside the dense block.
-      const footer = footerHost.querySelector('[data-testid$="-actions"], [data-testid$="-footer"]');
       // One inside the block is already one of its rows: a panel's own action
       // row would otherwise be reported twice, once as itself and once as this
-      // screen's footer.
-      if (footer && !panel.contains(footer)) {
+      // screen's footer. It comes first in document order, so the first match
+      // alone would hide the footer outside it at every hop.
+      const footer = Array.from(footerHost.querySelectorAll('[data-testid$="-actions"], [data-testid$="-footer"]'))
+        .find((candidate) => !panel.contains(candidate));
+      if (footer) {
         const box = footer.getBoundingClientRect();
         rows.push({
           testid: footer.dataset.testid,
@@ -412,8 +414,9 @@ _PRESS = r"""
   const panels = Array.from(document.querySelectorAll(".ce-decky-dense")).map((panel) => {
     const boxes = [panel];
     for (let host = panel.parentElement, hop = 0; host && hop < 6; host = host.parentElement, hop++) {
-      const footer = host.querySelector('[data-testid$="-actions"], [data-testid$="-footer"]');
-      if (footer && !panel.contains(footer)) { boxes.push(footer); break; }
+      const footer = Array.from(host.querySelectorAll('[data-testid$="-actions"], [data-testid$="-footer"]'))
+        .find((candidate) => !panel.contains(candidate));
+      if (footer) { boxes.push(footer); break; }
     }
     return boxes;
   });

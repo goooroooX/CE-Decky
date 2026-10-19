@@ -33,4 +33,19 @@ describe("target panel reader's modal navigation", () => {
     expect(JSON.parse(window.eval(expression)).pressed).toBe(false);
     expect(click).toHaveBeenCalledOnce();
   });
+
+  it("does not let a footer inside the block hide the one outside it", () => {
+    document.body.innerHTML = `<main><div class="ce-decky-dense"><div data-testid="catalog-footer"><button>Next</button></div></div>
+      <div data-testid="modal-actions"><button>Use</button></div></main>`;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => document.body });
+    vi.spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(() => [new DOMRect()] as unknown as DOMRectList);
+    const use = vi.fn();
+    document.querySelector('[data-testid="modal-actions"] button')!.addEventListener("click", use);
+    const rows = JSON.parse(window.eval(read)).surfaces[0].rows.map((row: { testid: string }) => row.testid);
+    expect(rows.filter((id: string) => id === "catalog-footer")).toHaveLength(1);
+    expect(rows).toContain("modal-actions");
+    const expression = press.replace("%(label)s", JSON.stringify("Use")).replace("%(scope)s", JSON.stringify("modal-actions"));
+    expect(JSON.parse(window.eval(expression))).toMatchObject({ pressed: true, where: "modal-actions" });
+    expect(use).toHaveBeenCalledOnce();
+  });
 });
