@@ -8,7 +8,7 @@ These are backend and package checks on Linux x86-64; the Quick Access Menu, con
 
 | CE Decky | Decky | Result | Checked | Detail | Key |
 |---|---|---|---|---|---|
-| 0.9.30 | [v3.3.0](https://github.com/SteamDeckHomebrew/decky-loader/releases/tag/v3.3.0) (stable) | COMPATIBLE | [2026-10-19 12:37 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/39253455488/attempts/1) | CE Decky 0.9.30 passed in Decky v3.3.0. | `github/0.9.30/d8d2f2b0df6ab119+v3.3.0/e80d03e641d1766a` |
+| 0.9.30 | [v3.3.0](https://github.com/SteamDeckHomebrew/decky-loader/releases/tag/v3.3.0) (stable) | COMPATIBLE | [2026-10-19 12:47 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/39254729647/attempts/1) | CE Decky 0.9.30 passed in Decky v3.3.0. | `github/0.9.30/d8d2f2b0df6ab119+v3.3.0/e80d03e641d1766a` |
 
 ## Earlier pairs
 
