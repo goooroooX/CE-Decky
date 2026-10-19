@@ -9,7 +9,7 @@ Current development version: **0.9.30 — 2026-10-19**
 On every clean run:
 
 1. Read this file completely, in bounded slices. It ends with **Release discipline**: if that heading is not in what you just read, the read was truncated and the rest of this contract is not optional. A route that truncated once truncates again, so change the route rather than repeating it.
-2. Read `docs/FIELD_NOTES.md` **Still worth checking**, which is the whole of what this project knows it has not confirmed. It is empty when nothing is owed, and that is an answer.
+2. Read `docs/FIELD_NOTES.md` **Still worth checking**, headed `## 5. Still worth checking` there, which is the whole of what this project knows it has not confirmed. It is empty when nothing is owed, and that is an answer.
 3. Before feature or bug-fix work, read only the newest `CHANGELOG.md` entry.
 4. Classify the change with the routing table and open only the required contracts and source files.
 5. Before writing any command that reads repository or device state, check **Tracked helpers**. One already answers most such questions, and the ones it does not are named in `docs/DEVELOPMENT.md`.
