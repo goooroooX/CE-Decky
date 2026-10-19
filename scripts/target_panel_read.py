@@ -47,6 +47,15 @@ can stay in the document with its handlers intact, and a press that landed on
 one of those would run a screen nobody is looking at while reporting itself as
 a press that worked.
 
+A modal's screen is its whole dialog, so a way out it keeps outside its block,
+such as **Close** at the foot of Advanced, is read and pressed like any row.
+Where screens are stacked, the one in front is the one the page has on top, not
+the last in the document: a name on both presses the control in front, and
+`--choose` only ever opens a dropdown of the screen in front, picks only from
+the menu that click opened, closes a menu it refused by picking the value the
+control already showed, and says when the control does not show the choice
+afterwards.
+
 Two limits remain, and neither is about which name is allowed. A name that is on
 more than one control presses nothing and says where each of them is, because
 **Cancel** leaves a dialog on one screen and stops a running Cheat Engine
@@ -92,6 +101,42 @@ MAX_RESULT_BYTES = 2 * 1024 * 1024
 # over a description with its controls beside it, and its own reveal under it.
 MAX_DEPTH = 12
 
+# What a screen is, and what is on top, shared by the read, the press and the
+# choice so the three never disagree about it.
+#
+# A modal's screen is its whole dialog, not the dense block inside it: Steam
+# draws the dialog as one `role="dialog"` form, and a modal here keeps controls
+# outside its block, such as the **Close** at the foot of Advanced, which no
+# name could reach while a screen ended at the block and its tagged footer.
+#
+# What is in front is asked of the page rather than of the document's order.
+# Steam puts a modal opened over another wherever its own container is, and
+# the last block in the document was once the window behind the one on screen.
+# Both questions fall back to the document's order where the page has no
+# layout to ask, which is what the component tests run in.
+_SCREEN = r"""
+  const screenOf = (panel) => panel.closest('[role="dialog"]') || panel;
+  // Whether a user could press this now: scrolled to, as they would scroll to
+  // it, and then the thing on top at its middle is it or inside it.
+  const onTop = (node) => {
+    if (typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const box = node.getBoundingClientRect();
+    if (!box.width || !box.height) return false;
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return Boolean(hit && (hit === node || node.contains(hit)));
+  };
+  // Whether nothing covers a screen, asked at the middle of the part of it on
+  // the page. Not scrolled: a screen is looked at where it is.
+  const uncovered = (screen) => {
+    const box = screen.getBoundingClientRect();
+    const left = Math.max(box.left, 0), right = Math.min(box.right, window.innerWidth);
+    const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, window.innerHeight);
+    if (right <= left || bottom <= top) return false;
+    const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+    return Boolean(hit && screen.contains(hit));
+  };
+"""
+
 # One expression, evaluated in each page, returning this plugin's surfaces.
 #
 # `ce-decky-dense` is the wrapper every screen here draws inside, so it is what
@@ -101,6 +146,7 @@ MAX_DEPTH = 12
 _READ = """
 (() => {
   const MAX_DEPTH = %(depth)d;
+%(screen)s
   const text = (node) => (node.textContent || "").replace(/\\s+/g, " ").trim();
   // A switch Steam draws is a div: not a button, not an input, and with no name
   // on it at all. This plugin marks its own with `data-switch`, which is what
@@ -192,8 +238,9 @@ _READ = """
     // Buttons that sit in no row at all. Steam's full-width buttons carry no
     // test id, so `Load table & start CE` and `Configure cheats` were pressable
     // by name and yet absent from every read, which cost a session a search
-    // through the source to learn they were there.
-    const loose = Array.from(panel.querySelectorAll("button")).filter((el) => !el.closest("[data-testid]"));
+    // through the source to learn they were there. Looked for across the whole
+    // screen, because a modal's own way out can sit outside its block.
+    const loose = Array.from(screenOf(panel).querySelectorAll("button")).filter((el) => !el.closest("[data-testid]"));
     if (loose.length) {
       rows.push({
         testid: "untagged-controls",
@@ -395,6 +442,7 @@ _PRESS = r"""
 (() => {
   const wanted = %(label)s;
   const scope = %(scope)s;
+%(screen)s
   const surface = (node) => {
     for (let at = node; at; at = at.parentElement) {
       const id = at.getAttribute && at.getAttribute("data-testid");
@@ -412,6 +460,10 @@ _PRESS = r"""
   // footer holds the decision the window exists for, and it sits outside the
   // block by design. Both are the same screen, so they share its depth.
   const panels = Array.from(document.querySelectorAll(".ce-decky-dense")).map((panel) => {
+    // A modal is its whole dialog, which holds its footer and any control it
+    // keeps outside the block; the panel, which is in no dialog, keeps looking
+    // for the footer beside it.
+    if (screenOf(panel) !== panel) return [screenOf(panel)];
     const boxes = [panel];
     for (let host = panel.parentElement, hop = 0; host && hop < 6; host = host.parentElement, hop++) {
       const footer = Array.from(host.querySelectorAll('[data-testid$="-actions"], [data-testid$="-footer"]'))
@@ -460,8 +512,12 @@ _PRESS = r"""
       }
     }
   }
-  const found = Array.from(byButton.values());
-  if (found.length === 0) return JSON.stringify({ pressed: false, reason: "no control with that name is on screen" });
+  const matched = Array.from(byButton.values());
+  if (matched.length === 0) return JSON.stringify({ pressed: false, reason: "no control with that name is on screen" });
+  // The ones a user could press now, where the page can say. A screen left
+  // under another is drawn and has every handler, and is not the one meant.
+  const reachable = matched.filter((match) => onTop(match.button));
+  const found = reachable.length ? reachable : matched;
   // The screen in front of the reader, and only that one. Opening a modal
   // leaves the one under it in the document and drawn, so the same row exists
   // once per screen that is open: a press has to mean the one on top, which is
@@ -551,10 +607,23 @@ _CHOOSE = r"""
   const scope = %(scope)s;
   const drawn = (node) => node.getClientRects().length > 0;
   const text = (node) => (node.textContent || "").replace(/\s+/g, " ").trim();
+%(screen)s
   const panels = Array.from(document.querySelectorAll(".ce-decky-dense")).filter(drawn);
-  const roots = scope === null
-    ? (panels.length ? [panels[panels.length - 1]] : [])
-    : Array.from(document.querySelectorAll('[data-testid="' + scope + '"]')).filter(drawn);
+  let roots;
+  if (scope !== null) {
+    roots = Array.from(document.querySelectorAll('[data-testid="' + scope + '"]')).filter(drawn);
+  } else {
+    // The screen in front is the one nothing covers, which is not the last
+    // one in the document: Steam puts a modal opened over another wherever its
+    // own container is, and taking the last block once chose an option in a
+    // dropdown of the window behind the one being looked at.
+    const screens = Array.from(new Set(panels.map(screenOf)));
+    const front = screens.filter(uncovered);
+    if (front.length > 1) {
+      return JSON.stringify({ chosen: false, reason: front.length + " screens are in front; name the row as <data-testid>:<option>" });
+    }
+    roots = front.length === 1 ? front : screens.slice(-1);
+  }
   const found = [];
   for (const root of roots) {
     for (const node of Array.from(root.querySelectorAll('[class*="dropdown" i], [data-dropdown]'))) {
@@ -575,12 +644,17 @@ _CHOOSE = r"""
   }
   const control = found[0];
   const before = text(control);
+  const menuItems = () => Array.from(document.querySelectorAll(
+    '[class*="contextmenu" i] [class*="item" i], [role="menuitem"], [class*="ContextMenuItem" i]')).filter(drawn);
+  // Only the menu this click opens. A menu another dropdown left behind is
+  // still in the document, and an option matched in it is a choice made in
+  // a control nobody named.
+  const stale = new Set(menuItems());
   control.click();
   const items = async () => {
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
-      const shown = Array.from(document.querySelectorAll(
-        '[class*="contextmenu" i] [class*="item" i], [role="menuitem"], [class*="ContextMenuItem" i]')).filter(drawn);
+      const shown = menuItems().filter((node) => !stale.has(node));
       if (shown.length > 0) return shown;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -591,6 +665,17 @@ _CHOOSE = r"""
     return JSON.stringify({ chosen: false, reason: "the dropdown was opened and no menu appeared", showing: before });
   }
   const labels = shown.map(text);
+  // A refusal leaves the control as it was. Steam's menus do not close on a
+  // synthetic Escape, so one left open took the focus with it and swallowed
+  // the next press; picking the value the control already shows closes it
+  // and changes nothing.
+  const dismiss = async () => {
+    const same = labels.indexOf(before);
+    if (same >= 0) shown[same].click();
+    else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return same >= 0 ? "closed by picking the value it already had" : "left for Escape to close";
+  };
   let at = labels.findIndex((label) => label === wanted);
   if (at < 0) {
     // A shorter name is allowed to stand for one option and never for a choice
@@ -598,24 +683,23 @@ _CHOOSE = r"""
     // and `Atomic Heart 2` beside it is exactly the pick nobody asked for.
     const starting = labels.map((label, index) => ({ label, index })).filter((item) => item.label.startsWith(wanted));
     if (starting.length > 1) {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       return JSON.stringify({
         chosen: false, reason: "that name is the start of " + starting.length + " of this dropdown's options",
-        options: starting.map((item) => item.label).slice(0, 40),
+        options: starting.map((item) => item.label).slice(0, 40), menu: await dismiss(),
       });
     }
     if (starting.length === 1) at = starting[0].index;
   }
   if (at < 0) {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     return JSON.stringify({
-      chosen: false, reason: "that option is not in this dropdown",
-      options: labels.slice(0, 40),
+      chosen: false, reason: "that option is not in this dropdown, which shows " + JSON.stringify(before),
+      options: labels.slice(0, 40), menu: await dismiss(),
     });
   }
   shown[at].click();
   await new Promise((resolve) => setTimeout(resolve, 300));
-  return JSON.stringify({ chosen: true, option: labels[at], was: before, showing: text(control) });
+  const after = text(control);
+  return JSON.stringify({ chosen: true, option: labels[at], was: before, showing: after, verified: after === labels[at] });
 })()
 """
 
@@ -655,7 +739,7 @@ def press(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str, 
     label and the surface it was found on, and the caller prints both.
     """
     scope, name = press_target(label)
-    expression = _PRESS % {"label": json.dumps(name), "scope": json.dumps(scope or None)}
+    expression = _PRESS % {"label": json.dumps(name), "scope": json.dumps(scope or None), "screen": _SCREEN}
     last: dict[str, Any] = {"pressed": False, "reason": "no page answered"}
     for page in pages:
         url = str(page.get("webSocketDebuggerUrl", ""))
@@ -709,7 +793,7 @@ def choose(pages: list[dict[str, Any]], label: str, timeout: float) -> dict[str,
     The caller names it in its report exactly as it names a press.
     """
     scope, option = press_target(label)
-    expression = _CHOOSE % {"option": json.dumps(option), "scope": json.dumps(scope or None)}
+    expression = _CHOOSE % {"option": json.dumps(option), "scope": json.dumps(scope or None), "screen": _SCREEN}
     last: dict[str, Any] = {"chosen": False, "reason": "no page answered"}
     for page in pages:
         url = str(page.get("webSocketDebuggerUrl", ""))
@@ -847,7 +931,7 @@ def read_page(endpoint: str, page: dict[str, Any], timeout: float) -> dict[str, 
     connection = DevToolsSocket(url, timeout)
     try:
         request = connection.send("Runtime.evaluate", {
-            "expression": _READ % {"depth": MAX_DEPTH},
+            "expression": _READ % {"depth": MAX_DEPTH, "screen": _SCREEN},
             "returnByValue": True,
             "timeout": int(timeout * 1000),
         })
@@ -1048,6 +1132,8 @@ def main() -> int:
         picked = choose(pages, label, args.timeout)
         if not picked.get("chosen"):
             print(f"panel read: could not choose {label!r}: {picked.get('reason')}", file=sys.stderr)
+            if picked.get("menu"):
+                print(f"  the menu it opened was {picked['menu']}", file=sys.stderr)
             for name in (picked.get("options") or [])[:40]:
                 print(f"  option: {name}", file=sys.stderr)
             if made:
@@ -1055,6 +1141,10 @@ def main() -> int:
             return 1
         made.append(f"chose {picked.get('option')}")
         print(f"{made[-1]} (was {picked.get('was') or 'nothing'})")
+        if picked.get("verified") is False:
+            # The option was pressed and the control does not say so: either it
+            # labels a choice differently, or the press landed somewhere else.
+            print(f"panel read: after that choice the dropdown shows {picked.get('showing')!r}", file=sys.stderr)
         # The screen re-renders on the choice, exactly as it does on a press.
         time.sleep(1.5)
         try:
