@@ -455,11 +455,12 @@ def scripts_one(table: Path) -> dict[str, object]:
 def scripts_corpus(root: Path) -> dict[str, object]:
     """The same shapes over a directory, and what three hiding rules would do.
 
-    `everything` is today's rule: every enclosing record is hidden. `outermost`
-    hides only those with no enclosing record above them. `holds_scripts` hides
-    only those with another enclosing record inside them. For each, how many
-    records are hidden and how many enclosing records are shown, over the whole
-    corpus and as the number of tables that show at least one.
+    `everything` hides every enclosing record, which is what Configure cheats
+    did before 0.9.31. `outermost` hides only those with no enclosing record
+    above them. `scripts_holding_scripts` is what `scriptListedControlIds`
+    hides now: an Auto Assembler script with another enclosing record inside
+    it. For each, how many records are hidden and how many enclosing records
+    are shown.
     """
     tables = 0
     unreadable = 0
@@ -467,6 +468,7 @@ def scripts_corpus(root: Path) -> dict[str, object]:
     counts = {shape: 0 for shape in _SHAPES}
     tables_with = {shape: 0 for shape in _SHAPES}
     kinds: dict[str, dict[str, int]] = {shape: {} for shape in _SHAPES}
+    script_holders = 0
     examples: dict[str, list[str]] = {shape: [] for shape in _SHAPES}
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() != ".ct":
@@ -484,12 +486,14 @@ def scripts_corpus(root: Path) -> dict[str, object]:
                 tables_with[shape] += 1
             for row in rows:
                 kinds[shape][str(row["kind"])] = kinds[shape].get(str(row["kind"]), 0) + 1
+                if shape.endswith("_holds_scripts") and row["kind"] == "script":
+                    script_holders += 1
                 if len(examples[shape]) < MAX_SHAPE_EXAMPLES:
                     examples[shape].append(f"{row['name']} ({row['kind']}, holds {row['holds']}) in {path.name[:12]}")
     hidden_by = {
         "everything": sum(counts.values()),
         "outermost": counts["outermost_values_only"] + counts["outermost_holds_scripts"],
-        "holds_scripts": counts["outermost_holds_scripts"] + counts["nested_holds_scripts"],
+        "scripts_holding_scripts": script_holders,
     }
     return {
         "tables": tables,

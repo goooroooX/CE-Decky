@@ -47,6 +47,6 @@ def test_scripts_corpus_counts_what_each_rule_would_hide(tmp_path: Path):
     answer = survey.scripts_corpus(tmp_path)
 
     assert answer["tables"] == 1
-    assert answer["hidden_by_rule"] == {"everything": 5, "outermost": 2, "holds_scripts": 2}
-    assert answer["enclosing_shown_by_rule"] == {"everything": 0, "outermost": 3, "holds_scripts": 3}
+    assert answer["hidden_by_rule"] == {"everything": 5, "outermost": 2, "scripts_holding_scripts": 2}
+    assert answer["enclosing_shown_by_rule"] == {"everything": 0, "outermost": 3, "scripts_holding_scripts": 3}
     assert answer["kinds"]["nested_values_only"] == {"script": 2}
