@@ -5415,29 +5415,20 @@ describe("Cheat selection workflow", () => {
     fireEvent.click(within(script).getByTestId("toggle"));
     expect(within(script).queryByLabelText("Value")).toBeNull();
 
-    // A value record does nothing until a value is written, so its editor
-    // appears without the user having to find it behind More.
+    // A value record does nothing until a value is written, so the press that
+    // switches it on with no value opens the field it is about to need.
     const value = screen.getByTestId("cheat-row-100");
     expect(within(value).queryByLabelText("Value")).toBeNull();
     fireEvent.click(within(value).getByTestId("toggle"));
     expect(within(value).getByLabelText("Value")).toBeTruthy();
-    // The reveal is forced for as long as the cheat is on, so the button says
-    // what the row is actually showing and cannot pretend to change it. It used
-    // to read "More" over an already-open row and do nothing when pressed.
-    const toggleDetail = within(value).getByRole("button", { name: "Less" }) as HTMLButtonElement;
-    expect(toggleDetail.disabled).toBe(true);
-    fireEvent.click(toggleDetail);
-    expect(within(value).getByLabelText("Value")).toBeTruthy();
-
-    // Switching the cheat off releases it: the editor is no longer required, so
-    // the row collapses and its own More works again.
-    fireEvent.click(within(value).getByTestId("toggle"));
+    // Opened, not held open: Less closes it with the cheat still on, and More
+    // opens it again. The row used to stay open with Less disabled for as long
+    // as the cheat was on.
+    fireEvent.click(within(value).getByRole("button", { name: "Less" }));
     expect(within(value).queryByLabelText("Value")).toBeNull();
-    const released = within(value).getByRole("button", { name: "More" }) as HTMLButtonElement;
-    expect(released.disabled).toBe(false);
-    fireEvent.click(released);
+    expect((within(value).getByTestId("toggle") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(value).getByRole("button", { name: "More" }));
     expect(within(value).getByLabelText("Value")).toBeTruthy();
-    expect(within(value).getByRole("button", { name: "Less" })).toBeTruthy();
   });
 
   it("keeps Cheat Engine's unreadable placeholder out of the compact row", async () => {
@@ -7815,6 +7806,27 @@ describe("Selection and staged-change persistence", () => {
     expect(onApplied.mock.calls[0][0]).toEqual([{ record_id: 20, active: true, value: null }]);
   });
 
+  it("opens with every row collapsed, a value cheat that is on included", async () => {
+    // Every active value cheat used to open on its own, so the dialog arrived
+    // as a wall of editors, and Less on one of them was disabled.
+    renderNested([
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: true, value: "95", error: null },
+    ]);
+
+    const child = await screen.findByTestId("cheat-row-21");
+    expect(within(child).queryByLabelText("Value")).toBeNull();
+    // Switched off and on again it still holds a value, so nothing is missing
+    // and the press opens nothing.
+    fireEvent.click(within(child).getByTestId("toggle"));
+    fireEvent.click(within(child).getByTestId("toggle"));
+    expect(within(child).queryByLabelText("Value")).toBeNull();
+    fireEvent.click(within(child).getByRole("button", { name: "More" }));
+    expect(within(child).getByLabelText("Value")).toBeTruthy();
+    fireEvent.click(within(child).getByRole("button", { name: "Less" }));
+    expect(within(child).queryByLabelText("Value")).toBeNull();
+  });
+
   it("takes a cheat it could not switch off down with the script that made it", async () => {
     // A cheat CE Decky leaves on, because the table's own code was not read as
     // surviving it being switched off, must not be left running for ever. It is
@@ -7899,6 +7911,7 @@ describe("Selection and staged-change persistence", () => {
     />);
 
     const child = await screen.findByTestId("cheat-row-21");
+    await revealDetails(within(child));
     fireEvent.change(within(child).getByLabelText("Value"), { target: { value: "80" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 

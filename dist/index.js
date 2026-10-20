@@ -11451,6 +11451,13 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         clearError();
         update(recordId, { active });
         setTouchedActive((current) => new Set(current).add(recordId));
+        // Rows open only when asked. A cheat switched on here with no value is the
+        // one press that asks: Apply refuses it until a value is typed, so the
+        // press opens the field it is about to need.
+        const control = controlById.get(recordId);
+        if (active && control && controlNeedsValueInput(control) && displayableControlValue(staged[recordId]?.value) === null) {
+            setExpanded(recordId);
+        }
     };
     /**
      * Re-read the exact session after a failed Apply and say what it really holds.
@@ -11923,10 +11930,11 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                             // A switch carries its own answer in the toggle beside it, so
                                             // `= 1` on the summary line is the same fact twice.
                                             const value = controlIsSwitch(control) ? null : presentableControlValue(state?.value);
-                                            // An active record whose value still has to be supplied always
-                                            // shows its editor, even before the user opens the details.
-                                            const valueRequired = state?.active === true && controlNeedsValueInput(control);
-                                            const isExpanded = expanded === recordId || valueRequired;
+                                            // Every row opens collapsed and opens only on More, or on the
+                                            // press that switches a cheat on with no value (`touchActive`).
+                                            // Holding every active value cheat open filled the dialog with
+                                            // editors nobody asked for, none of which could be closed.
+                                            const isExpanded = expanded === recordId;
                                             // A record its enclosing script has not created yet is shown as
                                             // waiting for that script rather than as a broken control.
                                             const blockedByParent = !storedOnly && unavailableRecords.has(recordId);
@@ -11975,14 +11983,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                                     && control.switch_off_is_safe !== true
                                                     ? "not safe to switch off" : null,
                                             ].filter(Boolean).join(" \u00b7 ");
-                                            return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { testId: `cheat-row-${recordId}`, label: controlRowLabel(control), summary: summary, active: state?.active ?? null, disabled: applying || pinning, highlighted: isExpanded, onActiveChange: traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active })), actions: (
-                                                    // An active cheat that takes a value keeps its editor
-                                                    // open whatever this button does, so the button both
-                                                    // said "More" over an already-open row and did nothing
-                                                    // when pressed. It reports the row's real state and is
-                                                    // disabled for exactly as long as it cannot change it -
-                                                    // switching the cheat off releases it.
-                                                    SP_JSX.jsx(DFL.DialogButton, { style: cheatRowActionStyle, disabled: applying || valueRequired, onClick: traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId }), children: isExpanded ? "Less" : "More" })), body: isExpanded ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelNote, { children: control.path.join(" \u203a ") }), control.description.trim() && control.description.trim() !== controlRowLabel(control)
+                                            return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { testId: `cheat-row-${recordId}`, label: controlRowLabel(control), summary: summary, active: state?.active ?? null, disabled: applying || pinning, highlighted: isExpanded, onActiveChange: traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active })), actions: (SP_JSX.jsx(DFL.DialogButton, { style: cheatRowActionStyle, disabled: applying, onClick: traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId }), children: isExpanded ? "Less" : "More" })), body: isExpanded ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelNote, { children: control.path.join(" \u203a ") }), control.description.trim() && control.description.trim() !== controlRowLabel(control)
                                                                 ? SP_JSX.jsx(PanelNote, { children: control.description.trim() })
                                                                 : null, searchable && listed && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), blockedBy(control) && (controlAcceptsTypedValue(control) || (controlIsSwitch(control) && state?.active === true)) && (SP_JSX.jsx(PanelNote, { children: state?.active === true
                                                                     ? `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.`

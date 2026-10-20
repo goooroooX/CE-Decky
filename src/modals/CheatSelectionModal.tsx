@@ -512,6 +512,13 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     clearError();
     update(recordId, { active });
     setTouchedActive((current) => new Set(current).add(recordId));
+    // Rows open only when asked. A cheat switched on here with no value is the
+    // one press that asks: Apply refuses it until a value is typed, so the
+    // press opens the field it is about to need.
+    const control = controlById.get(recordId);
+    if (active && control && controlNeedsValueInput(control) && displayableControlValue(staged[recordId]?.value) === null) {
+      setExpanded(recordId);
+    }
   };
 
   /**
@@ -1116,10 +1123,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 // A switch carries its own answer in the toggle beside it, so
                 // `= 1` on the summary line is the same fact twice.
                 const value = controlIsSwitch(control) ? null : presentableControlValue(state?.value);
-                // An active record whose value still has to be supplied always
-                // shows its editor, even before the user opens the details.
-                const valueRequired = state?.active === true && controlNeedsValueInput(control);
-                const isExpanded = expanded === recordId || valueRequired;
+                // Every row opens collapsed and opens only on More, or on the
+                // press that switches a cheat on with no value (`touchActive`).
+                // Holding every active value cheat open filled the dialog with
+                // editors nobody asked for, none of which could be closed.
+                const isExpanded = expanded === recordId;
                 // A record its enclosing script has not created yet is shown as
                 // waiting for that script rather than as a broken control.
                 const blockedByParent = !storedOnly && unavailableRecords.has(recordId);
@@ -1183,15 +1191,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                       highlighted={isExpanded}
                       onActiveChange={traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active }))}
                       actions={(
-                        // An active cheat that takes a value keeps its editor
-                        // open whatever this button does, so the button both
-                        // said "More" over an already-open row and did nothing
-                        // when pressed. It reports the row's real state and is
-                        // disabled for exactly as long as it cannot change it -
-                        // switching the cheat off releases it.
                         <DialogButton
                           style={cheatRowActionStyle}
-                          disabled={applying || valueRequired}
+                          disabled={applying}
                           onClick={traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId })}
                         >
                           {isExpanded ? "Less" : "More"}
