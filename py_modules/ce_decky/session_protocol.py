@@ -1336,6 +1336,9 @@ def _runtime_error_code(value: str) -> str:
         # not in the requested state. Distinguished from the undifferentiated
         # failure because it is the one a user can act on.
         "activation_rejected",
+        # The same record, from a game that had closed by the time it came back:
+        # what the user is told then is about the game, not about the table.
+        "target_exited",
         # A quiesce that could not put every record down. Its own code because
         # what follows from it is not a failure of the stop: the stop proceeds
         # either way, and this is the record of what was left switched on in a

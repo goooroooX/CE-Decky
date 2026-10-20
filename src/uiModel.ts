@@ -686,13 +686,15 @@ export function rememberedSelection(
  * it from the profile instead was wrong twice over - session preparation adds
  * the enclosing scripts a remembered cheat needs, and it also overrides a
  * parent saved as off to on when an active child requires it, so a saved
- * `false` is not evidence that off is what startup attempted.
+ * `false` is not evidence that off is what startup attempted. `target_exited`
+ * is the same read-back from a game that had closed by then, and the question
+ * is put for it too: the cheat may be what closed the game.
  */
 export function refusedStartupEnable(results: readonly RuntimeResult[]): RuntimeResult | null {
   return results.find((result) =>
     result.generation === 0
     && !result.ok
-    && result.error_code === "activation_rejected"
+    && (result.error_code === "activation_rejected" || result.error_code === "target_exited")
     && result.record_id !== null
     // Never `!== true`: a record that reported no state at all says nothing
     // about which direction was attempted.

@@ -157,7 +157,11 @@ local function record_proxy(definition)
           backing.AsyncProcessing = true
           state.async_records[definition.id] = {
             ticks = definition.activation_async_ticks,
-            settle = function() settle_active(value) end,
+            -- Or Cheat Engine finishes and the record comes back off, which is
+            -- an enable that failed after it had started.
+            settle = function()
+              if definition.activation_async_settles_off then settle_active(false) else settle_active(value) end
+            end,
           }
           return
         end
@@ -325,12 +329,15 @@ function stub.install(scenario)
   _G.getOpenedProcessID = function() return state.opened_pid end
 
   _G.getProcesslist = function()
-    if scenario.processlist_error then error("getProcesslist failed", 0) end
+    if scenario.processlist_error or state.processlist_error then error("getProcesslist failed", 0) end
     local processes = {}
     for pid, name in pairs(state.processes) do processes[pid] = name end
     if scenario.target_pid and scenario.target_pid > 0 and scenario.target_process and processes[scenario.target_pid] == nil then
       processes[scenario.target_pid] = scenario.target_process
     end
+    -- The game has exited: Wine's list no longer holds it, while Cheat Engine
+    -- still answers with the id it opened.
+    if state.target_exited and scenario.target_pid then processes[scenario.target_pid] = nil end
     return processes
   end
 

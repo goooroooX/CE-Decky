@@ -88,7 +88,7 @@ import { forgetSearchOutcomes } from "./providerCatalog";
 import { commitSourceSelection, countsReadable, everySourceOn, sourceSwitched } from "./providerSelection";
 import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImport";
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
-import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
+import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
 import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
@@ -2777,6 +2777,17 @@ function Content() {
       // check was handed: what it found, what it did not, and what it could not
       // look for.
       const scanned = scan ? scan.present.length + scan.missing.length + scan.not_checked.length : 0;
+      // The refusal arrives explaining itself as a different build, which is
+      // a guess made before anything was checked. A check that found every
+      // pattern in the game's own program answers that guess, so the answer
+      // replaces it, here and in the mark this dialog can write. Nothing else
+      // in the dialog speaks when nothing is missing, so the guess used to
+      // stand alone, already disproved.
+      const everyPatternFound = scan !== null && scanned > 0 && scan.missing.length === 0 && scan.not_checked.length === 0;
+      const stated = everyPatternFound && reason.includes(DIFFERENT_BUILD_EXPLANATION)
+        ? reason.replace(DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND)
+        : reason;
+      if (stated !== reason) logUi("panel.table_refusal_build_explanation_replaced", { table, patterns: scanned });
       // What was missing, and what matched in more than one place. The second
       // matters most exactly here: a table that failed with every pattern
       // present says nothing at all otherwise, and a hook Cheat Engine put at
@@ -2809,7 +2820,7 @@ function Content() {
       const confirm = showModal(
       <DeckyConfirmModal
         strTitle="This table did not work"
-        strDescription={`${reason}${scanSentence ? ` ${scanSentence}` : ""}${noRepair}${question} These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`}
+        strDescription={`${stated}${scanSentence ? ` ${scanSentence}` : ""}${noRepair}${question} These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`}
         strOKButtonText={repairable ? "Try a repaired copy" : "Stop using it"}
         strMiddleButtonText={repairable ? "Stop using it" : undefined}
         onMiddleButton={repairable ? traceUiAction("panel.table_refusal.stop_beside_repair", () => { stopUsing(); }) : undefined}
@@ -2983,7 +2994,7 @@ function Content() {
             // that something failed and nothing they could do about it.
             let markFailure: string | null = null;
             try {
-              await blockTable(tableSha256, reason, game.appId);
+              await blockTable(tableSha256, stated, game.appId);
               // Recorded from here on, whatever the re-read of the list does:
               // reporting a write that landed as one that did not is the
               // protection failing closed while the user is told it failed.

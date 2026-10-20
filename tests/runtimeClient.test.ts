@@ -729,6 +729,35 @@ describe("runtime ACK client", () => {
     ])).rejects.toThrow(/“Init -- ENABLE THIS FIRST” did not switch on.*different build of the game/s);
   });
 
+  it("says the game closed rather than blaming the build, and still asks about the table", async () => {
+    // On the device the game ended in the same second its activation came back
+    // off, and the panel said the table was written for another build. The
+    // cheat may still be what closed it, so the question about the table stays.
+    const queried = [{ generation: 1, record_id: 7, ok: true, active: false, value: null, error: null }];
+    const closed = [{
+      generation: 2, record_id: 7, ok: false, active: false, value: null,
+      error: "the game closed while it was being switched on", error_code: "target_exited",
+    }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(2, queried))
+      .mockResolvedValueOnce(envelope(2, queried))
+      .mockResolvedValueOnce(envelope(3, [...queried, ...closed]))
+      .mockResolvedValue(envelope(3, [...queried, ...closed]));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 2 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 3 });
+
+    const failure = await applyRuntimeSelection(10, [
+      { record_id: 7, active: true, value: null, label: "Activate" },
+    ]).catch((cause) => cause);
+
+    expect(failure).toBeInstanceOf(RuntimeOperationError);
+    expect(failure.message).toContain("“Activate” did not finish switching on: the game closed while it was being switched on.");
+    expect(failure.message).not.toContain("different build");
+    expect(failure.tableRefused).toBe(true);
+  });
+
   it("says whose ask a flag was when the one CE Decky put down would not go", async () => {
     // These records are not the reader's choice: the table's own script
     // declares them on, and the press writes each down so switching on one

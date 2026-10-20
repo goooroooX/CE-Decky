@@ -395,9 +395,10 @@ export interface RuntimeResult {
   /**
    * `activation_rejected` means Cheat Engine accepted the change, finished, and
    * the record is still not in the requested state - for a script record, Cheat
-   * Engine declining to run it.
+   * Engine declining to run it. `target_exited` is the same outcome from a game
+   * that had closed by the time the bridge answered.
    */
-  error_code?: "record_missing" | "target_detached" | "address_list_unavailable" | "record_read_failed" | "mutation_failed" | "attach_failed" | "activation_rejected" | "quiesce_in_progress" | null;
+  error_code?: "record_missing" | "target_detached" | "address_list_unavailable" | "record_read_failed" | "mutation_failed" | "attach_failed" | "activation_rejected" | "target_exited" | "quiesce_in_progress" | null;
 }
 
 export interface RuntimeStatus {

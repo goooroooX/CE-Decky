@@ -66,7 +66,16 @@ const runtimeClient = vi.hoisted(() => ({
 
 vi.mock("../src/api", () => api);
 vi.mock("../src/steam/client", () => steam);
-vi.mock("../src/runtimeClient", () => runtimeClient);
+// The refusal's own sentences are real exports the panel reads, so they come
+// from the module rather than from a copy that could drift from it.
+vi.mock("../src/runtimeClient", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/runtimeClient")>();
+  return {
+    ...runtimeClient,
+    DIFFERENT_BUILD_EXPLANATION: actual.DIFFERENT_BUILD_EXPLANATION,
+    EVERY_PATTERN_FOUND: actual.EVERY_PATTERN_FOUND,
+  };
+});
 vi.mock("@decky/api", async () => {
   // The loader's own hook is state backed, so this stand-in has to re-render
   // the panel when visibility changes: reacting to the panel being shown again
@@ -1081,6 +1090,32 @@ describe("Home panel and managed setup", () => {
     expect(confirm.props.strOKButtonText).toBe("Stop using it");
     expect(confirm.props.strMiddleButtonText).toBeUndefined();
     expect(confirm.props.strDescription).toContain("cannot make a copy without that pattern");
+  });
+
+  it("replaces the different-build guess when every pattern was found, in the dialog and the mark", async () => {
+    // On the device the check found all 34 of the table's patterns in the
+    // game's program, and the dialog still said the table was written for a
+    // different build, beside that finding - and kept it in the mark.
+    const { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND } = await import("../src/runtimeClient");
+    api.checkTableScans.mockResolvedValueOnce({
+      source: "file", present: ["aobHealth", "aobJump"], missing: [], not_checked: [],
+      elapsed_ms: 716, reason: null, repairable: false, ambiguous: [],
+    });
+    api.blockTable.mockResolvedValue({});
+    renderContent();
+    const picker = await openPicker();
+    await picker.props.onTableRefused(`“Activate” did not switch on: Cheat Engine ran it and it went straight back off. ${DIFFERENT_BUILD_EXPLANATION}`);
+    const confirm = await waitFor(() => {
+      const found = modalState.nodes.find((node: any) => node.type === DeckyConfirmModal);
+      expect(found).toBeTruthy();
+      return found;
+    });
+
+    const stated = `“Activate” did not switch on: Cheat Engine ran it and it went straight back off. ${EVERY_PATTERN_FOUND}`;
+    expect(confirm.props.strDescription).toContain(stated);
+    expect(confirm.props.strDescription).not.toContain("different build");
+    await act(async () => { confirm.props.onOK(); });
+    await waitFor(() => expect(api.blockTable).toHaveBeenCalledWith(SHA, stated, 10));
   });
 
   it("says what makes room when the record list has none", async () => {

@@ -69,6 +69,9 @@ local MAX_SWITCH_OFF_VALUES = 2048
 -- completed mutation while AsyncProcessing is true, so keep the command
 -- pending and poll from the timer instead of rejecting the first false read.
 local MAX_ACTIVATION_WAIT_TICKS = 40
+-- How long a cheat that did not settle is held while the game is checked:
+-- half a second at `POLL_MS`. See `heldRefusal`.
+local REFUSAL_GRACE_TICKS = 2
 local MAX_APP_ID = 4294967295
 local MAX_RECORD_ID = 2147483647
 local MAX_GENERATION = 2147483647
@@ -848,6 +851,42 @@ local function mutationOutcome(...)
   return "activation did not settle", "activation_rejected"
 end
 
+-- Whether the game this session opened is still running: true, false, or nil
+-- when the process list cannot be read.
+--
+-- Cheat Engine keeps the id it opened after the game is gone, so the open id is
+-- no answer. The process list is: Wine's server takes a process off the list it
+-- answers from the moment its last thread ends, whatever handles to it are
+-- still open (`remove_process_thread` in `server/process.c`).
+local function targetStillRunning()
+  local pid = state.opened_process_id
+  if type(pid) ~= "number" or pid <= 0 then return nil end
+  local ok, processes = pcall(function() return getProcesslist() end)
+  if not ok or type(processes) ~= "table" then return nil end
+  for candidate in pairs(processes) do
+    if tonumber(candidate) == pid then return true end
+  end
+  return false
+end
+
+-- What a cheat that did not settle is, once the game has had a moment to say.
+--
+-- `activation_rejected` is read as the table's fault, and a game that closed
+-- while a cheat was being switched on produces exactly the same record: on the
+-- device the game ended in the same second the activation came back off, and
+-- the panel told the user the table was written for another build. So the
+-- answer is held for up to `REFUSAL_GRACE_TICKS` while the process list is
+-- asked whether the game is still there. Nil means keep waiting; a list that
+-- cannot be read leaves the answer what it always was.
+local function heldRefusal(desired, waits)
+  if targetStillRunning() == false then
+    return desired and "the game closed while it was being switched on"
+      or "the game closed while it was being switched off", "target_exited"
+  end
+  if waits >= REFUSAL_GRACE_TICKS then return "activation did not settle", "activation_rejected" end
+  return nil
+end
+
 local function recordAsyncProcessing(record)
   local ok, processing = pcall(function() return record.AsyncProcessing end)
   if not ok then return nil, tostring(processing) end
@@ -1011,6 +1050,16 @@ local function applyStartup()
 
   if state.startup_pending then
     local pending = state.startup_pending
+    if pending.refused then
+      pending.waits = pending.waits + 1
+      local err, errorCode = heldRefusal(pending.desired, pending.waits)
+      if not err then return end
+      beginRollback(pending.index)
+      result(0, pending.action.record_id, false, pending.refused.actual, pending.refused.value, err, errorCode)
+      state.startup_pending = nil
+      state.startup_failed = true
+      return
+    end
     local processing, asyncErr = recordAsyncProcessing(pending.record)
     if asyncErr then
       beginRollback(pending.index)
@@ -1034,8 +1083,18 @@ local function applyStartup()
     end
     local actual, readValue, activeErr = recordSnapshot(pending.record)
     if activeErr or actual ~= pending.desired then
+      local err, errorCode = mutationOutcome(activeErr)
+      if errorCode == "activation_rejected" then
+        local heldErr, heldCode = heldRefusal(pending.desired, 0)
+        if not heldErr then
+          pending.waits = 0
+          pending.refused = { actual = actual, value = readValue }
+          return
+        end
+        err, errorCode = heldErr, heldCode
+      end
       beginRollback(pending.index)
-      result(0, pending.action.record_id, false, actual, readValue, mutationOutcome(activeErr))
+      result(0, pending.action.record_id, false, actual, readValue, err, errorCode)
       state.startup_pending = nil
       state.startup_failed = true
       return
@@ -1115,8 +1174,20 @@ local function applyStartup()
         recordStartupTransition(action.record_id, active == false and desired)
         result(0, action.record_id, true, actual, readValue, nil)
       else
+        local err, errorCode = mutationOutcome(message, asyncErr, activeErr)
+        if errorCode == "activation_rejected" then
+          local heldErr, heldCode = heldRefusal(desired, 0)
+          if not heldErr then
+            state.startup_pending = {
+              index = index, action = action, record = record, desired = desired, waits = 0,
+              refused = { actual = actual, value = readValue },
+            }
+            return
+          end
+          err, errorCode = heldErr, heldCode
+        end
         beginRollback(index)
-        result(0, action.record_id, false, actual, readValue, mutationOutcome(message, asyncErr, activeErr))
+        result(0, action.record_id, false, actual, readValue, err, errorCode)
         state.startup_failed = true
         return
       end
@@ -1384,10 +1455,12 @@ local function advanceQuiesce()
       run.index = run.index + 1
       markUnsettled(run, run.records[run.index].name)
     end
-    if state.startup_pending and state.startup_pending.action then
+    -- A refusal held while the game is checked is not moving: its record has
+    -- already come back the way it went in.
+    if state.startup_pending and state.startup_pending.action and not state.startup_pending.refused then
       markUnsettled(run, state.startup_pending.action.record_id)
     end
-    if state.pending_command and state.pending_command.command then
+    if state.pending_command and state.pending_command.command and not state.pending_command.refused then
       markUnsettled(run, state.pending_command.command.record_id)
     end
     if state.rollback then markUnsettled(run, "rollback") end
@@ -1571,8 +1644,22 @@ local function executeCommand(command)
       return
     end
     local actual, value, readErr = recordSnapshot(record)
-    if ok and not asyncErr and not readErr and actual == desired then result(command.generation, command.record_id, true, actual, value, nil)
-    else result(command.generation, command.record_id, false, actual, value, mutationOutcome(message, asyncErr, readErr)) end
+    if ok and not asyncErr and not readErr and actual == desired then
+      result(command.generation, command.record_id, true, actual, value, nil)
+      return
+    end
+    local err, errorCode = mutationOutcome(message, asyncErr, readErr)
+    if errorCode == "activation_rejected" then
+      local heldErr, heldCode = heldRefusal(desired, 0)
+      if not heldErr then
+        state.pending_command = {
+          command = command, desired = desired, waits = 0, refused = { actual = actual, value = value },
+        }
+        return
+      end
+      err, errorCode = heldErr, heldCode
+    end
+    result(command.generation, command.record_id, false, actual, value, err, errorCode)
   end
 end
 
@@ -1582,6 +1669,14 @@ local function settlePendingCommand()
   local command = pending.command
   if not state.attached then
     result(command.generation, command.record_id, false, nil, nil, "target process is not attached", "target_detached")
+    state.pending_command = nil
+    return
+  end
+  if pending.refused then
+    pending.waits = pending.waits + 1
+    local err, errorCode = heldRefusal(pending.desired, pending.waits)
+    if not err then return end
+    result(command.generation, command.record_id, false, pending.refused.actual, pending.refused.value, err, errorCode)
     state.pending_command = nil
     return
   end
@@ -1606,9 +1701,20 @@ local function settlePendingCommand()
   local actual, value, readErr = recordSnapshot(pending.record)
   if not readErr and actual == pending.desired then
     result(command.generation, command.record_id, true, actual, value, nil)
-  else
-    result(command.generation, command.record_id, false, actual, value, mutationOutcome(readErr))
+    state.pending_command = nil
+    return
   end
+  local err, errorCode = mutationOutcome(readErr)
+  if errorCode == "activation_rejected" then
+    local heldErr, heldCode = heldRefusal(pending.desired, 0)
+    if not heldErr then
+      pending.waits = 0
+      pending.refused = { actual = actual, value = value }
+      return
+    end
+    err, errorCode = heldErr, heldCode
+  end
+  result(command.generation, command.record_id, false, actual, value, err, errorCode)
   state.pending_command = nil
 end
 

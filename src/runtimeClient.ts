@@ -68,7 +68,8 @@ export class RuntimeOperationError extends Error {
    * This is the one runtime failure that is about the table rather than about
    * the session, so it is the one a caller can act on: it is what a table
    * written for a different build of the game does, every time, and the panel
-   * offers to stop using that table because of it.
+   * offers to stop using that table because of it. A game that closed while the
+   * cheat was switching on counts too: the cheat may be what closed it.
    */
   tableRefused: boolean;
 
@@ -550,7 +551,10 @@ function refusalIsAboutTheTable(
   failed: RuntimeResult,
   desiredById: ReadonlyMap<number, RuntimeDesiredState>,
 ): boolean {
-  if (failed.error_code !== "activation_rejected") return false;
+  // A game that closed while a cheat was being switched on may have been closed
+  // by that cheat, so the question about the table is still put; only what it
+  // is said to have done changes.
+  if (failed.error_code !== "activation_rejected" && failed.error_code !== "target_exited") return false;
   const desired = failed.record_id === null ? undefined : desiredById.get(failed.record_id);
   return desired?.active === true;
 }
@@ -576,10 +580,31 @@ function describeMutationFailure(
   if (failed.error_code === "activation_rejected") {
     return desired?.active === false
       ? `${subject} did not switch off: Cheat Engine ran its disable step and the cheat stayed on.`
-      : `${subject} did not switch on: Cheat Engine ran it and it went straight back off. A cheat table finds the game's code by scanning for patterns, so this normally means this table was written for a different build of the game.`;
+      : `${subject} did not switch on: Cheat Engine ran it and it went straight back off. ${DIFFERENT_BUILD_EXPLANATION}`;
+  }
+  // Not the build: the game was gone by the time the bridge answered. Whether
+  // the cheat is what closed it nobody can tell from here, so the sentence
+  // says what would tell.
+  if (failed.error_code === "target_exited") {
+    return desired?.active === false
+      ? `The game closed while ${subject} was being switched off.`
+      : `${subject} did not finish switching on: the game closed while it was being switched on. If the game closes every time this cheat is switched on, the cheat may not suit this version of the game.`;
   }
   return failed.error ?? `${subject} mutation failed.`;
 }
+
+/**
+ * The explanation a refused activation carries before anything was checked.
+ *
+ * Exported so the refusal dialog can replace it once the table's patterns have
+ * been read against the game. On the device every one of them was found, which
+ * the dialog does not mention when nothing is missing, so it went on saying
+ * the table was written for another build and wrote that into the mark.
+ */
+export const DIFFERENT_BUILD_EXPLANATION = "A cheat table finds the game's code by scanning for patterns, so this normally means this table was written for a different build of the game.";
+
+/** What replaces `DIFFERENT_BUILD_EXPLANATION` when every pattern was found. */
+export const EVERY_PATTERN_FOUND = "Every byte pattern this table looks for was found in this game's main program, so this is not a pattern this build lacks.";
 
 /**
  * The value this desired state asks for: the switch's key, or what was staged.

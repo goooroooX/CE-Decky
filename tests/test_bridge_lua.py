@@ -228,6 +228,101 @@ def test_bridge_separates_a_refused_activation_from_an_undifferentiated_failure(
     assert refused[-1].error == "activation did not settle"
 
 
+def test_bridge_tells_a_game_that_closed_mid_activation_from_a_refusal(tmp_path: Path):
+    # On the device the game ended in the same second its activation came back
+    # off, and `activation_rejected` sent the panel to say the table was written
+    # for another build. Cheat Engine still answers with the id it opened, so
+    # the bridge asks the process list, and holds the answer briefly to do it.
+    run = _run(
+        tmp_path,
+        descriptor=_descriptor(),
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "records": {5: {"active": False, "activation_never_settles": True}},
+            "steps": [{"ticks": 1}, {"target_exited": True, "ticks": 3}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "set_active", 5, "1"))},
+    )
+    refused = [item for item in run.status().results if item.record_id == 5]
+    assert len(refused) == 1, "a held refusal is answered once"
+    assert refused[0].ok is False
+    assert refused[0].error_code == "target_exited"
+    assert refused[0].error == "the game closed while it was being switched on"
+
+
+def test_bridge_holds_an_async_activation_that_came_back_off_the_same_way(tmp_path: Path):
+    # Cheat Engine took its time and the record came back off; the game then
+    # closed while the answer was held.
+    run = _run(
+        tmp_path,
+        descriptor=_descriptor(),
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "records": {5: {"active": False, "activation_async_ticks": 1, "activation_async_settles_off": True}},
+            "steps": [{"ticks": 2}, {"target_exited": True, "ticks": 3}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "set_active", 5, "1"))},
+    )
+    refused = [item for item in run.status().results if item.record_id == 5]
+    assert [item.error_code for item in refused] == ["target_exited"]
+
+
+def test_bridge_still_refuses_an_async_activation_while_the_game_runs(tmp_path: Path):
+    run = _run(
+        tmp_path,
+        descriptor=_descriptor(),
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "records": {5: {"active": False, "activation_async_ticks": 1, "activation_async_settles_off": True}},
+            "steps": [{"ticks": 6}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "set_active", 5, "1"))},
+    )
+    refused = [item for item in run.status().results if item.record_id == 5]
+    assert [(item.error_code, item.error) for item in refused] == [("activation_rejected", "activation did not settle")]
+
+
+def test_bridge_keeps_the_refusal_when_the_process_list_cannot_be_read(tmp_path: Path):
+    # No answer about the game is not an answer that it closed.
+    run = _run(
+        tmp_path,
+        descriptor=_descriptor(),
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "records": {5: {"active": False, "activation_never_settles": True}},
+            "steps": [{"ticks": 1}, {"processlist_error": True, "ticks": 4}],
+        },
+        controls={"control.txt": _control(RuntimeCommand(1, "set_active", 5, "1"))},
+    )
+    refused = [item for item in run.status().results if item.record_id == 5]
+    assert [item.error_code for item in refused] == ["activation_rejected"]
+
+
+def test_bridge_tells_a_game_that_closed_during_startup_from_a_refusal(tmp_path: Path):
+    # Auto-load is the route a table refuses on first, so it is held the same.
+    descriptor = _descriptor(startup=(StartupAction(record_id=1, kind="active", value="1", path=()),))
+    run = _run(
+        tmp_path,
+        descriptor=descriptor,
+        scenario={
+            "target_process": "game.exe",
+            "target_pid": 4321,
+            "records": {1: {"active": False, "activation_never_settles": True}},
+            "steps": [{"ticks": 1}, {"target_exited": True, "ticks": 3}],
+        },
+    )
+    status = run.status()
+    result = next(item for item in status.results if item.generation == 0 and item.record_id == 1)
+    assert result.ok is False
+    assert result.error_code == "target_exited"
+    assert result.error == "the game closed while it was being switched on"
+    assert status.startup_state != "applied"
+
+
 # -- table loading ----------------------------------------------------------
 
 
@@ -2224,9 +2319,11 @@ def test_bridge_rolls_back_earlier_startup_actions_after_a_later_failure(tmp_pat
             "target_process": "game.exe",
             "target_pid": 4321,
             "records": {1: {"active": False}, 2: {"active": False, "activation_never_settles": True}},
-            "steps": [{"ticks": 3}],
+            # The probe arrives once the refusal has been held while the bridge
+            # checked the game was still running, and the rollback has run.
+            "steps": [{"ticks": 4}, {"control": "probe.txt", "ticks": 2}],
         },
-        controls={"control.txt": _control(RuntimeCommand(generation=1, kind="query", record_id=1, value=None))},
+        controls={"probe.txt": _control(RuntimeCommand(generation=1, kind="query", record_id=1, value=None))},
     )
     results = {(item.generation, item.record_id): item for item in run.status().results}
     assert results[(0, 2)].ok is False

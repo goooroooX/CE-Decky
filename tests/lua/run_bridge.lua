@@ -39,6 +39,8 @@ for _, step in ipairs(scenario.steps or {}) do
   if step.target_pid ~= nil then stub.set("target_pid", step.target_pid) end
   if step.opened_pid ~= nil then stub.set("opened_pid", step.opened_pid) end
   if step.processes ~= nil then stub.set("processes", step.processes) end
+  if step.target_exited ~= nil then stub.set("target_exited", step.target_exited) end
+  if step.processlist_error ~= nil then stub.set("processlist_error", step.processlist_error) end
   if step.write_failures ~= nil then stub.set("write_failures", step.write_failures) end
   if step.show_window ~= nil then
     stub.show_window(step.show_window == true and nil or step.show_window)

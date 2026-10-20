@@ -3866,12 +3866,14 @@ function rememberedSelection(controls, states, previous, touchedActive, touchedV
  * it from the profile instead was wrong twice over - session preparation adds
  * the enclosing scripts a remembered cheat needs, and it also overrides a
  * parent saved as off to on when an active child requires it, so a saved
- * `false` is not evidence that off is what startup attempted.
+ * `false` is not evidence that off is what startup attempted. `target_exited`
+ * is the same read-back from a game that had closed by then, and the question
+ * is put for it too: the cheat may be what closed the game.
  */
 function refusedStartupEnable(results) {
     return results.find((result) => result.generation === 0
         && !result.ok
-        && result.error_code === "activation_rejected"
+        && (result.error_code === "activation_rejected" || result.error_code === "target_exited")
         && result.record_id !== null
         // Never `!== true`: a record that reported no state at all says nothing
         // about which direction was attempted.
@@ -8396,7 +8398,10 @@ async function queryRuntimeControlsPartial(appId, recordIds, expectedEnvelope, s
  * the table unusable there would both misdescribe it and hide that.
  */
 function refusalIsAboutTheTable(failed, desiredById) {
-    if (failed.error_code !== "activation_rejected")
+    // A game that closed while a cheat was being switched on may have been closed
+    // by that cheat, so the question about the table is still put; only what it
+    // is said to have done changes.
+    if (failed.error_code !== "activation_rejected" && failed.error_code !== "target_exited")
         return false;
     const desired = failed.record_id === null ? undefined : desiredById.get(failed.record_id);
     return desired?.active === true;
@@ -8419,10 +8424,29 @@ function describeMutationFailure(failed, desiredById) {
     if (failed.error_code === "activation_rejected") {
         return desired?.active === false
             ? `${subject} did not switch off: Cheat Engine ran its disable step and the cheat stayed on.`
-            : `${subject} did not switch on: Cheat Engine ran it and it went straight back off. A cheat table finds the game's code by scanning for patterns, so this normally means this table was written for a different build of the game.`;
+            : `${subject} did not switch on: Cheat Engine ran it and it went straight back off. ${DIFFERENT_BUILD_EXPLANATION}`;
+    }
+    // Not the build: the game was gone by the time the bridge answered. Whether
+    // the cheat is what closed it nobody can tell from here, so the sentence
+    // says what would tell.
+    if (failed.error_code === "target_exited") {
+        return desired?.active === false
+            ? `The game closed while ${subject} was being switched off.`
+            : `${subject} did not finish switching on: the game closed while it was being switched on. If the game closes every time this cheat is switched on, the cheat may not suit this version of the game.`;
     }
     return failed.error ?? `${subject} mutation failed.`;
 }
+/**
+ * The explanation a refused activation carries before anything was checked.
+ *
+ * Exported so the refusal dialog can replace it once the table's patterns have
+ * been read against the game. On the device every one of them was found, which
+ * the dialog does not mention when nothing is missing, so it went on saying
+ * the table was written for another build and wrote that into the mark.
+ */
+const DIFFERENT_BUILD_EXPLANATION = "A cheat table finds the game's code by scanning for patterns, so this normally means this table was written for a different build of the game.";
+/** What replaces `DIFFERENT_BUILD_EXPLANATION` when every pattern was found. */
+const EVERY_PATTERN_FOUND = "Every byte pattern this table looks for was found in this game's main program, so this is not a pattern this build lacks.";
 /**
  * The value this desired state asks for: the switch's key, or what was staged.
  *
@@ -16203,6 +16227,18 @@ function Content() {
             // check was handed: what it found, what it did not, and what it could not
             // look for.
             const scanned = scan ? scan.present.length + scan.missing.length + scan.not_checked.length : 0;
+            // The refusal arrives explaining itself as a different build, which is
+            // a guess made before anything was checked. A check that found every
+            // pattern in the game's own program answers that guess, so the answer
+            // replaces it, here and in the mark this dialog can write. Nothing else
+            // in the dialog speaks when nothing is missing, so the guess used to
+            // stand alone, already disproved.
+            const everyPatternFound = scan !== null && scanned > 0 && scan.missing.length === 0 && scan.not_checked.length === 0;
+            const stated = everyPatternFound && reason.includes(DIFFERENT_BUILD_EXPLANATION)
+                ? reason.replace(DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND)
+                : reason;
+            if (stated !== reason)
+                logUi("panel.table_refusal_build_explanation_replaced", { table, patterns: scanned });
             // What was missing, and what matched in more than one place. The second
             // matters most exactly here: a table that failed with every pattern
             // present says nothing at all otherwise, and a hook Cheat Engine put at
@@ -16232,7 +16268,7 @@ function Content() {
             // to the middle, which is the order the reader is owed: the answer that
             // might give them a working table before the one that retires it. Where
             // there is none the dialog is the two answers it has always been.
-            const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "This table did not work", strDescription: `${reason}${scanSentence ? ` ${scanSentence}` : ""}${noRepair}${question} These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`, strOKButtonText: repairable ? "Try a repaired copy" : "Stop using it", strMiddleButtonText: repairable ? "Stop using it" : undefined, onMiddleButton: repairable ? traceUiAction("panel.table_refusal.stop_beside_repair", () => { stopUsing(); }) : undefined, strCancelButtonText: "Keep it", onCancel: traceUiAction("panel.table_refusal.keep", () => { dismiss(); confirm.Close(); }), onOK: repairable
+            const confirm = DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "This table did not work", strDescription: `${stated}${scanSentence ? ` ${scanSentence}` : ""}${noRepair}${question} These exact bytes are then marked as not working: the copy stays on this device and search still shows it, but nothing can be set to use it again until you clear the mark, and a source may still offer another version. Keeping it changes nothing.`, strOKButtonText: repairable ? "Try a repaired copy" : "Stop using it", strMiddleButtonText: repairable ? "Stop using it" : undefined, onMiddleButton: repairable ? traceUiAction("panel.table_refusal.stop_beside_repair", () => { stopUsing(); }) : undefined, strCancelButtonText: "Keep it", onCancel: traceUiAction("panel.table_refusal.keep", () => { dismiss(); confirm.Close(); }), onOK: repairable
                     ? traceUiAction("panel.table_refusal.repair", () => {
                         // Captured before the dialog closes, the way the answer beside it
                         // does: the operation this starts runs detached, and without the
@@ -16398,7 +16434,7 @@ function Content() {
                     // that something failed and nothing they could do about it.
                     let markFailure = null;
                     try {
-                        await blockTable(tableSha256, reason, game.appId);
+                        await blockTable(tableSha256, stated, game.appId);
                         // Recorded from here on, whatever the re-read of the list does:
                         // reporting a write that landed as one that did not is the
                         // protection failing closed while the user is told it failed.

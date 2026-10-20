@@ -1807,6 +1807,13 @@ describe("refused startup enable", () => {
     expect(refusedStartupEnable([result(7, "target_detached", false)])).toBeNull();
   });
 
+  it("still names a cheat that was switching on when the game closed", () => {
+    // The cheat may be what closed the game, so the question is put for it;
+    // what it is said to have done is the panel's business, not this one's.
+    expect(refusedStartupEnable([result(7, "target_exited", false)])?.record_id).toBe(7);
+    expect(refusedStartupEnable([result(7, "target_exited", true)])).toBeNull();
+  });
+
   it("ignores a record that reported no state at all", () => {
     // Nothing about which direction was attempted can be read from that.
     expect(refusedStartupEnable([result(7, "activation_rejected", null)])).toBeNull();
