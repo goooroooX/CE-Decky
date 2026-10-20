@@ -2602,10 +2602,20 @@ export function scriptListedControlIds(controls: readonly TableControl[]): Set<n
  * session with every cheat under it off. Deepest first is what makes one pass
  * enough - an inner script counts as a user of the one around it, so it has to
  * be released before its parent is judged.
+ *
+ * Structure alone cannot tell that machinery from a script that is a cheat in
+ * its own right with a setting under it, so `chosen` carries what it cannot
+ * see: the scripts the user switched on in this press or this Apply. One of
+ * those is never residue, and while it is on it keeps the scripts around it in
+ * use. Judging it from structure released it in the same request that switched
+ * it on, which the panel refused as a duplicate record and Configure cheats
+ * applied as a silent switch back off. Required rather than defaulted, so a
+ * caller cannot forget the user's own choice.
  */
 export function unusedActiveScripts(
   controls: readonly TableControl[],
   activeById: ReadonlyMap<number, boolean | null>,
+  chosen: ReadonlySet<number>,
 ): number[] {
   const enclosing = enclosingControlIds(controls);
   const scripts = controls
@@ -2615,6 +2625,7 @@ export function unusedActiveScripts(
   const released: number[] = [];
   for (const script of scripts) {
     if (active.get(script.id) !== true) continue;
+    if (chosen.has(script.id)) continue;
     const used = controls.some((candidate) =>
       candidate.id !== null
       && candidate.id !== script.id

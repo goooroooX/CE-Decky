@@ -655,8 +655,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // after the last cheat that needed it went off is residue: it keeps its
       // patch in the game for nothing. Switch it off in the same Apply, and let
       // the deepest-first order release an inner script before its parent is
-      // judged, so a chain of them clears in one pass.
-      for (const scriptId of unusedActiveScripts(safeControls, activeById)) {
+      // judged, so a chain of them clears in one pass. A script the user
+      // switched on in this Apply is their choice, not residue, whatever is
+      // under it.
+      const chosen = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === true));
+      for (const scriptId of unusedActiveScripts(safeControls, activeById, chosen)) {
         effective[scriptId] = { active: false, value: effective[scriptId]?.value ?? null };
         effectiveTouchedActive.add(scriptId);
         if (!touchedActive.has(scriptId)) pluginManaged.add(scriptId);

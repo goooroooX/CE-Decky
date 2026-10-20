@@ -3260,12 +3260,14 @@ function Content() {
     }
     // Project what this one toggle leaves behind, so the scripts it switched on
     // can be released again the moment nothing under them is on. A script left
-    // running keeps its patch in the game for no cheat at all.
+    // running keeps its patch in the game for no cheat at all. The row pressed
+    // on is the user's choice even when it is a script with nothing under it on,
+    // so it is never released by its own press.
     const projected = new Map(activeById);
     projected.set(recordId, active);
     const ancestors = active ? inactiveAncestorControls(control, controls, activeById) : [];
     for (const ancestor of ancestors) if (ancestor.id !== null) projected.set(ancestor.id, true);
-    const released = unusedActiveScripts(controls, projected);
+    const released = unusedActiveScripts(controls, projected, active ? new Set([recordId]) : new Set<number>());
     const releasedRows = released.flatMap((scriptId) => {
       const script = controls.find((candidate) => candidate.id === scriptId);
       return script ? [{ record_id: scriptId, active: false, value: null, structure: script.structure, label: controlRowLabel(script) }] : [];

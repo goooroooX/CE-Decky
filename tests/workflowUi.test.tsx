@@ -6462,6 +6462,82 @@ describe("Pinned live controls", () => {
     ]));
   });
 
+  // A table whose cheat is a script with its setting under it, all inside the
+  // script that installs the table's hooks: `Jump Height` is the user's switch,
+  // `Multiplier` is its optional setting, `Activate` is machinery.
+  const chained = {
+    ...inspect,
+    total_entries: 3,
+    controls: [
+      { id: 30, description: "Activate", path: ["Activate"], structure: ["Activate"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+      { id: 31, description: "Jump Height", path: ["Activate", "Jump Height"], structure: ["Activate", "Jump Height"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+      { id: 32, description: "Multiplier", path: ["Activate", "Jump Height", "Multiplier"], structure: ["Activate", "Jump Height", "Multiplier"], variable_type: "Float", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+    ],
+  };
+
+  function renderChained(pinned: number[], before: any[], after: any[]) {
+    const snapshot = pinnedStatus();
+    snapshot.profiles[0].pinned = pinned;
+    snapshot.profiles[0].remembered = [];
+    api.getStatus.mockResolvedValue(snapshot);
+    api.inspectTableSha.mockResolvedValue(chained);
+    const live = liveRuntime();
+    live.status.results = before;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.queryRuntimeControls
+      .mockResolvedValueOnce({ envelope: live, results: before })
+      .mockResolvedValue({ envelope: live, results: after });
+    runtimeClient.queryRuntimeControlsPartial
+      .mockResolvedValueOnce({ envelope: live, results: before, unavailable: [] })
+      .mockResolvedValue({ envelope: live, results: after, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: after });
+    api.setRememberedCheats.mockResolvedValue({});
+    renderContent();
+  }
+
+  it("switches a pinned script on with its setting off, and keeps it on", async () => {
+    // Its setting is off, so judged from structure alone the script was
+    // residue the moment it was switched on: the same request carried it on
+    // and off, and the panel refused that as a duplicate MemoryRecord.
+    renderChained([31], [
+      { generation: 1, record_id: 30, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 31, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 32, ok: true, active: false, value: "2", error: null },
+    ], [
+      { generation: 2, record_id: 30, ok: true, active: true, value: null, error: null },
+      { generation: 2, record_id: 31, ok: true, active: true, value: null, error: null },
+      { generation: 2, record_id: 32, ok: true, active: false, value: "2", error: null },
+    ]);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-31")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[30, true], [31, true]]);
+    // The script is the user's choice and is remembered as one; the script
+    // around it is CE Decky's own, so it is not.
+    await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
+    expect(api.setRememberedCheats.mock.calls[0][2]).toEqual([{ record_id: 31, active: true, value: null }]);
+  });
+
+  it("still releases the scripts a pinned cheat needed once it is switched off", async () => {
+    // What the user chose is spared; what CE Decky switched on to reach it is
+    // not. With the last cheat under them off, both scripts are residue.
+    renderChained([32], [
+      { generation: 1, record_id: 30, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 31, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 32, ok: true, active: true, value: "2", error: null },
+    ], [
+      { generation: 2, record_id: 30, ok: true, active: false, value: null, error: null },
+    ]);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-32")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[32, false], [31, false], [30, false]]);
+  });
+
   it("disables nested children before the scripts that create them", async () => {
     const nested = {
       ...inspect,
@@ -7710,6 +7786,33 @@ describe("Selection and staged-change persistence", () => {
     expect(desired.find((item: any) => item.record_id === 20)).toMatchObject({ active: false });
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(onApplied.mock.calls[0][0].map((item: any) => item.record_id)).toEqual([21]);
+  });
+
+  it("keeps a script the user switched on with its setting off, and remembers it on", async () => {
+    // The same rule as above read from structure alone switched this script
+    // straight back off in the Apply that switched it on, with no message, and
+    // remembered it off.
+    const onApplied = renderNested([
+      { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: false, value: "95", error: null },
+    ]);
+    fireEvent.click(within(await screen.findByTestId("show-scripts")).getByTestId("toggle"));
+    const script = await screen.findByTestId("cheat-row-20");
+    const after = [
+      { generation: 2, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 2, record_id: 21, ok: true, active: false, value: "95", error: null },
+    ];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: after });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: after, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: after });
+    fireEvent.click(within(script).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.filter((item: any) => item.record_id === 20)).toMatchObject([{ active: true }]);
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    expect(onApplied.mock.calls[0][0]).toEqual([{ record_id: 20, active: true, value: null }]);
   });
 
   it("takes a cheat it could not switch off down with the script that made it", async () => {

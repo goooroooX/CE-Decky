@@ -5503,8 +5503,17 @@ function scriptListedControlIds(controls) {
  * session with every cheat under it off. Deepest first is what makes one pass
  * enough - an inner script counts as a user of the one around it, so it has to
  * be released before its parent is judged.
+ *
+ * Structure alone cannot tell that machinery from a script that is a cheat in
+ * its own right with a setting under it, so `chosen` carries what it cannot
+ * see: the scripts the user switched on in this press or this Apply. One of
+ * those is never residue, and while it is on it keeps the scripts around it in
+ * use. Judging it from structure released it in the same request that switched
+ * it on, which the panel refused as a duplicate record and Configure cheats
+ * applied as a silent switch back off. Required rather than defaulted, so a
+ * caller cannot forget the user's own choice.
  */
-function unusedActiveScripts(controls, activeById) {
+function unusedActiveScripts(controls, activeById, chosen) {
     const enclosing = enclosingControlIds(controls);
     const scripts = controls
         .filter((control) => control.id !== null && enclosing.has(control.id))
@@ -5513,6 +5522,8 @@ function unusedActiveScripts(controls, activeById) {
     const released = [];
     for (const script of scripts) {
         if (active.get(script.id) !== true)
+            continue;
+        if (chosen.has(script.id))
             continue;
         const used = controls.some((candidate) => candidate.id !== null
             && candidate.id !== script.id
@@ -11580,8 +11591,11 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // after the last cheat that needed it went off is residue: it keeps its
             // patch in the game for nothing. Switch it off in the same Apply, and let
             // the deepest-first order release an inner script before its parent is
-            // judged, so a chain of them clears in one pass.
-            for (const scriptId of unusedActiveScripts(safeControls, activeById)) {
+            // judged, so a chain of them clears in one pass. A script the user
+            // switched on in this Apply is their choice, not residue, whatever is
+            // under it.
+            const chosen = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === true));
+            for (const scriptId of unusedActiveScripts(safeControls, activeById, chosen)) {
                 effective[scriptId] = { active: false, value: effective[scriptId]?.value ?? null };
                 effectiveTouchedActive.add(scriptId);
                 if (!touchedActive.has(scriptId))
@@ -16638,14 +16652,16 @@ function Content() {
         }
         // Project what this one toggle leaves behind, so the scripts it switched on
         // can be released again the moment nothing under them is on. A script left
-        // running keeps its patch in the game for no cheat at all.
+        // running keeps its patch in the game for no cheat at all. The row pressed
+        // on is the user's choice even when it is a script with nothing under it on,
+        // so it is never released by its own press.
         const projected = new Map(activeById);
         projected.set(recordId, active);
         const ancestors = active ? inactiveAncestorControls(control, controls, activeById) : [];
         for (const ancestor of ancestors)
             if (ancestor.id !== null)
                 projected.set(ancestor.id, true);
-        const released = unusedActiveScripts(controls, projected);
+        const released = unusedActiveScripts(controls, projected, active ? new Set([recordId]) : new Set());
         const releasedRows = released.flatMap((scriptId) => {
             const script = controls.find((candidate) => candidate.id === scriptId);
             return script ? [{ record_id: scriptId, active: false, value: null, structure: script.structure, label: controlRowLabel(script) }] : [];
