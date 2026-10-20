@@ -1589,8 +1589,21 @@ describe("Executable-content review", () => {
     const attach: TableControl = { ...control(9, "script", "game attach (f2)"), path: ["game attach (f2)"], structure: ["game attach (f2)"], attach_only: true };
     const withAttach = [...controls, attach];
 
-    expect([...scriptListedControlIds(withAttach)].sort((a, b) => a - b)).toEqual([1, 2, 9]);
+    expect([...scriptListedControlIds(withAttach)].sort((a, b) => a - b)).toEqual([1, 9]);
     expect([...enclosingControlIds(withAttach)].sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+
+  it("lists only a script holding another script with the machinery", () => {
+    // `Party Damage Reduction` holds only its setting, so it is a cheat, and
+    // `Enable 1.0` holds a script, so it is machinery. A value record with
+    // records under it is never a script, whatever it holds. All of them are
+    // still dependencies: a cheat inside any of them switches it on.
+    const pointer: TableControl = { ...control(5, "value", "Pointer"), path: ["Enable 1.0", "Pointer"], structure: ["Enable 1.0", "Pointer"] };
+    const offset: TableControl = { ...control(6, "value", "Offset"), path: ["Enable 1.0", "Pointer", "Offset"], structure: ["Enable 1.0", "Pointer", "Offset"] };
+    const withPointer = [...controls, pointer, offset];
+
+    expect([...scriptListedControlIds(withPointer)]).toEqual([1]);
+    expect([...enclosingControlIds(withPointer)].sort((a, b) => a - b)).toEqual([1, 2, 5]);
   });
 
   it("releases a whole chain of scripts once the last cheat under it is off", () => {

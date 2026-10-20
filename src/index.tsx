@@ -1398,9 +1398,9 @@ function Content() {
     && liveSnapshot.sessionId === runtime?.prepared?.session_id
     && liveSnapshot.tableSha256 === profile?.table_sha256,
   );
-  // What is on, split the way this panel presents it. A table's enclosing
-  // scripts and its attach-only record are machinery rather than choices: CE
-  // Decky switches them on itself and the picker lists them apart from the
+  // What is on, split the way this panel presents it. A table's machinery - a
+  // script holding other scripts - and its attach-only record are not choices:
+  // CE Decky switches them on itself and the picker lists them apart from the
   // cheats. Counting them in with the cheats made the panel say two were on
   // above a single switch that was, which is the panel disagreeing with its own
   // controls; and the labels under it named a script the user never chose.

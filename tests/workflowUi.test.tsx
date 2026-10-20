@@ -6571,18 +6571,22 @@ describe("Pinned live controls", () => {
     expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[31, true]]);
   });
 
-  it("counts a pinned script that is on as a cheat, and only the machinery as scripts", async () => {
+  it("counts a script by its shape, and a pinned one as a cheat whatever its shape", async () => {
     // On the device, with only `Infinite Health` on, the panel said "0 active
-    // (2 scripts)" above its own switch reading on. A table carries no mark that
-    // tells machinery from a cheat with its settings under it, so a pin decides.
+    // (2 scripts)" above its own switch reading on. A script holding only its
+    // settings counts as a cheat; one holding scripts is machinery, unless the
+    // user pinned it, because a table carries no mark that tells them apart.
     const on = [
       { generation: 1, record_id: 30, ok: true, active: true, value: null, error: null },
       { generation: 1, record_id: 31, ok: true, active: true, value: null, error: null },
       { generation: 1, record_id: 32, ok: true, active: false, value: "2", error: null },
     ];
     renderChained([31], on, on);
-
     expect(await screen.findByText("1 active (1 script)")).toBeTruthy();
+    cleanup();
+
+    renderChained([30, 31], on, on);
+    expect(await screen.findByText("2 active")).toBeTruthy();
   });
 
   it("still releases the scripts a pinned cheat needed once it is switched off", async () => {
@@ -6626,10 +6630,10 @@ describe("Pinned live controls", () => {
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
 
-    // Two records are on and one of them is the script that creates the other,
-    // so the panel names the cheat count its own switches match and says where
-    // the second came from rather than adding it in.
-    await screen.findByText("1 active (1 script)");
+    // Two records are on, and the script holds only the value under it, so by
+    // its shape it is a cheat with its setting rather than machinery and both
+    // count. Machinery is a script holding another script.
+    await screen.findByText("2 active");
     const disable = await screen.findByRole("button", { name: "Disable all" });
     fireEvent.click(disable);
 
@@ -6674,7 +6678,7 @@ describe("Pinned live controls", () => {
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
 
-    await screen.findByText("1 active (1 script)");
+    await screen.findByText("2 active");
     fireEvent.click(await screen.findByRole("button", { name: "Disable all" }));
 
     await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
@@ -7794,20 +7798,53 @@ describe("Selection and staged-change persistence", () => {
     expect((within(child).getByLabelText("Value") as HTMLInputElement).value).toBe("40");
   });
 
-  it("hides the enclosing scripts until the header toggle asks for them", async () => {
-    renderNested([
-      { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null },
-      { generation: 1, record_id: 21, ok: true, active: false, value: "??", error: null },
-    ]);
+  // A table's machinery around a cheat with its setting: `Activate` holds a
+  // script, so it is machinery; `Party Damage Reduction` holds only its value,
+  // so it is a cheat.
+  const machinery = {
+    ...inspect,
+    total_entries: 3,
+    controls: [
+      { id: 19, description: "Activate", path: ["Activate"], structure: ["Activate"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+      ...nestedInspection.controls.map((control) => ({
+        ...control, path: ["Activate", ...control.path], structure: ["Activate", ...control.structure],
+      })),
+    ],
+  };
 
-    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(1));
-    expect(screen.queryByTestId("cheat-row-20")).toBeNull();
-    expect(screen.getByTestId("cheat-row-21")).toBeTruthy();
-    expect(screen.getByText("2 supported · 1 shown · 1 script hidden")).toBeTruthy();
+  function renderMachinery(pinned: number[]) {
+    const results = [19, 20, 21].map((id) => ({ generation: 1, record_id: id, ok: true, active: false, value: id === 21 ? "95" : null, error: null }));
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results, unavailable: [] });
+    render(<CheatSelectionModal
+      appId={10}
+      inspection={machinery as any}
+      live
+      pinned={pinned}
+      startupPreferences={[]}
+      rememberedPreferences={[]}
+      configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])}
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onCancel={vi.fn()}
+    />);
+  }
+
+  it("hides only the machinery until the header toggle asks for it", async () => {
+    // A cheat with its setting under it used to be hidden with the machinery,
+    // because it encloses a record too.
+    renderMachinery([]);
+
+    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(2));
+    expect(screen.queryByTestId("cheat-row-19")).toBeNull();
+    expect(screen.getByTestId("cheat-row-20")).toBeTruthy();
+    expect(screen.getByText("3 supported · 2 shown · 1 script hidden")).toBeTruthy();
 
     fireEvent.click(within(screen.getByTestId("show-scripts")).getByTestId("toggle"));
-    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(2));
-    expect(screen.getByText("2 supported · 2 shown")).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(3));
+    expect(screen.getByText("3 supported · 3 shown")).toBeTruthy();
   });
 
   it("switches on the enclosing script itself instead of refusing the cheat", async () => {
@@ -7927,30 +7964,12 @@ describe("Selection and staged-change persistence", () => {
     expect(desired.find((item: any) => item.record_id === 20)?.active).not.toBe(false);
   });
 
-  it("lists a pinned script with the cheats rather than behind Scripts", async () => {
-    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: [] });
-    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: [
-      { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null },
-      { generation: 1, record_id: 21, ok: true, active: false, value: "95", error: null },
-    ], unavailable: [] });
-    render(<CheatSelectionModal
-      appId={10}
-      inspection={nestedInspection as any}
-      live
-      pinned={[20]}
-      startupPreferences={[]}
-      rememberedPreferences={[]}
-      configuredValues={[]}
-      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
-      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
-      onTogglePin={vi.fn().mockResolvedValue([])}
-      onApplied={vi.fn().mockResolvedValue(undefined)}
-      onCancel={vi.fn()}
-    />);
+  it("lists pinned machinery with the cheats rather than behind Scripts", async () => {
+    renderMachinery([19]);
 
-    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(2));
-    expect(screen.getByTestId("cheat-row-20")).toBeTruthy();
-    expect(screen.getByText("2 supported \u00b7 2 shown")).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(3));
+    expect(screen.getByTestId("cheat-row-19")).toBeTruthy();
+    expect(screen.getByText("3 supported \u00b7 3 shown")).toBeTruthy();
   });
 
   it("opens with every row collapsed, a value cheat that is on included", async () => {

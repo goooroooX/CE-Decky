@@ -2578,19 +2578,40 @@ export function enclosingControlIds(controls: readonly TableControl[]): Set<numb
  * Controls listed with the scripts rather than with the cheats.
  *
  * Two different things belong here for the same reason: neither is a choice a
- * user makes. An enclosing script is the machinery a table uses to build its
- * real cheats, and CE Decky switches it on by itself. An attach-only record is
- * the table author's own "attach to the game" button, which changes nothing in
- * the game and duplicates what CE Decky already did by exact PID.
+ * user makes. A script that holds other scripts is the machinery a table uses
+ * to build its real cheats, and CE Decky switches it on by itself. An
+ * attach-only record is the table author's own "attach to the game" button,
+ * which changes nothing in the game and duplicates what CE Decky already did by
+ * exact PID.
  *
- * This is the view, not the dependency rule: only enclosing scripts are ever
- * switched on to reach something else, and that stays keyed off
+ * A table does not say which of its scripts are machinery, so this goes by
+ * shape. Every record with others inside it used to be listed here, which hid
+ * a cheat with its settings under it (`Infinite Health` holding `Health %`) and
+ * hid value records too: over a corpus of 142 real tables that was 1265
+ * records, 701 of them not scripts at all, where a script holding another
+ * enclosing record is 141 (`ct_scan_survey.py --scripts`). Hiding only the
+ * outermost was measured too and hides cheats in every table that groups its
+ * scripts under headers. A record the user pins is taken as a cheat by its
+ * callers, whatever its shape.
+ *
+ * This is the view, not the dependency rule: every enclosing record is still
+ * switched on to reach what is inside it, and that stays keyed off
  * `enclosingControlIds`.
  */
 export function scriptListedControlIds(controls: readonly TableControl[]): Set<number> {
-  const ids = enclosingControlIds(controls);
+  const enclosing = enclosingControlIds(controls);
+  const holders = controls.filter((control) => control.id !== null && enclosing.has(control.id));
+  const ids = new Set<number>();
   for (const control of controls) {
-    if (control.id !== null && control.attach_only) ids.add(control.id);
+    if (control.id === null) continue;
+    if (control.attach_only) {
+      ids.add(control.id);
+      continue;
+    }
+    if (control.kind !== "script" || !enclosing.has(control.id)) continue;
+    if (holders.some((inner) => inner.id !== control.id && encloses(control.structure, inner.structure))) {
+      ids.add(control.id);
+    }
   }
   return ids;
 }

@@ -194,9 +194,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   const configuredByIdRef = useRef(new Map(configuredValues.map((item) => [item.record_id, item.value])));
   const sections = useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
   const enclosingIds = useMemo(() => enclosingControlIds(safeControls), [safeControls]);
-  // What the Scripts toggle hides, which is more than what Apply treats as a
-  // dependency: an attach-only record is machinery too, but nothing is ever
-  // switched on through it.
+  // What the Scripts toggle hides, which is not what Apply treats as a
+  // dependency: a script holding only its settings is a dependency of them and
+  // is listed with the cheats, and an attach-only record is machinery although
+  // nothing is ever switched on through it.
   // A pinned record is a cheat at the user's word, whatever it encloses: a table
   // carries no mark that tells machinery from a script with its settings under
   // it. Read from the pins this dialog opened with, so a row does not vanish

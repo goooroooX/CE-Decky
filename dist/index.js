@@ -5479,20 +5479,42 @@ function enclosingControlIds(controls) {
  * Controls listed with the scripts rather than with the cheats.
  *
  * Two different things belong here for the same reason: neither is a choice a
- * user makes. An enclosing script is the machinery a table uses to build its
- * real cheats, and CE Decky switches it on by itself. An attach-only record is
- * the table author's own "attach to the game" button, which changes nothing in
- * the game and duplicates what CE Decky already did by exact PID.
+ * user makes. A script that holds other scripts is the machinery a table uses
+ * to build its real cheats, and CE Decky switches it on by itself. An
+ * attach-only record is the table author's own "attach to the game" button,
+ * which changes nothing in the game and duplicates what CE Decky already did by
+ * exact PID.
  *
- * This is the view, not the dependency rule: only enclosing scripts are ever
- * switched on to reach something else, and that stays keyed off
+ * A table does not say which of its scripts are machinery, so this goes by
+ * shape. Every record with others inside it used to be listed here, which hid
+ * a cheat with its settings under it (`Infinite Health` holding `Health %`) and
+ * hid value records too: over a corpus of 142 real tables that was 1265
+ * records, 701 of them not scripts at all, where a script holding another
+ * enclosing record is 141 (`ct_scan_survey.py --scripts`). Hiding only the
+ * outermost was measured too and hides cheats in every table that groups its
+ * scripts under headers. A record the user pins is taken as a cheat by its
+ * callers, whatever its shape.
+ *
+ * This is the view, not the dependency rule: every enclosing record is still
+ * switched on to reach what is inside it, and that stays keyed off
  * `enclosingControlIds`.
  */
 function scriptListedControlIds(controls) {
-    const ids = enclosingControlIds(controls);
+    const enclosing = enclosingControlIds(controls);
+    const holders = controls.filter((control) => control.id !== null && enclosing.has(control.id));
+    const ids = new Set();
     for (const control of controls) {
-        if (control.id !== null && control.attach_only)
+        if (control.id === null)
+            continue;
+        if (control.attach_only) {
             ids.add(control.id);
+            continue;
+        }
+        if (control.kind !== "script" || !enclosing.has(control.id))
+            continue;
+        if (holders.some((inner) => inner.id !== control.id && encloses(control.structure, inner.structure))) {
+            ids.add(control.id);
+        }
     }
     return ids;
 }
@@ -11172,9 +11194,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const configuredByIdRef = SP_REACT.useRef(new Map(configuredValues.map((item) => [item.record_id, item.value])));
     const sections = SP_REACT.useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
     const enclosingIds = SP_REACT.useMemo(() => enclosingControlIds(safeControls), [safeControls]);
-    // What the Scripts toggle hides, which is more than what Apply treats as a
-    // dependency: an attach-only record is machinery too, but nothing is ever
-    // switched on through it.
+    // What the Scripts toggle hides, which is not what Apply treats as a
+    // dependency: a script holding only its settings is a dependency of them and
+    // is listed with the cheats, and an attach-only record is machinery although
+    // nothing is ever switched on through it.
     // A pinned record is a cheat at the user's word, whatever it encloses: a table
     // carries no mark that tells machinery from a script with its settings under
     // it. Read from the pins this dialog opened with, so a row does not vanish
@@ -14968,9 +14991,9 @@ function Content() {
         && liveSnapshot
         && liveSnapshot.sessionId === runtime?.prepared?.session_id
         && liveSnapshot.tableSha256 === profile?.table_sha256);
-    // What is on, split the way this panel presents it. A table's enclosing
-    // scripts and its attach-only record are machinery rather than choices: CE
-    // Decky switches them on itself and the picker lists them apart from the
+    // What is on, split the way this panel presents it. A table's machinery - a
+    // script holding other scripts - and its attach-only record are not choices:
+    // CE Decky switches them on itself and the picker lists them apart from the
     // cheats. Counting them in with the cheats made the panel say two were on
     // above a single switch that was, which is the panel disagreeing with its own
     // controls; and the labels under it named a script the user never chose.
