@@ -2590,8 +2590,9 @@ export function enclosingControlIds(controls: readonly TableControl[]): Set<numb
  * hid value records too: over a corpus of 142 real tables that was 1265
  * records, 701 of them not scripts at all, where a script holding another
  * enclosing record is 141 (`ct_scan_survey.py --scripts`). Hiding only the
- * outermost was measured too and hides cheats in every table that groups its
- * scripts under headers. A record the user pins is taken as a cheat by its
+ * outermost was measured too: it hides 310 records with only values inside,
+ * in 54 of those tables, which are cheats in tables that group their scripts
+ * under headers. A record the user pins is taken as a cheat by its
  * callers, whatever its shape.
  *
  * This is the view, not the dependency rule: every enclosing record is still
