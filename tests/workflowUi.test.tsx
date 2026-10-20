@@ -6571,6 +6571,20 @@ describe("Pinned live controls", () => {
     expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[31, true]]);
   });
 
+  it("counts a pinned script that is on as a cheat, and only the machinery as scripts", async () => {
+    // On the device, with only `Infinite Health` on, the panel said "0 active
+    // (2 scripts)" above its own switch reading on. A table carries no mark that
+    // tells machinery from a cheat with its settings under it, so a pin decides.
+    const on = [
+      { generation: 1, record_id: 30, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 31, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 32, ok: true, active: false, value: "2", error: null },
+    ];
+    renderChained([31], on, on);
+
+    expect(await screen.findByText("1 active (1 script)")).toBeTruthy();
+  });
+
   it("still releases the scripts a pinned cheat needed once it is switched off", async () => {
     // What the user chose is spared; what CE Decky switched on to reach it is
     // not. With the last cheat under them off, both scripts are residue.
@@ -7911,6 +7925,32 @@ describe("Selection and staged-change persistence", () => {
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
     const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
     expect(desired.find((item: any) => item.record_id === 20)?.active).not.toBe(false);
+  });
+
+  it("lists a pinned script with the cheats rather than behind Scripts", async () => {
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: [] });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: [
+      { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: false, value: "95", error: null },
+    ], unavailable: [] });
+    render(<CheatSelectionModal
+      appId={10}
+      inspection={nestedInspection as any}
+      live
+      pinned={[20]}
+      startupPreferences={[]}
+      rememberedPreferences={[]}
+      configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])}
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onCancel={vi.fn()}
+    />);
+
+    await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(2));
+    expect(screen.getByTestId("cheat-row-20")).toBeTruthy();
+    expect(screen.getByText("2 supported \u00b7 2 shown")).toBeTruthy();
   });
 
   it("opens with every row collapsed, a value cheat that is on included", async () => {

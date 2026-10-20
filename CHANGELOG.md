@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.31 — 2026-10-20
 
+- [Fixed] A pinned cheat that is a script with settings under it counts as a cheat: the panel counts it among the active cheats rather than as a script, and Configure cheats lists it with the cheats rather than behind Scripts. A table does not say which of its scripts are cheats, so pinning one is what decides it.
 - [Fixed] When a cheat does not switch on and every byte pattern the table looks for is found in the game's program, the question about the table no longer says it was written for a different build of the game, and neither does the mark it leaves.
 - [Fixed] When the game closes while a cheat is being switched on, CE Decky says the game closed, where it said the table was written for a different build of the game. Cheat Engine goes on answering for a game that has gone, so a cheat that comes back off is now held for up to half a second while CE Decky checks the game is still running. It still asks whether to stop using the table, because the cheat may be what closed the game.
 - [Changed] Configure cheats opens with every cheat collapsed, and a cheat's details open only on More. Every cheat that was on and takes a value used to open by itself, with its Less button disabled. Switching a cheat on there when it has no value yet still opens its value field, because Apply needs one.

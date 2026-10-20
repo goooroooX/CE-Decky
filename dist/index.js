@@ -11175,7 +11175,16 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     // What the Scripts toggle hides, which is more than what Apply treats as a
     // dependency: an attach-only record is machinery too, but nothing is ever
     // switched on through it.
-    const scriptListedIds = SP_REACT.useMemo(() => scriptListedControlIds(safeControls), [safeControls]);
+    // A pinned record is a cheat at the user's word, whatever it encloses: a table
+    // carries no mark that tells machinery from a script with its settings under
+    // it. Read from the pins this dialog opened with, so a row does not vanish
+    // from under the press that unpins it.
+    const scriptListedIds = SP_REACT.useMemo(() => {
+        const ids = scriptListedControlIds(safeControls);
+        for (const recordId of pinned)
+            ids.delete(recordId);
+        return ids;
+    }, [safeControls, pinned]);
     const [showScripts, setShowScripts] = SP_REACT.useState(false);
     // Set when an Apply failed after the first runtime command: the modal is then
     // showing reconciled live state, not the user's staged intent, and closing
@@ -14965,10 +14974,17 @@ function Content() {
     // cheats. Counting them in with the cheats made the panel say two were on
     // above a single switch that was, which is the panel disagreeing with its own
     // controls; and the labels under it named a script the user never chose.
+    //
+    // A table carries no mark that tells a script that is machinery from one that
+    // is a cheat with its settings under it, so a pinned record is taken at the
+    // user's word: it is a switch on this panel, and counting it as a script put
+    // "0 active" above it while it was on.
+    const pinnedIds = profile?.pinned;
     const { activeCheatLabels, activeScriptCount } = SP_REACT.useMemo(() => {
         if (!activeCheatSnapshotReady || !liveSnapshot)
             return { activeCheatLabels: [], activeScriptCount: 0 };
         const scriptListed = scriptListedControlIds(safeControls);
+        const pinned = new Set(pinnedIds ?? []);
         const labels = [];
         let scripts = 0;
         for (const control of safeControls) {
@@ -14977,13 +14993,13 @@ function Content() {
             const result = latestRuntimeResult(liveSnapshot.results, control.id);
             if (!result?.ok || result.active !== true)
                 continue;
-            if (scriptListed.has(control.id))
+            if (scriptListed.has(control.id) && !pinned.has(control.id))
                 scripts += 1;
             else
                 labels.push(control.path.join(" › "));
         }
         return { activeCheatLabels: labels, activeScriptCount: scripts };
-    }, [activeCheatSnapshotReady, liveSnapshot, safeControls]);
+    }, [activeCheatSnapshotReady, liveSnapshot, safeControls, pinnedIds]);
     const pinnedRows = SP_REACT.useMemo(() => activeCheatSnapshotReady && liveSnapshot
         ? pinnedCheatRows(safeControls, profile?.pinned ?? [], liveSnapshot.results, profile?.remembered ?? [], profile?.configured_values ?? [])
         : [], [activeCheatSnapshotReady, liveSnapshot, safeControls, profile?.pinned, profile?.remembered, profile?.configured_values]);

@@ -1404,20 +1404,27 @@ function Content() {
   // cheats. Counting them in with the cheats made the panel say two were on
   // above a single switch that was, which is the panel disagreeing with its own
   // controls; and the labels under it named a script the user never chose.
+  //
+  // A table carries no mark that tells a script that is machinery from one that
+  // is a cheat with its settings under it, so a pinned record is taken at the
+  // user's word: it is a switch on this panel, and counting it as a script put
+  // "0 active" above it while it was on.
+  const pinnedIds = profile?.pinned;
   const { activeCheatLabels, activeScriptCount } = useMemo(() => {
     if (!activeCheatSnapshotReady || !liveSnapshot) return { activeCheatLabels: [] as string[], activeScriptCount: 0 };
     const scriptListed = scriptListedControlIds(safeControls);
+    const pinned = new Set(pinnedIds ?? []);
     const labels: string[] = [];
     let scripts = 0;
     for (const control of safeControls) {
       if (control.id === null) continue;
       const result = latestRuntimeResult(liveSnapshot.results, control.id);
       if (!result?.ok || result.active !== true) continue;
-      if (scriptListed.has(control.id)) scripts += 1;
+      if (scriptListed.has(control.id) && !pinned.has(control.id)) scripts += 1;
       else labels.push(control.path.join(" › "));
     }
     return { activeCheatLabels: labels, activeScriptCount: scripts };
-  }, [activeCheatSnapshotReady, liveSnapshot, safeControls]);
+  }, [activeCheatSnapshotReady, liveSnapshot, safeControls, pinnedIds]);
 
   const pinnedRows = useMemo(
     () => activeCheatSnapshotReady && liveSnapshot

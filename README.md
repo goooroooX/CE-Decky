@@ -129,7 +129,7 @@ A table marked as not working is still **Local**: the file is here, you just can
 - A cheat that is simply on or off is a plain switch: the toggle is the whole control, with no list and no box.
 - A cheat that really does choose between things offers that list on the row, and nothing else. If you need a value the author did not list, **Type a value instead** gives you a box. Long lists get a **Find a value** search: type part of the name or the number to narrow it.
 - A cheat that takes a number, like a damage multiplier, keeps its box. Those sit under the switch they belong to.
-- The scripts a table uses to build its cheats are behind the **Scripts** toggle in the header; CE Decky manages them for you.
+- The scripts a table uses to build its cheats are behind the **Scripts** toggle in the header; CE Decky manages them for you. A table does not say which of its scripts is a cheat in its own right, so one you pin is listed and counted with the cheats.
 
 ### 4. Start Cheat Engine
 

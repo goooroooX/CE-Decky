@@ -197,7 +197,15 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   // What the Scripts toggle hides, which is more than what Apply treats as a
   // dependency: an attach-only record is machinery too, but nothing is ever
   // switched on through it.
-  const scriptListedIds = useMemo(() => scriptListedControlIds(safeControls), [safeControls]);
+  // A pinned record is a cheat at the user's word, whatever it encloses: a table
+  // carries no mark that tells machinery from a script with its settings under
+  // it. Read from the pins this dialog opened with, so a row does not vanish
+  // from under the press that unpins it.
+  const scriptListedIds = useMemo(() => {
+    const ids = scriptListedControlIds(safeControls);
+    for (const recordId of pinned) ids.delete(recordId);
+    return ids;
+  }, [safeControls, pinned]);
   const [showScripts, setShowScripts] = useState(false);
   // Set when an Apply failed after the first runtime command: the modal is then
   // showing reconciled live state, not the user's staged intent, and closing
