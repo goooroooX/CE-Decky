@@ -387,6 +387,123 @@ def flags_corpus(root: Path) -> dict[str, object]:
     }
 
 
+# How many examples of each shape `--scripts` names. They are there to be
+# recognised, so a handful per shape is the answer and a page of them is not.
+MAX_SHAPE_EXAMPLES = 6
+
+# The four shapes an enclosing record takes, by where it sits and what it holds.
+_SHAPES = ("outermost_values_only", "outermost_holds_scripts", "nested_values_only", "nested_holds_scripts")
+
+
+def _listed_controls(found) -> list:
+    """The controls Configure cheats lists, by most of `safeActionableControls`.
+
+    Group headers and records whose ID the table repeats are never listed, so
+    they are neither scripts nor cheats to that screen and are left out here.
+    Its other exclusion, a record under a script whose ID the table repeats, is
+    not repeated, so a table holding one counts a few records the screen omits.
+    """
+    ambiguous = set(found.ambiguous_record_ids)
+    return [
+        control for control in found.controls
+        if control.id is not None and control.kind != "group" and not control.group_header
+        and control.id not in ambiguous
+    ]
+
+
+def scripts_one(table: Path) -> dict[str, object]:
+    """Every record that encloses others in one table, sorted into four shapes.
+
+    Configure cheats lists a record as a script, behind **Scripts**, when other
+    records sit inside it, which is `enclosingControlIds` in `src/uiModel.ts`
+    and is repeated here. That puts a cheat with its settings under it beside
+    the machinery that installs a table's hooks, and a table does not say which
+    is which. What can be read is where a record sits - whether another
+    enclosing record is above it - and what it holds - other enclosing records,
+    or only records with values - and those are the four shapes counted here.
+    """
+    data = table.read_bytes()
+    if len(data) > MAX_TABLE_BYTES:
+        raise ValueError("that table is larger than one this reads")
+    found = inspect_table(table, sha256(data).hexdigest())
+    listed = _listed_controls(found)
+    prefixes = {
+        tuple(control.structure[:depth])
+        for control in listed for depth in range(1, len(control.structure))
+    }
+    enclosing = [control for control in listed if tuple(control.structure) in prefixes]
+
+    def inside(outer, inner) -> bool:
+        return len(outer.structure) < len(inner.structure) and tuple(inner.structure[:len(outer.structure)]) == tuple(outer.structure)
+
+    shapes: dict[str, list[dict[str, object]]] = {shape: [] for shape in _SHAPES}
+    for control in enclosing:
+        outermost = not any(inside(other, control) for other in enclosing if other is not control)
+        holds_scripts = any(inside(control, other) for other in enclosing if other is not control)
+        held = sum(1 for other in listed if inside(control, other))
+        shape = ("outermost" if outermost else "nested") + ("_holds_scripts" if holds_scripts else "_values_only")
+        shapes[shape].append({"name": " > ".join(control.path), "holds": held, "kind": control.kind})
+    return {
+        "table": table.name,
+        "sha256": found.sha256,
+        "listed": len(listed),
+        "enclosing": len(enclosing),
+        "shapes": shapes,
+    }
+
+
+def scripts_corpus(root: Path) -> dict[str, object]:
+    """The same shapes over a directory, and what three hiding rules would do.
+
+    `everything` is today's rule: every enclosing record is hidden. `outermost`
+    hides only those with no enclosing record above them. `holds_scripts` hides
+    only those with another enclosing record inside them. For each, how many
+    records are hidden and how many enclosing records are shown, over the whole
+    corpus and as the number of tables that show at least one.
+    """
+    tables = 0
+    unreadable = 0
+    listed = 0
+    counts = {shape: 0 for shape in _SHAPES}
+    tables_with = {shape: 0 for shape in _SHAPES}
+    kinds: dict[str, dict[str, int]] = {shape: {} for shape in _SHAPES}
+    examples: dict[str, list[str]] = {shape: [] for shape in _SHAPES}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() != ".ct":
+            continue
+        tables += 1
+        try:
+            answer = scripts_one(path)
+        except (OSError, ValueError, ET.ParseError):
+            unreadable += 1
+            continue
+        listed += int(answer["listed"])
+        for shape, rows in answer["shapes"].items():
+            counts[shape] += len(rows)
+            if rows:
+                tables_with[shape] += 1
+            for row in rows:
+                kinds[shape][str(row["kind"])] = kinds[shape].get(str(row["kind"]), 0) + 1
+                if len(examples[shape]) < MAX_SHAPE_EXAMPLES:
+                    examples[shape].append(f"{row['name']} ({row['kind']}, holds {row['holds']}) in {path.name[:12]}")
+    hidden_by = {
+        "everything": sum(counts.values()),
+        "outermost": counts["outermost_values_only"] + counts["outermost_holds_scripts"],
+        "holds_scripts": counts["outermost_holds_scripts"] + counts["nested_holds_scripts"],
+    }
+    return {
+        "tables": tables,
+        "unreadable": unreadable,
+        "listed": listed,
+        "shapes": counts,
+        "tables_with_shape": tables_with,
+        "kinds": kinds,
+        "examples": examples,
+        "hidden_by_rule": hidden_by,
+        "enclosing_shown_by_rule": {rule: sum(counts.values()) - hidden for rule, hidden in hidden_by.items()},
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tables", type=Path, help="a directory of .CT files to read patterns out of")
@@ -405,6 +522,10 @@ def main() -> int:
         "--flags", action="store_true",
         help="which flags the table switches on by itself, and which of them may be switched off",
     )
+    parser.add_argument(
+        "--scripts", action="store_true",
+        help="the records Configure cheats lists as scripts, by where they sit and what they hold",
+    )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
 
@@ -412,17 +533,21 @@ def main() -> int:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if args.tables is not None and args.flags:
+        if args.tables is not None and args.scripts:
+            answer["scripts_corpus"] = scripts_corpus(args.tables)
+        elif args.tables is not None and args.flags:
             answer["flags_corpus"] = flags_corpus(args.tables)
         elif args.tables is not None and args.repair_coverage:
             answer["repair_coverage"] = repair_coverage(args.tables)
         elif args.tables is not None:
             answer["survey"] = survey_tables(args.tables)
+        if args.table is not None and args.scripts:
+            answer["scripts"] = scripts_one(args.table)
         if args.table is not None and args.flags:
             answer["flags"] = flags_one(args.table)
         if args.table is not None and args.repair:
             answer["repair"] = repair_one(args.table, list(args.repair))
-        if args.table is not None and not args.repair and not args.flags:
+        if args.table is not None and not args.repair and not args.flags and not args.scripts:
             if args.executable is None:
                 parser.error("--table needs --executable, which is the program to look in")
             answer["check"] = check_one(args.table, args.executable, args.repeat)
@@ -474,6 +599,23 @@ def main() -> int:
               f"all flags readable {corpus['tables_whose_flags_are_all_readable']}")
         print(f"  switched on by the table {corpus['switched_on_by_the_table']}, "
               f"safe to switch off {corpus['safe_to_switch_off']}")
+    one = answer.get("scripts")
+    if isinstance(one, dict):
+        print(f"{one['table']} ({one['sha256'][:12]}): {one['listed']} listed, {one['enclosing']} enclose others")
+        for shape, rows in one["shapes"].items():
+            print(f"  {shape}: {len(rows)}")
+            for row in rows[:MAX_SHAPE_EXAMPLES]:
+                print(f"    {row['name']} ({row['kind']}, holds {row['holds']})")
+    scripts = answer.get("scripts_corpus")
+    if isinstance(scripts, dict):
+        print(f"tables {scripts['tables']} ({scripts['unreadable']} unreadable), listed {scripts['listed']}")
+        for shape in _SHAPES:
+            kinds = ", ".join(f"{kind} {count}" for kind, count in sorted(scripts["kinds"][shape].items()))
+            print(f"  {shape}: {scripts['shapes'][shape]} in {scripts['tables_with_shape'][shape]} tables ({kinds})")
+            for example in scripts["examples"][shape]:
+                print(f"    {example}")
+        for rule, hidden in scripts["hidden_by_rule"].items():
+            print(f"  rule {rule}: hides {hidden}, shows {scripts['enclosing_shown_by_rule'][rule]} enclosing records")
     check = answer.get("check")
     if isinstance(check, dict):
         megabytes = int(check["executable_bytes"]) // (1024 * 1024)
