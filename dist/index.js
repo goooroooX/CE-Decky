@@ -5519,6 +5519,43 @@ function scriptListedControlIds(controls) {
     return ids;
 }
 /**
+ * The records still on under a script that is being switched off.
+ *
+ * Switching a script off used to leave what was inside it on: a frozen value
+ * whose address belongs to an outer script went on reading as on, doing
+ * nothing, and stayed remembered on, so the next auto-load switched the script
+ * back on for it. These go off with the script.
+ *
+ * `keepsOnKey` marks a switch whose off key is not known to be safe to write
+ * (`switch_off_is_safe`): writing a table's own flag off is what killed a game
+ * minutes later on the device, so such a switch is only released, never
+ * written, and the script going down is what ends it.
+ */
+function activeCheatsUnder(script, controls, activeById) {
+    return controls.flatMap((control) => {
+        if (control.id === null || activeById.get(control.id) !== true)
+            return [];
+        if (!encloses(script.structure, control.structure))
+            return [];
+        const keepsOnKey = controlIsSwitch(control) && control.switch_off_is_safe !== true;
+        return [{ control: control, keepsOnKey }];
+    });
+}
+/**
+ * What to remember for a record that went off with its script: off, and no
+ * value.
+ *
+ * Off with a value is replayed by auto-load as a write of that value, and with
+ * the script off the record has no address to write to, so the start fails on
+ * it. Off with no value is dropped there instead while its script is off. A
+ * switch released with its on key still in the game would also have that key
+ * read back and remembered, and replayed it is the cheat on. A value the user
+ * typed is kept apart, in the table's configured values, and is not lost.
+ */
+function offWithoutValues(remembered, wentOff) {
+    return remembered.map((item) => wentOff.has(item.record_id) && item.active === false ? { ...item, value: null } : item);
+}
+/**
  * Enclosing scripts this change leaves on with nothing under them on, deepest
  * first.
  *
@@ -11657,6 +11694,27 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             const missingValueReason = missingRequiredValueReason(missingValues);
             if (missingValueReason)
                 throw new Error(missingValueReason);
+            // A script switched off here takes what is still on inside it down with
+            // it. After the ancestors above on purpose: a cheat switched on in this
+            // same Apply has already put its script back on, so it is never undone.
+            // A switch whose off key is not known to be safe is only released.
+            const releasedWithOnKey = new Set();
+            const wentOffWithScript = new Set();
+            for (const recordId of touchedActive) {
+                if (effective[recordId]?.active !== false || activeBefore.get(recordId) !== true)
+                    continue;
+                const script = controlById.get(recordId);
+                if (!script)
+                    continue;
+                for (const { control: child, keepsOnKey } of activeCheatsUnder(script, safeControls, activeById)) {
+                    effective[child.id] = { active: false, value: effective[child.id]?.value ?? null };
+                    effectiveTouchedActive.add(child.id);
+                    activeById.set(child.id, false);
+                    wentOffWithScript.add(child.id);
+                    if (keepsOnKey)
+                        releasedWithOnKey.add(child.id);
+                }
+            }
             // A script exists to create the records inside it, so one left running
             // after the last cheat that needed it went off is residue: it keeps its
             // patch in the game for nothing. Switch it off in the same Apply, and let
@@ -11668,7 +11726,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // Off now and on before, read from what is running rather than from what
             // was touched: a setting switched on and back off again in this dialog
             // was never on, and its script is no more residue than it was.
-            const switchedOff = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === false && activeBefore.get(recordId) === true));
+            const switchedOff = new Set([...effectiveTouchedActive].filter((recordId) => effective[recordId]?.active === false && activeBefore.get(recordId) === true));
             for (const scriptId of unusedActiveScripts(safeControls, activeById, { chosen, switchedOff })) {
                 effective[scriptId] = { active: false, value: effective[scriptId]?.value ?? null };
                 effectiveTouchedActive.add(scriptId);
@@ -11702,7 +11760,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
                     : [];
             });
-            const prospectiveRemembered = rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged);
+            const prospectiveRemembered = offWithoutValues(rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript);
             const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
             if (budgetError)
                 throw new Error(budgetError);
@@ -11777,7 +11835,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                         record_id: control.id,
                         active,
                         value,
-                        switch_values: switchValuesFor(control),
+                        switch_values: releasedWithOnKey.has(control.id) ? undefined : switchValuesFor(control),
                         structure: control.structure,
                         label: controlRowLabel(control),
                     }];
@@ -11872,7 +11930,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 const typed = staged[result.record_id]?.value ?? null;
                 return displayableControlValue(result.value) === null && typed !== null ? { ...result, value: typed } : result;
             });
-            const remembered = rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged);
+            const remembered = offWithoutValues(rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript);
             const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
             if (finalBudgetError) {
                 throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
@@ -16749,9 +16807,14 @@ function Content() {
         for (const ancestor of ancestors)
             if (ancestor.id !== null)
                 projected.set(ancestor.id, true);
+        // A script switched off takes what is still on inside it down with it, so
+        // nothing reads as on that the script no longer runs.
+        const under = active ? [] : activeCheatsUnder(control, controls, activeById);
+        for (const { control: child } of under)
+            projected.set(child.id, false);
         const released = unusedActiveScripts(controls, projected, {
             chosen: active ? new Set([recordId]) : new Set(),
-            switchedOff: active ? new Set() : new Set([recordId]),
+            switchedOff: active ? new Set() : new Set([recordId, ...under.map(({ control: child }) => child.id)]),
         });
         const releasedRows = released.flatMap((scriptId) => {
             const script = controls.find((candidate) => candidate.id === scriptId);
@@ -16816,6 +16879,14 @@ function Content() {
                     structure: control.structure,
                     label: controlRowLabel(control),
                 },
+                ...under.map(({ control: child, keepsOnKey }) => ({
+                    record_id: child.id,
+                    active: false,
+                    value: null,
+                    switch_values: keepsOnKey ? undefined : switchValuesFor(child),
+                    structure: child.structure,
+                    label: controlRowLabel(child),
+                })),
                 ...releasedRows,
             ];
         pinnedBusyRef.current = recordId;
@@ -16851,7 +16922,9 @@ function Content() {
                 const alsoOn = leftOnSentence(leftOn);
                 if (alsoOn)
                     toaster.toast({ title: "CE Decky", body: alsoOn });
-                const touched = new Set([recordId]);
+                // What went off under it is remembered off with it: one left on in the
+                // profile switched the script back on at the next auto-load.
+                const touched = new Set([recordId, ...under.map(({ control: child }) => child.id)]);
                 // The scripts around this cheat are CE Decky's own bookkeeping, so they
                 // are sent to Cheat Engine but never written into the profile as a
                 // choice - the startup profile derives them from the table anyway. Only
@@ -16861,7 +16934,7 @@ function Content() {
                     if (scriptId !== recordId)
                         managedScripts.add(scriptId);
                 }
-                const remembered = rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), managedScripts);
+                const remembered = offWithoutValues(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), managedScripts), new Set(under.map(({ control: child }) => child.id)));
                 // Cheat Engine already holds this change, so Home must show it whether
                 // or not the durable half lands. Publishing the snapshot first also
                 // keeps a failed persistence from leaving the panel showing the state

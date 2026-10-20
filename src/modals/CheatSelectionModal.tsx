@@ -53,6 +53,8 @@ import {
   switchesLeftOn,
   switchesToHoldOff,
   unusedActiveScripts,
+  activeCheatsUnder,
+  offWithoutValues,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
 import { describeError, leadWithCause } from "../errors";
@@ -667,6 +669,25 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       const missingValueReason = missingRequiredValueReason(missingValues);
       if (missingValueReason) throw new Error(missingValueReason);
 
+      // A script switched off here takes what is still on inside it down with
+      // it. After the ancestors above on purpose: a cheat switched on in this
+      // same Apply has already put its script back on, so it is never undone.
+      // A switch whose off key is not known to be safe is only released.
+      const releasedWithOnKey = new Set<number>();
+      const wentOffWithScript = new Set<number>();
+      for (const recordId of touchedActive) {
+        if (effective[recordId]?.active !== false || activeBefore.get(recordId) !== true) continue;
+        const script = controlById.get(recordId);
+        if (!script) continue;
+        for (const { control: child, keepsOnKey } of activeCheatsUnder(script, safeControls, activeById)) {
+          effective[child.id] = { active: false, value: effective[child.id]?.value ?? null };
+          effectiveTouchedActive.add(child.id);
+          activeById.set(child.id, false);
+          wentOffWithScript.add(child.id);
+          if (keepsOnKey) releasedWithOnKey.add(child.id);
+        }
+      }
+
       // A script exists to create the records inside it, so one left running
       // after the last cheat that needed it went off is residue: it keeps its
       // patch in the game for nothing. Switch it off in the same Apply, and let
@@ -678,7 +699,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // Off now and on before, read from what is running rather than from what
       // was touched: a setting switched on and back off again in this dialog
       // was never on, and its script is no more residue than it was.
-      const switchedOff = new Set([...touchedActive].filter((recordId) =>
+      const switchedOff = new Set([...effectiveTouchedActive].filter((recordId) =>
         effective[recordId]?.active === false && activeBefore.get(recordId) === true));
       for (const scriptId of unusedActiveScripts(safeControls, activeById, { chosen, switchedOff })) {
         effective[scriptId] = { active: false, value: effective[scriptId]?.value ?? null };
@@ -711,9 +732,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
           : [];
       });
-      const prospectiveRemembered = rememberedSelection(
+      const prospectiveRemembered = offWithoutValues(rememberedSelection(
         safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged,
-      );
+      ), wentOffWithScript);
       const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
       if (budgetError) throw new Error(budgetError);
 
@@ -788,7 +809,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           record_id: control.id,
           active,
           value,
-          switch_values: switchValuesFor(control),
+          switch_values: releasedWithOnKey.has(control.id) ? undefined : switchValuesFor(control),
           structure: control.structure,
           label: controlRowLabel(control),
         }];
@@ -889,9 +910,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         const typed = staged[result.record_id]?.value ?? null;
         return displayableControlValue(result.value) === null && typed !== null ? { ...result, value: typed } : result;
       });
-      const remembered = rememberedSelection(
+      const remembered = offWithoutValues(rememberedSelection(
         safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged,
-      );
+      ), wentOffWithScript);
       const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
       if (finalBudgetError) {
         throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));

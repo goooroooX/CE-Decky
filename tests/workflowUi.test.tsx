@@ -6589,6 +6589,64 @@ describe("Pinned live controls", () => {
     expect(await screen.findByText("2 active")).toBeTruthy();
   });
 
+  it("switches what is on under a pinned script off with it, and remembers it off", async () => {
+    // On the device the jump script went off and its `Multiplier` stayed on:
+    // frozen, doing nothing, and remembered on, so the next auto-load switched
+    // the script back on for it.
+    renderChained([31], [
+      { generation: 1, record_id: 30, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 31, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 32, ok: true, active: true, value: "2", error: null },
+    ], [
+      { generation: 2, record_id: 30, ok: true, active: false, value: null, error: null },
+    ]);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-31")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[31, false], [32, false], [30, false]]);
+    await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
+    expect(api.setRememberedCheats.mock.calls[0][2]).toEqual([
+      { record_id: 31, active: false, value: null },
+      { record_id: 32, active: false, value: null },
+    ]);
+  });
+
+  it("only releases a flag under it whose off key is not known to be safe", async () => {
+    // Writing a table's own flag off is what killed a game minutes later, so a
+    // flag the hook reader did not prove safe keeps its key, and is remembered
+    // off with no value rather than beside its on key.
+    const withFlag = {
+      ...chained,
+      total_entries: 4,
+      controls: [
+        ...chained.controls,
+        {
+          id: 33, description: "bJump", path: ["Activate", "Jump Height", "bJump"], structure: ["Activate", "Jump Height", "bJump"],
+          variable_type: "Byte", kind: "dropdown", group_header: false, has_assembler_script: false,
+          dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false,
+          switch_on_value: "1", declared_default: "1", switch_off_is_safe: false,
+        },
+      ],
+    };
+    const before = [30, 31, 33].map((id) => ({ generation: 1, record_id: id, ok: true, active: true, value: id === 33 ? "1" : null, error: null }));
+    const after = [
+      { generation: 2, record_id: 30, ok: true, active: false, value: null, error: null },
+      { generation: 2, record_id: 33, ok: true, active: false, value: "1", error: null },
+    ];
+    renderChained([31], before, after, withFlag);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-31")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const flag = runtimeClient.applyRuntimeSelection.mock.calls[0][1].find((item: any) => item.record_id === 33);
+    expect(flag).toMatchObject({ active: false, value: null });
+    expect(flag.switch_values).toBeUndefined();
+    await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
+    expect(api.setRememberedCheats.mock.calls[0][2]).toContainEqual({ record_id: 33, active: false, value: null });
+  });
+
   it("still releases the scripts a pinned cheat needed once it is switched off", async () => {
     // What the user chose is spared; what CE Decky switched on to reach it is
     // not. With the last cheat under them off, both scripts are residue.
@@ -7970,6 +8028,67 @@ describe("Selection and staged-change persistence", () => {
     await waitFor(() => expect(screen.getAllByTestId(/^cheat-row-/)).toHaveLength(3));
     expect(screen.getByTestId("cheat-row-19")).toBeTruthy();
     expect(screen.getByText("3 supported \u00b7 3 shown")).toBeTruthy();
+  });
+
+  it("switches what is on under a script off when Apply switches the script off", async () => {
+    // A flag under it that the hook reader did not prove safe is released, not
+    // written, and both are remembered off with no value: off with a value is
+    // replayed as a write to a record whose script is off.
+    const inspection = {
+      ...nestedInspection,
+      total_entries: 3,
+      controls: [
+        ...nestedInspection.controls,
+        {
+          id: 22, description: "bFlag", path: ["Party Damage Reduction", "bFlag"], structure: ["Party Damage Reduction", "bFlag"],
+          variable_type: "Byte", kind: "dropdown", group_header: false, has_assembler_script: false,
+          dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false,
+          switch_on_value: "1", declared_default: "1", switch_off_is_safe: false,
+        },
+      ],
+    };
+    const before = [
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: true, value: "95", error: null },
+      { generation: 1, record_id: 22, ok: true, active: true, value: "1", error: null },
+    ];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: before });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: before, unavailable: [] });
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    render(<CheatSelectionModal
+      appId={10}
+      inspection={inspection as any}
+      live
+      pinned={[]}
+      startupPreferences={[]}
+      rememberedPreferences={[{ record_id: 21, active: true, value: "95" }]}
+      configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])}
+      onApplied={onApplied}
+      onCancel={vi.fn()}
+    />);
+    const script = await screen.findByTestId("cheat-row-20");
+    const after = before.map((result) => ({ ...result, generation: 2, active: false }));
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: after });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: after, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: after });
+    fireEvent.click(within(script).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.find((item: any) => item.record_id === 20)).toMatchObject({ active: false });
+    expect(desired.find((item: any) => item.record_id === 21)).toMatchObject({ active: false });
+    const flag = desired.find((item: any) => item.record_id === 22);
+    expect(flag).toMatchObject({ active: false });
+    expect(flag.switch_values).toBeUndefined();
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    expect(onApplied.mock.calls[0][0]).toEqual(expect.arrayContaining([
+      { record_id: 21, active: false, value: null },
+      { record_id: 22, active: false, value: null },
+    ]));
   });
 
   it("opens with every row collapsed, a value cheat that is on included", async () => {

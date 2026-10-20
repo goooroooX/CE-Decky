@@ -70,6 +70,8 @@ import {
   enclosingControlIds,
   scriptListedControlIds,
   unusedActiveScripts,
+  activeCheatsUnder,
+  offWithoutValues,
   rememberedSelectionBudgetError,
   runtimeAttachCandidates,
   safeActionableControls,
@@ -1644,6 +1646,35 @@ describe("Executable-content review", () => {
     // Switching off the setting under it is the accepted gap: nothing durable
     // says it was chosen, so it goes with its parent.
     expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([2, 1]);
+  });
+
+  it("names what is still on under a script going off, at any depth", () => {
+    const flag: TableControl = {
+      ...control(5, "dropdown", "bFlag"), path: ["Enable 1.0", "bFlag"], structure: ["Enable 1.0", "bFlag"],
+      dropdown_values: [["0", "Off"], ["1", "On"]], switch_on_value: "1", declared_default: "1", switch_off_is_safe: false,
+    };
+    const withFlag = [...controls, flag];
+    const active = new Map<number, boolean | null>([[1, true], [2, true], [3, true], [4, false], [5, true]]);
+
+    const under = activeCheatsUnder(controls[0], withFlag, active);
+    expect(under.map(({ control: item, keepsOnKey }) => [item.id, keepsOnKey])).toEqual([[2, false], [3, false], [5, true]]);
+    // A switch proved safe to write off is written off like any other.
+    expect(activeCheatsUnder(controls[0], [...controls, { ...flag, switch_off_is_safe: true }], active)
+      .find(({ control: item }) => item.id === 5)?.keepsOnKey).toBe(false);
+  });
+
+  it("remembers what went off with its script as off with no value", () => {
+    // Off with a value is replayed as a write to a record whose script is off,
+    // and for a released switch the value is its on key.
+    expect(offWithoutValues([
+      { record_id: 5, active: false, value: "1" },
+      { record_id: 6, active: false, value: "1" },
+      { record_id: 7, active: true, value: "1" },
+    ], new Set([5, 7]))).toEqual([
+      { record_id: 5, active: false, value: null },
+      { record_id: 6, active: false, value: "1" },
+      { record_id: 7, active: true, value: "1" },
+    ]);
   });
 
   it("never writes a script CE Decky switched on itself into the remembered state", () => {

@@ -2617,6 +2617,51 @@ export function scriptListedControlIds(controls: readonly TableControl[]): Set<n
 }
 
 /**
+ * The records still on under a script that is being switched off.
+ *
+ * Switching a script off used to leave what was inside it on: a frozen value
+ * whose address belongs to an outer script went on reading as on, doing
+ * nothing, and stayed remembered on, so the next auto-load switched the script
+ * back on for it. These go off with the script.
+ *
+ * `keepsOnKey` marks a switch whose off key is not known to be safe to write
+ * (`switch_off_is_safe`): writing a table's own flag off is what killed a game
+ * minutes later on the device, so such a switch is only released, never
+ * written, and the script going down is what ends it.
+ */
+export function activeCheatsUnder(
+  script: TableControl,
+  controls: readonly TableControl[],
+  activeById: ReadonlyMap<number, boolean | null>,
+): { control: TableControl & { id: number }; keepsOnKey: boolean }[] {
+  return controls.flatMap((control) => {
+    if (control.id === null || activeById.get(control.id) !== true) return [];
+    if (!encloses(script.structure, control.structure)) return [];
+    const keepsOnKey = controlIsSwitch(control) && control.switch_off_is_safe !== true;
+    return [{ control: control as TableControl & { id: number }, keepsOnKey }];
+  });
+}
+
+/**
+ * What to remember for a record that went off with its script: off, and no
+ * value.
+ *
+ * Off with a value is replayed by auto-load as a write of that value, and with
+ * the script off the record has no address to write to, so the start fails on
+ * it. Off with no value is dropped there instead while its script is off. A
+ * switch released with its on key still in the game would also have that key
+ * read back and remembered, and replayed it is the cheat on. A value the user
+ * typed is kept apart, in the table's configured values, and is not lost.
+ */
+export function offWithoutValues(
+  remembered: readonly StartupPreference[],
+  wentOff: ReadonlySet<number>,
+): StartupPreference[] {
+  return remembered.map((item) =>
+    wentOff.has(item.record_id) && item.active === false ? { ...item, value: null } : item);
+}
+
+/**
  * Enclosing scripts this change leaves on with nothing under them on, deepest
  * first.
  *

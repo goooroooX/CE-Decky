@@ -90,7 +90,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, activeCheatsUnder, offWithoutValues, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -3286,9 +3286,13 @@ function Content() {
     projected.set(recordId, active);
     const ancestors = active ? inactiveAncestorControls(control, controls, activeById) : [];
     for (const ancestor of ancestors) if (ancestor.id !== null) projected.set(ancestor.id, true);
+    // A script switched off takes what is still on inside it down with it, so
+    // nothing reads as on that the script no longer runs.
+    const under = active ? [] : activeCheatsUnder(control, controls, activeById);
+    for (const { control: child } of under) projected.set(child.id, false);
     const released = unusedActiveScripts(controls, projected, {
       chosen: active ? new Set([recordId]) : new Set<number>(),
-      switchedOff: active ? new Set<number>() : new Set([recordId]),
+      switchedOff: active ? new Set<number>() : new Set([recordId, ...under.map(({ control: child }) => child.id)]),
     });
     const releasedRows = released.flatMap((scriptId) => {
       const script = controls.find((candidate) => candidate.id === scriptId);
@@ -3353,6 +3357,14 @@ function Content() {
             structure: control.structure,
             label: controlRowLabel(control),
           },
+          ...under.map(({ control: child, keepsOnKey }) => ({
+            record_id: child.id,
+            active: false,
+            value: null,
+            switch_values: keepsOnKey ? undefined : switchValuesFor(child),
+            structure: child.structure,
+            label: controlRowLabel(child),
+          })),
           ...releasedRows,
         ];
     pinnedBusyRef.current = recordId;
@@ -3392,7 +3404,9 @@ function Content() {
         // cheat that is on now, and the sentence names them.
         const alsoOn = leftOnSentence(leftOn);
         if (alsoOn) toaster.toast({ title: "CE Decky", body: alsoOn });
-        const touched = new Set<number>([recordId]);
+        // What went off under it is remembered off with it: one left on in the
+        // profile switched the script back on at the next auto-load.
+        const touched = new Set<number>([recordId, ...under.map(({ control: child }) => child.id)]);
         // The scripts around this cheat are CE Decky's own bookkeeping, so they
         // are sent to Cheat Engine but never written into the profile as a
         // choice - the startup profile derives them from the table anyway. Only
@@ -3401,8 +3415,9 @@ function Content() {
         for (const scriptId of enclosingControlIds(controls)) {
           if (scriptId !== recordId) managedScripts.add(scriptId);
         }
-        const remembered = rememberedSelection(
-          controls, finalState.results, current.remembered, touched, new Set<number>(), managedScripts,
+        const remembered = offWithoutValues(
+          rememberedSelection(controls, finalState.results, current.remembered, touched, new Set<number>(), managedScripts),
+          new Set(under.map(({ control: child }) => child.id)),
         );
         // Cheat Engine already holds this change, so Home must show it whether
         // or not the durable half lands. Publishing the snapshot first also
