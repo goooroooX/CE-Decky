@@ -2596,7 +2596,8 @@ export function scriptListedControlIds(controls: readonly TableControl[]): Set<n
 }
 
 /**
- * Enclosing scripts that are on with nothing under them on, deepest first.
+ * Enclosing scripts this change leaves on with nothing under them on, deepest
+ * first.
  *
  * A script exists to create the records inside it, so one left running after
  * the last cheat that needed it was switched off is pure residue: it keeps its
@@ -2605,29 +2606,36 @@ export function scriptListedControlIds(controls: readonly TableControl[]): Set<n
  * enough - an inner script counts as a user of the one around it, so it has to
  * be released before its parent is judged.
  *
+ * Only a script around something this change switches off (`switchedOff`) is
+ * judged, because that is the only way residue arises. Judging every script in
+ * the table released a script the user had switched on earlier with its
+ * settings off the moment anything anywhere else was pressed: on the device,
+ * switching on the jump cheat switched infinite health off.
+ *
  * Structure alone cannot tell that machinery from a script that is a cheat in
  * its own right with a setting under it, so `chosen` carries what it cannot
  * see: the scripts the user switched on in this press or this Apply. One of
- * those is never residue, and while it is on it keeps the scripts around it in
- * use. Judging it from structure released it in the same request that switched
- * it on, which the panel refused as a duplicate record and Configure cheats
- * applied as a silent switch back off. Required rather than defaulted, so a
- * caller cannot forget the user's own choice.
+ * those is never residue, even when the same Apply switches off something
+ * under it, and while it is on it keeps the scripts around it in use. Both are
+ * required rather than defaulted, so a caller cannot forget either.
  */
 export function unusedActiveScripts(
   controls: readonly TableControl[],
   activeById: ReadonlyMap<number, boolean | null>,
-  chosen: ReadonlySet<number>,
+  change: { chosen: ReadonlySet<number>; switchedOff: ReadonlySet<number> },
 ): number[] {
   const enclosing = enclosingControlIds(controls);
+  const offPlaces = controls.flatMap((control) =>
+    control.id !== null && change.switchedOff.has(control.id) ? [control.structure] : []);
   const scripts = controls
     .filter((control): control is TableControl & { id: number } => control.id !== null && enclosing.has(control.id))
+    .filter((script) => offPlaces.some((place) => encloses(script.structure, place)))
     .sort((left, right) => right.structure.length - left.structure.length);
   const active = new Map(activeById);
   const released: number[] = [];
   for (const script of scripts) {
     if (active.get(script.id) !== true) continue;
-    if (chosen.has(script.id)) continue;
+    if (change.chosen.has(script.id)) continue;
     const used = controls.some((candidate) =>
       candidate.id !== null
       && candidate.id !== script.id

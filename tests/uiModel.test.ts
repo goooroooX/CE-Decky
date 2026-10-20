@@ -1597,14 +1597,14 @@ describe("Executable-content review", () => {
     // Deepest first is what makes one pass enough: the inner script has to stop
     // counting as a user of the outer one before the outer one is judged.
     const active = new Map<number, boolean | null>([[1, true], [2, true], [3, false], [4, false]]);
-    expect(unusedActiveScripts(controls, active, new Set())).toEqual([2, 1]);
+    expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([2, 1]);
   });
 
   it("keeps a script that still has an active cheat under it, at any depth", () => {
-    expect(unusedActiveScripts(controls, new Map([[1, true], [2, true], [3, true], [4, false]]), new Set())).toEqual([]);
-    expect(unusedActiveScripts(controls, new Map([[1, true], [2, false], [3, false], [4, true]]), new Set())).toEqual([]);
+    expect(unusedActiveScripts(controls, new Map([[1, true], [2, true], [3, true], [4, false]]), { chosen: new Set(), switchedOff: new Set([4]) })).toEqual([]);
+    expect(unusedActiveScripts(controls, new Map([[1, true], [2, false], [3, false], [4, true]]), { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([]);
     // An off script is not released again, and a leaf is never a script.
-    expect(unusedActiveScripts(controls, new Map([[1, false], [2, false], [3, false], [4, true]]), new Set())).toEqual([]);
+    expect(unusedActiveScripts(controls, new Map([[1, false], [2, false], [3, false], [4, true]]), { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([]);
   });
 
   it("never releases a script the user switched on, and keeps the scripts around it", () => {
@@ -1612,12 +1612,25 @@ describe("Executable-content review", () => {
     // by hand with its setting off, structure alone calls it residue, and the
     // same request that switched it on released it and the script it sits in.
     const active = new Map<number, boolean | null>([[1, true], [2, true], [3, false], [4, false]]);
-    expect(unusedActiveScripts(controls, active, new Set([2]))).toEqual([]);
+    expect(unusedActiveScripts(controls, active, { chosen: new Set([2]), switchedOff: new Set([3]) })).toEqual([]);
     // Only the chosen script itself is spared: choosing the outer one still
     // releases the inner one, which has nothing under it on.
-    expect(unusedActiveScripts(controls, active, new Set([1]))).toEqual([2]);
+    expect(unusedActiveScripts(controls, active, { chosen: new Set([1]), switchedOff: new Set([3]) })).toEqual([2]);
     // A chosen script that is not on is not switched on by being chosen.
-    expect(unusedActiveScripts(controls, new Map([[1, true], [2, false], [3, false], [4, false]]), new Set([2]))).toEqual([1]);
+    expect(unusedActiveScripts(controls, new Map([[1, true], [2, false], [3, false], [4, false]]), { chosen: new Set([2]), switchedOff: new Set([4]) })).toEqual([1]);
+  });
+
+  it("judges only the scripts around what this change switches off", () => {
+    // `Party Damage Reduction` was switched on by hand earlier with its setting
+    // off. Switching off `Easy Kills` beside it, or switching anything on, is
+    // not a reason to release it: on the device, switching the jump cheat on
+    // switched infinite health off.
+    const active = new Map<number, boolean | null>([[1, true], [2, true], [3, false], [4, false]]);
+    expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([4]) })).toEqual([]);
+    expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set() })).toEqual([]);
+    // Switching off the setting under it is the accepted gap: nothing durable
+    // says it was chosen, so it goes with its parent.
+    expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([2, 1]);
   });
 
   it("never writes a script CE Decky switched on itself into the remembered state", () => {
@@ -2038,6 +2051,6 @@ describe("records told apart by where they sit", () => {
 
   it("keeps a script whose own cheat is on, whatever its twin has on", () => {
     const active = new Map<number, boolean | null>([[1, true], [3, false], [4, true], [6, true]]);
-    expect(unusedActiveScripts(controls, active, new Set())).toEqual([1]);
+    expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([1]);
   });
 });

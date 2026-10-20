@@ -6501,12 +6501,12 @@ describe("Pinned live controls", () => {
     ],
   };
 
-  function renderChained(pinned: number[], before: any[], after: any[]) {
+  function renderChained(pinned: number[], before: any[], after: any[], inspection: any = chained) {
     const snapshot = pinnedStatus();
     snapshot.profiles[0].pinned = pinned;
     snapshot.profiles[0].remembered = [];
     api.getStatus.mockResolvedValue(snapshot);
-    api.inspectTableSha.mockResolvedValue(chained);
+    api.inspectTableSha.mockResolvedValue(inspection);
     const live = liveRuntime();
     live.status.results = before;
     api.getRuntimeStatus.mockResolvedValue(live);
@@ -6544,6 +6544,31 @@ describe("Pinned live controls", () => {
     // around it is CE Decky's own, so it is not.
     await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
     expect(api.setRememberedCheats.mock.calls[0][2]).toEqual([{ record_id: 31, active: true, value: null }]);
+  });
+
+  it("leaves a script switched on earlier alone when another pinned cheat is pressed", async () => {
+    // On the device: `Infinite Health` was on with its setting off, and
+    // switching the jump cheat on switched it off as residue. Nothing was
+    // switched off by that press, so nothing can have become residue.
+    const withHealth = {
+      ...chained,
+      total_entries: 5,
+      controls: [
+        ...chained.controls,
+        { id: 33, description: "Infinite Health", path: ["Activate", "Infinite Health"], structure: ["Activate", "Infinite Health"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 34, description: "Health %", path: ["Activate", "Infinite Health", "Health %"], structure: ["Activate", "Infinite Health", "Health %"], variable_type: "Float", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      ],
+    };
+    const state = (active: Record<number, boolean>, generation: number) => [30, 31, 32, 33, 34].map((id) => ({
+      generation, record_id: id, ok: true, active: active[id] ?? false, value: id === 32 || id === 34 ? "2" : null, error: null,
+    }));
+    renderChained([31], state({ 30: true, 33: true }, 1), state({ 30: true, 31: true, 33: true }, 2), withHealth);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-31")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[31, true]]);
   });
 
   it("still releases the scripts a pinned cheat needed once it is switched off", async () => {
@@ -7839,6 +7864,53 @@ describe("Selection and staged-change persistence", () => {
     expect(desired.filter((item: any) => item.record_id === 20)).toMatchObject([{ active: true }]);
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(onApplied.mock.calls[0][0]).toEqual([{ record_id: 20, active: true, value: null }]);
+  });
+
+  it("leaves a script switched on earlier alone when Apply switches on something else", async () => {
+    // The dialog's half of the same defect: any Apply released every script in
+    // the table that had nothing under it on, including one the user chose.
+    const inspection = {
+      ...nestedInspection,
+      total_entries: 3,
+      controls: [
+        ...nestedInspection.controls,
+        { id: 25, description: "Gold", path: ["Gold"], structure: ["Gold"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      ],
+    };
+    const results = [
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: false, value: "95", error: null },
+      { generation: 1, record_id: 25, ok: true, active: false, value: "100", error: null },
+    ];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results });
+    render(<CheatSelectionModal
+      appId={10}
+      inspection={inspection as any}
+      live
+      pinned={[]}
+      startupPreferences={[]}
+      rememberedPreferences={[]}
+      configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])}
+      onApplied={vi.fn().mockResolvedValue(undefined)}
+      onCancel={vi.fn()}
+    />);
+
+    fireEvent.click(within(await screen.findByTestId("cheat-row-25")).getByTestId("toggle"));
+    // A setting switched on and back off in the same dialog was never on, so
+    // it does not make the script above it residue either.
+    const setting = screen.getByTestId("cheat-row-21");
+    fireEvent.click(within(setting).getByTestId("toggle"));
+    fireEvent.click(within(setting).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.find((item: any) => item.record_id === 20)?.active).not.toBe(false);
   });
 
   it("opens with every row collapsed, a value cheat that is on included", async () => {

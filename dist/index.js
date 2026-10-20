@@ -5497,7 +5497,8 @@ function scriptListedControlIds(controls) {
     return ids;
 }
 /**
- * Enclosing scripts that are on with nothing under them on, deepest first.
+ * Enclosing scripts this change leaves on with nothing under them on, deepest
+ * first.
  *
  * A script exists to create the records inside it, so one left running after
  * the last cheat that needed it was switched off is pure residue: it keeps its
@@ -5506,26 +5507,32 @@ function scriptListedControlIds(controls) {
  * enough - an inner script counts as a user of the one around it, so it has to
  * be released before its parent is judged.
  *
+ * Only a script around something this change switches off (`switchedOff`) is
+ * judged, because that is the only way residue arises. Judging every script in
+ * the table released a script the user had switched on earlier with its
+ * settings off the moment anything anywhere else was pressed: on the device,
+ * switching on the jump cheat switched infinite health off.
+ *
  * Structure alone cannot tell that machinery from a script that is a cheat in
  * its own right with a setting under it, so `chosen` carries what it cannot
  * see: the scripts the user switched on in this press or this Apply. One of
- * those is never residue, and while it is on it keeps the scripts around it in
- * use. Judging it from structure released it in the same request that switched
- * it on, which the panel refused as a duplicate record and Configure cheats
- * applied as a silent switch back off. Required rather than defaulted, so a
- * caller cannot forget the user's own choice.
+ * those is never residue, even when the same Apply switches off something
+ * under it, and while it is on it keeps the scripts around it in use. Both are
+ * required rather than defaulted, so a caller cannot forget either.
  */
-function unusedActiveScripts(controls, activeById, chosen) {
+function unusedActiveScripts(controls, activeById, change) {
     const enclosing = enclosingControlIds(controls);
+    const offPlaces = controls.flatMap((control) => control.id !== null && change.switchedOff.has(control.id) ? [control.structure] : []);
     const scripts = controls
         .filter((control) => control.id !== null && enclosing.has(control.id))
+        .filter((script) => offPlaces.some((place) => encloses(script.structure, place)))
         .sort((left, right) => right.structure.length - left.structure.length);
     const active = new Map(activeById);
     const released = [];
     for (const script of scripts) {
         if (active.get(script.id) !== true)
             continue;
-        if (chosen.has(script.id))
+        if (change.chosen.has(script.id))
             continue;
         const used = controls.some((candidate) => candidate.id !== null
             && candidate.id !== script.id
@@ -11622,11 +11629,15 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // after the last cheat that needed it went off is residue: it keeps its
             // patch in the game for nothing. Switch it off in the same Apply, and let
             // the deepest-first order release an inner script before its parent is
-            // judged, so a chain of them clears in one pass. A script the user
-            // switched on in this Apply is their choice, not residue, whatever is
-            // under it.
+            // judged, so a chain of them clears in one pass. Only the scripts around
+            // what this Apply switches off are judged, and a script the user switched
+            // on in this Apply is their choice, not residue, whatever is under it.
             const chosen = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === true));
-            for (const scriptId of unusedActiveScripts(safeControls, activeById, chosen)) {
+            // Off now and on before, read from what is running rather than from what
+            // was touched: a setting switched on and back off again in this dialog
+            // was never on, and its script is no more residue than it was.
+            const switchedOff = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === false && activeBefore.get(recordId) === true));
+            for (const scriptId of unusedActiveScripts(safeControls, activeById, { chosen, switchedOff })) {
                 effective[scriptId] = { active: false, value: effective[scriptId]?.value ?? null };
                 effectiveTouchedActive.add(scriptId);
                 if (!touchedActive.has(scriptId))
@@ -16689,16 +16700,20 @@ function Content() {
         }
         // Project what this one toggle leaves behind, so the scripts it switched on
         // can be released again the moment nothing under them is on. A script left
-        // running keeps its patch in the game for no cheat at all. The row pressed
-        // on is the user's choice even when it is a script with nothing under it on,
-        // so it is never released by its own press.
+        // running keeps its patch in the game for no cheat at all. Only a press
+        // that switches something off can leave a script with nothing under it, and
+        // the row pressed on is the user's choice even when it is a script with
+        // nothing under it on.
         const projected = new Map(activeById);
         projected.set(recordId, active);
         const ancestors = active ? inactiveAncestorControls(control, controls, activeById) : [];
         for (const ancestor of ancestors)
             if (ancestor.id !== null)
                 projected.set(ancestor.id, true);
-        const released = unusedActiveScripts(controls, projected, active ? new Set([recordId]) : new Set());
+        const released = unusedActiveScripts(controls, projected, {
+            chosen: active ? new Set([recordId]) : new Set(),
+            switchedOff: active ? new Set() : new Set([recordId]),
+        });
         const releasedRows = released.flatMap((scriptId) => {
             const script = controls.find((candidate) => candidate.id === scriptId);
             return script ? [{ record_id: scriptId, active: false, value: null, structure: script.structure, label: controlRowLabel(script) }] : [];
