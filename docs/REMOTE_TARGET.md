@@ -28,7 +28,7 @@ Where the plugin is already installed, take the home and the settings directory 
 ssh <user>@<target-ip> 'cd <mirror>; python3 scripts/target_plugin_install.py authority'
 ```
 
-Its `user_home` and `settings_dir` are what `target_state_probe.py` and `target_ce_launch_probe.py` want. On a device with no install yet there is no authority to ask, so the remote `$HOME` above is what the first install is built on, and it is stated in the run rather than assumed.
+Its `user_home` and `settings_dir` are what `target_state_probe.py` and `target_ce_launch_probe.py` want; the state probe asks for them itself when they are not given. On a device with no install yet there is no authority to ask, so the remote `$HOME` above is what the first install is built on, and it is stated in the run rather than assumed.
 
 ## Putting the checkout on the target
 

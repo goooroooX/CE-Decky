@@ -4,9 +4,11 @@
 The probe reads only plugin-owned config/profile/session/launch records plus an
 allowlisted process marker used by the managed CE installer.  It never calls a
 mutation RPC, never prints launch-option contents, and never emits installer
-operation markers or environment values.  Take exact DECKY_USER_HOME and DECKY_PLUGIN_SETTINGS_DIR values from
-``target_plugin_install.py authority``, which reads them from the
-authenticated live backend. ``target_decky_env_probe.py`` reports the same
+operation markers or environment values.  The exact DECKY_USER_HOME and
+DECKY_PLUGIN_SETTINGS_DIR come from ``--home`` and ``--settings-dir``, or else
+from the resolver ``target_plugin_install.py authority`` uses, which asks the
+authenticated live backend through its read-only status call first and the
+verified install record after it. ``target_decky_env_probe.py`` reports the same
 paths from procfs and is the fallback, not the first route: SteamOS may deny a
 same-user sibling process the environment bytes it needs.
 """
@@ -243,6 +245,25 @@ def _profile_summary(profile: GameProfile | None) -> dict[str, object] | None:
         "remembered_count": len(profile.remembered),
         "pinned_count": len(profile.pinned),
     }
+
+
+def _profile_detail(profile: GameProfile | None) -> dict[str, object] | None:
+    """One game's summary, plus what it remembers and pins record by record.
+
+    Counts answer nothing when the question is which cheats the next Auto-load
+    replays: that is each remembered record's own state and value, and reading
+    them meant opening `profiles.json` by hand. Only for the one `--appid`, so
+    the per-profile list stays a summary.
+    """
+    summary = _profile_summary(profile)
+    if profile is None or summary is None:
+        return summary
+    summary["remembered"] = [
+        {"record_id": item.record_id, "active": item.active, "value": item.value}
+        for item in profile.remembered
+    ]
+    summary["pinned"] = list(profile.pinned)
+    return summary
 
 
 def _read_environ(path: Path) -> bytes | None:
@@ -530,7 +551,7 @@ def probe(home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = 
             raise ValueError("AppID must be between 1 and 4294967295")
         profile = next((item for item in profiles if item.app_id == app_id), None) if profile_error is None else None
         report["app_id"] = app_id
-        report["profile"] = _profile_summary(profile)
+        report["profile"] = _profile_detail(profile)
         launch = CELaunchSupervisor(home, ce_root, state_root, logging.getLogger("target-state-probe"))
         launch_observation = launch.inspect_owned_launch_record(app_id, proc_root=proc_root)
         report["owned_ce_launch"] = launch_observation
@@ -544,10 +565,38 @@ def probe(home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = 
     return report
 
 
+def _paths(home: Path | None, settings_dir: Path | None) -> tuple[Path, Path, str]:
+    """The two paths, from the command line or else from the install authority.
+
+    Every run used to start with `target_plugin_install.py authority` and a copy
+    of two paths out of its answer. This asks the same resolver that command
+    does, live backend first and the verified install record after it, and
+    says which one answered; a path given on the command line always wins.
+    """
+    if home is not None and settings_dir is not None:
+        return home, settings_dir, "arguments"
+    if __package__:
+        from .target_plugin_install import resolve_install_authority
+    else:
+        from target_plugin_install import resolve_install_authority
+    authority = resolve_install_authority()
+    reported_home = authority.get("user_home")
+    reported_settings = authority.get("settings_dir")
+    if home is None and not reported_home:
+        raise ValueError("the install authority reports no user_home; pass --home")
+    if settings_dir is None and not reported_settings:
+        raise ValueError("the install authority reports no settings_dir; pass --settings-dir")
+    return (
+        home if home is not None else Path(str(reported_home)),
+        settings_dir if settings_dir is not None else Path(str(reported_settings)),
+        f"authority:{authority.get('source', 'unknown')}",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--home", type=Path, required=True, help="exact DECKY_USER_HOME; `target_plugin_install.py authority` reports it as user_home")
-    parser.add_argument("--settings-dir", type=Path, required=True, help="exact DECKY_PLUGIN_SETTINGS_DIR; `target_plugin_install.py authority` reports it as settings_dir")
+    parser.add_argument("--home", type=Path, help="exact DECKY_USER_HOME; omitted, it is user_home from `target_plugin_install.py authority`")
+    parser.add_argument("--settings-dir", type=Path, help="exact DECKY_PLUGIN_SETTINGS_DIR; omitted, it is settings_dir from `target_plugin_install.py authority`")
     parser.add_argument("--appid", type=int, help="exact Steam/non-Steam AppID for profile/session/runtime correlation")
     parser.add_argument("--proc-root", type=Path, default=Path("/proc"), help=argparse.SUPPRESS)
     return parser
@@ -560,8 +609,10 @@ def main(argv: list[str] | None = None) -> int:
     except host_platform.UnsupportedHost as exc:
         return host_platform.refuse(exc)
     try:
-        report = probe(args.home, args.settings_dir, args.appid, args.proc_root)
-    except (OSError, ValueError) as exc:
+        home, settings_dir, paths_from = _paths(args.home, args.settings_dir)
+        report = probe(home, settings_dir, args.appid, args.proc_root)
+        report["paths_from"] = paths_from
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"target state probe: {exc}", file=sys.stderr)
         return 2
     json.dump(report, sys.stdout, indent=2, sort_keys=True, ensure_ascii=False)

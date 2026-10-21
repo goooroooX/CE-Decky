@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ce_decky.profiles import ProfileStore
 from ce_decky.session_protocol import PreparedSession, RuntimeStatus
 from scripts import target_state_probe
@@ -317,3 +319,46 @@ def test_the_report_says_which_games_a_stop_holds(tmp_path: Path):
     (state / "game_run_holds.json").write_text('{"schema": 99}')
     report = target_state_probe.probe(home, settings, None, tmp_path / "proc")
     assert report["run_holds"] == [] and report["run_holds_error"]
+
+
+def test_the_appid_profile_names_each_remembered_record_and_pin(tmp_path: Path):
+    # Which cheats the next Auto-load replays is each remembered record's own
+    # state and value; counts alone sent that question to profiles.json by hand.
+    from ce_decky.profiles import StartupPreference
+
+    home, settings, proc = tmp_path / "home", tmp_path / "settings", tmp_path / "proc"
+    for path in (home, settings, proc):
+        path.mkdir()
+    state = home / ".cheat-engine-decky" / "state"
+    state.mkdir(parents=True)
+    store = ProfileStore(state / "profiles.json")
+    sha = "a" * 64
+    store.upsert(app_id=77, name="Safe Game", is_shortcut=False, table_sha256=sha, target_process=None)
+    store.set_remembered(app_id=77, table_sha256=sha, states=[StartupPreference(5, True, None), StartupPreference(6, False, "100")])
+    store.set_pinned(app_id=77, table_sha256=sha, record_id=5, pinned=True)
+
+    report = target_state_probe.probe(home, settings, 77, proc)
+
+    assert report["profile"]["remembered"] == [
+        {"record_id": 5, "active": True, "value": None},
+        {"record_id": 6, "active": False, "value": "100"},
+    ]
+    assert report["profile"]["pinned"] == [5]
+    assert "remembered" not in report["profiles"][0]
+
+
+def test_omitted_paths_come_from_the_install_authority(monkeypatch, tmp_path: Path):
+    from scripts import target_plugin_install
+
+    monkeypatch.setattr(target_plugin_install, "resolve_install_authority", lambda: {
+        "source": "live_backend", "user_home": str(tmp_path / "home"), "settings_dir": str(tmp_path / "settings"),
+    })
+
+    assert target_state_probe._paths(None, None) == (tmp_path / "home", tmp_path / "settings", "authority:live_backend")
+    # A path given on the command line wins over the authority's.
+    assert target_state_probe._paths(tmp_path / "mine", None)[0] == tmp_path / "mine"
+    assert target_state_probe._paths(tmp_path / "a", tmp_path / "b") == (tmp_path / "a", tmp_path / "b", "arguments")
+
+    monkeypatch.setattr(target_plugin_install, "resolve_install_authority", lambda: {"source": "recorded_install", "user_home": None, "settings_dir": None})
+    with pytest.raises(ValueError, match="pass --home"):
+        target_state_probe._paths(None, None)
