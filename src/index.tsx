@@ -90,7 +90,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, activeCheatsUnder, offWithoutValues, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, activeCheatsUnder, offWithoutSwitchKeys, rememberedScriptChoices, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -3290,8 +3290,14 @@ function Content() {
     // nothing reads as on that the script no longer runs.
     const under = active ? [] : activeCheatsUnder(control, controls, activeById);
     for (const { control: child } of under) projected.set(child.id, false);
+    // A script remembered on was chosen in an earlier press, so switching off
+    // the last cheat under it does not take it down; the row pressed is the
+    // user's choice when it is switched on and not when it is switched off.
+    const chosen = rememberedScriptChoices(controls, current.remembered);
+    if (active) chosen.add(recordId);
+    else chosen.delete(recordId);
     const released = unusedActiveScripts(controls, projected, {
-      chosen: active ? new Set([recordId]) : new Set<number>(),
+      chosen,
       switchedOff: active ? new Set<number>() : new Set([recordId, ...under.map(({ control: child }) => child.id)]),
     });
     const releasedRows = released.flatMap((scriptId) => {
@@ -3407,17 +3413,19 @@ function Content() {
         // What went off under it is remembered off with it: one left on in the
         // profile switched the script back on at the next auto-load.
         const touched = new Set<number>([recordId, ...under.map(({ control: child }) => child.id)]);
-        // The scripts around this cheat are CE Decky's own bookkeeping, so they
-        // are sent to Cheat Engine but never written into the profile as a
-        // choice - the startup profile derives them from the table anyway. Only
-        // the pinned record itself is the user's, even when it is a script.
-        const managedScripts = new Set(released);
-        for (const scriptId of enclosingControlIds(controls)) {
-          if (scriptId !== recordId) managedScripts.add(scriptId);
-        }
-        const remembered = offWithoutValues(
+        // The scripts this press switched on or off by itself are CE Decky's
+        // own bookkeeping, so they are sent to Cheat Engine but never written
+        // into the profile as a choice - the startup profile derives them from
+        // the table anyway. Every other script keeps what is remembered for it,
+        // which is a choice made in an earlier press: clearing every enclosing
+        // script dropped one chosen with its settings off the moment another
+        // pinned cheat was pressed, and Auto-load no longer started it.
+        const managedScripts = new Set<number>(released);
+        for (const ancestor of ancestors) if (ancestor.id !== null) managedScripts.add(ancestor.id);
+        const remembered = offWithoutSwitchKeys(
           rememberedSelection(controls, finalState.results, current.remembered, touched, new Set<number>(), managedScripts),
           new Set(under.map(({ control: child }) => child.id)),
+          controls,
         );
         // Cheat Engine already holds this change, so Home must show it whether
         // or not the durable half lands. Publishing the snapshot first also
@@ -3509,17 +3517,17 @@ function Content() {
       // that ceased to exist when their script went off - and the next Auto-load
       // then waited for MemoryRecords that could never appear and failed.
       const touched = new Set<number>(result.deactivatedIds);
-      // Every script is off after this, so what went off inside one is
-      // remembered off with no value, exactly as when its script is switched
-      // off by hand: a child the script destroyed has no state row, and the
-      // value it had before was carried over beside "off", which Auto-load
-      // replayed as a write to a record that does not exist.
+      // Every script is off after this, so a switch that went off inside one
+      // is remembered off with no key, exactly as when its script is switched
+      // off by hand: the key read back can be its on key, and remembered beside
+      // "off" it is replayed under a running script as the cheat on. Values
+      // are kept; Auto-load writes none for a record whose script stays off.
       const wentOffWithScript = new Set(controls.flatMap((control) =>
         control.id !== null && touched.has(control.id) && sitsInsideScript(control, controls) ? [control.id] : []));
-      const remembered = offWithoutValues(rememberedSelection(
+      const remembered = offWithoutSwitchKeys(rememberedSelection(
         controls, finalState.results, current.remembered, touched, new Set<number>(),
         enclosingControlIds(controls),
-      ), wentOffWithScript);
+      ), wentOffWithScript, controls);
       // The game has already been changed. Whatever happens to the durable half,
       // Home shows what Cheat Engine actually holds now.
       recordLiveSnapshot(finalState.results, finalState.envelope);

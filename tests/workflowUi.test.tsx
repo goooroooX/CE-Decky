@@ -6504,10 +6504,10 @@ describe("Pinned live controls", () => {
     ],
   };
 
-  function renderChained(pinned: number[], before: any[], after: any[], inspection: any = chained) {
+  function renderChained(pinned: number[], before: any[], after: any[], inspection: any = chained, remembered: any[] = []) {
     const snapshot = pinnedStatus();
     snapshot.profiles[0].pinned = pinned;
-    snapshot.profiles[0].remembered = [];
+    snapshot.profiles[0].remembered = remembered;
     api.getStatus.mockResolvedValue(snapshot);
     api.inspectTableSha.mockResolvedValue(inspection);
     const live = liveRuntime();
@@ -6613,6 +6613,31 @@ describe("Pinned live controls", () => {
     expect(api.setRememberedCheats.mock.calls[0][2]).toEqual([
       { record_id: 31, active: false, value: null },
       { record_id: 32, active: false, value: null },
+    ]);
+  });
+
+  it("keeps a script chosen earlier on and remembered when the last cheat under it is switched off", async () => {
+    // `Jump Height` was switched on by hand and is remembered on. Switching
+    // off `Multiplier` under it released it as residue, because only a choice
+    // made in the same press counted, and the next press anywhere cleared its
+    // remembered entry because every enclosing script was treated as CE
+    // Decky's own.
+    const state = (on: number[], generation: number) => [30, 31, 32].map((id) => ({
+      generation, record_id: id, ok: true, active: on.includes(id), value: id === 32 ? "2" : null, error: null,
+    }));
+    renderChained([32], state([30, 31, 32], 1), state([30, 31], 2), chained, [
+      { record_id: 31, active: true, value: null },
+      { record_id: 32, active: true, value: "2" },
+    ]);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-32")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1].map((item: any) => [item.record_id, item.active])).toEqual([[32, false]]);
+    await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
+    expect(api.setRememberedCheats.mock.calls[0][2]).toEqual([
+      { record_id: 31, active: true, value: null },
+      { record_id: 32, active: false, value: "2" },
     ]);
   });
 
@@ -6779,10 +6804,10 @@ describe("Pinned live controls", () => {
     expect(remembered.find((item: any) => item.record_id === 21)).toEqual({ record_id: 21, active: false, value: null });
   });
 
-  it("forgets the value of a cheat Disable all switched off inside a script", async () => {
-    // The script took its child with it, so the child had no state row and
-    // the value remembered before was carried over beside "off". Auto-load
-    // replayed that as a write to a record that does not exist.
+  it("keeps the values of what Disable all switched off, and forgets only a switch's key", async () => {
+    // A value is what the user set and is kept: Auto-load writes none for a
+    // record whose script stays off. A switch's key is the table's, and the on
+    // key replayed beside off under a running script is the cheat on.
     const nested = {
       ...inspect,
       total_entries: 3,
@@ -6790,18 +6815,21 @@ describe("Pinned live controls", () => {
         { id: 20, description: "Parent", path: ["Parent"], structure: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
         { id: 21, description: "Child", path: ["Parent", "Child"], structure: ["Parent", "Child"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
         { id: 23, description: "Gold", path: ["Gold"], structure: ["Gold"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 24, description: "bFlag", path: ["Parent", "bFlag"], structure: ["Parent", "bFlag"], variable_type: "Byte", kind: "dropdown", group_header: false, has_assembler_script: false, dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false, switch_on_value: "1" },
       ],
     };
     const snapshot = status(true);
     snapshot.profiles[0].remembered = [
       { record_id: 21, active: true, value: "40" },
       { record_id: 23, active: true, value: "500" },
+      { record_id: 24, active: true, value: "1" },
     ];
     api.getStatus.mockResolvedValue(snapshot);
     const results = [
       { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
       { generation: 2, record_id: 21, ok: true, active: true, value: "40", error: null },
       { generation: 3, record_id: 23, ok: true, active: true, value: "500", error: null },
+      { generation: 3, record_id: 24, ok: true, active: true, value: "1", error: null },
     ];
     api.inspectTableSha.mockResolvedValue(nested);
     const live = liveRuntime();
@@ -6810,13 +6838,14 @@ describe("Pinned live controls", () => {
     const after = [
       { generation: 4, record_id: 20, ok: true, active: false, value: null, error: null },
       { generation: 5, record_id: 23, ok: true, active: false, value: "500", error: null },
+      { generation: 5, record_id: 24, ok: true, active: false, value: "1", error: null },
     ];
     runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
     runtimeClient.queryRuntimeControlsPartial
       .mockResolvedValueOnce({ envelope: live, results, unavailable: [] })
       .mockResolvedValue({ envelope: live, results: after, unavailable: [21] });
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 3, active: 3, deactivated: 3, deactivatedIds: [21, 23, 20], envelope: live,
+      queried: 4, active: 4, deactivated: 4, deactivatedIds: [21, 24, 23, 20], envelope: live,
     });
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
@@ -6826,9 +6855,9 @@ describe("Pinned live controls", () => {
 
     await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
     const [, , remembered] = api.setRememberedCheats.mock.calls[0];
-    expect(remembered.find((item: any) => item.record_id === 21)).toEqual({ record_id: 21, active: false, value: null });
-    // A cheat outside any script was not destroyed and keeps what it read.
+    expect(remembered.find((item: any) => item.record_id === 21)).toEqual({ record_id: 21, active: false, value: "40" });
     expect(remembered.find((item: any) => item.record_id === 23)).toEqual({ record_id: 23, active: false, value: "500" });
+    expect(remembered.find((item: any) => item.record_id === 24)).toEqual({ record_id: 24, active: false, value: null });
   });
 
   it("says the game may still be changed when a failed Apply already mutated it", async () => {
@@ -8056,6 +8085,43 @@ describe("Selection and staged-change persistence", () => {
     }
   });
 
+  it("keeps a script chosen earlier on when Apply switches off the last cheat under it", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    const before = [
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: true, value: "95", error: null },
+    ];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: before });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: before, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: before });
+    render(<CheatSelectionModal
+      appId={10}
+      inspection={nestedInspection as any}
+      live
+      pinned={[]}
+      startupPreferences={[]}
+      rememberedPreferences={[{ record_id: 20, active: true, value: null }, { record_id: 21, active: true, value: "95" }]}
+      configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])}
+      onApplied={onApplied}
+      onCancel={vi.fn()}
+    />);
+    const after = [before[0], { ...before[1], active: false }];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: after });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: after, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: after });
+
+    fireEvent.click(within(await screen.findByTestId("cheat-row-21")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1].map((item: any) => [item.record_id, item.active])).toEqual([[21, false]]);
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    expect(onApplied.mock.calls[0][0]).toEqual(expect.arrayContaining([{ record_id: 20, active: true, value: null }]));
+  });
+
   it("keeps a script the user switched on with its setting off, and remembers it on", async () => {
     // The same rule as above read from structure alone switched this script
     // straight back off in the Apply that switched it on, with no message, and
@@ -8140,8 +8206,9 @@ describe("Selection and staged-change persistence", () => {
 
   it("switches what is on under a script off when Apply switches the script off", async () => {
     // A flag under it that the hook reader did not prove safe is released, not
-    // written, and both are remembered off with no value: off with a value is
-    // replayed as a write to a record whose script is off.
+    // written, and remembered off with no key: the on key it still holds,
+    // replayed beside off under a running script, is the cheat on. The value
+    // is the user's and is kept.
     const inspection = {
       ...nestedInspection,
       total_entries: 3,
@@ -8194,7 +8261,7 @@ describe("Selection and staged-change persistence", () => {
     expect(flag.switch_values).toBeUndefined();
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(onApplied.mock.calls[0][0]).toEqual(expect.arrayContaining([
-      { record_id: 21, active: false, value: null },
+      { record_id: 21, active: false, value: "95" },
       { record_id: 22, active: false, value: null },
     ]));
   });
@@ -8273,10 +8340,11 @@ describe("Selection and staged-change persistence", () => {
     expect(desired.find((item: any) => item.record_id === 22)).toBeUndefined();
   });
 
-  it("drops a script an older build left in the profile even when it stays on", async () => {
-    // The script is legitimately on, because a cheat inside it is on, so
-    // nothing releases it. It is still not a choice the user made, and the
-    // startup profile derives it from the table, so the stale entry goes.
+  it("keeps a script chosen earlier remembered when Apply changes a cheat under it", async () => {
+    // Nothing CE Decky switches on by itself is ever remembered, so a script
+    // that is remembered was the user's choice. Every untouched enclosing
+    // script was cleared from the profile on any Apply, and Auto-load no
+    // longer started one chosen with its settings off.
     runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results: [] });
     const results = [
       { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
@@ -8309,10 +8377,9 @@ describe("Selection and staged-change persistence", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
-    // The script stays on in Cheat Engine; only the profile entry goes.
     expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]
       .find((item: any) => item.record_id === 20)).toBeUndefined();
-    expect(onApplied.mock.calls[0][0].map((item: any) => item.record_id)).toEqual([21]);
+    expect(onApplied.mock.calls[0][0]).toEqual(expect.arrayContaining([{ record_id: 20, active: true, value: null }]));
   });
 
   it("saves a value pre-set before the game without writing it or failing", async () => {

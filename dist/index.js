@@ -5553,18 +5553,21 @@ function sitsInsideScript(control, controls) {
     return controls.some((candidate) => candidate.id !== null && candidate.kind === "script" && encloses(candidate.structure, control.structure));
 }
 /**
- * What to remember for a record that went off with its script: off, and no
- * value.
+ * What to remember for a switch that went off with its script: off, and no
+ * key.
  *
- * Off with a value is replayed by auto-load as a write of that value, and with
- * the script off the record has no address to write to, so the start fails on
- * it. Off with no value is dropped there instead while its script is off. A
- * switch released with its on key still in the game would also have that key
- * read back and remembered, and replayed it is the cheat on. A value the user
- * typed is kept apart, in the table's configured values, and is not lost.
+ * A switch's value is not something the user typed: it is one of the two keys
+ * the table declares, and a switch released with its on key still in the game
+ * has that key read back. Remembered beside off, it is replayed by Auto-load
+ * under a running script as a write of the on key, which is the cheat on.
+ * Every other value is left as it is: forgetting what a cheat held is not
+ * this function's to decide, and a value is never written at startup for a
+ * record that stays off under a script that stays off, which is the
+ * backend's rule, so keeping it costs nothing.
  */
-function offWithoutValues(remembered, wentOff) {
-    return remembered.map((item) => wentOff.has(item.record_id) && item.active === false ? { ...item, value: null } : item);
+function offWithoutSwitchKeys(remembered, wentOff, controls) {
+    const switches = new Set(controls.flatMap((control) => control.id !== null && controlIsSwitch(control) ? [control.id] : []));
+    return remembered.map((item) => wentOff.has(item.record_id) && item.active === false && switches.has(item.record_id) ? { ...item, value: null } : item);
 }
 /**
  * Enclosing scripts this change leaves on with nothing under them on, deepest
@@ -5585,7 +5588,8 @@ function offWithoutValues(remembered, wentOff) {
  *
  * Structure alone cannot tell that machinery from a script that is a cheat in
  * its own right with a setting under it, so `chosen` carries what it cannot
- * see: the scripts the user switched on in this press or this Apply. One of
+ * see: the scripts the user switched on in this press or this Apply, and
+ * those remembered on from an earlier one (`rememberedScriptChoices`). One of
  * those is never residue, even when the same Apply switches off something
  * under it, and while it is on it keeps the scripts around it in use. Both are
  * required rather than defaulted, so a caller cannot forget either.
@@ -5618,6 +5622,19 @@ function unusedActiveScripts(controls, activeById, change) {
         released.push(script.id);
     }
     return released;
+}
+/**
+ * The scripts the user chose, read from what is remembered for this table.
+ *
+ * What is remembered is only ever the user's: no public build has written a
+ * script CE Decky switched on by itself there. So a script remembered on was
+ * switched on by hand, in an earlier press or an earlier session, and stays
+ * the user's choice when a later press switches something under it off,
+ * exactly as one chosen in the same press does.
+ */
+function rememberedScriptChoices(controls, remembered) {
+    const scripts = new Set(controls.flatMap((control) => control.id !== null && control.kind === "script" ? [control.id] : []));
+    return new Set(remembered.flatMap((item) => item.active === true && scripts.has(item.record_id) ? [item.record_id] : []));
 }
 /**
  * Every enclosing control that is switched off, outermost first.
@@ -11741,7 +11758,14 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // judged, so a chain of them clears in one pass. Only the scripts around
             // what this Apply switches off are judged, and a script the user switched
             // on in this Apply is their choice, not residue, whatever is under it.
-            const chosen = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === true));
+            //
+            // A script remembered on was chosen in an earlier press, and is the
+            // user's for the same reason, unless this Apply switches it off.
+            const chosen = new Set([
+                ...[...touchedActive].filter((recordId) => effective[recordId]?.active === true),
+                ...[...rememberedScriptChoices(safeControls, rememberedPreferences)]
+                    .filter((recordId) => effective[recordId]?.active !== false),
+            ]);
             // Off now and on before, read from what is running rather than from what
             // was touched: a setting switched on and back off again in this dialog
             // was never on, and its script is no more residue than it was.
@@ -11753,15 +11777,12 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     pluginManaged.add(scriptId);
                 activeById.set(scriptId, false);
             }
-            // An enclosing script this Apply neither switched on nor released is
-            // still not a choice: it is on because something inside it is, and the
-            // startup profile derives it from the table anyway. Without this, a
-            // script left on by an older build stayed in the profile until the cheat
-            // under it happened to be switched off.
-            for (const scriptId of enclosingIds) {
-                if (!touchedActive.has(scriptId))
-                    pluginManaged.add(scriptId);
-            }
+            // A script this Apply did not touch keeps what is remembered for it:
+            // nothing is remembered for one CE Decky switched on by itself, so what
+            // is there is a choice the user made in an earlier press. Clearing every
+            // untouched enclosing script dropped a script chosen with its settings
+            // off the moment anything else was applied, and Auto-load no longer
+            // started it.
             // A value whose enclosing script is still off has no address yet, so it
             // cannot be written now. That is a pre-game setting, not an error: keep it
             // in this table's own config and write it when the script is switched on.
@@ -11779,7 +11800,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
                     : [];
             });
-            const prospectiveRemembered = offWithoutValues(rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript);
+            const prospectiveRemembered = offWithoutSwitchKeys(rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript, safeControls);
             const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
             if (budgetError)
                 throw new Error(budgetError);
@@ -11957,7 +11978,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 const typed = staged[result.record_id]?.value ?? null;
                 return displayableControlValue(result.value) === null && typed !== null ? { ...result, value: typed } : result;
             });
-            const remembered = offWithoutValues(rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript);
+            const remembered = offWithoutSwitchKeys(rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript, safeControls);
             const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
             if (finalBudgetError) {
                 throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
@@ -16839,8 +16860,16 @@ function Content() {
         const under = active ? [] : activeCheatsUnder(control, controls, activeById);
         for (const { control: child } of under)
             projected.set(child.id, false);
+        // A script remembered on was chosen in an earlier press, so switching off
+        // the last cheat under it does not take it down; the row pressed is the
+        // user's choice when it is switched on and not when it is switched off.
+        const chosen = rememberedScriptChoices(controls, current.remembered);
+        if (active)
+            chosen.add(recordId);
+        else
+            chosen.delete(recordId);
         const released = unusedActiveScripts(controls, projected, {
-            chosen: active ? new Set([recordId]) : new Set(),
+            chosen,
             switchedOff: active ? new Set() : new Set([recordId, ...under.map(({ control: child }) => child.id)]),
         });
         const releasedRows = released.flatMap((scriptId) => {
@@ -16952,16 +16981,18 @@ function Content() {
                 // What went off under it is remembered off with it: one left on in the
                 // profile switched the script back on at the next auto-load.
                 const touched = new Set([recordId, ...under.map(({ control: child }) => child.id)]);
-                // The scripts around this cheat are CE Decky's own bookkeeping, so they
-                // are sent to Cheat Engine but never written into the profile as a
-                // choice - the startup profile derives them from the table anyway. Only
-                // the pinned record itself is the user's, even when it is a script.
+                // The scripts this press switched on or off by itself are CE Decky's
+                // own bookkeeping, so they are sent to Cheat Engine but never written
+                // into the profile as a choice - the startup profile derives them from
+                // the table anyway. Every other script keeps what is remembered for it,
+                // which is a choice made in an earlier press: clearing every enclosing
+                // script dropped one chosen with its settings off the moment another
+                // pinned cheat was pressed, and Auto-load no longer started it.
                 const managedScripts = new Set(released);
-                for (const scriptId of enclosingControlIds(controls)) {
-                    if (scriptId !== recordId)
-                        managedScripts.add(scriptId);
-                }
-                const remembered = offWithoutValues(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), managedScripts), new Set(under.map(({ control: child }) => child.id)));
+                for (const ancestor of ancestors)
+                    if (ancestor.id !== null)
+                        managedScripts.add(ancestor.id);
+                const remembered = offWithoutSwitchKeys(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), managedScripts), new Set(under.map(({ control: child }) => child.id)), controls);
                 // Cheat Engine already holds this change, so Home must show it whether
                 // or not the durable half lands. Publishing the snapshot first also
                 // keeps a failed persistence from leaving the panel showing the state
@@ -17051,13 +17082,13 @@ function Content() {
             // that ceased to exist when their script went off - and the next Auto-load
             // then waited for MemoryRecords that could never appear and failed.
             const touched = new Set(result.deactivatedIds);
-            // Every script is off after this, so what went off inside one is
-            // remembered off with no value, exactly as when its script is switched
-            // off by hand: a child the script destroyed has no state row, and the
-            // value it had before was carried over beside "off", which Auto-load
-            // replayed as a write to a record that does not exist.
+            // Every script is off after this, so a switch that went off inside one
+            // is remembered off with no key, exactly as when its script is switched
+            // off by hand: the key read back can be its on key, and remembered beside
+            // "off" it is replayed under a running script as the cheat on. Values
+            // are kept; Auto-load writes none for a record whose script stays off.
             const wentOffWithScript = new Set(controls.flatMap((control) => control.id !== null && touched.has(control.id) && sitsInsideScript(control, controls) ? [control.id] : []));
-            const remembered = offWithoutValues(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), enclosingControlIds(controls)), wentOffWithScript);
+            const remembered = offWithoutSwitchKeys(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), enclosingControlIds(controls)), wentOffWithScript, controls);
             // The game has already been changed. Whatever happens to the durable half,
             // Home shows what Cheat Engine actually holds now.
             recordLiveSnapshot(finalState.results, finalState.envelope);

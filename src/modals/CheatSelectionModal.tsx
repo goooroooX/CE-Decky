@@ -53,8 +53,9 @@ import {
   switchesLeftOn,
   switchesToHoldOff,
   unusedActiveScripts,
+  rememberedScriptChoices,
   activeCheatsUnder,
-  offWithoutValues,
+  offWithoutSwitchKeys,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
 import { describeError, leadWithCause } from "../errors";
@@ -695,7 +696,14 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // judged, so a chain of them clears in one pass. Only the scripts around
       // what this Apply switches off are judged, and a script the user switched
       // on in this Apply is their choice, not residue, whatever is under it.
-      const chosen = new Set([...touchedActive].filter((recordId) => effective[recordId]?.active === true));
+      //
+      // A script remembered on was chosen in an earlier press, and is the
+      // user's for the same reason, unless this Apply switches it off.
+      const chosen = new Set([
+        ...[...touchedActive].filter((recordId) => effective[recordId]?.active === true),
+        ...[...rememberedScriptChoices(safeControls, rememberedPreferences)]
+          .filter((recordId) => effective[recordId]?.active !== false),
+      ]);
       // Off now and on before, read from what is running rather than from what
       // was touched: a setting switched on and back off again in this dialog
       // was never on, and its script is no more residue than it was.
@@ -707,14 +715,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         if (!touchedActive.has(scriptId)) pluginManaged.add(scriptId);
         activeById.set(scriptId, false);
       }
-      // An enclosing script this Apply neither switched on nor released is
-      // still not a choice: it is on because something inside it is, and the
-      // startup profile derives it from the table anyway. Without this, a
-      // script left on by an older build stayed in the profile until the cheat
-      // under it happened to be switched off.
-      for (const scriptId of enclosingIds) {
-        if (!touchedActive.has(scriptId)) pluginManaged.add(scriptId);
-      }
+      // A script this Apply did not touch keeps what is remembered for it:
+      // nothing is remembered for one CE Decky switched on by itself, so what
+      // is there is a choice the user made in an earlier press. Clearing every
+      // untouched enclosing script dropped a script chosen with its settings
+      // off the moment anything else was applied, and Auto-load no longer
+      // started it.
 
       // A value whose enclosing script is still off has no address yet, so it
       // cannot be written now. That is a pre-game setting, not an error: keep it
@@ -732,9 +738,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
           : [];
       });
-      const prospectiveRemembered = offWithoutValues(rememberedSelection(
+      const prospectiveRemembered = offWithoutSwitchKeys(rememberedSelection(
         safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged,
-      ), wentOffWithScript);
+      ), wentOffWithScript, safeControls);
       const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
       if (budgetError) throw new Error(budgetError);
 
@@ -918,9 +924,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         const typed = staged[result.record_id]?.value ?? null;
         return displayableControlValue(result.value) === null && typed !== null ? { ...result, value: typed } : result;
       });
-      const remembered = offWithoutValues(rememberedSelection(
+      const remembered = offWithoutSwitchKeys(rememberedSelection(
         safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged,
-      ), wentOffWithScript);
+      ), wentOffWithScript, safeControls);
       const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
       if (finalBudgetError) {
         throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));

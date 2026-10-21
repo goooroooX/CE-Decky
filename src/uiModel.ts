@@ -2655,22 +2655,27 @@ export function sitsInsideScript(control: TableControl, controls: readonly Table
 }
 
 /**
- * What to remember for a record that went off with its script: off, and no
- * value.
+ * What to remember for a switch that went off with its script: off, and no
+ * key.
  *
- * Off with a value is replayed by auto-load as a write of that value, and with
- * the script off the record has no address to write to, so the start fails on
- * it. Off with no value is dropped there instead while its script is off. A
- * switch released with its on key still in the game would also have that key
- * read back and remembered, and replayed it is the cheat on. A value the user
- * typed is kept apart, in the table's configured values, and is not lost.
+ * A switch's value is not something the user typed: it is one of the two keys
+ * the table declares, and a switch released with its on key still in the game
+ * has that key read back. Remembered beside off, it is replayed by Auto-load
+ * under a running script as a write of the on key, which is the cheat on.
+ * Every other value is left as it is: forgetting what a cheat held is not
+ * this function's to decide, and a value is never written at startup for a
+ * record that stays off under a script that stays off, which is the
+ * backend's rule, so keeping it costs nothing.
  */
-export function offWithoutValues(
+export function offWithoutSwitchKeys(
   remembered: readonly StartupPreference[],
   wentOff: ReadonlySet<number>,
+  controls: readonly TableControl[],
 ): StartupPreference[] {
+  const switches = new Set(controls.flatMap((control) =>
+    control.id !== null && controlIsSwitch(control) ? [control.id] : []));
   return remembered.map((item) =>
-    wentOff.has(item.record_id) && item.active === false ? { ...item, value: null } : item);
+    wentOff.has(item.record_id) && item.active === false && switches.has(item.record_id) ? { ...item, value: null } : item);
 }
 
 /**
@@ -2692,7 +2697,8 @@ export function offWithoutValues(
  *
  * Structure alone cannot tell that machinery from a script that is a cheat in
  * its own right with a setting under it, so `chosen` carries what it cannot
- * see: the scripts the user switched on in this press or this Apply. One of
+ * see: the scripts the user switched on in this press or this Apply, and
+ * those remembered on from an earlier one (`rememberedScriptChoices`). One of
  * those is never residue, even when the same Apply switches off something
  * under it, and while it is on it keeps the scripts around it in use. Both are
  * required rather than defaulted, so a caller cannot forget either.
@@ -2729,6 +2735,24 @@ export function unusedActiveScripts(
     released.push(script.id);
   }
   return released;
+}
+
+/**
+ * The scripts the user chose, read from what is remembered for this table.
+ *
+ * What is remembered is only ever the user's: no public build has written a
+ * script CE Decky switched on by itself there. So a script remembered on was
+ * switched on by hand, in an earlier press or an earlier session, and stays
+ * the user's choice when a later press switches something under it off,
+ * exactly as one chosen in the same press does.
+ */
+export function rememberedScriptChoices(
+  controls: readonly TableControl[],
+  remembered: readonly StartupPreference[],
+): Set<number> {
+  const scripts = new Set(controls.flatMap((control) =>
+    control.id !== null && control.kind === "script" ? [control.id] : []));
+  return new Set(remembered.flatMap((item) => item.active === true && scripts.has(item.record_id) ? [item.record_id] : []));
 }
 
 /**

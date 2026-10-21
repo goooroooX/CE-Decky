@@ -72,7 +72,7 @@ import {
   scriptListedControlIds,
   unusedActiveScripts,
   activeCheatsUnder,
-  offWithoutValues,
+  offWithoutSwitchKeys,
   rememberedSelectionBudgetError,
   runtimeAttachCandidates,
   safeActionableControls,
@@ -1644,8 +1644,8 @@ describe("Executable-content review", () => {
     const active = new Map<number, boolean | null>([[1, true], [2, true], [3, false], [4, false]]);
     expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([4]) })).toEqual([]);
     expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set() })).toEqual([]);
-    // Switching off the setting under it is the accepted gap: nothing durable
-    // says it was chosen, so it goes with its parent.
+    // Switching off the setting under it releases it unless it is in
+    // `chosen`, which is why its callers add the scripts remembered on.
     expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([2, 1]);
   });
 
@@ -1681,16 +1681,22 @@ describe("Executable-content review", () => {
     expect(inactiveAncestorControl(values[1], values, new Map([[40, false], [41, false]]))).toBeNull();
   });
 
-  it("remembers what went off with its script as off with no value", () => {
-    // Off with a value is replayed as a write to a record whose script is off,
-    // and for a released switch the value is its on key.
-    expect(offWithoutValues([
+  it("forgets the key of a switch that went off with its script, and keeps every value", () => {
+    // A released switch can read back its on key, which replayed beside off
+    // under a running script is the cheat on. A value is the user's and is
+    // kept: Auto-load writes none for a record whose script stays off.
+    const flag: TableControl = {
+      ...control(5, "dropdown", "bFlag"), path: ["Enable 1.0", "bFlag"], structure: ["Enable 1.0", "bFlag"],
+      dropdown_values: [["0", "Off"], ["1", "On"]], switch_on_value: "1",
+    };
+    const amount: TableControl = { ...control(6, "value", "Amount"), path: ["Enable 1.0", "Amount"], structure: ["Enable 1.0", "Amount"] };
+    expect(offWithoutSwitchKeys([
       { record_id: 5, active: false, value: "1" },
-      { record_id: 6, active: false, value: "1" },
+      { record_id: 6, active: false, value: "40" },
       { record_id: 7, active: true, value: "1" },
-    ], new Set([5, 7]))).toEqual([
+    ], new Set([5, 6, 7]), [flag, amount])).toEqual([
       { record_id: 5, active: false, value: null },
-      { record_id: 6, active: false, value: "1" },
+      { record_id: 6, active: false, value: "40" },
       { record_id: 7, active: true, value: "1" },
     ]);
   });
