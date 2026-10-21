@@ -2564,7 +2564,8 @@ describe("Home panel and managed setup", () => {
     api.getCELaunchCapability.mockResolvedValue({ ...launch, game: { ...launch.game, running: false } });
     renderContent();
     await screen.findByText("No game selected");
-    fireEvent.click(await screen.findByRole("button", { name: "Choose" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Choose" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Choose" }));
     await waitFor(() => expect(modalState.nodes.length).toBeGreaterThan(0));
     await act(async () => { await modalState.nodes[0].props.onPick(game); });
     expect(await screen.findByText(/Steam · game\.exe/)).toBeTruthy();
@@ -2594,13 +2595,15 @@ describe("Home panel and managed setup", () => {
     api.getCELaunchCapability.mockResolvedValue({ ...launch, game: { ...launch.game, running: false } });
     renderContent();
     await screen.findByText("No game selected");
-    fireEvent.click(await screen.findByRole("button", { name: "Choose" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Choose" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Choose" }));
     await waitFor(() => expect(modalState.nodes.length).toBeGreaterThan(0));
     await act(async () => { await modalState.nodes[0].props.onPick(game); });
     expect(await screen.findByText(/Steam · game\.exe/)).toBeTruthy();
 
     modalState.nodes.length = 0;
     modalState.events.length = 0;
+    await waitFor(() => expect((screen.getByRole("button", { name: "Change" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Change" }));
     await waitFor(() => expect(modalState.nodes.length).toBeGreaterThan(0));
     const picker = modalState.nodes.find((node: any) => node.type === GamePickerModal);
