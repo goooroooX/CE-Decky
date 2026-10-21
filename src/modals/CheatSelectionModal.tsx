@@ -801,6 +801,14 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         const active = effectiveTouchedActive.has(control.id) ? state.active : null;
         // Emptying the field asks for the stored configuration to be dropped,
         // not for a blank to be written into the game's memory.
+        //
+        // Review note (static review 2026-10-21, F5): a value edited on a cheat
+        // that stays off is still written here, once and unfrozen, by the
+        // maintainer's decision. That is Cheat Engine's own meaning of editing
+        // a value that is not frozen, such as setting an amount once, and the
+        // row goes on saying off because nothing holds it. Startup is where the
+        // review was followed: `_without_values_nothing_reads` in
+        // `session_protocol.py` writes no value for a cheat that stays off.
         const value = touchedValues.has(control.id) && !deferredValues.has(control.id)
           ? displayableControlValue(state.value)
           : null;

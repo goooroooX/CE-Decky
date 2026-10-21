@@ -1865,9 +1865,53 @@ def _startup_expansion(
         if not getattr(controls.get(preference.record_id), "attach_only", False)
     ]
     expanded = _without_orphan_off_preferences(
-        _with_enclosing_scripts(kept, controls, ambiguous), controls
+        _without_values_nothing_reads(_with_enclosing_scripts(kept, controls, ambiguous), controls),
+        controls,
     )
     return expanded, controls, ambiguous
+
+
+def _without_values_nothing_reads(
+    preferences: list[StartupPreference],
+    controls: dict[int, object],
+) -> list[StartupPreference]:
+    """Keep a value write only for a record this startup switches on or runs a script for.
+
+    A value is written at startup for two reasons and no others: the record is
+    switched on, so the value is what it holds; or every script it sits inside
+    is switched on by this same startup, so the value is that script's setting,
+    which the script reads whether or not the record itself is frozen. Anything
+    else wrote game memory for a cheat that stays off: a value typed for later,
+    or one left beside an off record, became a write on every launch, and under
+    a script this startup leaves off it was a write to a record that does not
+    exist, which failed the whole Auto-load. The value stays in the profile
+    either way; only the startup write is dropped.
+
+    Review note (static review 2026-10-21, F5): the review asked for a value
+    typed while a cheat is off never to reach game memory. Live Apply still
+    writes it once, unfrozen, by the maintainer's decision: that is Cheat
+    Engine's own meaning of editing a value that is not frozen, such as setting
+    an amount once. What the review asked of startup is what this does.
+    """
+    on = {item.record_id for item in preferences if item.active is True}
+    kept: list[StartupPreference] = []
+    for preference in preferences:
+        if preference.value is None or preference.active is True:
+            kept.append(preference)
+            continue
+        control = controls.get(preference.record_id)
+        if control is None:
+            # Not this rule's to judge: the plan below refuses a record the
+            # exact table does not have, by name.
+            kept.append(preference)
+            continue
+        enclosing = _enclosing_script_ids(control, controls)
+        if enclosing and all(script_id in on for script_id in enclosing):
+            kept.append(preference)
+            continue
+        if preference.active is not None:
+            kept.append(replace(preference, value=None))
+    return kept
 
 
 def _startup_actions(preferences: Iterable[StartupPreference], inspection: TableInspection) -> list[StartupAction]:

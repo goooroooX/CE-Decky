@@ -1043,7 +1043,9 @@ def test_autoload_remembered_state_overlays_legacy_startup_only_when_enabled(tmp
     profiles.set_autoload(app_id=142, table_sha256=artifact.sha256, enabled=True)
     enabled = SessionStore(tmp_path / "state-enabled", tmp_path).prepare(profiles.get(142), blob, inspection, CE_SHA)  # type: ignore[arg-type]
     enabled_actions = parse_descriptor(Path(enabled.descriptor_path).read_bytes()).startup
-    assert [(item.kind, item.value) for item in enabled_actions] == [("value", "1"), ("active", "0")]
+    # Remembered off overlays the legacy on, and a record that stays off is not
+    # written: its value is kept in the profile for when it is switched on.
+    assert [(item.kind, item.value) for item in enabled_actions] == [("active", "0")]
 
 
 def test_remembered_value_overlay_preserves_startup_active_field():
