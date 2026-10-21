@@ -1098,6 +1098,26 @@ def test_a_phrase_is_narrowed_the_way_each_runner_reads_it():
     assert qa._pytest_filter("quiesce") == "quiesce"
 
 
+def test_several_names_run_the_cases_matching_any_of_them():
+    """`--name` was one value, so a second replaced the first in silence.
+
+    A run naming a case in each of two files ran one case and reported a pass
+    for both.
+    """
+    [frontend] = qa._explicit_vitest_stages(["tests/a.test.ts", "tests/b.test.tsx"], ["value off alone", "chosen earlier"])
+    assert frontend.command[-2:] == ("-t", "(?:value off alone)|(?:chosen earlier)")
+    assert frontend.named_cases is True
+    [backend] = qa._explicit_pytest_stages(["tests/test_qa.py"], ["says what failed", "quiesce"])
+    assert backend.command[-2:] == ("-k", "(says and what and failed) or (quiesce)")
+    # One name is exactly what it was.
+    [single] = qa._explicit_vitest_stages(["tests/a.test.ts"], ["value off alone"])
+    assert single.command[-2:] == ("-t", "value off alone")
+
+    stage = qa.Stage("frontend-explicit")
+    rerun = qa._qa_rerun_command("auto", [], stage, ["tests/a.test.ts"], ["one", "two words"])
+    assert "--name one --name 'two words'" in rerun
+
+
 def test_a_pytest_selection_that_collected_nothing_says_so_rather_than_a_number(tmp_path, monkeypatch):
     """`pytest` prints not one character when its `-k` matched nothing.
 

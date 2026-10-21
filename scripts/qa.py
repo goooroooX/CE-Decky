@@ -686,7 +686,26 @@ def _frontend_stage(key: str, relative_module: str, *arguments: str) -> Stage:
     return Stage(key, (node, str(module), *arguments), timeout=1200.0)
 
 
-def _explicit_vitest_stages(selections: list[str], name: str | None = None) -> list[Stage]:
+def _names(name: str | Iterable[str] | None) -> tuple[str, ...]:
+    """Every `--name` given, in order: one string is one name."""
+    if name is None:
+        return ()
+    if isinstance(name, str):
+        return (name,) if name else ()
+    return tuple(item for item in name if item)
+
+
+def _vitest_filter(names: tuple[str, ...]) -> str:
+    """Several `--name`s as one `-t`, which vitest reads as a pattern.
+
+    A case runs when any of them matches. `--name` was a single value, so a
+    second one replaced the first in silence and a run that named two cases
+    ran one of them.
+    """
+    return names[0] if len(names) == 1 else "|".join(f"(?:{name})" for name in names)
+
+
+def _explicit_vitest_stages(selections: list[str], name: str | Iterable[str] | None = None) -> list[Stage]:
     """One focused component run, the frontend counterpart of `--pytest`.
 
     The whole component stage is half a minute and covers eighteen files, so
@@ -700,9 +719,10 @@ def _explicit_vitest_stages(selections: list[str], name: str | None = None) -> l
         return []
     # `-t` is vitest's own, for the same reason: the component suite is 45
     # seconds and one case of it is under two.
-    narrowed = (*selections, "-t", name) if name else tuple(selections)
+    names = _names(name)
+    narrowed = (*selections, "-t", _vitest_filter(names)) if names else tuple(selections)
     stage = _frontend_stage("frontend-explicit", "vitest/vitest.mjs", "run", "--reporter=dot", *narrowed)
-    stage.named_cases = bool(name)
+    stage.named_cases = bool(names)
     return [stage]
 
 
@@ -825,19 +845,25 @@ def _pytest_filter(name: str) -> str:
     return " and ".join(name.split()) or name
 
 
-def _explicit_pytest_stages(tests: list[str], name: str | None = None) -> list[Stage]:
+def _explicit_pytest_stages(tests: list[str], name: str | Iterable[str] | None = None) -> list[Stage]:
     if not tests:
         return []
+    names = _names(name)
     # `-k` is pytest's own narrowing, passed through rather than reimplemented:
     # a file of a hundred cases is one run either way, and reading one failure
     # by running all of them is the cost this exists to remove. It is added to
     # each command rather than to the selection, because the selection is split
     # by which tests need Linux and a flag is not a test.
-    narrow = ("-k", _pytest_filter(name)) if name else ()
+    # Several `--name`s are any of them, as they are for vitest.
+    expression = (
+        _pytest_filter(names[0]) if len(names) == 1
+        else " or ".join(f"({_pytest_filter(item)})" for item in names)
+    )
+    narrow = ("-k", expression) if names else ()
     if os.name != "nt":
         stage = _backend_focused_stage([*tests, *narrow], key="backend-explicit")
         if stage:
-            stage.named_cases = bool(name)
+            stage.named_cases = bool(names)
         return [stage] if stage else []
     safe = [item for item in tests if not _linux_test_selection(item)]
     linux = [item for item in tests if _linux_test_selection(item)]
@@ -845,14 +871,14 @@ def _explicit_pytest_stages(tests: list[str], name: str | None = None) -> list[S
     if safe:
         stage = _backend_focused_stage([*safe, *narrow], key="backend-explicit")
         if stage:
-            stage.named_cases = bool(name)
+            stage.named_cases = bool(names)
             stages.append(stage)
     if linux:
         command, reason = _wsl_backend_command(
             ("-m", "pytest", "--tb=short", "--disable-warnings", *linux, *narrow))
         stages.append(Stage(
             "backend-linux-explicit", command or (), timeout=1200.0,
-            incomplete_reason=reason, named_cases=bool(name),
+            incomplete_reason=reason, named_cases=bool(names),
         ))
     return stages
 
@@ -929,7 +955,7 @@ def _store_artifact_stage() -> Stage:
 
 def _profile_stages(
     profile: str, changed: list[str], explicit_pytest: list[str],
-    explicit_vitest: list[str] | None = None, name: str | None = None,
+    explicit_vitest: list[str] | None = None, name: str | Iterable[str] | None = None,
 ) -> list[Stage]:
     python = str(_development_python())
     explicit_vitest = explicit_vitest or []
@@ -990,15 +1016,15 @@ def _command_text(command: tuple[str, ...]) -> str:
 
 def _qa_rerun_command(
     profile: str, explicit_pytest: list[str], stage: Stage,
-    explicit_vitest: list[str] | None = None, name: str | None = None,
+    explicit_vitest: list[str] | None = None, name: str | Iterable[str] | None = None,
 ) -> str:
     command: list[str] = ["python", "scripts/qa.py", "--profile", profile]
     for node in explicit_pytest:
         command.extend(("--pytest", node))
     for node in explicit_vitest or []:
         command.extend(("--vitest", node))
-    if name:
-        command.extend(("--name", name))
+    for item in _names(name):
+        command.extend(("--name", item))
     if stage.incomplete_reason and "rerun with --bootstrap" in stage.incomplete_reason:
         command.append("--bootstrap")
     command.extend(("--stage", stage.key))
@@ -1007,7 +1033,7 @@ def _qa_rerun_command(
 
 def _with_rerun_commands(
     profile: str, explicit_pytest: list[str], stages: list[Stage],
-    explicit_vitest: list[str] | None = None, name: str | None = None,
+    explicit_vitest: list[str] | None = None, name: str | Iterable[str] | None = None,
 ) -> list[Stage]:
     for stage in stages:
         if stage.rerun_command is None:
@@ -1426,9 +1452,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pytest", action="append", default=[], metavar="NODE_OR_PATH", help="run an explicit focused pytest selection")
     parser.add_argument("--vitest", action="append", default=[], metavar="PATH_OR_PATTERN", help="run an explicit focused vitest selection")
     parser.add_argument(
-        "--name", metavar="EXPR",
+        "--name", action="append", default=[], metavar="EXPR",
         help="narrow a --pytest or --vitest selection to the cases whose name matches,"
-             " through the runner's own -k and -t",
+             " through the runner's own -k and -t; repeat it to run the cases matching any of them",
     )
     parser.add_argument(
         "--stage", action="append", default=[], metavar="STAGE",
