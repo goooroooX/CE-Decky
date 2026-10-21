@@ -2,7 +2,7 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
-## 0.9.31 — 2026-10-20
+## 0.9.31 — 2026-10-21
 
 - [Fixed] Switching a script off, from the panel or in Configure cheats, switches off what is still on under it. A value inside it could stay on and stayed remembered on, so the next auto-load switched the script back on for it. A switch the table's own code is not proven safe to write off is released rather than written off, because that write can crash the game.
 - [Changed] Configure cheats hides behind Scripts only the scripts that hold other scripts, and the panel counts only those as scripts. A cheat that is a script with its settings under it, and a value with other values under it, were hidden there and counted as scripts; over 142 real tables that was 1265 records, against 141 now. A table does not say which of its scripts are cheats, so a script you pin is listed and counted with the cheats whatever it holds.
