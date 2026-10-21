@@ -824,7 +824,9 @@ function hasUnaddressableEnclosingScript(
       && !candidate.group_header
       && sameRecordPlace(candidate.structure, prefix),
     );
-    if (ancestor && ancestor.id !== null && ambiguous.has(ancestor.id)) return true;
+    // Only a script is a dependency: a value with records under it creates
+    // none of them, so its being unaddressable leaves them reachable.
+    if (ancestor && ancestor.id !== null && ancestor.kind === "script" && ambiguous.has(ancestor.id)) return true;
   }
   return false;
 }
@@ -2635,6 +2637,9 @@ export function activeCheatsUnder(
   controls: readonly TableControl[],
   activeById: ReadonlyMap<number, boolean | null>,
 ): { control: TableControl & { id: number }; keepsOnKey: boolean }[] {
+  // A value with records under it creates none of them, so switching it off
+  // leaves them where they are: they are cheats of their own.
+  if (script.kind !== "script") return [];
   return controls.flatMap((control) => {
     if (control.id === null || activeById.get(control.id) !== true) return [];
     if (!encloses(script.structure, control.structure)) return [];
@@ -2685,6 +2690,10 @@ export function offWithoutValues(
  * those is never residue, even when the same Apply switches off something
  * under it, and while it is on it keeps the scripts around it in use. Both are
  * required rather than defaulted, so a caller cannot forget either.
+ *
+ * Only a script is judged. A value with records under it creates none of
+ * them, so it is never switched on to reach them and is never residue when
+ * they go off: releasing it unfroze a cheat the user had switched on.
  */
 export function unusedActiveScripts(
   controls: readonly TableControl[],
@@ -2695,7 +2704,8 @@ export function unusedActiveScripts(
   const offPlaces = controls.flatMap((control) =>
     control.id !== null && change.switchedOff.has(control.id) ? [control.structure] : []);
   const scripts = controls
-    .filter((control): control is TableControl & { id: number } => control.id !== null && enclosing.has(control.id))
+    .filter((control): control is TableControl & { id: number } =>
+      control.id !== null && control.kind === "script" && enclosing.has(control.id))
     .filter((script) => offPlaces.some((place) => encloses(script.structure, place)))
     .sort((left, right) => right.structure.length - left.structure.length);
   const active = new Map(activeById);
@@ -2736,7 +2746,12 @@ export function inactiveAncestorControls(
       && candidate.id !== control.id
       && sameRecordPlace(candidate.structure, prefix),
     );
-    if (ancestor && ancestor.id !== null && activeById.get(ancestor.id) === false) chain.push(ancestor);
+    // Only a script: it creates what is inside it. A value with records under
+    // it creates none of them, and switching it on would freeze it for a cheat
+    // that never needed it.
+    if (ancestor && ancestor.id !== null && ancestor.kind === "script" && activeById.get(ancestor.id) === false) {
+      chain.push(ancestor);
+    }
   }
   return chain;
 }

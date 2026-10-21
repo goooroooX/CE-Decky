@@ -6616,6 +6616,35 @@ describe("Pinned live controls", () => {
     ]);
   });
 
+  it("switches a pinned value off alone when values sit under it, or it under one", async () => {
+    // A value record holding others creates none of them. Switching the
+    // parent off took the child with it, and switching the last child off
+    // unfroze the parent as though it were a script left with nothing to do.
+    const values = {
+      ...chained,
+      total_entries: 2,
+      controls: [
+        { id: 40, description: "Player", path: ["Player"], structure: ["Player"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 41, description: "Health", path: ["Player", "Health"], structure: ["Player", "Health"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      ],
+    };
+    const state = (on: number[], generation: number) => [40, 41].map((id) => ({
+      generation, record_id: id, ok: true, active: on.includes(id), value: "100", error: null,
+    }));
+
+    renderChained([40, 41], state([40, 41], 1), state([40], 2), values);
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-41")).getByTestId("toggle"));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1].map((item: any) => [item.record_id, item.active])).toEqual([[41, false]]);
+    cleanup();
+    runtimeClient.applyRuntimeSelection.mockClear();
+
+    renderChained([40, 41], state([40, 41], 1), state([41], 2), values);
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-40")).getByTestId("toggle"));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1].map((item: any) => [item.record_id, item.active])).toEqual([[40, false]]);
+  });
+
   it("only releases a flag under it whose off key is not known to be safe", async () => {
     // Writing a table's own flag off is what killed a game minutes later, so a
     // flag the hook reader did not prove safe keeps its key, and is remembered
@@ -7775,14 +7804,14 @@ describe("Selection and staged-change persistence", () => {
     ],
   };
 
-  function renderNested(results: any[]) {
+  function renderNested(results: any[], inspection: any = nestedInspection) {
     runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: liveRuntime(), results });
     runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ ...{ envelope: liveRuntime(), results }, unavailable: [] });
     runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results });
     const onApplied = vi.fn().mockResolvedValue(undefined);
     render(<CheatSelectionModal
       appId={10}
-      inspection={nestedInspection as any}
+      inspection={inspection}
       live
       pinned={[]}
       startupPreferences={[]}
@@ -7949,6 +7978,30 @@ describe("Selection and staged-change persistence", () => {
     expect(desired.find((item: any) => item.record_id === 20)).toMatchObject({ active: false });
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(onApplied.mock.calls[0][0].map((item: any) => item.record_id)).toEqual([21]);
+  });
+
+  it("switches a value off alone in Configure cheats when values sit under it, or it under one", async () => {
+    // Only a script creates what is inside it. A value holding others took
+    // them off with it, and switching the last of them off unfroze it.
+    const values = {
+      ...nestedInspection,
+      controls: [
+        { id: 40, description: "Player", path: ["Player"], structure: ["Player"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 41, description: "Health", path: ["Player", "Health"], structure: ["Player", "Health"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      ],
+    };
+    const both = [40, 41].map((id) => ({ generation: 1, record_id: id, ok: true, active: true, value: "100", error: null }));
+
+    for (const pressed of [41, 40]) {
+      runtimeClient.applyRuntimeSelection.mockClear();
+      renderNested(both, values);
+      fireEvent.click(within(await screen.findByTestId(`cheat-row-${pressed}`)).getByTestId("toggle"));
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+      const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+      expect(desired.map((item: any) => [item.record_id, item.active])).toEqual([[pressed, false]]);
+      cleanup();
+    }
   });
 
   it("keeps a script the user switched on with its setting off, and remembers it on", async () => {

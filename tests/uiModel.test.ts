@@ -26,6 +26,7 @@ import {
   switchOffValues,
   switchValueFor,
   switchesToHoldOff,
+  inactiveAncestorControl,
   inactiveAncestorControls,
   switchValuesFor,
   controlsMissingRequiredValue,
@@ -1661,6 +1662,23 @@ describe("Executable-content review", () => {
     // A switch proved safe to write off is written off like any other.
     expect(activeCheatsUnder(controls[0], [...controls, { ...flag, switch_off_is_safe: true }], active)
       .find(({ control: item }) => item.id === 5)?.keepsOnKey).toBe(false);
+  });
+
+  it("treats a value with values under it as cheats of their own, not as a script", () => {
+    // A value record holding others creates none of them: switching a child on
+    // froze the parent for nothing, switching the parent off took the children
+    // with it, and switching the last child off unfroze the parent.
+    const base = { group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false };
+    const values: TableControl[] = [
+      { ...base, id: 40, description: "Player", path: ["Player"], structure: ["Player"], variable_type: "4 Bytes", kind: "value" },
+      { ...base, id: 41, description: "Health", path: ["Player", "Health"], structure: ["Player", "Health"], variable_type: "4 Bytes", kind: "value" },
+    ] as TableControl[];
+    const both = new Map<number, boolean | null>([[40, true], [41, true]]);
+
+    expect(activeCheatsUnder(values[0], values, both)).toEqual([]);
+    expect(unusedActiveScripts(values, new Map([[40, true], [41, false]]), { chosen: new Set(), switchedOff: new Set([41]) })).toEqual([]);
+    expect(inactiveAncestorControls(values[1], values, new Map([[40, false], [41, false]]))).toEqual([]);
+    expect(inactiveAncestorControl(values[1], values, new Map([[40, false], [41, false]]))).toBeNull();
   });
 
   it("remembers what went off with its script as off with no value", () => {

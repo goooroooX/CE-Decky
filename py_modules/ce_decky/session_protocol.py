@@ -1577,7 +1577,7 @@ def _effective_startup_preferences(profile: GameProfile) -> list[StartupPreferen
 
 
 def _enclosing_script_ids(control, controls: dict[int, object]) -> list[int]:
-    """IDs of the controls whose group encloses this one, outermost first.
+    """IDs of the scripts this record sits inside, outermost first.
 
     A Cheat Engine record inside a script does not exist until that script has
     run, so restoring a remembered child without its parents restores nothing.
@@ -1594,7 +1594,11 @@ def _enclosing_script_ids(control, controls: dict[int, object]) -> list[int]:
                 continue
             if candidate.kind == "group" or candidate.group_header:
                 continue
-            found.append(candidate_id)
+            # Only a script creates what is inside it. A value with records
+            # under it creates none of them, and switching it on to reach one
+            # froze a cheat nobody asked for.
+            if candidate.kind == "script":
+                found.append(candidate_id)
             break
     return found
 

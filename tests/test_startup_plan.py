@@ -199,6 +199,39 @@ def test_a_value_typed_for_a_cheat_that_stays_off_is_not_written_at_startup(tmp_
     assert plan[(1, "active")] == "1"
 
 
+VALUES_TABLE = """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>40</ID><Description>Player</Description><VariableType>4 Bytes</VariableType>
+      <Address>game.exe+100</Address>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>41</ID><Description>Health</Description><VariableType>4 Bytes</VariableType>
+          <Address>game.exe+104</Address>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
+"""
+
+
+def test_a_value_with_values_under_it_is_not_switched_on_to_reach_them(tmp_path: Path):
+    # Only a script creates what is inside it. Auto-load switched on a value
+    # parent for its child as if it were one, which froze a cheat nobody chose.
+    service = _service(tmp_path, "m62")
+    source = tmp_path / "values.CT"
+    source.write_text(VALUES_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    profile = _profile(table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+                       remembered=[StartupPreference(41, True, "100")])
+
+    actions = effective_startup_plan(profile, _inspection(service, table["sha256"]))
+
+    assert [(action.record_id, action.kind) for action in actions] == [(41, "value"), (41, "active")]
+
+
 def test_a_script_that_switches_its_own_flags_on_has_them_held_off_at_startup(tmp_path: Path):
     """The table author's defaults are not the user's selection.
 
