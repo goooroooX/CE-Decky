@@ -39,7 +39,10 @@ else:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_COMMANDS = ("git", "python3", "codex")
+# What repository work itself runs. The agent driving a session is not one of
+# them: requiring one agent's CLI reported every other agent's checkout as not
+# ready while git, Python and the gate all worked.
+REQUIRED_COMMANDS = ("git", "python3")
 # Checks that answer for the machine rather than for the checkout. A host that
 # fails one of these is the wrong machine for target work, which is a different
 # outcome from a checkout that is not ready.
@@ -138,7 +141,7 @@ def probe(*, network: bool = False, root: Path = ROOT) -> dict[str, object]:
     target_host_ok = all(check.ok for check in target if check.name != "steamos_device")
     notes = [
         "This does not inspect or modify Steam, Decky, CE, VDF, or user-managed state.",
-        "Codex approval and sandbox policy are enforced outside a child process; a failed check is the authority for this session.",
+        "An agent's approval and sandbox policy are enforced outside this process; a failed check is the authority for this session.",
         "Run again with --network only after the operator permits Git/provider network access.",
         "Optional checks never fail the preflight; a missing optional tool means a skipped local stage, never an OS change.",
         "Whether a live Decky holding this plugin is reachable is the other half of the question:"

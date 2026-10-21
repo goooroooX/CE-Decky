@@ -67,6 +67,23 @@ def test_a_linux_desktop_can_host_helpers_and_is_still_not_the_target(monkeypatc
     assert "REMOTE_TARGET" in report["notes"][0]
 
 
+def test_a_checkout_with_git_and_python_is_ready_whichever_agent_drives_it(monkeypatch, tmp_path: Path):
+    # Requiring one agent's own CLI reported every other agent's checkout as
+    # not ready while git, Python and the gate all worked.
+    monkeypatch.setattr(target_agent_preflight.host_platform, "describe", lambda: _host())
+    monkeypatch.setattr(target_agent_preflight, "_git_checkout",
+                        lambda _root: target_agent_preflight.Check("git_checkout", True, "fixture"))
+    monkeypatch.setattr(target_agent_preflight.shutil, "which",
+                        lambda name: f"/usr/bin/{name}" if name in {"git", "python3"} else None)
+
+    report = target_agent_preflight.probe(root=tmp_path)
+
+    assert report["repository_ok"] is True
+    assert {check["name"] for check in report["checks"] if check["name"].startswith("command_")} == {
+        "command_git", "command_python3",
+    }
+
+
 def test_the_preflight_names_the_machine_it_is_running_on(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(target_agent_preflight.host_platform, "describe", lambda: _host())
 
