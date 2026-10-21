@@ -82,7 +82,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -863,6 +863,42 @@ def describe(pages: list[dict[str, Any]], testid: str | None, timeout: float) ->
     return best
 
 
+# The two turns every paged screen of this plugin draws, in `PagerFooter`.
+PAGE_TURNS = ("Next \u203a", "\u2039 Previous")
+# Turns allowed in each direction. A long table is a few dozen pages at most,
+# and a bound is what keeps a pager that never disables from turning forever.
+MAX_PAGE_TURNS = 40
+
+
+def page_through(
+    present: Callable[[], bool], turn: Callable[[str], dict[str, Any]], limit: int = MAX_PAGE_TURNS,
+) -> tuple[bool, list[str], str | None]:
+    """Turn a paged screen until a row is on it: forward first, then back.
+
+    Reaching a cheat on page nine of Configure cheats was eight separate
+    presses of Next and a read after each. This is that loop, bounded. Every
+    turn is a press, so `turn` is where the caller names each one as it lands,
+    and the list returned is the same turns for a caller that wants them after.
+    A turn that is refused ends that direction, because a disabled Next is the
+    last page; a refusal other than that ends the search and is returned.
+    """
+    turned: list[str] = []
+    if present():
+        return True, turned, None
+    for label in PAGE_TURNS:
+        for _ in range(limit):
+            answer = turn(label)
+            if not answer.get("pressed"):
+                reason = str(answer.get("reason") or "")
+                if "disabled" in reason:
+                    break
+                return False, turned, f"could not press {label!r}: {reason}"
+            turned.append(f"{answer.get('label') or label} on {answer.get('where')}" if answer.get("where") else label)
+            if present():
+                return True, turned, None
+    return False, turned, None
+
+
 def open_panel(pages: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
     """Open the quick access panel on this plugin's page, through Steam's own API."""
     last: dict[str, Any] = {"opened": False, "reason": "no page answered"}
@@ -1076,6 +1112,11 @@ def main() -> int:
         "--wait-seconds", type=float, default=30.0,
         help="how long --wait-for may wait, at most 300",
     )
+    parser.add_argument(
+        "--find", metavar="TESTID",
+        help="turn the pages of the screen in front until the row carrying this test id is on it;"
+             " every turn is a press and is named",
+    )
     parser.add_argument("--testid", help="report only the rows carrying this test id")
     parser.add_argument(
         "--describe", nargs="?", const="", metavar="TESTID",
@@ -1174,10 +1215,39 @@ def main() -> int:
             print(f"panel read: {exc}", file=sys.stderr)
             return 1
 
+    if args.find:
+        def turn(label: str) -> dict[str, Any]:
+            nonlocal pages
+            answer = press(pages, label, args.timeout)
+            if answer.get("pressed"):
+                # Named as it lands, so a read that fails after it still
+                # leaves the press reported.
+                where = answer.get("where")
+                made.append(f"{answer.get('label') or label} on {where}" if where else label)
+                print(f"pressed {made[-1]}")
+                # A page turn re-renders the list in place, which is quicker
+                # than a screen opening, and the next read has to see it.
+                time.sleep(0.75)
+                pages = _pages(args.endpoint, args.timeout)
+            return answer
+
+        try:
+            reached, _turned, refusal = page_through(
+                lambda: bool(describe(pages, args.find, args.timeout).get("rows")), turn,
+            )
+        except ProbeError as exc:
+            reached, refusal = False, str(exc)
+        if not reached:
+            print(f"panel read: {args.find} is on no page of the screen in front"
+                  + (f"; {refusal}" if refusal else ""), file=sys.stderr)
+            if made:
+                print(f"this run pressed, in order: {', '.join(made)}", file=sys.stderr)
+            return 1
+
     if args.describe is not None:
         answer = describe(pages, args.describe or None, args.timeout)
         if args.json:
-            print(json.dumps(answer, indent=2, sort_keys=True))
+            print(json.dumps({**answer, "pressed": made}, indent=2, sort_keys=True))
             return 0
         rows = answer.get("rows") or []
         if not rows:
@@ -1199,6 +1269,8 @@ def main() -> int:
                 if not part.get("drawn"):
                     bits.append("not drawn")
                 print("   - " + " ".join(str(bit) for bit in bits))
+        if made:
+            print(f"this run pressed, in order: {', '.join(made)}")
         return 0
 
     if args.wait_for:

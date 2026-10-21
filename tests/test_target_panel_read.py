@@ -59,3 +59,57 @@ def test_the_refusal_reported_is_the_one_that_saw_the_controls():
     ambiguous = {"pressed": False, "matches": ["imported-table-a", "imported-table-b"], "reason": "that name is on 2"}
     ranks = [panel_read._refusal_rank(answer) for answer in (nothing, absent, disabled, ambiguous)]
     assert ranks == sorted(ranks) and len(set(ranks)) == 4
+
+
+class _Pager:
+    """A paged screen: the row is on one page, and each turn moves one page."""
+
+    def __init__(self, pages: int, start: int, row_on: int):
+        self.pages, self.page, self.row_on = pages, start, row_on
+
+    def present(self) -> bool:
+        return self.page == self.row_on
+
+    def turn(self, label: str) -> dict:
+        step = 1 if label.startswith("Next") else -1
+        if not 0 <= self.page + step < self.pages:
+            return {"pressed": False, "where": "cheat-footer", "reason": "that control is disabled right now"}
+        self.page += step
+        return {"pressed": True, "label": label, "where": "cheat-footer"}
+
+
+def test_find_turns_forward_to_a_row_on_a_later_page_and_names_every_turn():
+    pager = _Pager(pages=9, start=0, row_on=8)
+
+    reached, turned, refusal = panel_read.page_through(pager.present, pager.turn)
+
+    assert (reached, refusal) == (True, None)
+    assert turned == ["Next › on cheat-footer"] * 8
+
+
+def test_find_turns_back_when_the_row_is_behind_the_page_in_front():
+    pager = _Pager(pages=5, start=3, row_on=1)
+
+    reached, turned, _ = panel_read.page_through(pager.present, pager.turn)
+
+    assert reached is True
+    # Forward to the last page first, then back: every turn is a press made.
+    assert turned == ["Next › on cheat-footer"] + ["‹ Previous on cheat-footer"] * 3
+
+
+def test_find_stops_at_both_ends_and_on_a_screen_with_no_pager():
+    pager = _Pager(pages=3, start=0, row_on=99)
+    reached, turned, refusal = panel_read.page_through(pager.present, pager.turn)
+    assert (reached, refusal, len(turned)) == (False, None, 4)
+
+    reached, turned, refusal = panel_read.page_through(
+        lambda: False, lambda _label: {"pressed": False, "reason": "no control with that name is on screen"},
+    )
+    assert (reached, turned) == (False, [])
+    assert "no control with that name" in refusal
+
+
+def test_the_page_turns_are_the_labels_the_pager_draws():
+    pager = (ROOT / "src" / "components" / "PagerFooter.tsx").read_text(encoding="utf-8")
+    assert '"\\u2039 Previous"' in pager and '"Next \\u203a"' in pager
+    assert panel_read.PAGE_TURNS == ("Next ›", "‹ Previous")
