@@ -50,3 +50,40 @@ def test_scripts_corpus_counts_what_each_rule_would_hide(tmp_path: Path):
     assert answer["hidden_by_rule"] == {"everything": 5, "outermost": 2, "scripts_holding_scripts": 2}
     assert answer["enclosing_shown_by_rule"] == {"everything": 0, "outermost": 3, "scripts_holding_scripts": 3}
     assert answer["kinds"]["nested_values_only"] == {"script": 2}
+
+
+def _stored(store: Path, content: bytes, digest: str | None = None) -> str:
+    from hashlib import sha256
+
+    digest = digest or sha256(content).hexdigest()
+    blob = store / "sha256" / digest[:2] / digest / "table.CT"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(content)
+    return digest
+
+
+def test_a_stored_table_is_found_by_the_start_of_its_digest_and_verified(tmp_path: Path):
+    store = tmp_path / "tables"
+    digest = _stored(store, _table(tmp_path).read_bytes())
+
+    found = survey.table_by_sha(digest[:10].upper(), store)
+
+    assert found == store / "sha256" / digest[:2] / digest / "table.CT"
+    assert survey.scripts_one(found)["enclosing"] == 5
+
+
+def test_a_prefix_that_names_no_table_or_several_is_refused(tmp_path: Path):
+    import pytest
+
+    store = tmp_path / "tables"
+    _stored(store, b"one", "ab" * 32)
+    _stored(store, b"two", "ab" * 31 + "cd")
+    with pytest.raises(ValueError, match="begins 2 stored tables"):
+        survey.table_by_sha("abababab", store)
+    with pytest.raises(ValueError, match="no stored table"):
+        survey.table_by_sha("cdcdcdcd", store)
+    with pytest.raises(ValueError, match="at least eight"):
+        survey.table_by_sha("abab", store)
+    # Bytes that are not the digest they are filed under are refused, not read.
+    with pytest.raises(ValueError, match="SHA-256 verification"):
+        survey.table_by_sha("ab" * 32, store)

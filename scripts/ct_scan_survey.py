@@ -15,6 +15,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --tables <dir> --json
     python3 scripts/ct_scan_survey.py --tables <dir> --repair-coverage
     python3 scripts/ct_scan_survey.py --table <file.CT> --flags
+    python3 scripts/ct_scan_survey.py --table-sha <first 8+ hex of its SHA-256> --scripts
     python3 scripts/ct_scan_survey.py --tables <dir> --flags
 
 It reads and nothing else: no table is stored, no game is started, and the
@@ -508,10 +509,49 @@ def scripts_corpus(root: Path) -> dict[str, object]:
     }
 
 
+def table_by_sha(prefix: str, store: Path | None) -> Path:
+    """The stored table whose SHA-256 begins with this, verified in full.
+
+    A table on the device is named by its digest everywhere this project talks
+    about it, and finding its file meant listing the store by hand. This reads
+    the same content-addressed layout the plugin writes, refuses a prefix that
+    names no table or more than one, and hands back the path only after
+    `TableStore.verified_blob` has checked every byte against the digest.
+    """
+    wanted = prefix.strip().lower()
+    if len(wanted) < 8 or any(ch not in "0123456789abcdef" for ch in wanted):
+        raise ValueError("--table-sha takes at least eight hexadecimal characters of a table's SHA-256")
+    if store is None:
+        # The store is under the Steam user's home, which only the live plugin
+        # or its verified install record can say: never a guessed home.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from target_plugin_install import resolve_install_authority  # noqa: PLC0415
+        home = resolve_install_authority().get("user_home")
+        if not home:
+            raise ValueError("the install authority reports no user_home; pass --store")
+        store = Path(str(home)) / ".cheat-engine-decky" / "tables"
+    shard = store / "sha256" / wanted[:2]
+    matches = sorted(item.name for item in shard.glob(f"{wanted}*")) if shard.is_dir() else []
+    if not matches:
+        raise ValueError(f"no stored table's SHA-256 begins with {wanted} in {store}")
+    if len(matches) > 1:
+        raise ValueError(f"{wanted} begins {len(matches)} stored tables: {', '.join(item[:16] for item in matches)}")
+    from ce_decky.table_store import TableStore  # noqa: PLC0415
+    return TableStore(store).verified_blob(matches[0])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tables", type=Path, help="a directory of .CT files to read patterns out of")
     parser.add_argument("--table", type=Path, help="one table to check")
+    parser.add_argument(
+        "--table-sha", metavar="PREFIX",
+        help="one table from the plugin's own store, by the start of its SHA-256, in place of --table",
+    )
+    parser.add_argument(
+        "--store", type=Path,
+        help="the table store --table-sha reads; omitted, the one under user_home from the install authority",
+    )
     parser.add_argument("--executable", type=Path, help="the game program to look for its patterns in")
     parser.add_argument("--repeat", type=int, default=1, help="run the check this many times and report each")
     parser.add_argument(
@@ -533,6 +573,14 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
 
+    if args.table is not None and args.table_sha is not None:
+        parser.error("name one table: --table <file.CT> or --table-sha <prefix>")
+    if args.table_sha is not None:
+        try:
+            args.table = table_by_sha(args.table_sha, args.store)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"ct scan survey: {exc}", file=sys.stderr)
+            return 1
     if args.tables is None and args.table is None:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
