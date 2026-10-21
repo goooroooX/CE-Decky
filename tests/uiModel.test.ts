@@ -1599,14 +1599,34 @@ describe("Executable-content review", () => {
   it("lists only a script holding another script with the machinery", () => {
     // `Party Damage Reduction` holds only its setting, so it is a cheat, and
     // `Enable 1.0` holds a script, so it is machinery. A value record with
-    // records under it is never a script, whatever it holds. All of them are
-    // still dependencies: a cheat inside any of them switches it on.
+    // records under it is never a script, whatever it holds. Every script is
+    // still a dependency: a cheat inside one switches it on.
     const pointer: TableControl = { ...control(5, "value", "Pointer"), path: ["Enable 1.0", "Pointer"], structure: ["Enable 1.0", "Pointer"] };
     const offset: TableControl = { ...control(6, "value", "Offset"), path: ["Enable 1.0", "Pointer", "Offset"], structure: ["Enable 1.0", "Pointer", "Offset"] };
     const withPointer = [...controls, pointer, offset];
 
     expect([...scriptListedControlIds(withPointer)]).toEqual([1]);
     expect([...enclosingControlIds(withPointer)].sort((a, b) => a - b)).toEqual([1, 2, 5]);
+  });
+
+  it("calls a script machinery by the scripts inside it, not by what else holds records", () => {
+    // A script whose only script holds nothing is still the script holding
+    // it, and was listed as a cheat because the inner one encloses nothing.
+    // A script holding a value that holds values holds no script, and was
+    // hidden because the value encloses records.
+    const shapes: TableControl[] = [
+      script(20, ["Hooks"]),
+      script(21, ["Hooks", "Godmode"]),
+      script(22, ["Stats"]),
+      leaf(23, ["Stats", "Player"]),
+      leaf(24, ["Stats", "Player", "HP"]),
+      script(25, ["Chain"]),
+      script(26, ["Chain", "Middle"]),
+      script(27, ["Chain", "Middle", "Inner"]),
+      leaf(28, ["Chain", "Middle", "Inner", "Amount"]),
+    ];
+
+    expect([...scriptListedControlIds(shapes)].sort((a, b) => a - b)).toEqual([20, 25, 26]);
   });
 
   it("releases a whole chain of scripts once the last cheat under it is off", () => {

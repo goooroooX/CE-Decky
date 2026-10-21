@@ -5491,11 +5491,10 @@ function enclosingControlIds(controls) {
  * shape. Every record with others inside it used to be listed here, which hid
  * a cheat with its settings under it (`Infinite Health` holding `Health %`) and
  * hid value records too: over a corpus of 142 real tables that was 1265
- * records, 701 of them not scripts at all, where a script holding another
- * enclosing record is 141 (`ct_scan_survey.py --scripts`). Hiding only the
- * outermost was measured too: it hides 310 records with only values inside,
- * in 54 of those tables, which are cheats in tables that group their scripts
- * under headers. A record the user pins is taken as a cheat by its
+ * records, 701 of them not scripts at all, where a script with another script
+ * inside it is 189 (`ct_scan_survey.py --scripts`). Hiding only the outermost
+ * was measured too: it hides 291 records with no script inside, in 36 of those
+ * tables, which are cheats in tables that group their scripts under headers. A record the user pins is taken as a cheat by its
  * callers, whatever its shape.
  *
  * This is the view, not the dependency rule: every enclosing record is still
@@ -5503,8 +5502,7 @@ function enclosingControlIds(controls) {
  * `enclosingControlIds`.
  */
 function scriptListedControlIds(controls) {
-    const enclosing = enclosingControlIds(controls);
-    const holders = controls.filter((control) => control.id !== null && enclosing.has(control.id));
+    const scripts = controls.filter((control) => control.id !== null && control.kind === "script");
     const ids = new Set();
     for (const control of controls) {
         if (control.id === null)
@@ -5513,9 +5511,13 @@ function scriptListedControlIds(controls) {
             ids.add(control.id);
             continue;
         }
-        if (control.kind !== "script" || !enclosing.has(control.id))
+        if (control.kind !== "script")
             continue;
-        if (holders.some((inner) => inner.id !== control.id && encloses(control.structure, inner.structure))) {
+        // Another script inside it, at any depth and whatever that one holds. A
+        // record merely holding others is not the test: a value holding values is
+        // a group of cheats, and a script whose scripts hold nothing is still the
+        // script that holds them.
+        if (scripts.some((inner) => inner.id !== control.id && encloses(control.structure, inner.structure))) {
             ids.add(control.id);
         }
     }

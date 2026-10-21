@@ -21,6 +21,10 @@ def _table(tmp_path: Path) -> Path:
                _entry(2, "Infinite Health", "script", _entry(3, "Health %", "value"))
                + _entry(4, "Section", "script", _entry(5, "Sub", "script", _entry(6, "Amount", "value"))))
         + _entry(7, "Teleporter", "script", _entry(8, "X", "value"))
+        # A script whose script holds nothing, and a script holding a value
+        # that holds values: the first holds a script, the second does not.
+        + _entry(9, "Hooks", "script", _entry(10, "Godmode", "script"))
+        + _entry(11, "Stats", "script", _entry(12, "Player", "value", _entry(13, "HP", "value")))
     )
     path = tmp_path / "shapes.CT"
     path.write_text(f'<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries>{entries}</CheatEntries></CheatTable>')
@@ -32,12 +36,12 @@ def test_scripts_sorts_every_enclosing_record_into_one_shape(tmp_path: Path):
 
     names = {shape: [row["name"] for row in rows] for shape, rows in answer["shapes"].items()}
     assert names == {
-        "outermost_values_only": ["Teleporter"],
-        "outermost_holds_scripts": ["Activate"],
-        "nested_values_only": ["Activate > Infinite Health", "Activate > Section > Sub"],
+        "outermost_values_only": ["Teleporter", "Stats"],
+        "outermost_holds_scripts": ["Activate", "Hooks"],
+        "nested_values_only": ["Activate > Infinite Health", "Activate > Section > Sub", "Stats > Player"],
         "nested_holds_scripts": ["Activate > Section"],
     }
-    assert answer["enclosing"] == 5
+    assert answer["enclosing"] == 8
 
 
 def test_scripts_corpus_counts_what_each_rule_would_hide(tmp_path: Path):
@@ -47,9 +51,9 @@ def test_scripts_corpus_counts_what_each_rule_would_hide(tmp_path: Path):
     answer = survey.scripts_corpus(tmp_path)
 
     assert answer["tables"] == 1
-    assert answer["hidden_by_rule"] == {"everything": 5, "outermost": 2, "scripts_holding_scripts": 2}
-    assert answer["enclosing_shown_by_rule"] == {"everything": 0, "outermost": 3, "scripts_holding_scripts": 3}
-    assert answer["kinds"]["nested_values_only"] == {"script": 2}
+    assert answer["hidden_by_rule"] == {"everything": 8, "outermost": 4, "scripts_holding_scripts": 3}
+    assert answer["enclosing_shown_by_rule"] == {"everything": 0, "outermost": 4, "scripts_holding_scripts": 5}
+    assert answer["kinds"]["nested_values_only"] == {"script": 2, "value": 1}
 
 
 def _stored(store: Path, content: bytes, digest: str | None = None) -> str:
@@ -69,7 +73,7 @@ def test_a_stored_table_is_found_by_the_start_of_its_digest_and_verified(tmp_pat
     found = survey.table_by_sha(digest[:10].upper(), store)
 
     assert found == store / "sha256" / digest[:2] / digest / "table.CT"
-    assert survey.scripts_one(found)["enclosing"] == 5
+    assert survey.scripts_one(found)["enclosing"] == 8
 
 
 def test_a_prefix_that_names_no_table_or_several_is_refused(tmp_path: Path):

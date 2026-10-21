@@ -420,8 +420,8 @@ def scripts_one(table: Path) -> dict[str, object]:
     and is repeated here. That puts a cheat with its settings under it beside
     the machinery that installs a table's hooks, and a table does not say which
     is which. What can be read is where a record sits - whether another
-    enclosing record is above it - and what it holds - other enclosing records,
-    or only records with values - and those are the four shapes counted here.
+    enclosing record is above it - and what it holds - a script somewhere
+    inside it, or none - and those are the four shapes counted here.
     """
     data = table.read_bytes()
     if len(data) > MAX_TABLE_BYTES:
@@ -440,7 +440,10 @@ def scripts_one(table: Path) -> dict[str, object]:
     shapes: dict[str, list[dict[str, object]]] = {shape: [] for shape in _SHAPES}
     for control in enclosing:
         outermost = not any(inside(other, control) for other in enclosing if other is not control)
-        holds_scripts = any(inside(control, other) for other in enclosing if other is not control)
+        # A script anywhere inside it, leaf or not, which is the test
+        # `scriptListedControlIds` makes: a record holding values that hold
+        # values is not a script holding scripts.
+        holds_scripts = any(other.kind == "script" and inside(control, other) for other in listed if other is not control)
         held = sum(1 for other in listed if inside(control, other))
         shape = ("outermost" if outermost else "nested") + ("_holds_scripts" if holds_scripts else "_values_only")
         shapes[shape].append({"name": " > ".join(control.path), "holds": held, "kind": control.kind})
@@ -459,7 +462,7 @@ def scripts_corpus(root: Path) -> dict[str, object]:
     `everything` hides every enclosing record, which is what Configure cheats
     did before 0.9.31. `outermost` hides only those with no enclosing record
     above them. `scripts_holding_scripts` is what `scriptListedControlIds`
-    hides now: an Auto Assembler script with another enclosing record inside
+    hides now: an Auto Assembler script with another script anywhere inside
     it. For each, how many records are hidden and how many enclosing records
     are shown.
     """
