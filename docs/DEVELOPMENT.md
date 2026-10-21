@@ -650,7 +650,7 @@ To prepare a release without publishing it:
 
 1. Confirm the synchronized development version and date in `package.json`, `AGENTS.md`, and `CHANGELOG.md`.
 2. Confirm the newest changelog heading is `## x.y.z — YYYY-MM-DD` and contains only concise labeled outcomes.
-3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is for somebody deciding whether to install the release: what is new, what is fixed, how to install it, one line per change. `docs/release-notes/README.md` states the shape, and `scripts/check_release.py` refuses a tag whose file is missing or empty. Only a version that is released needs one: a version that is skipped keeps its changelog entries and gets no file and no tag.
+3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is short and for a user deciding whether to update: one sentence on why, one line per change they would notice, in the names on their screen and never how it was done, then how to install it. `docs/release-notes/README.md` states the rules, with examples, and `scripts/check_release.py` refuses a tag whose file is missing or empty. Only a version that is released needs one: a version that is skipped keeps its changelog entries and gets no file and no tag.
 4. Run `python scripts/qa.py --profile release --bootstrap`; omit `--bootstrap` when lock fingerprints are already current.
 5. Review the package contents and checksums.
 6. Run `python scripts/check_release.py --tag v<version>`. It is the check the release workflow runs first, so missing or empty release notes, a row left under **Still worth checking** in `docs/FIELD_NOTES.md`, or a pre-release notice left in `README.md` is found here rather than after the tag is pushed.
