@@ -2648,6 +2648,12 @@ export function activeCheatsUnder(
   });
 }
 
+/** Whether a script encloses this record, which is what can destroy it. */
+export function sitsInsideScript(control: TableControl, controls: readonly TableControl[]): boolean {
+  return controls.some((candidate) =>
+    candidate.id !== null && candidate.kind === "script" && encloses(candidate.structure, control.structure));
+}
+
 /**
  * What to remember for a record that went off with its script: off, and no
  * value.

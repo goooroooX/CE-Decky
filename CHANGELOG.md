@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.31 — 2026-10-21
 
+- [Fixed] Disable all remembers a cheat it switched off inside a script as off with no value. The value it had before was kept beside off, and Auto-load wrote it to a record whose script was off, which failed the start.
 - [Fixed] A value with other cheats under it is a cheat of its own rather than a script. Switching on a cheat under it froze it too, switching it off switched off what was under it, and switching the last of those off unfroze it, from the panel, in Configure cheats and at Auto-load.
 - [Fixed] Auto-load writes a value only for a cheat it switches on, or for a setting of a script it switches on. A value typed for a cheat that was off, or left beside one switched off, was written on every launch, and under a script the launch left off it was written to a record that does not exist, which failed the whole Auto-load. The value stays saved for when the cheat is switched on. Applying a value to a cheat that stays off in a running game still writes it once without holding it, as Cheat Engine does.
 - [Fixed] Switching a script off, from the panel or in Configure cheats, switches off what is still on under it. A value inside it could stay on and stayed remembered on, so the next auto-load switched the script back on for it. A switch the table's own code is not proven safe to write off is released rather than written off, because that write can crash the game.

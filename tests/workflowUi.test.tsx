@@ -6779,6 +6779,58 @@ describe("Pinned live controls", () => {
     expect(remembered.find((item: any) => item.record_id === 21)).toEqual({ record_id: 21, active: false, value: null });
   });
 
+  it("forgets the value of a cheat Disable all switched off inside a script", async () => {
+    // The script took its child with it, so the child had no state row and
+    // the value remembered before was carried over beside "off". Auto-load
+    // replayed that as a write to a record that does not exist.
+    const nested = {
+      ...inspect,
+      total_entries: 3,
+      controls: [
+        { id: 20, description: "Parent", path: ["Parent"], structure: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 21, description: "Child", path: ["Parent", "Child"], structure: ["Parent", "Child"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        { id: 23, description: "Gold", path: ["Gold"], structure: ["Gold"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      ],
+    };
+    const snapshot = status(true);
+    snapshot.profiles[0].remembered = [
+      { record_id: 21, active: true, value: "40" },
+      { record_id: 23, active: true, value: "500" },
+    ];
+    api.getStatus.mockResolvedValue(snapshot);
+    const results = [
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 2, record_id: 21, ok: true, active: true, value: "40", error: null },
+      { generation: 3, record_id: 23, ok: true, active: true, value: "500", error: null },
+    ];
+    api.inspectTableSha.mockResolvedValue(nested);
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    const after = [
+      { generation: 4, record_id: 20, ok: true, active: false, value: null, error: null },
+      { generation: 5, record_id: 23, ok: true, active: false, value: "500", error: null },
+    ];
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial
+      .mockResolvedValueOnce({ envelope: live, results, unavailable: [] })
+      .mockResolvedValue({ envelope: live, results: after, unavailable: [21] });
+    runtimeClient.deactivateAllActiveControls.mockResolvedValue({
+      queried: 3, active: 3, deactivated: 3, deactivatedIds: [21, 23, 20], envelope: live,
+    });
+    api.setRememberedCheats.mockResolvedValue({});
+    renderContent();
+
+    await screen.findByText(/^\d+ active/);
+    fireEvent.click(await screen.findByRole("button", { name: "Disable all" }));
+
+    await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
+    const [, , remembered] = api.setRememberedCheats.mock.calls[0];
+    expect(remembered.find((item: any) => item.record_id === 21)).toEqual({ record_id: 21, active: false, value: null });
+    // A cheat outside any script was not destroyed and keeps what it read.
+    expect(remembered.find((item: any) => item.record_id === 23)).toEqual({ record_id: 23, active: false, value: "500" });
+  });
+
   it("says the game may still be changed when a failed Apply already mutated it", async () => {
     // The low-level helper does not roll back commands it already had
     // acknowledged, so the form used to keep showing the user's intent while

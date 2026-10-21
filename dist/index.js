@@ -5548,6 +5548,10 @@ function activeCheatsUnder(script, controls, activeById) {
         return [{ control: control, keepsOnKey }];
     });
 }
+/** Whether a script encloses this record, which is what can destroy it. */
+function sitsInsideScript(control, controls) {
+    return controls.some((candidate) => candidate.id !== null && candidate.kind === "script" && encloses(candidate.structure, control.structure));
+}
 /**
  * What to remember for a record that went off with its script: off, and no
  * value.
@@ -17047,7 +17051,13 @@ function Content() {
             // that ceased to exist when their script went off - and the next Auto-load
             // then waited for MemoryRecords that could never appear and failed.
             const touched = new Set(result.deactivatedIds);
-            const remembered = rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), enclosingControlIds(controls));
+            // Every script is off after this, so what went off inside one is
+            // remembered off with no value, exactly as when its script is switched
+            // off by hand: a child the script destroyed has no state row, and the
+            // value it had before was carried over beside "off", which Auto-load
+            // replayed as a write to a record that does not exist.
+            const wentOffWithScript = new Set(controls.flatMap((control) => control.id !== null && touched.has(control.id) && sitsInsideScript(control, controls) ? [control.id] : []));
+            const remembered = offWithoutValues(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), enclosingControlIds(controls)), wentOffWithScript);
             // The game has already been changed. Whatever happens to the durable half,
             // Home shows what Cheat Engine actually holds now.
             recordLiveSnapshot(finalState.results, finalState.envelope);
