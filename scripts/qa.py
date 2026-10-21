@@ -130,6 +130,13 @@ _FAILURE_BANNERS = (
 )
 
 
+# A terminal's colour codes. On the CI runner `vitest` colours its own `FAIL`
+# lines, which a local run here prints plain, so a red CI run printed the
+# reason and none of the names: the line began with an escape rather than
+# with the word.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 def _failure_digest(text: str) -> dict[str, object]:
     """Which tests failed, and the first thing the runner said about one.
 
@@ -140,6 +147,7 @@ def _failure_digest(text: str) -> dict[str, object]:
     falls back to the tail, which is the right answer for a command that failed
     rather than a test that did.
     """
+    text = _ANSI_ESCAPE.sub("", text)
     names: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -1335,6 +1343,18 @@ def _write_results(profile: str, source: str, changed: list[str], results: list[
                 print(f"    {line}")
         if actionable.get("rerun_command"):
             print(f"  rerun: {actionable['rerun_command']}")
+    # Every other stage that failed is named too, with what failed in it and
+    # how to run it again. Its reason is not repeated: one account is what a
+    # reader starts from, and the names are what says how much is left after
+    # it. A local run keeps that reason in `qa-failures.json`; on a runner that
+    # throws the run directory away, the rerun line is how it is read.
+    for other in failed[1:]:
+        names = [str(name) for name in (other.get("failed_tests") or [])]
+        shown = ", ".join(names[:FAILURE_NAMES]) if names else "no test names in its output"
+        more = f" and {len(names) - FAILURE_NAMES} more" if len(names) > FAILURE_NAMES else ""
+        print(f"  {other['key']} failed: {shown}{more}")
+        if other.get("rerun_command"):
+            print(f"  rerun: {other['rerun_command']}")
     print(f"  summary: {summary_path.relative_to(ROOT)}")
     if failures_path:
         print(f"  failures: {failures_path.relative_to(ROOT)}")

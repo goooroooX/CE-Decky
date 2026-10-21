@@ -1132,3 +1132,34 @@ def test_user_bin_is_reached_without_shadowing_system_tools(monkeypatch, tmp_pat
     monkeypatch.setenv("PATH", "/usr/bin")
     qa._include_user_bin()
     assert os.environ["PATH"] == "/usr/bin"
+
+
+def test_a_coloured_vitest_failure_still_names_its_tests():
+    # On the CI runner vitest colours its FAIL lines, which a local run prints
+    # plain, so a red CI run printed the reason and none of the names.
+    coloured = VITEST_FAILURE.replace(
+        " FAIL  tests/uiModel.test.ts",
+        " \x1b[31m\x1b[1m\x1b[7m FAIL \x1b[27m\x1b[22m\x1b[39m tests/uiModel.test.ts\x1b[2m",
+    )
+    digest = qa._failure_digest(coloured)
+    assert digest["failed_tests"] == ["tests/uiModel.test.ts > controller UI model > calls a copy Fixed"]
+    assert "\x1b[" not in str(digest["excerpt"])
+
+
+def test_every_failed_stage_is_named_not_only_the_first(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    qa._write_results("release", "working tree", [], [
+        {"key": "backend-full", "status": "failed", "duration_seconds": 1.0,
+         "output_tail": PYTEST_FAILURE, **qa._failure_digest(PYTEST_FAILURE),
+         "rerun_command": "python scripts/qa.py --profile release --stage backend-full"},
+        {"key": "frontend-component", "status": "failed", "duration_seconds": 1.0,
+         "output_tail": VITEST_FAILURE[-1600:], **qa._failure_digest(VITEST_FAILURE),
+         "rerun_command": "python scripts/qa.py --profile release --stage frontend-component"},
+    ], tmp_path)
+    printed = capsys.readouterr().out
+
+    assert "backend-full failed: tests/test_ct_hooks.py::test_a_flag_is_not_safe" in printed
+    assert "frontend-component failed: tests/uiModel.test.ts > controller UI model > calls a copy Fixed" in printed
+    # One account of why, from the first; the second says what and how to rerun.
+    assert "backend-full why:" in printed and "frontend-component why:" not in printed
+    assert printed.count("  rerun: ") == 2
