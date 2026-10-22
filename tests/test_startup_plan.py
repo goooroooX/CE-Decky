@@ -1,7 +1,8 @@
 """Auto-load intent and exact expanded startup-plan contracts.
 
 Each test fails on the code that preceded it: a configured value was written at
-startup for a cheat the user had explicitly switched off, `Disable all` left
+startup for a cheat the user had explicitly switched off under a script startup
+left off, `Disable all` left
 explicit-off intent for records their own script destroys, the persisted budget
 ignored the enclosing scripts the descriptor adds, and Auto-load could not be
 disarmed once its own prerequisites broke.
@@ -124,22 +125,33 @@ def _profile(**overrides) -> GameProfile:
     return GameProfile(**base)
 
 
-def test_an_explicitly_off_cheat_does_not_write_its_configured_value_at_startup(tmp_path: Path):
+def test_an_off_cheat_gets_its_typed_value_only_under_a_script_startup_runs(tmp_path: Path):
+    """A value typed in Configure cheats for a record remembered off.
+
+    Written once under a script this startup runs, because that is a script's
+    setting and is often remembered off (maintainer, 2026-10-23); never under a
+    script startup leaves off, where the record does not exist; and with nothing
+    typed, nothing is written.
+    """
     service = _service(tmp_path, "m26")
     table = _nested_profile(service, tmp_path, 920)
     inspection = _inspection(service, table["sha256"])
-    profile = _profile(
-        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
-        remembered=[StartupPreference(2, False, None), StartupPreference(3, True, None)],
-        configured_values=[ConfiguredValue(2, "9999")],
-    )
 
-    actions = effective_startup_plan(profile, inspection)
-    by_record = {(action.record_id, action.kind) for action in actions}
-    assert (2, "value") not in by_record, "a dormant value must not be written for an explicitly-off cheat"
-    assert (3, "active") in by_record, "the independent cheat must still be applied"
-    # The enclosing script the applied cheat needs is still derived.
-    assert (1, "active") in by_record
+    def plan(**overrides):
+        profile = _profile(table_sha256=table["sha256"], execution_consent_sha256=table["sha256"], **overrides)
+        return {(action.record_id, action.kind): action.value for action in effective_startup_plan(profile, inspection)}
+
+    running = plan(remembered=[StartupPreference(2, False, None), StartupPreference(3, True, None)],
+                   configured_values=[ConfiguredValue(2, "9999")])
+    assert running[(2, "value")] == "9999"
+    assert running[(2, "active")] == "0", "written once, never switched on"
+    assert (3, "active") in running and (1, "active") in running
+
+    left_off = plan(remembered=[StartupPreference(2, False, None)], configured_values=[ConfiguredValue(2, "9999")])
+    assert not any(record_id == 2 for record_id, _ in left_off)
+
+    nothing_typed = plan(remembered=[StartupPreference(2, False, "100"), StartupPreference(3, True, None)])
+    assert (2, "value") not in nothing_typed
 
 
 MIXED_TABLE = NESTED_TABLE.replace(
@@ -390,6 +402,15 @@ def test_a_flag_switched_off_with_no_key_is_held_off_when_another_cheat_starts_i
     assert order.index((1, "active")) < order.index((3, "value")) < order.index((3, "active"))
     assert startup_left_on(profile, inspection) == ()
 
+    # A switch takes no typed value: its on key is the cheat on.
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, "1"), StartupPreference(3, False, None)],
+        configured_values=[ConfiguredValue(3, "1")],
+    )
+    by_record = {(action.record_id, action.kind): action.value for action in effective_startup_plan(profile, inspection)}
+    assert by_record[(3, "value")] == "0"
+
     # Switched off by hand with its off key: that key, once.
     profile = _profile(
         table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
@@ -416,12 +437,13 @@ def test_a_flag_switched_off_with_no_key_whose_off_is_unsafe_is_named_rather_tha
     assert startup_left_on(profile, inspection) == (4,)
 
 
-def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_is_not_written(tmp_path: Path):
+def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_gets_no_read_back_value(tmp_path: Path):
     """The value an off cheat remembers is what it held while it was on.
 
     A sibling keeping the script running made that value look like the script's
     setting, so every Auto-load wrote game memory for a cheat switched off. A
-    value with no switch state of its own is a setting and is still written.
+    value with no switch state of its own is a setting and is still written, and
+    so is one typed in Configure cheats.
     """
     service = _service(tmp_path, "m65")
     plan = _mixed_plan(service, tmp_path, 965,
@@ -435,11 +457,12 @@ def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_is_not_written
     assert plan[(2, "value")] == "100"
     assert (2, "active") not in plan
 
-    # Configured beside an explicit off: kept for later, never written.
+    # Typed in Configure cheats beside an explicit off: the typed value, not
+    # the one read back (maintainer, 2026-10-23).
     plan = _mixed_plan(service, tmp_path, 967,
-                       remembered=[StartupPreference(2, False, None), StartupPreference(3, True, None)],
-                       configured_values=[ConfiguredValue(2, "100")])
-    assert (2, "value") not in plan
+                       remembered=[StartupPreference(2, False, "100"), StartupPreference(3, True, None)],
+                       configured_values=[ConfiguredValue(2, "250")])
+    assert plan[(2, "value")] == "250"
 
 
 TOP_SWITCH_TABLE = FLAG_TABLE.replace(

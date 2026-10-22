@@ -353,7 +353,7 @@ class SessionStore:
             target_process=profile.target_process,
             control_path=wine_z_path(control_path),
             status_path=wine_z_path(status_path),
-            startup=tuple(_startup_actions(_effective_startup_preferences(profile), inspection)),
+            startup=tuple(_startup_actions(_effective_startup_preferences(profile), inspection, _startup_configured(profile))),
             is_shortcut=profile.is_shortcut,
             switch_off=_switch_off_values(inspection),
             # From the same inspection the user reviewed and consented to, so
@@ -1576,6 +1576,18 @@ def _effective_startup_preferences(profile: GameProfile) -> list[StartupPreferen
     return _effective_preferences(profile.startup, profile.remembered, profile.configured_values)
 
 
+def _startup_configured(profile: GameProfile) -> dict[int, str]:
+    """The values typed in Configure cheats, which startup reads beside the merge.
+
+    Kept apart from the merged preferences because an off record's value there is
+    whatever it held last, while one of these is what the user typed for it, and
+    only the second is written for a record startup leaves off.
+    """
+    if not profile.autoload_enabled:
+        return {}
+    return {item.record_id: item.value for item in profile.configured_values}
+
+
 def _enclosing_script_ids(control, controls: dict[int, object]) -> list[int]:
     """IDs of the scripts this record sits inside, outermost first.
 
@@ -1676,7 +1688,7 @@ def effective_startup_plan(profile: GameProfile, inspection: TableInspection) ->
     within budget and then make every launch impossible. This is the one
     authority both sides use.
     """
-    return _startup_actions(_effective_startup_preferences(profile), inspection)
+    return _startup_actions(_effective_startup_preferences(profile), inspection, _startup_configured(profile))
 
 
 def _held_off_switch_preferences(
@@ -1770,7 +1782,9 @@ def startup_left_on(profile: GameProfile, inspection: TableInspection) -> tuple[
     write them and they run in the game while the panel counts only what the
     user chose. Whoever said the startup succeeded owes the user these names.
     """
-    expanded, controls, ambiguous = _startup_expansion(_effective_startup_preferences(profile), inspection)
+    expanded, controls, ambiguous = _startup_expansion(
+        _effective_startup_preferences(profile), inspection, _startup_configured(profile),
+    )
     return tuple(sorted(
         record_id
         for record_id, control in _script_default_switches(expanded, controls, ambiguous).items()
@@ -1868,6 +1882,7 @@ def _switch_off_key(control: object) -> str | None:
 
 def _startup_expansion(
     preferences: Iterable[StartupPreference], inspection: TableInspection,
+    configured: dict[int, str] | None = None,
 ) -> tuple[list[StartupPreference], dict[int, object], set[int]]:
     """The preferences a startup plan acts on, before the switches it holds off."""
     controls = {}
@@ -1891,7 +1906,7 @@ def _startup_expansion(
         if not getattr(controls.get(preference.record_id), "attach_only", False)
     ]
     expanded = _without_orphan_off_preferences(
-        _without_values_nothing_reads(_with_enclosing_scripts(kept, controls, ambiguous), controls),
+        _without_values_nothing_reads(_with_enclosing_scripts(kept, controls, ambiguous), controls, configured or {}),
         controls,
     )
     return expanded, controls, ambiguous
@@ -1900,6 +1915,7 @@ def _startup_expansion(
 def _without_values_nothing_reads(
     preferences: list[StartupPreference],
     controls: dict[int, object],
+    configured: dict[int, str],
 ) -> list[StartupPreference]:
     """Keep a value write only for a record this startup switches on or runs a script for.
 
@@ -1913,24 +1929,34 @@ def _without_values_nothing_reads(
     exist, which failed the whole Auto-load. The value stays in the profile
     either way; only the startup write is dropped.
 
-    A setting is a value with no switch state of its own. A record remembered
-    off was switched off, and the value beside it is what it held while it was
-    on: replaying that because a sibling keeps the script running wrote game
-    memory for a cheat the user had switched off. The one value an off record
-    keeps is a switch's off key, which is what switching that switch off is:
-    under scripts this startup runs, or on a switch no script creates or
-    allocates, which is there to be written whatever else startup does.
+    A record remembered off under scripts this startup runs gets the value typed
+    for it in Configure cheats (`configured`), and nothing when none was typed.
+    The value remembered beside off is what Cheat Engine last read there, which
+    for a cheat switched off is what it held while it was on, and replaying that
+    because a sibling keeps the script running wrote memory nobody chose. A
+    switch takes no typed value, because its value is its toggle and its on key
+    is the cheat on; what an off switch keeps is its off key: under scripts this
+    startup runs, or on a switch no script creates or allocates, which is there
+    to be written whatever else startup does.
 
     Review note (static review 2026-10-21, F5): the review asked for a value
     typed while a cheat is off never to reach game memory. Live Apply still
     writes it once, unfrozen, by the maintainer's decision: that is Cheat
     Engine's own meaning of editing a value that is not frozen, such as setting
-    an amount once. What the review asked of startup is what this does.
+    an amount once.
+
+    Review note (static review 2026-10-22, N2): the review asked that a value
+    cheat switched off receive no startup write while a sibling keeps its script
+    running. Followed for the value read back beside off; not for the value typed
+    in Configure cheats, by the maintainer's decision on 2026-10-23: a script's
+    setting is often remembered off, and dropping its typed value at Auto-load
+    left the script running on its own default. The typed value is written once,
+    unfrozen, only under scripts this startup runs; with none typed, nothing is.
     """
     on = {item.record_id for item in preferences if item.active is True}
     kept: list[StartupPreference] = []
     for preference in preferences:
-        if preference.value is None or preference.active is True:
+        if preference.active is True:
             kept.append(preference)
             continue
         control = controls.get(preference.record_id)
@@ -1940,9 +1966,21 @@ def _without_values_nothing_reads(
             kept.append(preference)
             continue
         enclosing = _enclosing_script_ids(control, controls)
-        off_key = preference.value == _switch_off_key(control)
-        setting = preference.active is None or off_key
-        if setting and enclosing and all(script_id in on for script_id in enclosing):
+        running = bool(enclosing) and all(script_id in on for script_id in enclosing)
+        off_key = preference.value is not None and preference.value == _switch_off_key(control)
+        if preference.active is False and not off_key:
+            typed = configured.get(preference.record_id) if _switch_off_key(control) is None else None
+            if running and typed is not None:
+                kept.append(replace(preference, value=typed))
+            elif preference.value is not None:
+                kept.append(replace(preference, value=None))
+            else:
+                kept.append(preference)
+            continue
+        if preference.value is None:
+            kept.append(preference)
+            continue
+        if (preference.active is None or off_key) and running:
             kept.append(preference)
             continue
         # A switch no script creates and whose address the game owns exists
@@ -1957,8 +1995,11 @@ def _without_values_nothing_reads(
     return kept
 
 
-def _startup_actions(preferences: Iterable[StartupPreference], inspection: TableInspection) -> list[StartupAction]:
-    expanded, controls, ambiguous = _startup_expansion(preferences, inspection)
+def _startup_actions(
+    preferences: Iterable[StartupPreference], inspection: TableInspection,
+    configured: dict[int, str] | None = None,
+) -> list[StartupAction]:
+    expanded, controls, ambiguous = _startup_expansion(preferences, inspection, configured)
     actions: list[StartupAction] = []
     # A held-off key joins what the plan already asks of that record, such as
     # making it inactive, so one record carries one value write and at most one
