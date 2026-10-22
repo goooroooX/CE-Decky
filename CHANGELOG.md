@@ -2,7 +2,7 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
-## 0.9.31 — 2026-10-22
+## 0.9.31 — 2026-10-23
 
 - [Fixed] Switching on a cheat in Configure cheats where Cheat Engine reads nothing at its address writes the value its row shows, as the panel's pinned toggle does, rather than freezing whatever the game holds there.
 - [Fixed] A cheat that a script creates can be switched on while that script is off, in Configure cheats and from a pinned toggle: its row says its script has not run yet, and switching it on switches on every script around it first and writes the value shown for it, which on the panel is now the one last set in Configure cheats rather than an older one read back. It had no switch at all, and a pinned one disappeared from the panel, which then said to connect Cheat Engine. A pinned cheat the running table does not have is now counted on the panel instead.
