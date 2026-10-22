@@ -16,7 +16,7 @@ from ce_decky.ct_inspector import inspect_table
 from ce_decky.paths import PluginPaths
 from ce_decky.profiles import ConfiguredValue, GameProfile, StartupPreference
 from ce_decky.service import PluginService
-from ce_decky.session_protocol import MAX_STARTUP_ACTIONS, effective_startup_plan
+from ce_decky.session_protocol import MAX_STARTUP_ACTIONS, effective_startup_plan, startup_left_on
 
 FLAG_TABLE = """<?xml version="1.0" encoding="utf-8"?>
 <CheatTable CheatEngineTableVersion="45">
@@ -359,6 +359,87 @@ def test_a_cheat_the_user_switched_off_keeps_its_own_choice_at_startup(tmp_path:
     by_record = {(action.record_id, action.kind): action for action in actions}
     assert by_record[(3, "value")].value == "1"
     assert (3, "active") in by_record
+
+
+def test_a_flag_switched_off_with_no_key_is_held_off_when_another_cheat_starts_its_script(tmp_path: Path):
+    """Off with no key is how a switch that went down with its script is remembered.
+
+    Naming it was enough to skip it, and making it inactive only releases a
+    freeze, so the script's own on value stayed in the game: the cheat the user
+    switched off ran again whenever another cheat started the same script.
+    """
+    service = _service(tmp_path, "m63")
+    source = tmp_path / "flags-off.CT"
+    source.write_text(FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    inspection = _inspection(service, table["sha256"])
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, "1"), StartupPreference(3, False, None)],
+    )
+
+    actions = effective_startup_plan(profile, inspection)
+    order = [(action.record_id, action.kind) for action in actions]
+    by_record = {(action.record_id, action.kind): action.value for action in actions}
+    assert by_record[(1, "active")] == "1"
+    assert by_record[(2, "active")] == "1"
+    assert by_record[(3, "value")] == "0"
+    assert by_record[(3, "active")] == "0"
+    # One write per record, after the script that creates it.
+    assert order.count((3, "value")) == 1
+    assert order.index((1, "active")) < order.index((3, "value")) < order.index((3, "active"))
+    assert startup_left_on(profile, inspection) == ()
+
+    # Switched off by hand with its off key: that key, once.
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, "1"), StartupPreference(3, False, "0")],
+    )
+    order = [(action.record_id, action.kind, action.value) for action in effective_startup_plan(profile, inspection)]
+    assert order.count((3, "value", "0")) == 1
+
+
+def test_a_flag_switched_off_with_no_key_whose_off_is_unsafe_is_named_rather_than_written(tmp_path: Path):
+    service = _service(tmp_path, "m64")
+    source = tmp_path / "unsafe-off.CT"
+    source.write_text(UNSAFE_FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    inspection = _inspection(service, table["sha256"])
+    profile = _profile(
+        table_sha256=table["sha256"], execution_consent_sha256=table["sha256"],
+        remembered=[StartupPreference(2, True, None), StartupPreference(4, False, None)],
+    )
+
+    by_record = {(action.record_id, action.kind): action.value for action in effective_startup_plan(profile, inspection)}
+    assert (4, "value") not in by_record, "a flag whose off is not proven safe is never written at startup"
+    assert by_record[(3, "value")] == "0"
+    assert startup_left_on(profile, inspection) == (4,)
+
+
+def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_is_not_written(tmp_path: Path):
+    """The value an off cheat remembers is what it held while it was on.
+
+    A sibling keeping the script running made that value look like the script's
+    setting, so every Auto-load wrote game memory for a cheat switched off. A
+    value with no switch state of its own is a setting and is still written.
+    """
+    service = _service(tmp_path, "m65")
+    plan = _mixed_plan(service, tmp_path, 965,
+                       remembered=[StartupPreference(2, False, "100"), StartupPreference(3, True, "5")])
+    assert (2, "value") not in plan
+    assert plan[(3, "value")] == "5" and plan[(3, "active")] == "1"
+    assert plan[(1, "active")] == "1"
+
+    plan = _mixed_plan(service, tmp_path, 966,
+                       remembered=[StartupPreference(2, None, "100"), StartupPreference(3, True, None)])
+    assert plan[(2, "value")] == "100"
+    assert (2, "active") not in plan
+
+    # Configured beside an explicit off: kept for later, never written.
+    plan = _mixed_plan(service, tmp_path, 967,
+                       remembered=[StartupPreference(2, False, None), StartupPreference(3, True, None)],
+                       configured_values=[ConfiguredValue(2, "100")])
+    assert (2, "value") not in plan
 
 
 def test_an_orphan_off_action_is_never_asked_of_a_record_its_script_will_not_create(tmp_path: Path):

@@ -1716,12 +1716,28 @@ def _script_default_switches(
 
     The candidates both halves of the rule are drawn from: the ones held off
     and the ones left on, so the two cannot disagree about which is which.
+
+    Named means this plan does something to the switch: switches it on, or
+    writes it a value. A switch remembered off with no key, which is what one
+    that went off with its script is remembered as, is named and does nothing:
+    making the record inactive releases a freeze and leaves the script's own
+    on value in the game. Skipping it for being named switched the cheat the
+    user had switched off back on whenever another cheat started its script.
+
+    Only a script declares defaults. A value with records under it allocates
+    nothing and runs nothing, so switching one on is no reason to touch the
+    flags it happens to hold.
     """
-    named = {preference.record_id for preference in preferences}
+    named = {
+        preference.record_id for preference in preferences
+        if preference.active is True or preference.value is not None
+    }
     switched_on = [
         control
         for preference in preferences
-        if preference.active is True and (control := controls.get(preference.record_id)) is not None
+        if preference.active is True
+        and (control := controls.get(preference.record_id)) is not None
+        and getattr(control, "kind", None) == "script"
     ]
     found: dict[int, object] = {}
     for script in switched_on:
@@ -1834,12 +1850,18 @@ def _switch_off_value(control: object) -> str | None:
     guarantee depend on which of the two put the cheats on. What was not
     established stays on, and the panel is what names it.
     """
-    on = getattr(control, "switch_on_value", None)
-    values = getattr(control, "dropdown_values", ())
-    declared = getattr(control, "declared_default", None)
     if getattr(control, "switch_off_is_safe", False) is not True:
         return None
-    if not isinstance(on, str) or not on or len(values) != 2 or declared != on:
+    if getattr(control, "declared_default", None) != getattr(control, "switch_on_value", None):
+        return None
+    return _switch_off_key(control)
+
+
+def _switch_off_key(control: object) -> str | None:
+    """The key that switches this record off, when it is a switch at all."""
+    on = getattr(control, "switch_on_value", None)
+    values = getattr(control, "dropdown_values", ())
+    if not isinstance(on, str) or not on or len(values) != 2:
         return None
     return next((value for value, _ in values if value != on), None)
 
@@ -1891,6 +1913,12 @@ def _without_values_nothing_reads(
     exist, which failed the whole Auto-load. The value stays in the profile
     either way; only the startup write is dropped.
 
+    A setting is a value with no switch state of its own. A record remembered
+    off was switched off, and the value beside it is what it held while it was
+    on: replaying that because a sibling keeps the script running wrote game
+    memory for a cheat the user had switched off. The one value an off record
+    keeps is a switch's off key, which is what switching that switch off is.
+
     Review note (static review 2026-10-21, F5): the review asked for a value
     typed while a cheat is off never to reach game memory. Live Apply still
     writes it once, unfrozen, by the maintainer's decision: that is Cheat
@@ -1910,7 +1938,8 @@ def _without_values_nothing_reads(
             kept.append(preference)
             continue
         enclosing = _enclosing_script_ids(control, controls)
-        if enclosing and all(script_id in on for script_id in enclosing):
+        setting = preference.active is None or preference.value == _switch_off_key(control)
+        if setting and enclosing and all(script_id in on for script_id in enclosing):
             kept.append(preference)
             continue
         if preference.active is not None:
@@ -1921,7 +1950,14 @@ def _without_values_nothing_reads(
 def _startup_actions(preferences: Iterable[StartupPreference], inspection: TableInspection) -> list[StartupAction]:
     expanded, controls, ambiguous = _startup_expansion(preferences, inspection)
     actions: list[StartupAction] = []
-    expanded = expanded + _held_off_switch_preferences(expanded, controls, ambiguous)
+    # A held-off key joins what the plan already asks of that record, such as
+    # making it inactive, so one record carries one value write and at most one
+    # activation rather than two preferences for the same ID.
+    by_id = {preference.record_id: preference for preference in expanded}
+    for held in _held_off_switch_preferences(expanded, controls, ambiguous):
+        existing = by_id.get(held.record_id)
+        by_id[held.record_id] = held if existing is None else replace(existing, value=held.value)
+    expanded = [by_id[key] for key in sorted(by_id)]
     for preference in expanded:
         if preference.record_id in ambiguous:
             raise ValueError(f"startup MemoryRecord {preference.record_id} is ambiguous in exact table SHA")
