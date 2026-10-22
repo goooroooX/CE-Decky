@@ -1917,7 +1917,9 @@ def _without_values_nothing_reads(
     off was switched off, and the value beside it is what it held while it was
     on: replaying that because a sibling keeps the script running wrote game
     memory for a cheat the user had switched off. The one value an off record
-    keeps is a switch's off key, which is what switching that switch off is.
+    keeps is a switch's off key, which is what switching that switch off is:
+    under scripts this startup runs, or on a switch no script creates or
+    allocates, which is there to be written whatever else startup does.
 
     Review note (static review 2026-10-21, F5): the review asked for a value
     typed while a cheat is off never to reach game memory. Live Apply still
@@ -1938,8 +1940,16 @@ def _without_values_nothing_reads(
             kept.append(preference)
             continue
         enclosing = _enclosing_script_ids(control, controls)
-        setting = preference.active is None or preference.value == _switch_off_key(control)
+        off_key = preference.value == _switch_off_key(control)
+        setting = preference.active is None or off_key
         if setting and enclosing and all(script_id in on for script_id in enclosing):
+            kept.append(preference)
+            continue
+        # A switch no script creates and whose address the game owns exists
+        # whenever the game does, so its off key is always addressable. Making
+        # it inactive alone releases a freeze and leaves it at whatever the
+        # game holds, which for a flag written on is the cheat still running.
+        if off_key and not enclosing and not getattr(control, "script_owned", False):
             kept.append(preference)
             continue
         if preference.active is not None:

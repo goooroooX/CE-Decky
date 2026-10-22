@@ -442,6 +442,75 @@ def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_is_not_written
     assert (2, "value") not in plan
 
 
+TOP_SWITCH_TABLE = FLAG_TABLE.replace(
+    "  </CheatEntries>\n</CheatTable>",
+    "    <CheatEntry>\n"
+    "      <ID>10</ID><Description>No clip</Description><VariableType>Byte</VariableType>\n"
+    "      <Address>game.exe+10</Address>\n"
+    "      <DropDownList>0:Off\n1:On</DropDownList>\n"
+    "    </CheatEntry>\n"
+    "    <CheatEntry>\n"
+    "      <ID>11</ID><Description>Money</Description><VariableType>4 Bytes</VariableType>\n"
+    "      <Address>game.exe+20</Address>\n"
+    "    </CheatEntry>\n"
+    "    <CheatEntry>\n"
+    "      <ID>12</ID><Description>God mode</Description><VariableType>4 Bytes</VariableType>\n"
+    "      <Address>bEnableGodMode</Address>\n"
+    "      <DropDownList>0:Disabled\n1:Enabled</DropDownList>\n"
+    "    </CheatEntry>\n"
+    "  </CheatEntries>\n</CheatTable>",
+)
+
+
+def _top_switch_plan(service: PluginService, tmp_path: Path, app_id: int, remembered):
+    source = tmp_path / f"top-switch-{app_id}.CT"
+    source.write_text(TOP_SWITCH_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    profile = _profile(table_sha256=table["sha256"], execution_consent_sha256=table["sha256"], remembered=remembered)
+    return [(action.record_id, action.kind, action.value)
+            for action in effective_startup_plan(profile, _inspection(service, table["sha256"]))]
+
+
+def test_a_switch_no_script_creates_keeps_its_off_key_at_startup(tmp_path: Path):
+    """A top-level switch switched off is written off, not only released.
+
+    Its address is the game's, so it is there to be written whatever else the
+    startup does. Making it inactive alone left a flag written on at its on
+    value, running under a switch the panel showed off.
+    """
+    service = _service(tmp_path, "m66")
+    source = tmp_path / "top-switch-shape.CT"
+    source.write_text(TOP_SWITCH_TABLE, encoding="utf-8")
+    shape = {control.id: control for control in _inspection(service, service.import_table(str(source))["sha256"]).controls}
+    assert shape[10].switch_on_value == "1" and not shape[10].script_owned
+    assert shape[12].switch_on_value == "1" and shape[12].script_owned
+
+    # Beside an independent cheat that is on.
+    plan = _top_switch_plan(service, tmp_path, 970, [StartupPreference(10, False, "0"), StartupPreference(11, True, "5")])
+    assert plan.count((10, "value", "0")) == 1
+    assert (10, "active", "0") in plan
+    assert plan.index((10, "value", "0")) < plan.index((10, "active", "0"))
+    assert not any(record_id == 10 and value == "1" for record_id, _, value in plan)
+
+    # Alone: no script is needed to reach it, so nothing is started for it.
+    plan = _top_switch_plan(service, tmp_path, 971, [StartupPreference(10, False, "0")])
+    assert (10, "value", "0") in plan
+    assert not any(record_id == 1 for record_id, _, _ in plan)
+
+    # An ordinary value switched off keeps no startup write.
+    plan = _top_switch_plan(service, tmp_path, 972, [StartupPreference(11, False, "9999"), StartupPreference(10, True, "1")])
+    assert not any(record_id == 11 and kind == "value" for record_id, kind, _ in plan)
+
+    # A switch whose address a script allocates is not there while that script
+    # is off, so its off key is not asked for at the top level either.
+    plan = _top_switch_plan(service, tmp_path, 973, [StartupPreference(12, False, "0"), StartupPreference(11, True, "5")])
+    assert not any(record_id == 12 and kind == "value" for record_id, kind, _ in plan)
+
+    # Nested under a script this startup leaves off: nothing waited for.
+    plan = _top_switch_plan(service, tmp_path, 974, [StartupPreference(3, False, "0"), StartupPreference(11, True, "5")])
+    assert not any(record_id == 3 for record_id, _, _ in plan)
+
+
 def test_an_orphan_off_action_is_never_asked_of_a_record_its_script_will_not_create(tmp_path: Path):
     service = _service(tmp_path, "m12")
     table = _nested_profile(service, tmp_path, 921)
