@@ -6,7 +6,7 @@ import { CompatibilityMark } from "./CompatibilityMark";
 import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, SwitchBox, UPDATE_ACTION_CLASS } from "./PanelDensity";
 import { HEXPAW_DATA_URI } from "../assets/hexpaw";
 import { leadWithCause } from "../errors";
-import type { BlockedMark, PinnedCheatRow } from "../uiModel";
+import { activeCountLabel, type BlockedMark, type PinnedCheatRow } from "../uiModel";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
 import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from "../types";
 
@@ -182,6 +182,8 @@ interface Props {
    */
   activeScriptCount: number;
   pinnedCount: number;
+  /** Pinned cheats the running table does not have, so no row can be drawn for them. */
+  pinnedMissing?: number;
   /** Pinned controls promoted onto this panel, with their live active state. */
   pinnedRows: PinnedCheatRow[];
   pinnedBusyRecordId: number | null;
@@ -270,6 +272,7 @@ export function HomePanel(props: Props) {
     activeCheatSnapshotReady,
     activeScriptCount,
     pinnedCount,
+    pinnedMissing = 0,
     pinnedRows,
     pinnedBusyRecordId,
     onTogglePinnedCheat,
@@ -328,9 +331,7 @@ export function HomePanel(props: Props) {
   // What is on, counted as the user chose it. A table's own scripts are on
   // because a cheat needed them, so they are named as what they are instead of
   // being added to a number that is meant to match the switches on this panel.
-  const activeCheatSummary = activeScriptCount > 0
-    ? `${activeCheatLabels.length} active (${activeScriptCount} script${activeScriptCount === 1 ? "" : "s"})`
-    : `${activeCheatLabels.length} active`;
+  const activeCheatSummary = activeCountLabel(activeCheatLabels.length, activeScriptCount);
   // Read in place unless whichever of the two is on the row was written
   // somewhere this frontend cannot see the length of.
   const runtimeRowStatus = launchPending || (runtimeHint === null ? runtimeTextComplete : runtimeHint.complete);
@@ -587,8 +588,11 @@ export function HomePanel(props: Props) {
             />
           </PanelSectionRow>
         ))}
-        {pinnedCount > 0 && pinnedRows.length === 0 && (
+        {pinnedCount > 0 && pinnedRows.length === 0 && !(runtimeReady && activeCheatSnapshotReady) && (
           <PanelSectionRow><PanelRow status label="Pinned controls" truncate description={`${pinnedCount} pinned; connect Cheat Engine to use them here.`} /></PanelSectionRow>
+        )}
+        {runtimeReady && activeCheatSnapshotReady && pinnedMissing > 0 && (
+          <PanelSectionRow><PanelRow status label="Pinned controls" truncate description={`${pinnedMissing} pinned not found in the running table.`} /></PanelSectionRow>
         )}
         {pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (
           <PanelSectionRow key={`${index}:${label}`}><PanelRow label={label} truncate /></PanelSectionRow>

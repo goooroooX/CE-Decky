@@ -959,6 +959,77 @@ describe("nested MemoryRecord topology", () => {
     expect(activeCommands()).toEqual([1, 2]);
   });
 
+  it("waits for an inner script to appear and run before the cheat inside it", async () => {
+    // Outer script -> inner script -> cheat, with both inner records missing
+    // until the script above them runs. Each is switched on as it appears,
+    // outermost first, and the cheat is never sent before its own script.
+    const beforeQuery = [query(1, 1, false), query(2, 2, null, false), query(3, 3, null, false)];
+    const outerOn = [query(4, 1, true)];
+    const innerAppears = [query(5, 2, false), query(6, 3, null, false)];
+    const innerOn = [query(7, 2, true)];
+    const leafAppears = [query(8, 3, false)];
+    const leafOn = [query(9, 3, true)];
+    const verified = [query(10, 1, true), query(11, 2, true), query(12, 3, true)];
+    const upTo = (...parts: ReturnType<typeof query>[][]) => parts.flat();
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(4, beforeQuery))
+      .mockResolvedValueOnce(envelope(4, beforeQuery))
+      .mockResolvedValueOnce(envelope(5, upTo(beforeQuery, outerOn)))
+      .mockResolvedValueOnce(envelope(5, upTo(beforeQuery, outerOn)))
+      .mockResolvedValueOnce(envelope(7, upTo(beforeQuery, outerOn, innerAppears)))
+      .mockResolvedValueOnce(envelope(7, upTo(beforeQuery, outerOn, innerAppears)))
+      .mockResolvedValueOnce(envelope(8, upTo(beforeQuery, outerOn, innerAppears, innerOn)))
+      .mockResolvedValueOnce(envelope(8, upTo(beforeQuery, outerOn, innerAppears, innerOn)))
+      .mockResolvedValueOnce(envelope(9, upTo(beforeQuery, outerOn, innerAppears, innerOn, leafAppears)))
+      .mockResolvedValueOnce(envelope(9, upTo(beforeQuery, outerOn, innerAppears, innerOn, leafAppears)))
+      .mockResolvedValueOnce(envelope(10, upTo(beforeQuery, outerOn, innerAppears, innerOn, leafAppears, leafOn)))
+      .mockResolvedValueOnce(envelope(10, upTo(beforeQuery, outerOn, innerAppears, innerOn, leafAppears, leafOn)))
+      .mockResolvedValue(envelope(13, upTo(beforeQuery, outerOn, innerAppears, innerOn, leafAppears, leafOn, verified)));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 3, next_generation: 4 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 5 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 7 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 8 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 9 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 10 })
+      .mockResolvedValue({ ok: true, count: 3, next_generation: 13 });
+
+    await applyRuntimeSelection(10, [
+      { record_id: 3, active: true, value: null, structure: ["Outer", "Inner", "Cheat"] },
+      { record_id: 2, active: true, value: null, structure: ["Outer", "Inner"] },
+      { record_id: 1, active: true, value: null, structure: ["Outer"] },
+    ]);
+
+    expect(activeCommands()).toEqual([1, 2, 3]);
+  });
+
+  it("gives up on a cheat its script never creates, bounded, and says which", async () => {
+    // The script ran and the record never appeared: a bounded number of reads,
+    // nothing sent to the record that is not there, and a failure naming it.
+    const results = [query(1, 1, false), query(2, 2, null, false)];
+    const statuses = [envelope(1)];
+    const batches: { count: number; next: number }[] = [{ count: 2, next: 3 }];
+    statuses.push(envelope(3, [...results]), envelope(3, [...results]));
+    results.push(query(3, 1, true));
+    batches.push({ count: 1, next: 4 });
+    statuses.push(envelope(4, [...results]), envelope(4, [...results]));
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      results.push(query(4 + attempt, 2, null, false));
+      batches.push({ count: 1, next: 5 + attempt });
+      statuses.push(envelope(5 + attempt, [...results]), envelope(5 + attempt, [...results]));
+    }
+    for (const status of statuses) api.getRuntimeStatus.mockResolvedValueOnce(status);
+    api.getRuntimeStatus.mockResolvedValue(statuses.at(-1));
+    for (const batch of batches) api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: batch.count, next_generation: batch.next });
+
+    await expect(applyRuntimeSelection(10, [
+      { record_id: 2, active: true, value: null, structure: ["Script", "Fly"], label: "Fly" },
+      { record_id: 1, active: true, value: null, structure: ["Script"] },
+    ])).rejects.toThrow(/Fly did not appear after its enclosing scripts were switched on/);
+    expect(activeCommands()).toEqual([1]);
+  });
+
   it("refuses a record that no ancestor in this call could ever create", async () => {
     const beforeQuery = [query(1, 1, null, false)];
     api.getRuntimeStatus

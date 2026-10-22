@@ -124,7 +124,7 @@ A table marked as not working is still **Local**: the file is here, you just can
 **Configure cheats** lists the table's controls, one per row, with an **Active** toggle. **More** on a row reveals its value editor, the option to pin it, and its raw record ID.
 
 - You can do this with the game running or with nothing running. Your choices are saved for that exact table and applied the next time Cheat Engine starts.
-- Switching on a cheat that lives inside a script switches on the scripts it needs first: a record inside a script has no address until that script has run.
+- Switching on a cheat that lives inside a script switches on the scripts it needs first: a record inside a script has no address until that script has run. Such a cheat says its script has not run yet, and switches on like any other.
 - **Pin** puts a control on the main panel as a live toggle, so the cheats you use are one press away.
 - A cheat that is simply on or off is a plain switch: the toggle is the whole control, with no list and no box.
 - A cheat that really does choose between things offers that list on the row, and nothing else. If you need a value the author did not list, **Type a value instead** gives you a box. Long lists get a **Find a value** search: type part of the name or the number to narrow it.

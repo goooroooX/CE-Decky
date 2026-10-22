@@ -26,6 +26,7 @@ import {
   switchOffValues,
   switchValueFor,
   switchesToHoldOff,
+  absentUnderStoppedScripts,
   inactiveAncestorControl,
   inactiveAncestorControls,
   switchValuesFor,
@@ -1102,6 +1103,32 @@ describe("compact cheat rows", () => {
     expect(switchesToHoldOff([script], [script, leftOff, unreadable], new Set())).toEqual([]);
     // A script with nothing under it asks for nothing.
     expect(switchesToHoldOff([{ ...base, id: 20, path: ["Alone"], structure: ["Alone"], kind: "script" as const }], [script, chosen], new Set())).toEqual([]);
+    // A value with the script's flags filed under it starts nothing, so it
+    // holds nothing off and leaves nothing on, whatever sits inside it.
+    const player = { ...base, id: 30, path: ["Enable", "Player"], structure: ["Enable", "Player"], kind: "value" as const };
+    const nestedFlag = { ...flag(31, "Shield"), path: ["Enable", "Player", "Shield"], structure: ["Enable", "Player", "Shield"] };
+    expect(switchesToHoldOff([player], [script, player, nestedFlag], new Set([30]))).toEqual([]);
+    expect(switchesLeftOn([player], [script, player, { ...nestedFlag, switch_off_is_safe: false }], new Set([30]))).toEqual([]);
+  });
+
+  it("finds the records gone with a script that is off, and only those", () => {
+    const script = { ...base, id: 10, path: ["Enable"], structure: ["Enable"], kind: "script" as const, has_assembler_script: true };
+    const child = { ...base, id: 11, path: ["Enable", "Health"], structure: ["Enable", "Health"], kind: "value" as const };
+    const holder = { ...base, id: 20, path: ["Player"], structure: ["Player"], kind: "value" as const };
+    const underValue = { ...base, id: 21, path: ["Player", "Ammo"], structure: ["Player", "Ammo"], kind: "value" as const };
+    const topLevel = { ...base, id: 30, path: ["Gold"], structure: ["Gold"], kind: "value" as const };
+    const controls = [script, child, holder, underValue, topLevel];
+    const missing = [{ record_id: 11 }, { record_id: 21 }, { record_id: 30 }];
+    const stopped = [
+      { record_id: 10, active: false, value: null },
+      { record_id: 20, active: false, value: "1" },
+    ];
+    // Under a script that answered off: gone with it. Under a value, or under
+    // nothing: missing for a reason that says nothing about the user's choice.
+    expect([...absentUnderStoppedScripts(controls, stopped, missing)]).toEqual([11]);
+    // A script that is on, or did not answer, proves nothing either.
+    expect([...absentUnderStoppedScripts(controls, [{ record_id: 10, active: true, value: null }], missing)]).toEqual([]);
+    expect([...absentUnderStoppedScripts(controls, [], missing)]).toEqual([]);
   });
 
   it("leaves on a cheat whose own code was not read as surviving being switched off", () => {

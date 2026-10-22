@@ -4868,7 +4868,8 @@ function switchesLeftOn(scripts, controls, requested) {
 function switchCandidates(scripts, controls, requested) {
     const held = new Map();
     for (const script of scripts) {
-        if (script.id === null)
+        // Only a script declares defaults; a value holding flags runs nothing.
+        if (script.id === null || script.kind !== "script")
             continue;
         for (const control of controls) {
             if (control.id === null || control.id === script.id || requested.has(control.id))
@@ -5396,6 +5397,21 @@ function pinnedControlValue(live, remembered, configured) {
     return null;
 }
 /**
+ * Pinned cheats the running table does not have, which the panel cannot draw.
+ *
+ * Not the ones waiting for a script, which have a row of their own. Counted so
+ * the panel can say why a pinned cheat is not there rather than drop it, and
+ * so it does not tell somebody whose Cheat Engine is running to connect it.
+ */
+function pinnedMissingCount(controls, pinned, results) {
+    const pinnedIds = new Set(pinned);
+    const waiting = recordsWaitingForScripts(controls, results);
+    return controls.filter((control) => control.id !== null
+        && pinnedIds.has(control.id)
+        && !waiting.has(control.id)
+        && latestRuntimeResult(results, control.id)?.error_code === "record_missing").length;
+}
+/**
  * Pinned controls promoted onto the CE Decky panel, in table order.
  *
  * Only a live exact-session result can be shown here: an unqueried or failed
@@ -5407,13 +5423,19 @@ function pinnedCheatRows(controls, pinned, results, remembered = [], configured 
     const rememberedById = new Map(remembered.map((item) => [item.record_id, item]));
     const configuredById = new Map(configured.map((item) => [item.record_id, item]));
     const rows = [];
+    // A pinned cheat a script creates is missing while that script is off, and
+    // leaving it out took the row off the panel with nothing said. It is shown
+    // off and waiting, and pressing it switches its scripts on first. Missing for
+    // any other reason, it still has no row: nothing can be said about its state.
+    const waiting = recordsWaitingForScripts(controls, results);
     for (const control of controls) {
         if (rows.length >= limit)
             break;
         if (control.id === null || !pinnedIds.has(control.id))
             continue;
         const latest = latestRuntimeResult(results, control.id);
-        if (!latest || !latest.ok)
+        const isWaiting = waiting.has(control.id);
+        if (!latest || (!latest.ok && !isWaiting))
             continue;
         const context = controlRowContext(control);
         // A value CE cannot read yet still has a confirmed choice behind it, so show
@@ -5421,7 +5443,7 @@ function pinnedCheatRows(controls, pinned, results, remembered = [], configured 
         // press on this row resolves it too.
         // A switch says what it is by being on or off, so `= 1` beside it is the
         // same fact written twice in the row's own scarcest space.
-        const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
+        const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(isWaiting ? null : latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
         // Said here too, because this row writes the flag's off key the moment it
         // is pressed and the picker's own warning is two screens away. A cheat its
         // table switches on by itself, whose code could not be proven to survive
@@ -5435,10 +5457,11 @@ function pinnedCheatRows(controls, pinned, results, remembered = [], configured 
             label: controlRowLabel(control),
             summary: [
                 context,
+                isWaiting ? "its script has not run yet" : null,
                 value ? `= ${value}` : null,
                 unsafeToSwitchOff ? "not safe to switch off" : null,
             ].filter(Boolean).join(" · "),
-            active: latest.active,
+            active: isWaiting ? false : latest.active,
         });
     }
     return rows;
@@ -5524,6 +5547,16 @@ function scriptListedControlIds(controls) {
     return ids;
 }
 /**
+ * `N active`, with the scripts that are on said beside the number rather than
+ * counted in it: the number is meant to match the switches a reader can see,
+ * and the panel and Configure cheats say it the same way.
+ */
+function activeCountLabel(cheats, scripts, word = "active") {
+    return scripts > 0
+        ? `${cheats} ${word} (${scripts} script${scripts === 1 ? "" : "s"})`
+        : `${cheats} ${word}`;
+}
+/**
  * The records still on under a script that is being switched off.
  *
  * Switching a script off used to leave what was inside it on: a frozen value
@@ -5553,6 +5586,47 @@ function activeCheatsUnder(script, controls, activeById) {
 /** Whether a script encloses this record, which is what can destroy it. */
 function sitsInsideScript(control, controls) {
     return controls.some((candidate) => candidate.id !== null && candidate.kind === "script" && encloses(candidate.structure, control.structure));
+}
+/**
+ * Records that are missing because a script around them is not running.
+ *
+ * Proven rather than assumed: the record answered `record_missing`, and a
+ * script that encloses it answered, off. Such a record is off by construction,
+ * which is what `Disable all` treats it as, so a choice remembered on for it is
+ * a choice that call overruled. A record missing for any other reason, such as
+ * a top-level one the running table does not have, proves nothing about what
+ * the user wants and is left alone.
+ */
+function absentUnderStoppedScripts(controls, results, unavailable) {
+    const stopped = new Set(results.flatMap((result) => result.record_id !== null && result.active === false ? [result.record_id] : []));
+    const missing = new Set(unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
+    const scripts = controls.filter((control) => control.id !== null && control.kind === "script" && stopped.has(control.id));
+    return new Set(controls.flatMap((control) => control.id !== null && missing.has(control.id)
+        && scripts.some((script) => encloses(script.structure, control.structure))
+        ? [control.id] : []));
+}
+/**
+ * `absentUnderStoppedScripts` over a snapshot that holds answers and refusals
+ * together, reading each record's latest result.
+ *
+ * Such a record is a cheat that can be switched on: doing so switches on the
+ * scripts around it, outermost first, and waits for each to create what is
+ * inside it. It is not a broken control and it is not off in the game either;
+ * it is waiting for its script.
+ */
+function recordsWaitingForScripts(controls, results) {
+    const answered = [];
+    const missing = [];
+    for (const control of controls) {
+        if (control.id === null)
+            continue;
+        const latest = latestRuntimeResult(results, control.id);
+        if (latest?.ok)
+            answered.push(latest);
+        else if (latest?.error_code === "record_missing")
+            missing.push(latest);
+    }
+    return absentUnderStoppedScripts(controls, answered, missing);
 }
 /**
  * What to remember for a switch that went off with its script: off, and no
@@ -9271,7 +9345,7 @@ const HEXPAW_DATA_URI = "data:image/png;base64,"
  * must be reachable without scrolling the quick-access column.
  */
 function HomePanel(props) {
-    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, runtimeLabel, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, dirtyRunNotice = null, onClearDirtyRun = () => undefined, onAdvanced, busy, error, } = props;
+    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, runtimeLabel, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedMissing = 0, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, dirtyRunNotice = null, onClearDirtyRun = () => undefined, onAdvanced, busy, error, } = props;
     const workflowBlocked = busy || setupPending || updateRunning;
     const searchDisabled = workflowBlocked || !game;
     // See `preferSearchFocus`: the mount decides, and nothing after it does.
@@ -9312,9 +9386,7 @@ function HomePanel(props) {
     // What is on, counted as the user chose it. A table's own scripts are on
     // because a cheat needed them, so they are named as what they are instead of
     // being added to a number that is meant to match the switches on this panel.
-    const activeCheatSummary = activeScriptCount > 0
-        ? `${activeCheatLabels.length} active (${activeScriptCount} script${activeScriptCount === 1 ? "" : "s"})`
-        : `${activeCheatLabels.length} active`;
+    const activeCheatSummary = activeCountLabel(activeCheatLabels.length, activeScriptCount);
     // Read in place unless whichever of the two is on the row was written
     // somewhere this frontend cannot see the length of.
     const runtimeRowStatus = launchPending || (runtimeHint === null ? runtimeTextComplete : runtimeHint.complete);
@@ -9343,7 +9415,7 @@ function HomePanel(props) {
                                 ? `${tableSource} · ${table.sha256.slice(0, 8)}${tableMarkedNotWorking ? " · marked as not working" : ""}`
                                 : selectedTableMissing ?? "Search online, or open one this device already has", leadingMark: table ? SP_JSX.jsx(CompatibilityMark, { evidence: tableEvidence, blocked: tableBlocked }) : undefined, actions: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: searchButtonRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: openOnSearch, disabled: searchDisabled, onClick: traceUiAction("home_panel.search", onSearchTable, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Search" }) }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.manage", onOpenImportedTables, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Manage" })] })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "runtime-row", truncate: true, tone: "header", status: runtimeRowStatus, label: launchPending ? "Starting Cheat Engine" : tableLoadFailed ? runtimeLabel ?? "Table not loaded" : !runtimeReady ? "Not connected" : activeCheatSnapshotReady ? activeCheatSummary : "Connected", description: launchPending
                                 ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
-                                : runtimeHint?.text ?? runtimeText, trailing: launchPending ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) }), pinnedRows.map((row) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { variant: "panel", testId: `pinned-cheat-${row.recordId}`, label: row.label, summary: row.summary, active: row.active, disabled: workflowBlocked || pinnedBusyRecordId !== null, highlighted: pinnedBusyRecordId === row.recordId, onActiveChange: traceUiAction("home_panel.toggle_cheat", (active) => onTogglePinnedCheat(row.recordId, active), (active) => ({ app_id: game?.appId, table_sha: table?.sha256, record_id: row.recordId, active })) }) }, row.recordId))), pinnedCount > 0 && pinnedRows.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Pinned controls", truncate: true, description: `${pinnedCount} pinned; connect Cheat Engine to use them here.` }) })), pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: label, truncate: true }) }, `${index}:${label}`))), pinnedCount === 0 && activeCheatLabels.length > 4 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: `+${activeCheatLabels.length - 4} more`, truncate: true }) })), table && targetNotRunning && !startBlockedRowShown && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "panel-target-not-running", label: `${targetProcess} is not running in this game`, description: `This game is running ${targetNotRunning.join(", ")}. Cheat Engine attaches to one exact program, so set the target under Advanced before starting it.` }) })), table && !runtimeReady && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !startRuntimeAvailable, onClick: traceUiAction("home_panel.load_table_start_ce", () => onStartRuntime(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Load table & start CE" }) }), !launchPending && !startRuntimeAvailable && startRuntimeBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Cannot start yet", description: startRuntimeBlockedReason }) }))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !table, onClick: traceUiAction("home_panel.configure_cheats", () => onChooseCheats(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Configure cheats" }) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "panel-error", label: "Attention", description: error }) }), dirtyRunNotice && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "dirty-run", truncate: true, label: "Restart the game first", description: dirtyRunNotice, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.clear_dirty_run", onClearDirtyRun, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Clear" }) }) })), SP_JSX.jsxs(ActionRow, { testId: "panel-actions", navEntryPreferPosition: DFL.NavEntryPositionPreferences.PREFERRED_CHILD, children: [SP_JSX.jsx(SmallButton, { grow: true, preferredFocus: !openOnSearch, disabled: workflowBlocked, onClick: traceUiAction("home_panel.advanced", onAdvanced, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Advanced\u2026" }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || !runtimeReady || !activeCheatSnapshotReady, onClick: traceUiAction("home_panel.disable_all", onDisableAllCheats, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Disable all" }), launchPending
+                                : runtimeHint?.text ?? runtimeText, trailing: launchPending ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) }), pinnedRows.map((row) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { variant: "panel", testId: `pinned-cheat-${row.recordId}`, label: row.label, summary: row.summary, active: row.active, disabled: workflowBlocked || pinnedBusyRecordId !== null, highlighted: pinnedBusyRecordId === row.recordId, onActiveChange: traceUiAction("home_panel.toggle_cheat", (active) => onTogglePinnedCheat(row.recordId, active), (active) => ({ app_id: game?.appId, table_sha: table?.sha256, record_id: row.recordId, active })) }) }, row.recordId))), pinnedCount > 0 && pinnedRows.length === 0 && !(runtimeReady && activeCheatSnapshotReady) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Pinned controls", truncate: true, description: `${pinnedCount} pinned; connect Cheat Engine to use them here.` }) })), runtimeReady && activeCheatSnapshotReady && pinnedMissing > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Pinned controls", truncate: true, description: `${pinnedMissing} pinned not found in the running table.` }) })), pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: label, truncate: true }) }, `${index}:${label}`))), pinnedCount === 0 && activeCheatLabels.length > 4 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: `+${activeCheatLabels.length - 4} more`, truncate: true }) })), table && targetNotRunning && !startBlockedRowShown && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "panel-target-not-running", label: `${targetProcess} is not running in this game`, description: `This game is running ${targetNotRunning.join(", ")}. Cheat Engine attaches to one exact program, so set the target under Advanced before starting it.` }) })), table && !runtimeReady && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !startRuntimeAvailable, onClick: traceUiAction("home_panel.load_table_start_ce", () => onStartRuntime(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Load table & start CE" }) }), !launchPending && !startRuntimeAvailable && startRuntimeBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Cannot start yet", description: startRuntimeBlockedReason }) }))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !table, onClick: traceUiAction("home_panel.configure_cheats", () => onChooseCheats(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Configure cheats" }) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "panel-error", label: "Attention", description: error }) }), dirtyRunNotice && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "dirty-run", truncate: true, label: "Restart the game first", description: dirtyRunNotice, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.clear_dirty_run", onClearDirtyRun, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Clear" }) }) })), SP_JSX.jsxs(ActionRow, { testId: "panel-actions", navEntryPreferPosition: DFL.NavEntryPositionPreferences.PREFERRED_CHILD, children: [SP_JSX.jsx(SmallButton, { grow: true, preferredFocus: !openOnSearch, disabled: workflowBlocked, onClick: traceUiAction("home_panel.advanced", onAdvanced, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Advanced\u2026" }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || !runtimeReady || !activeCheatSnapshotReady, onClick: traceUiAction("home_panel.disable_all", onDisableAllCheats, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Disable all" }), launchPending
                                 ? SP_JSX.jsx(SmallButton, { onClick: traceUiAction("home_panel.cancel_ce_launch", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Cancel CE launch" })
                                 : ceRunning && SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.stop_ce", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Stop CE" })] })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Auto-load" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(SwitchBox, { name: "Auto-load", checked: autoloadEnabled, testId: "autoload-row", style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ToggleField, { label: "Load last table & cheats", description: autoloadBlockedReason ?? "This exact game and table SHA only.", checked: autoloadEnabled, disabled: workflowBlocked || (autoloadBlockedReason !== null && !autoloadEnabled), onChange: traceUiAction("home_panel.load_last_table_cheats", onAutoloadChange, (enabled) => ({ app_id: game?.appId, table_sha: table?.sha256, enabled })), bottomSeparator: "none" }) }) })] })] }));
 }
@@ -11328,6 +11400,19 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const leftOnRef = SP_REACT.useRef([]);
     const [error, setError] = SP_REACT.useState(null);
     const [errorTitle, setErrorTitle] = SP_REACT.useState("Cannot apply");
+    // A record missing because a script around it is off is a cheat waiting for
+    // that script, not a broken control. It is staged off, so it has a switch,
+    // and so an inner script in that state is one Apply switches on on the way
+    // to a cheat inside it. Left without a state it had no switch at all, and a
+    // cheat a script creates could not be switched on here.
+    const withWaitingRecords = (states, results, unavailable) => {
+        for (const recordId of absentUnderStoppedScripts(safeControls, results, unavailable)) {
+            if (recordId in states)
+                continue;
+            states[recordId] = { active: false, value: configuredByIdRef.current.get(recordId) ?? null };
+        }
+        return states;
+    };
     SP_REACT.useEffect(() => {
         let cancelled = false;
         // A local flag only suppressed the state update; the multi-batch query kept
@@ -11403,10 +11488,11 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                         : result.value,
                 };
             }
+            withWaitingRecords(next, results, unavailable);
             setStaged(next);
             setLastConfirmed(next);
             setUnavailableRecords(new Set(unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
-            onSnapshot?.(results, envelope);
+            onSnapshot?.([...results, ...unavailable], envelope);
         })
             .catch((cause) => {
             // This query owns an AbortController and its cleanup aborts it, and the
@@ -11514,7 +11600,12 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     // page a commit after it opens, and a height held from the page it started
     // with padded the window past the bottom of a Steam Deck's display.
     const fullPageHeight = usePageHeight(listNode, visible.length, pageSize);
-    const activeCount = Object.values(staged).filter((state) => state.active === true).length;
+    // Counted the way the panel counts: a script listed with the scripts is said
+    // beside the number, so the number matches the cheats this list shows, and
+    // the panel and this header give one answer for the same session.
+    const activeIds = Object.entries(staged).flatMap(([recordId, state]) => state.active === true ? [Number(recordId)] : []);
+    const activeScripts = activeIds.filter((recordId) => scriptListedIds.has(recordId)).length;
+    const activeLabel = activeCountLabel(activeIds.length - activeScripts, activeScripts, storedOnly ? "selected" : "active");
     // Whether this screen is drawn on a handheld, which decides how much of it is
     // a second line. `windowNode` is how it asks about the page it is actually in,
     // which is never the page this code runs in.
@@ -11629,21 +11720,21 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         }
         setUnavailableRecords(new Set(observed.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
         const reconciled = {};
-        let changed = false;
         for (const result of observed.results) {
             if (result.record_id === null)
                 continue;
             const configured = configuredByIdRef.current.get(result.record_id) ?? null;
-            const state = {
+            reconciled[result.record_id] = {
                 active: result.active,
                 value: displayableControlValue(result.value) === null ? configured : result.value,
             };
-            reconciled[result.record_id] = state;
-            const previous = lastConfirmed[result.record_id];
-            if (!previous || previous.active !== state.active || previous.value !== state.value)
-                changed = true;
         }
-        onSnapshot?.(observed.results, observed.envelope);
+        withWaitingRecords(reconciled, observed.results, observed.unavailable);
+        const changed = Object.entries(reconciled).some(([recordId, state]) => {
+            const previous = lastConfirmed[Number(recordId)];
+            return !previous || previous.active !== state.active || previous.value !== state.value;
+        });
+        onSnapshot?.([...observed.results, ...observed.unavailable], observed.envelope);
         setLastConfirmed(reconciled);
         if (!changed)
             return false;
@@ -11908,7 +11999,12 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // with it and nothing held them off. A script that was already running
             // is not here either: its defaults were dealt with when it started, and
             // writing them again would undo a flag switched on since.
+            //
+            // A script, never a value with flags filed under it: that starts nothing,
+            // and holding its flags off wrote cheats the user had on under a script
+            // that was already running.
             const startedHere = safeControls.filter((control) => control.id !== null
+                && control.kind === "script"
                 && enclosingIds.has(control.id)
                 && activeById.get(control.id) === true
                 && activeBefore.get(control.id) !== true);
@@ -11985,7 +12081,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             if (finalBudgetError) {
                 throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
             }
-            onSnapshot?.(finalState.results, finalState.envelope);
+            onSnapshot?.([...finalState.results, ...finalState.unavailable], finalState.envelope);
             // Cheat Engine answers `??` for a record it cannot read yet, so adopting
             // the re-read blindly would wipe the value the user just chose. Keep the
             // typed value on screen until Cheat Engine reports a real one.
@@ -12000,6 +12096,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     value: displayableControlValue(result.value) === null ? typed ?? configured : result.value,
                 };
             }
+            withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
             setStaged(confirmedState);
             // Cheat Engine has been mutated and verified, but the remembered state
             // and auto-load are written by the parent. Adopting the confirmed state
@@ -12082,7 +12179,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         }
         onCancel();
     };
-    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("cheat_selection_modal.request_close", requestClose), children: SP_JSX.jsxs(DFL.Focusable, { ref: setWindowNode, style: { minWidth: 420, maxWidth: 620 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Configure cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { bottomSeparator: "thick", label: (SP_JSX.jsxs("div", { style: headerRowStyle, children: [SP_JSX.jsxs("div", { style: headerTextStyle, children: [SP_JSX.jsxs("div", { style: headerLabelStyle, children: [`${activeCount} ${storedOnly ? "selected" : "active"}${unsavedCount > 0 ? ` \u00b7 ${unsavedCount} unapplied` : ""}`, tight ? SP_JSX.jsx("span", { style: headerInlineCountStyle, children: ` \u00b7 ${countsLine}` }) : null] }), tight ? null : SP_JSX.jsx("div", { style: headerDescriptionStyle, children: countsLine })] }), loading && (SP_JSX.jsx("div", { style: headerSpinnerStyle, "data-testid": "cheats-loading", children: SP_JSX.jsx(DFL.Spinner, { style: { width: 16, height: 16 } }) })), SP_JSX.jsxs("div", { style: headerToggleStyle, "data-testid": "show-scripts", children: [SP_JSX.jsx("span", { style: headerToggleLabelStyle, children: "Scripts" }), SP_JSX.jsx("div", { style: toggleBoxStyle, children: SP_JSX.jsx(SwitchBox, { name: "scripts", checked: showScripts, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.Toggle, { value: showScripts, disabled: applying, onChange: traceUiAction("cheat_selection_modal.show_scripts", (checked) => { clearError(); setShowScripts(checked); setPage(0); setExpanded(null); }, (shown) => ({ shown })) }) }) })] })] })) }) }), storedOnly && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "cheats-stored-only", label: liveUnavailableReason ? "Live control is unavailable for this table" : "Cheat Engine is not running", description: tight ? undefined : storedOnlyLine, help: tight ? `${storedOnlyLine} ${storedOnlyHelp}` : storedOnlyHelp }) })), partialCommit && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Partly applied", description: [
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("cheat_selection_modal.request_close", requestClose), children: SP_JSX.jsxs(DFL.Focusable, { ref: setWindowNode, style: { minWidth: 420, maxWidth: 620 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Configure cheats" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { bottomSeparator: "thick", label: (SP_JSX.jsxs("div", { style: headerRowStyle, children: [SP_JSX.jsxs("div", { style: headerTextStyle, children: [SP_JSX.jsxs("div", { style: headerLabelStyle, children: [`${activeLabel}${unsavedCount > 0 ? ` \u00b7 ${unsavedCount} unapplied` : ""}`, tight ? SP_JSX.jsx("span", { style: headerInlineCountStyle, children: ` \u00b7 ${countsLine}` }) : null] }), tight ? null : SP_JSX.jsx("div", { style: headerDescriptionStyle, children: countsLine })] }), loading && (SP_JSX.jsx("div", { style: headerSpinnerStyle, "data-testid": "cheats-loading", children: SP_JSX.jsx(DFL.Spinner, { style: { width: 16, height: 16 } }) })), SP_JSX.jsxs("div", { style: headerToggleStyle, "data-testid": "show-scripts", children: [SP_JSX.jsx("span", { style: headerToggleLabelStyle, children: "Scripts" }), SP_JSX.jsx("div", { style: toggleBoxStyle, children: SP_JSX.jsx(SwitchBox, { name: "scripts", checked: showScripts, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.Toggle, { value: showScripts, disabled: applying, onChange: traceUiAction("cheat_selection_modal.show_scripts", (checked) => { clearError(); setShowScripts(checked); setPage(0); setExpanded(null); }, (shown) => ({ shown })) }) }) })] })] })) }) }), storedOnly && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "cheats-stored-only", label: liveUnavailableReason ? "Live control is unavailable for this table" : "Cheat Engine is not running", description: tight ? undefined : storedOnlyLine, help: tight ? `${storedOnlyLine} ${storedOnlyHelp}` : storedOnlyHelp }) })), partialCommit && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Partly applied", description: [
                                         partialCommit.runtimeChanged
                                             ? "Some commands were already accepted before this failed, so the rows below show what Cheat Engine actually holds rather than what was staged."
                                             : null,
@@ -12112,7 +12209,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                             const isExpanded = expanded === recordId;
                                             // A record its enclosing script has not created yet is shown as
                                             // waiting for that script rather than as a broken control.
-                                            const blockedByParent = !storedOnly && unavailableRecords.has(recordId);
+                                            // One missing for any other reason has no state and no switch,
+                                            // and says so rather than claiming a script it is not under.
+                                            const blockedByParent = !storedOnly && unavailableRecords.has(recordId) && state !== undefined;
+                                            const notInTable = !storedOnly && unavailableRecords.has(recordId) && state === undefined;
                                             // A real table here declares 6508 items in one picker, and a
                                             // controller walks a Decky dropdown one item at a time with no
                                             // search and no way to jump. Past a screenful, the list is
@@ -12148,6 +12248,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                                 // on the screen twice, neither copy complete.
                                                 isExpanded ? null : context,
                                                 blockedByParent ? "its script has not run yet" : null,
+                                                notInTable ? "not in the running table" : null,
                                                 value ? `= ${value}` : null,
                                                 isPinned ? "pinned" : null,
                                                 // Said on the row, before anything is pressed: a cheat this
@@ -14686,7 +14787,7 @@ function Content() {
                 const sessionId = queried.envelope.prepared?.session_id;
                 const tableSha256 = queried.envelope.prepared?.table_sha256;
                 if (sessionId && tableSha256 && queried.envelope.status?.session_id === sessionId && queried.envelope.session_current) {
-                    nextSnapshot = { sessionId, tableSha256, results: queried.results };
+                    nextSnapshot = { sessionId, tableSha256, results: [...queried.results, ...queried.unavailable] };
                 }
             }
         }
@@ -15134,6 +15235,9 @@ function Content() {
     const pinnedRows = SP_REACT.useMemo(() => activeCheatSnapshotReady && liveSnapshot
         ? pinnedCheatRows(safeControls, profile?.pinned ?? [], liveSnapshot.results, profile?.remembered ?? [], profile?.configured_values ?? [])
         : [], [activeCheatSnapshotReady, liveSnapshot, safeControls, profile?.pinned, profile?.remembered, profile?.configured_values]);
+    const pinnedMissing = SP_REACT.useMemo(() => activeCheatSnapshotReady && liveSnapshot
+        ? pinnedMissingCount(safeControls, profile?.pinned ?? [], liveSnapshot.results)
+        : 0, [activeCheatSnapshotReady, liveSnapshot, safeControls, profile?.pinned]);
     const recordLiveSnapshot = SP_REACT.useCallback((results, envelope) => {
         const game = selectedGameRef.current;
         const sessionId = envelope.prepared?.session_id;
@@ -15179,7 +15283,7 @@ function Content() {
             // child threw away the whole snapshot: pinned controls disappeared and
             // Disable all went dead while the bridge was perfectly healthy.
             const queried = await queryRuntimeControlsPartial(appId, recordIds, undefined, panelAborterRef.current.signal);
-            recordLiveSnapshot(queried.results, queried.envelope);
+            recordLiveSnapshot([...queried.results, ...queried.unavailable], queried.envelope);
             return queried.envelope;
         }
         catch (cause) {
@@ -16817,9 +16921,16 @@ function Content() {
             return;
         const tableSha = current.table_sha256;
         const controls = safeActionableControls(currentInspection);
+        // A record waiting for a script that is off is off, and so is an inner
+        // script waiting the same way: switching a cheat on switches each of them
+        // on, outermost first. Read as unknown, an inner script was skipped and
+        // the cheat inside it could never appear.
+        const waiting = recordsWaitingForScripts(controls, liveSnapshot.results);
         const activeById = new Map(controls.flatMap((control) => {
             if (control.id === null)
                 return [];
+            if (waiting.has(control.id))
+                return [[control.id, false]];
             const result = latestRuntimeResult(liveSnapshot.results, control.id);
             return [[control.id, result?.ok ? result.active : null]];
         }));
@@ -16888,7 +16999,9 @@ function Content() {
         // panel brought every default it declares with it, which is the whole thing
         // holding them off exists to prevent.
         const startedHere = active
-            ? [...ancestors, ...(control.id !== null && enclosingControlIds(controls).has(control.id) ? [control] : [])]
+            // Only a script brings defaults: a value with flags filed under it starts
+            // nothing, and holding those flags off wrote cheats the user had on.
+            ? [...ancestors, ...(control.id !== null && control.kind === "script" && enclosingControlIds(controls).has(control.id) ? [control] : [])]
             : [];
         const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
         // The other half of the same rule: what it refuses to write, which is a
@@ -16999,7 +17112,7 @@ function Content() {
                 // or not the durable half lands. Publishing the snapshot first also
                 // keeps a failed persistence from leaving the panel showing the state
                 // from before the toggle.
-                recordLiveSnapshot(finalState.results, finalState.envelope);
+                recordLiveSnapshot([...finalState.results, ...finalState.unavailable], finalState.envelope);
                 const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
                 if (budgetError) {
                     throw new Error(leadWithCause(budgetError, "The runtime change was confirmed, but it was not remembered."));
@@ -17037,7 +17150,7 @@ function Content() {
                 // when even that exact-session query fails.
                 try {
                     const reconciled = await queryRuntimeControlsPartial(game.appId, controls.flatMap((control) => control.id === null ? [] : [control.id]));
-                    recordLiveSnapshot(reconciled.results, reconciled.envelope);
+                    recordLiveSnapshot([...reconciled.results, ...reconciled.unavailable], reconciled.envelope);
                 }
                 catch (reason) {
                     dropLiveSnapshot(describeError(reason));
@@ -17083,17 +17196,37 @@ function Content() {
             // record, including scripts that are CE Decky's own machinery and children
             // that ceased to exist when their script went off - and the next Auto-load
             // then waited for MemoryRecords that could never appear and failed.
-            const touched = new Set(result.deactivatedIds);
+            //
+            // A record already missing because its script is off is off too, and
+            // the call counted it so without sending it anything. One remembered on
+            // is a choice this call overruled, and left out of `touched` it stayed
+            // remembered on, so the next Auto-load switched it back on after a
+            // Disable all that reported success.
+            const rememberedOn = new Set(current.remembered.flatMap((item) => item.active === true ? [item.record_id] : []));
+            const goneWithScript = [...absentUnderStoppedScripts(controls, finalState.results, finalState.unavailable)]
+                .filter((recordId) => rememberedOn.has(recordId));
+            const touched = new Set([...result.deactivatedIds, ...goneWithScript]);
+            logUi("cheats.disable_all_remembered", {
+                app_id: game.appId,
+                deactivated: result.deactivatedIds.length,
+                gone_with_script: goneWithScript.length,
+                gone_with_script_ids: goneWithScript.slice(0, 16),
+            });
             // Every script is off after this, so a switch that went off inside one
             // is remembered off with no key, exactly as when its script is switched
             // off by hand: the key read back can be its on key, and remembered beside
             // "off" it is replayed under a running script as the cheat on. Values
             // are kept; Auto-load writes none for a record whose script stays off.
             const wentOffWithScript = new Set(controls.flatMap((control) => control.id !== null && touched.has(control.id) && sitsInsideScript(control, controls) ? [control.id] : []));
-            const remembered = offWithoutSwitchKeys(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), enclosingControlIds(controls)), wentOffWithScript, controls);
+            // The scripts that hold records are dropped from what is remembered,
+            // since nothing under them is on. A value with values under it is a cheat
+            // and is remembered off like one, with the value it held kept.
+            const enclosing = enclosingControlIds(controls);
+            const holdingScripts = new Set(controls.flatMap((control) => control.id !== null && control.kind === "script" && enclosing.has(control.id) ? [control.id] : []));
+            const remembered = offWithoutSwitchKeys(rememberedSelection(controls, finalState.results, current.remembered, touched, new Set(), holdingScripts), wentOffWithScript, controls);
             // The game has already been changed. Whatever happens to the durable half,
             // Home shows what Cheat Engine actually holds now.
-            recordLiveSnapshot(finalState.results, finalState.envelope);
+            recordLiveSnapshot([...finalState.results, ...finalState.unavailable], finalState.envelope);
             const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
             if (budgetError) {
                 throw new Error(leadWithCause(budgetError, "The cheats were switched off, but that was not remembered."));
@@ -17816,7 +17949,7 @@ function Content() {
                 ? "The file for this game's selected table is gone. Download or open it again, or pick another."
                 : null, tableMarkedNotWorking: selectedTableMarkedNotWorking, tableEvidence: profile?.table_sha256
                 ? status?.table_compatibility?.entries.find((entry) => (entry.app_id === selectedGame?.appId && entry.table_sha256 === profile.table_sha256))
-                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, runtimeLabel: runtimeLabel, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, dirtyRunNotice: dirtyRunNotice(selectedRunHolds), onClearDirtyRun: () => {
+                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, runtimeLabel: runtimeLabel, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedMissing: pinnedMissing, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, dirtyRunNotice: dirtyRunNotice(selectedRunHolds), onClearDirtyRun: () => {
                 const game = selectedGameRef.current;
                 if (!game)
                     return;

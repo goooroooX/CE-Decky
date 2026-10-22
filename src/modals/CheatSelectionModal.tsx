@@ -56,6 +56,8 @@ import {
   rememberedScriptChoices,
   activeCheatsUnder,
   offWithoutSwitchKeys,
+  absentUnderStoppedScripts,
+  activeCountLabel,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
 import { describeError, leadWithCause } from "../errors";
@@ -261,6 +263,23 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   const [error, setError] = useState<string | null>(null);
   const [errorTitle, setErrorTitle] = useState("Cannot apply");
 
+  // A record missing because a script around it is off is a cheat waiting for
+  // that script, not a broken control. It is staged off, so it has a switch,
+  // and so an inner script in that state is one Apply switches on on the way
+  // to a cheat inside it. Left without a state it had no switch at all, and a
+  // cheat a script creates could not be switched on here.
+  const withWaitingRecords = (
+    states: Record<number, StagedState>,
+    results: readonly RuntimeResult[],
+    unavailable: readonly RuntimeResult[],
+  ): Record<number, StagedState> => {
+    for (const recordId of absentUnderStoppedScripts(safeControls, results, unavailable)) {
+      if (recordId in states) continue;
+      states[recordId] = { active: false, value: configuredByIdRef.current.get(recordId) ?? null };
+    }
+    return states;
+  };
+
   useEffect(() => {
     let cancelled = false;
     // A local flag only suppressed the state update; the multi-batch query kept
@@ -336,12 +355,13 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
               : result.value,
           };
         }
+        withWaitingRecords(next, results, unavailable);
         setStaged(next);
         setLastConfirmed(next);
         setUnavailableRecords(new Set(
           unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]),
         ));
-        onSnapshot?.(results, envelope);
+        onSnapshot?.([...results, ...unavailable], envelope);
       })
       .catch((cause) => {
         // This query owns an AbortController and its cleanup aborts it, and the
@@ -449,7 +469,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   // page a commit after it opens, and a height held from the page it started
   // with padded the window past the bottom of a Steam Deck's display.
   const fullPageHeight = usePageHeight(listNode, visible.length, pageSize);
-  const activeCount = Object.values(staged).filter((state) => state.active === true).length;
+  // Counted the way the panel counts: a script listed with the scripts is said
+  // beside the number, so the number matches the cheats this list shows, and
+  // the panel and this header give one answer for the same session.
+  const activeIds = Object.entries(staged).flatMap(([recordId, state]) => state.active === true ? [Number(recordId)] : []);
+  const activeScripts = activeIds.filter((recordId) => scriptListedIds.has(recordId)).length;
+  const activeLabel = activeCountLabel(activeIds.length - activeScripts, activeScripts, storedOnly ? "selected" : "active");
   // Whether this screen is drawn on a handheld, which decides how much of it is
   // a second line. `windowNode` is how it asks about the page it is actually in,
   // which is never the page this code runs in.
@@ -569,19 +594,20 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       observed.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]),
     ));
     const reconciled: Record<number, StagedState> = {};
-    let changed = false;
     for (const result of observed.results) {
       if (result.record_id === null) continue;
       const configured = configuredByIdRef.current.get(result.record_id) ?? null;
-      const state: StagedState = {
+      reconciled[result.record_id] = {
         active: result.active,
         value: displayableControlValue(result.value) === null ? configured : result.value,
       };
-      reconciled[result.record_id] = state;
-      const previous = lastConfirmed[result.record_id];
-      if (!previous || previous.active !== state.active || previous.value !== state.value) changed = true;
     }
-    onSnapshot?.(observed.results, observed.envelope);
+    withWaitingRecords(reconciled, observed.results, observed.unavailable);
+    const changed = Object.entries(reconciled).some(([recordId, state]) => {
+      const previous = lastConfirmed[Number(recordId)];
+      return !previous || previous.active !== state.active || previous.value !== state.value;
+    });
+    onSnapshot?.([...observed.results, ...observed.unavailable], observed.envelope);
     setLastConfirmed(reconciled);
     if (!changed) return false;
     setStaged(reconciled);
@@ -846,7 +872,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // with it and nothing held them off. A script that was already running
       // is not here either: its defaults were dealt with when it started, and
       // writing them again would undo a flag switched on since.
+      //
+      // A script, never a value with flags filed under it: that starts nothing,
+      // and holding its flags off wrote cheats the user had on under a script
+      // that was already running.
       const startedHere = safeControls.filter((control) => control.id !== null
+        && control.kind === "script"
         && enclosingIds.has(control.id)
         && activeById.get(control.id) === true
         && activeBefore.get(control.id) !== true);
@@ -931,7 +962,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       if (finalBudgetError) {
         throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
       }
-      onSnapshot?.(finalState.results, finalState.envelope);
+      onSnapshot?.([...finalState.results, ...finalState.unavailable], finalState.envelope);
       // Cheat Engine answers `??` for a record it cannot read yet, so adopting
       // the re-read blindly would wipe the value the user just chose. Keep the
       // typed value on screen until Cheat Engine reports a real one.
@@ -945,6 +976,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           value: displayableControlValue(result.value) === null ? typed ?? configured : result.value,
         };
       }
+      withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
       setStaged(confirmedState);
       // Cheat Engine has been mutated and verified, but the remembered state
       // and auto-load are written by the parent. Adopting the confirmed state
@@ -1047,7 +1079,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   them. */}
               <div style={headerTextStyle}>
                 <div style={headerLabelStyle}>
-                  {`${activeCount} ${storedOnly ? "selected" : "active"}${unsavedCount > 0 ? ` \u00b7 ${unsavedCount} unapplied` : ""}`}
+                  {`${activeLabel}${unsavedCount > 0 ? ` \u00b7 ${unsavedCount} unapplied` : ""}`}
                   {tight ? <span style={headerInlineCountStyle}>{` \u00b7 ${countsLine}`}</span> : null}
                 </div>
                 {tight ? null : <div style={headerDescriptionStyle}>{countsLine}</div>}
@@ -1179,7 +1211,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 const isExpanded = expanded === recordId;
                 // A record its enclosing script has not created yet is shown as
                 // waiting for that script rather than as a broken control.
-                const blockedByParent = !storedOnly && unavailableRecords.has(recordId);
+                // One missing for any other reason has no state and no switch,
+                // and says so rather than claiming a script it is not under.
+                const blockedByParent = !storedOnly && unavailableRecords.has(recordId) && state !== undefined;
+                const notInTable = !storedOnly && unavailableRecords.has(recordId) && state === undefined;
                 // A real table here declares 6508 items in one picker, and a
                 // controller walks a Decky dropdown one item at a time with no
                 // search and no way to jump. Past a screenful, the list is
@@ -1219,6 +1254,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   // on the screen twice, neither copy complete.
                   isExpanded ? null : context,
                   blockedByParent ? "its script has not run yet" : null,
+                  notInTable ? "not in the running table" : null,
                   value ? `= ${value}` : null,
                   isPinned ? "pinned" : null,
                   // Said on the row, before anything is pressed: a cheat this

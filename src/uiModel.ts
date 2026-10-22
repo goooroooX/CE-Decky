@@ -1919,7 +1919,8 @@ function switchCandidates(
 ): { control: TableControl; value: string; script: number }[] {
   const held = new Map<number, { control: TableControl; value: string; script: number }>();
   for (const script of scripts) {
-    if (script.id === null) continue;
+    // Only a script declares defaults; a value holding flags runs nothing.
+    if (script.id === null || script.kind !== "script") continue;
     for (const control of controls) {
       if (control.id === null || control.id === script.id || requested.has(control.id)) continue;
       // Below it by where it sits: a sibling script with the same name brings
@@ -2481,6 +2482,26 @@ export interface PinnedCheatRow {
 }
 
 /**
+ * Pinned cheats the running table does not have, which the panel cannot draw.
+ *
+ * Not the ones waiting for a script, which have a row of their own. Counted so
+ * the panel can say why a pinned cheat is not there rather than drop it, and
+ * so it does not tell somebody whose Cheat Engine is running to connect it.
+ */
+export function pinnedMissingCount(
+  controls: readonly TableControl[],
+  pinned: readonly number[],
+  results: readonly RuntimeResult[],
+): number {
+  const pinnedIds = new Set(pinned);
+  const waiting = recordsWaitingForScripts(controls, results);
+  return controls.filter((control) => control.id !== null
+    && pinnedIds.has(control.id)
+    && !waiting.has(control.id)
+    && latestRuntimeResult(results, control.id)?.error_code === "record_missing").length;
+}
+
+/**
  * Pinned controls promoted onto the CE Decky panel, in table order.
  *
  * Only a live exact-session result can be shown here: an unqueried or failed
@@ -2499,11 +2520,17 @@ export function pinnedCheatRows(
   const rememberedById = new Map(remembered.map((item) => [item.record_id, item]));
   const configuredById = new Map(configured.map((item) => [item.record_id, item]));
   const rows: PinnedCheatRow[] = [];
+  // A pinned cheat a script creates is missing while that script is off, and
+  // leaving it out took the row off the panel with nothing said. It is shown
+  // off and waiting, and pressing it switches its scripts on first. Missing for
+  // any other reason, it still has no row: nothing can be said about its state.
+  const waiting = recordsWaitingForScripts(controls, results);
   for (const control of controls) {
     if (rows.length >= limit) break;
     if (control.id === null || !pinnedIds.has(control.id)) continue;
     const latest = latestRuntimeResult(results, control.id);
-    if (!latest || !latest.ok) continue;
+    const isWaiting = waiting.has(control.id);
+    if (!latest || (!latest.ok && !isWaiting)) continue;
     const context = controlRowContext(control);
     // A value CE cannot read yet still has a confirmed choice behind it, so show
     // what this table was set to rather than nothing. Resolved once, where the
@@ -2511,7 +2538,7 @@ export function pinnedCheatRows(
     // A switch says what it is by being on or off, so `= 1` beside it is the
     // same fact written twice in the row's own scarcest space.
     const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(
-      latest.value,
+      isWaiting ? null : latest.value,
       rememberedById.get(control.id)?.value,
       configuredById.get(control.id)?.value,
     ));
@@ -2528,10 +2555,11 @@ export function pinnedCheatRows(
       label: controlRowLabel(control),
       summary: [
         context,
+        isWaiting ? "its script has not run yet" : null,
         value ? `= ${value}` : null,
         unsafeToSwitchOff ? "not safe to switch off" : null,
       ].filter(Boolean).join(" · "),
-      active: latest.active,
+      active: isWaiting ? false : latest.active,
     });
   }
   return rows;
@@ -2622,6 +2650,17 @@ export function scriptListedControlIds(controls: readonly TableControl[]): Set<n
 }
 
 /**
+ * `N active`, with the scripts that are on said beside the number rather than
+ * counted in it: the number is meant to match the switches a reader can see,
+ * and the panel and Configure cheats say it the same way.
+ */
+export function activeCountLabel(cheats: number, scripts: number, word = "active"): string {
+  return scripts > 0
+    ? `${cheats} ${word} (${scripts} script${scripts === 1 ? "" : "s"})`
+    : `${cheats} ${word}`;
+}
+
+/**
  * The records still on under a script that is being switched off.
  *
  * Switching a script off used to leave what was inside it on: a frozen value
@@ -2654,6 +2693,54 @@ export function activeCheatsUnder(
 export function sitsInsideScript(control: TableControl, controls: readonly TableControl[]): boolean {
   return controls.some((candidate) =>
     candidate.id !== null && candidate.kind === "script" && encloses(candidate.structure, control.structure));
+}
+
+/**
+ * Records that are missing because a script around them is not running.
+ *
+ * Proven rather than assumed: the record answered `record_missing`, and a
+ * script that encloses it answered, off. Such a record is off by construction,
+ * which is what `Disable all` treats it as, so a choice remembered on for it is
+ * a choice that call overruled. A record missing for any other reason, such as
+ * a top-level one the running table does not have, proves nothing about what
+ * the user wants and is left alone.
+ */
+export function absentUnderStoppedScripts(
+  controls: readonly TableControl[],
+  results: readonly RuntimeStateLike[],
+  unavailable: readonly { record_id: number | null }[],
+): Set<number> {
+  const stopped = new Set(results.flatMap((result) => result.record_id !== null && result.active === false ? [result.record_id] : []));
+  const missing = new Set(unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
+  const scripts = controls.filter((control) => control.id !== null && control.kind === "script" && stopped.has(control.id));
+  return new Set(controls.flatMap((control) =>
+    control.id !== null && missing.has(control.id)
+      && scripts.some((script) => encloses(script.structure, control.structure))
+      ? [control.id] : []));
+}
+
+/**
+ * `absentUnderStoppedScripts` over a snapshot that holds answers and refusals
+ * together, reading each record's latest result.
+ *
+ * Such a record is a cheat that can be switched on: doing so switches on the
+ * scripts around it, outermost first, and waits for each to create what is
+ * inside it. It is not a broken control and it is not off in the game either;
+ * it is waiting for its script.
+ */
+export function recordsWaitingForScripts(
+  controls: readonly TableControl[],
+  results: readonly RuntimeResult[],
+): Set<number> {
+  const answered: RuntimeResult[] = [];
+  const missing: RuntimeResult[] = [];
+  for (const control of controls) {
+    if (control.id === null) continue;
+    const latest = latestRuntimeResult(results, control.id);
+    if (latest?.ok) answered.push(latest);
+    else if (latest?.error_code === "record_missing") missing.push(latest);
+  }
+  return absentUnderStoppedScripts(controls, answered, missing);
 }
 
 /**

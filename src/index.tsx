@@ -90,7 +90,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, activeCheatsUnder, offWithoutSwitchKeys, rememberedScriptChoices, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, absentUnderStoppedScripts, activeCheatsUnder, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -984,7 +984,7 @@ function Content() {
         const sessionId = queried.envelope.prepared?.session_id;
         const tableSha256 = queried.envelope.prepared?.table_sha256;
         if (sessionId && tableSha256 && queried.envelope.status?.session_id === sessionId && queried.envelope.session_current) {
-          nextSnapshot = { sessionId, tableSha256, results: queried.results };
+          nextSnapshot = { sessionId, tableSha256, results: [...queried.results, ...queried.unavailable] };
         }
       }
     } catch (cause) {
@@ -1432,6 +1432,12 @@ function Content() {
       : [],
     [activeCheatSnapshotReady, liveSnapshot, safeControls, profile?.pinned, profile?.remembered, profile?.configured_values],
   );
+  const pinnedMissing = useMemo(
+    () => activeCheatSnapshotReady && liveSnapshot
+      ? pinnedMissingCount(safeControls, profile?.pinned ?? [], liveSnapshot.results)
+      : 0,
+    [activeCheatSnapshotReady, liveSnapshot, safeControls, profile?.pinned],
+  );
 
   const recordLiveSnapshot = useCallback((results: RuntimeResult[], envelope: RuntimeEnvelope) => {
     const game = selectedGameRef.current;
@@ -1484,7 +1490,7 @@ function Content() {
       const queried = await queryRuntimeControlsPartial(
         appId, recordIds, undefined, panelAborterRef.current.signal,
       );
-      recordLiveSnapshot(queried.results, queried.envelope);
+      recordLiveSnapshot([...queried.results, ...queried.unavailable], queried.envelope);
       return queried.envelope;
     } catch (cause) {
       // A sweep the closing panel abandoned says nothing about the session, so
@@ -3244,9 +3250,15 @@ function Content() {
     if (!current.pinned.includes(recordId)) return;
     const tableSha = current.table_sha256;
     const controls = safeActionableControls(currentInspection);
+    // A record waiting for a script that is off is off, and so is an inner
+    // script waiting the same way: switching a cheat on switches each of them
+    // on, outermost first. Read as unknown, an inner script was skipped and
+    // the cheat inside it could never appear.
+    const waiting = recordsWaitingForScripts(controls, liveSnapshot.results);
     const activeById = new Map<number, boolean | null>(
       controls.flatMap((control) => {
         if (control.id === null) return [];
+        if (waiting.has(control.id)) return [[control.id, false] as const];
         const result = latestRuntimeResult(liveSnapshot.results, control.id);
         return [[control.id, result?.ok ? result.active : null] as const];
       }),
@@ -3314,7 +3326,9 @@ function Content() {
     // panel brought every default it declares with it, which is the whole thing
     // holding them off exists to prevent.
     const startedHere = active
-      ? [...ancestors, ...(control.id !== null && enclosingControlIds(controls).has(control.id) ? [control] : [])]
+      // Only a script brings defaults: a value with flags filed under it starts
+      // nothing, and holding those flags off wrote cheats the user had on.
+      ? [...ancestors, ...(control.id !== null && control.kind === "script" && enclosingControlIds(controls).has(control.id) ? [control] : [])]
       : [];
     const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
     // The other half of the same rule: what it refuses to write, which is a
@@ -3431,7 +3445,7 @@ function Content() {
         // or not the durable half lands. Publishing the snapshot first also
         // keeps a failed persistence from leaving the panel showing the state
         // from before the toggle.
-        recordLiveSnapshot(finalState.results, finalState.envelope);
+        recordLiveSnapshot([...finalState.results, ...finalState.unavailable], finalState.envelope);
         const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
         if (budgetError) {
           throw new Error(leadWithCause(budgetError, "The runtime change was confirmed, but it was not remembered."));
@@ -3472,7 +3486,7 @@ function Content() {
             game.appId,
             controls.flatMap((control) => control.id === null ? [] : [control.id]),
           );
-          recordLiveSnapshot(reconciled.results, reconciled.envelope);
+          recordLiveSnapshot([...reconciled.results, ...reconciled.unavailable], reconciled.envelope);
         } catch (reason) {
           dropLiveSnapshot(describeError(reason));
         }
@@ -3516,7 +3530,22 @@ function Content() {
       // record, including scripts that are CE Decky's own machinery and children
       // that ceased to exist when their script went off - and the next Auto-load
       // then waited for MemoryRecords that could never appear and failed.
-      const touched = new Set<number>(result.deactivatedIds);
+      //
+      // A record already missing because its script is off is off too, and
+      // the call counted it so without sending it anything. One remembered on
+      // is a choice this call overruled, and left out of `touched` it stayed
+      // remembered on, so the next Auto-load switched it back on after a
+      // Disable all that reported success.
+      const rememberedOn = new Set(current.remembered.flatMap((item) => item.active === true ? [item.record_id] : []));
+      const goneWithScript = [...absentUnderStoppedScripts(controls, finalState.results, finalState.unavailable)]
+        .filter((recordId) => rememberedOn.has(recordId));
+      const touched = new Set<number>([...result.deactivatedIds, ...goneWithScript]);
+      logUi("cheats.disable_all_remembered", {
+        app_id: game.appId,
+        deactivated: result.deactivatedIds.length,
+        gone_with_script: goneWithScript.length,
+        gone_with_script_ids: goneWithScript.slice(0, 16),
+      });
       // Every script is off after this, so a switch that went off inside one
       // is remembered off with no key, exactly as when its script is switched
       // off by hand: the key read back can be its on key, and remembered beside
@@ -3524,13 +3553,18 @@ function Content() {
       // are kept; Auto-load writes none for a record whose script stays off.
       const wentOffWithScript = new Set(controls.flatMap((control) =>
         control.id !== null && touched.has(control.id) && sitsInsideScript(control, controls) ? [control.id] : []));
+      // The scripts that hold records are dropped from what is remembered,
+      // since nothing under them is on. A value with values under it is a cheat
+      // and is remembered off like one, with the value it held kept.
+      const enclosing = enclosingControlIds(controls);
+      const holdingScripts = new Set(controls.flatMap((control) =>
+        control.id !== null && control.kind === "script" && enclosing.has(control.id) ? [control.id] : []));
       const remembered = offWithoutSwitchKeys(rememberedSelection(
-        controls, finalState.results, current.remembered, touched, new Set<number>(),
-        enclosingControlIds(controls),
+        controls, finalState.results, current.remembered, touched, new Set<number>(), holdingScripts,
       ), wentOffWithScript, controls);
       // The game has already been changed. Whatever happens to the durable half,
       // Home shows what Cheat Engine actually holds now.
-      recordLiveSnapshot(finalState.results, finalState.envelope);
+      recordLiveSnapshot([...finalState.results, ...finalState.unavailable], finalState.envelope);
       const budgetError = rememberedSelectionBudgetError(current.startup, remembered);
       if (budgetError) {
         throw new Error(leadWithCause(budgetError, "The cheats were switched off, but that was not remembered."));
@@ -4447,6 +4481,7 @@ function Content() {
       activeScriptCount={activeScriptCount}
       activeCheatSnapshotReady={activeCheatSnapshotReady}
       pinnedCount={profile?.pinned.length ?? 0}
+      pinnedMissing={pinnedMissing}
       pinnedRows={pinnedRows}
       pinnedBusyRecordId={pinnedBusyRecordId}
       onTogglePinnedCheat={togglePinnedCheat}
