@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.changelog import add_entry
+from scripts.changelog import add_entry, set_date
 
 CURRENT = [
     "# Changelog",
@@ -102,3 +102,29 @@ def test_an_entry_cannot_land_under_a_heading_the_repository_has_moved_past():
 def test_a_paragraph_is_refused_because_an_entry_is_one_line():
     with pytest.raises(SystemExit, match="one line"):
         add_entry("[Fixed] A thing.\n\nAnd a second paragraph.", lines=list(CURRENT), version="0.9.14")
+
+
+AGENTS_LINES = ["# AGENTS.md", "", "Current development version: **0.9.14 — 2026-09-04**", ""]
+
+
+def test_a_date_move_changes_both_files_and_nothing_else():
+    changelog, agents = set_date("2026-09-05", changelog=list(CURRENT), agents=list(AGENTS_LINES), version="0.9.14")
+
+    assert changelog[4] == "## 0.9.14 — 2026-09-05"
+    assert agents[2] == "Current development version: **0.9.14 — 2026-09-05**"
+    # Only those two lines: the older version keeps its own date.
+    assert [line for line, before in zip(changelog, CURRENT) if line != before] == ["## 0.9.14 — 2026-09-05"]
+    assert changelog[9] == "## 0.9.13 — 2026-09-04"
+
+
+@pytest.mark.parametrize("date", ["2026-9-5", "05.09.2026", "2026-02-30"])
+def test_a_date_that_is_not_one_is_refused(date):
+    with pytest.raises(SystemExit):
+        set_date(date, changelog=list(CURRENT), agents=list(AGENTS_LINES), version="0.9.14")
+
+
+def test_a_date_move_is_not_a_version_change():
+    # The three disagreeing is a version that was never synchronized, and moving
+    # the date would hide that behind a matching day.
+    with pytest.raises(SystemExit, match="not synchronized"):
+        set_date("2026-09-05", changelog=list(CURRENT), agents=list(AGENTS_LINES), version="0.9.15")

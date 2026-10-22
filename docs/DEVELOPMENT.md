@@ -646,6 +646,18 @@ python scripts/changelog.py add "[Fixed] What changed, and why it was wrong befo
 It refuses a label that is not one of the five, an em dash, more than one line,
 and a version heading that `package.json` has moved past.
 
+The current version's date is in two places, `AGENTS.md` and the newest
+changelog heading, and moves in both at once:
+
+```bash
+python scripts/changelog.py date            # today's local date
+python scripts/changelog.py date 2026-10-23
+```
+
+It changes those two lines and nothing else, and refuses a malformed or
+impossible date and a version the two files and `package.json` do not already
+agree on, because moving a date is not how a version is changed.
+
 To prepare a release without publishing it:
 
 1. Confirm the synchronized development version and date in `package.json`, `AGENTS.md`, and `CHANGELOG.md`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add one entry to the top of the current version of `CHANGELOG.md`.
+"""Add one entry to the top of the current version of `CHANGELOG.md`, or move its date.
 
 Every bug-fix round ends by writing entries here, and the mechanical half of
 that is the same every time: find the newest version heading, and put the new
@@ -18,12 +18,19 @@ moment the entry is written rather than at the next QA run:
 - no em dash, which this project does not use in its own prose;
 - the entry goes above the current top entry of that version, on its own line.
 
+`date` moves the current version's date, which `AGENTS.md` and the newest
+changelog heading both carry and the release check holds equal. Changing one by
+hand and forgetting the other is the failure it removes; it refuses a version
+the two files and `package.json` do not already agree on, because a date move
+is not how a version is changed.
+
 Standard library only, like every other script here.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 from pathlib import Path
@@ -31,11 +38,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
 PACKAGE = ROOT / "package.json"
+AGENTS = ROOT / "AGENTS.md"
 
 HEADING = re.compile(r"^## (?P<version>\S+) — (?P<date>\d{4}-\d{2}-\d{2})$")
 ALLOWED_LABELS = ("New", "Changed", "Fixed", "Security", "Limitation")
 LABELLED = re.compile(r"^\[(?P<label>[A-Za-z]+)\] \S")
 EM_DASH = "—"
+AGENTS_VERSION = re.compile(r"^Current development version: \*\*(?P<version>\S+) — (?P<date>\d{4}-\d{2}-\d{2})\*\*$")
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _current_version() -> str:
@@ -104,14 +114,60 @@ def add_entry(text: str, *, lines: list[str], version: str) -> list[str]:
     return lines[:at] + addition + lines[at:]
 
 
+def set_date(
+    date: str, *, changelog: list[str], agents: list[str], version: str,
+) -> tuple[list[str], list[str]]:
+    """Both files with the current version's date set to `date`."""
+    if not DATE.match(date):
+        raise SystemExit(f"a date is YYYY-MM-DD, not {date!r}")
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError as error:
+        raise SystemExit(f"{date} is not a calendar date: {error}") from None
+    top = next((index for index, line in enumerate(changelog) if line.startswith("## ")), None)
+    heading = HEADING.match(changelog[top]) if top is not None else None
+    if heading is None:
+        raise SystemExit("CHANGELOG.md has no well-formed newest version heading")
+    line = next((index for index, text in enumerate(agents) if AGENTS_VERSION.match(text)), None)
+    if line is None:
+        raise SystemExit("AGENTS.md has no `Current development version` line")
+    stated = AGENTS_VERSION.match(agents[line])
+    versions = {"package.json": version, "CHANGELOG.md": heading.group("version"), "AGENTS.md": stated.group("version")}
+    if len(set(versions.values())) != 1:
+        raise SystemExit(
+            "the version is not synchronized ("
+            + ", ".join(f"{name} {value}" for name, value in versions.items())
+            + "); synchronize it before moving its date"
+        )
+    changelog = list(changelog)
+    agents = list(agents)
+    changelog[top] = f"## {version} {EM_DASH} {date}"
+    agents[line] = f"Current development version: **{version} {EM_DASH} {date}**"
+    return changelog, agents
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     subcommands = parser.add_subparsers(dest="command", required=True)
     adder = subcommands.add_parser("add", help="add one entry to the current version")
     adder.add_argument("entry", help='the entry, starting with its label: "[Fixed] ..."')
+    dater = subcommands.add_parser("date", help="move the current version's date in AGENTS.md and CHANGELOG.md")
+    dater.add_argument("date", nargs="?", help="YYYY-MM-DD; today's local date when omitted")
     arguments = parser.parse_args()
 
     version = _current_version()
+    if arguments.command == "date":
+        date = arguments.date or datetime.date.today().isoformat()
+        changelog, agents = set_date(
+            date,
+            changelog=CHANGELOG.read_text(encoding="utf-8").splitlines(),
+            agents=AGENTS.read_text(encoding="utf-8").splitlines(),
+            version=version,
+        )
+        CHANGELOG.write_text("\n".join(changelog) + "\n", encoding="utf-8")
+        AGENTS.write_text("\n".join(agents) + "\n", encoding="utf-8")
+        print(f"changelog: {version} is dated {date} in AGENTS.md and CHANGELOG.md")
+        return
     lines = CHANGELOG.read_text(encoding="utf-8").splitlines()
     updated = add_entry(arguments.entry, lines=lines, version=version)
     CHANGELOG.write_text("\n".join(updated) + "\n", encoding="utf-8")
