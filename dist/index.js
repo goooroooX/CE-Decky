@@ -5378,9 +5378,12 @@ function presentableControlValue(value) {
  * the press sent nothing and activated on whatever the game held, or show `40`
  * while the press wrote `100`. A switch has to mean what the row above it says.
  *
- * What is running comes first, then the choice this table confirmed, then the
- * one Configure stored: a value Cheat Engine can read is the truth about this
- * record, and the stored ones are what to say when it cannot read one yet.
+ * What is running comes first, then the one Configure stored, then the one last
+ * read back: a value Cheat Engine can read is the truth about this record, and
+ * where it cannot read one, as for a cheat its script has not created yet, the
+ * value the user last typed is newer than any read-back. Reading the remembered
+ * one first wrote `100` from a pinned switch after `200` was typed, while
+ * Configure cheats showed `200`. Configure cheats resolves its rows the same way.
  *
  * Displayability chooses which of the three answers; the answer itself comes
  * back exactly as it was stored. The two are not the same string: a record's
@@ -5390,7 +5393,7 @@ function presentableControlValue(value) {
  * could rewrite ` 100 ` as `100`.
  */
 function pinnedControlValue(live, remembered, configured) {
-    for (const source of [live, remembered, configured]) {
+    for (const source of [live, configured, remembered]) {
         if (source != null && displayableControlValue(source) !== null)
             return source;
     }
@@ -11400,6 +11403,19 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const leftOnRef = SP_REACT.useRef([]);
     const [error, setError] = SP_REACT.useState(null);
     const [errorTitle, setErrorTitle] = SP_REACT.useState("Cannot apply");
+    // The value a row shows where Cheat Engine has none to read, resolved exactly
+    // as the panel's pinned switch resolves it (`pinnedControlValue`): what is
+    // running, then what was typed here, then what was last read back. The two
+    // screens disagreed for a cheat its script had not created yet, and the
+    // switch on the panel wrote the older value.
+    // Records whose shown value came from that fallback rather than from a read,
+    // so a press switching one on writes what is shown rather than freezing
+    // whatever the game holds there.
+    const unreadValuesRef = SP_REACT.useRef(new Set());
+    const noteUnreadValues = (results) => {
+        unreadValuesRef.current = new Set(results.flatMap((result) => result.record_id !== null && displayableControlValue(result.value) === null ? [result.record_id] : []));
+    };
+    const resolvedValue = (recordId, live) => pinnedControlValue(live, rememberedPreferences.find((item) => item.record_id === recordId)?.value, configuredByIdRef.current.get(recordId));
     // A record missing because a script around it is off is a cheat waiting for
     // that script, not a broken control. It is staged off, so it has a switch,
     // and so an inner script in that state is one Apply switches on on the way
@@ -11409,7 +11425,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         for (const recordId of absentUnderStoppedScripts(safeControls, results, unavailable)) {
             if (recordId in states)
                 continue;
-            states[recordId] = { active: false, value: configuredByIdRef.current.get(recordId) ?? null };
+            states[recordId] = { active: false, value: resolvedValue(recordId, null) };
         }
         return states;
     };
@@ -11483,12 +11499,11 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 // of the options it is offering.
                 next[result.record_id] = {
                     active: result.active,
-                    value: displayableControlValue(result.value) === null
-                        ? configuredByIdRef.current.get(result.record_id) ?? null
-                        : result.value,
+                    value: resolvedValue(result.record_id, result.value),
                 };
             }
             withWaitingRecords(next, results, unavailable);
+            noteUnreadValues(results);
             setStaged(next);
             setLastConfirmed(next);
             setUnavailableRecords(new Set(unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id])));
@@ -11723,13 +11738,13 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         for (const result of observed.results) {
             if (result.record_id === null)
                 continue;
-            const configured = configuredByIdRef.current.get(result.record_id) ?? null;
             reconciled[result.record_id] = {
                 active: result.active,
-                value: displayableControlValue(result.value) === null ? configured : result.value,
+                value: resolvedValue(result.record_id, result.value),
             };
         }
         withWaitingRecords(reconciled, observed.results, observed.unavailable);
+        noteUnreadValues(observed.results);
         const changed = Object.entries(reconciled).some(([recordId, state]) => {
             const previous = lastConfirmed[Number(recordId)];
             return !previous || previous.active !== state.active || previous.value !== state.value;
@@ -11967,7 +11982,15 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 // row goes on saying off because nothing holds it. Startup is where the
                 // review was followed: `_without_values_nothing_reads` in
                 // `session_protocol.py` writes no value for a cheat that stays off.
-                const value = touchedValues.has(control.id) && !deferredValues.has(control.id)
+                //
+                // A cheat this press switches on whose row shows a stored value rather
+                // than one read, because its script has not created it yet or Cheat
+                // Engine read nothing there, gets that value, as the panel's pinned
+                // switch does. Untouched, it was sent with none, and Cheat Engine froze
+                // whatever was in the game while the row said otherwise.
+                const shownNotRead = active === true && controlNeedsValueInput(control)
+                    && (unavailableRecords.has(control.id) || unreadValuesRef.current.has(control.id));
+                const value = (touchedValues.has(control.id) || shownNotRead) && !deferredValues.has(control.id)
                     ? displayableControlValue(state.value)
                     : null;
                 if (active === null && value === null)
@@ -12090,13 +12113,13 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 if (result.record_id === null)
                     continue;
                 const typed = touchedValues.has(result.record_id) ? staged[result.record_id]?.value ?? null : null;
-                const configured = configuredByIdRef.current.get(result.record_id) ?? null;
                 confirmedState[result.record_id] = {
                     active: result.active,
-                    value: displayableControlValue(result.value) === null ? typed ?? configured : result.value,
+                    value: displayableControlValue(result.value) === null ? typed ?? resolvedValue(result.record_id, null) : result.value,
                 };
             }
             withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
+            noteUnreadValues(finalState.results);
             setStaged(confirmedState);
             // Cheat Engine has been mutated and verified, but the remembered state
             // and auto-load are written by the parent. Adopting the confirmed state

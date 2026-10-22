@@ -4679,6 +4679,62 @@ describe("Cheat selection workflow", () => {
     expect(await screen.findByText(/^2 active/)).toBeTruthy();
   });
 
+  it("writes the value a cheat waiting for its script shows when it is switched on", async () => {
+    // Its row showed the value typed for it, but untouched it was sent with
+    // none, and Cheat Engine froze whatever the script left there.
+    const live = liveRuntime();
+    live.status.results = [{ generation: 1, record_id: 30, ok: true, active: false, value: null, error: null }];
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: live, results: live.status.results,
+      unavailable: [{ generation: 2, record_id: 32, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" }],
+    });
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 2, controls: [
+        { id: 30, description: "Enable", path: ["Enable"], structure: ["Enable"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false, switch_on_value: null },
+        { id: 32, description: "Speed", path: ["Enable", "Speed"], structure: ["Enable", "Speed"], variable_type: "Float", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false, switch_on_value: null },
+      ] } as any,
+      rememberedPreferences: [{ record_id: 32, active: false, value: "100" }],
+      configuredValues: [{ record_id: 32, value: "200" }],
+    });
+
+    const row = await screen.findByTestId("cheat-row-32");
+    expect(row.textContent).toContain("= 200");
+    fireEvent.click(within(row).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    expect(sent.find((state: any) => state.record_id === 30)).toMatchObject({ active: true });
+    expect(sent.find((state: any) => state.record_id === 32)).toMatchObject({ active: true, value: "200" });
+  });
+
+  it("writes the stored value it shows for a cheat Cheat Engine reads nothing from", async () => {
+    // Shown from what was last read back, so the press that switches it on
+    // writes that, as the pinned switch does, rather than freezing `??`.
+    const live = liveRuntime();
+    live.status.results = [{ generation: 1, record_id: 41, ok: true, active: false, value: "??", error: null }];
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results: live.status.results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: live, results: live.status.results, unavailable: [] });
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 1, controls: [
+        { id: 41, description: "Health", path: ["Health"], structure: ["Health"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false, switch_on_value: null },
+      ] } as any,
+      rememberedPreferences: [{ record_id: 41, active: false, value: "100" }],
+    });
+
+    const row = await screen.findByTestId("cheat-row-41");
+    expect(row.textContent).toContain("= 100");
+    fireEvent.click(within(row).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    expect(sent.find((state: any) => state.record_id === 41)).toMatchObject({ active: true, value: "100" });
+  });
+
   it("does not hold off the flags filed under a value that is switched on", async () => {
     // The value starts nothing: the script around it is already running and
     // its defaults were dealt with when it started. Treating the value as
@@ -6071,6 +6127,47 @@ describe("Pinned live controls", () => {
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
     const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
     expect(sent.filter((state: any) => state.active === true).map((state: any) => state.record_id)).toEqual([30, 31, 32]);
+  });
+
+  it("writes the value last typed for a pinned cheat waiting for its script, not an older read-back", async () => {
+    // Remembered 100 from an earlier session, configured 200 since, and no
+    // record to read while its script is off. The row showed 100 and the
+    // switch wrote it, while Configure cheats showed 200.
+    const nested = {
+      ...inspect,
+      total_entries: 2,
+      controls: [
+        { id: 30, description: "Enable", path: ["Enable"], structure: ["Enable"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 32, description: "Speed", path: ["Enable", "Speed"], structure: ["Enable", "Speed"], variable_type: "Float", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+      ],
+    };
+    const snapshot = status(true);
+    snapshot.profiles[0].pinned = [32];
+    snapshot.profiles[0].remembered = [{ record_id: 32, active: false, value: "100" }];
+    snapshot.profiles[0].configured_values = [{ record_id: 32, value: "200" }];
+    api.getStatus.mockResolvedValue(snapshot);
+    api.inspectTableSha.mockResolvedValue(nested);
+    const results = [{ generation: 1, record_id: 30, ok: true, active: false, value: null, error: null }];
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: live, results,
+      unavailable: [{ generation: 2, record_id: 32, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" }],
+    });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results });
+    api.setRememberedCheats.mockResolvedValue({});
+    renderContent();
+
+    const row = await screen.findByTestId("pinned-cheat-32");
+    expect(row.textContent).toContain("= 200");
+    expect(row.textContent).not.toContain("100");
+    fireEvent.click(within(row).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    expect(sent.find((state: any) => state.record_id === 32)).toMatchObject({ active: true, value: "200" });
   });
 
   it("records a refused enable from the Home pinned toggle, not only from Apply", async () => {

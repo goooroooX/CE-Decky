@@ -1444,8 +1444,15 @@ describe("value input a cheat cannot work without", () => {
   });
 
   it("resolves one value for the row, the refusal and the write", () => {
+    // Arguments are live, remembered, configured; the order they are read in
+    // is live, configured, remembered. What was typed last is newer than what
+    // was last read back, which is what a cheat its script has not created yet
+    // had shown on its pinned row and written from it.
     expect(pinnedControlValue("40", "100", "250")).toBe("40");
-    expect(pinnedControlValue("??", "100", "250")).toBe("100");
+    expect(pinnedControlValue("??", "100", "250")).toBe("250");
+    expect(pinnedControlValue(null, "100", "200")).toBe("200");
+    expect(pinnedControlValue(null, "100", null)).toBe("100");
+    expect(pinnedControlValue(null, "100", " ")).toBe("100");
     expect(pinnedControlValue(null, " ", "250")).toBe("250");
     expect(pinnedControlValue(undefined, undefined, undefined)).toBe(null);
 
@@ -1454,7 +1461,7 @@ describe("value input a cheat cannot work without", () => {
     // displays it, and doing both here turned a switch that re-applies what is
     // already there into one that rewrites it.
     expect(pinnedControlValue(" 40 ", "100", "250")).toBe(" 40 ");
-    expect(pinnedControlValue("??", " 100 ", "250")).toBe(" 100 ");
+    expect(pinnedControlValue("??", " 100 ", null)).toBe(" 100 ");
     expect(presentableControlValue(pinnedControlValue(" 40 ", "100", "250"))).toBe("40");
   });
 });

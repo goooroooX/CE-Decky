@@ -2452,9 +2452,12 @@ export function presentableControlValue(value: string | null | undefined): strin
  * the press sent nothing and activated on whatever the game held, or show `40`
  * while the press wrote `100`. A switch has to mean what the row above it says.
  *
- * What is running comes first, then the choice this table confirmed, then the
- * one Configure stored: a value Cheat Engine can read is the truth about this
- * record, and the stored ones are what to say when it cannot read one yet.
+ * What is running comes first, then the one Configure stored, then the one last
+ * read back: a value Cheat Engine can read is the truth about this record, and
+ * where it cannot read one, as for a cheat its script has not created yet, the
+ * value the user last typed is newer than any read-back. Reading the remembered
+ * one first wrote `100` from a pinned switch after `200` was typed, while
+ * Configure cheats showed `200`. Configure cheats resolves its rows the same way.
  *
  * Displayability chooses which of the three answers; the answer itself comes
  * back exactly as it was stored. The two are not the same string: a record's
@@ -2468,7 +2471,7 @@ export function pinnedControlValue(
   remembered: string | null | undefined,
   configured: string | null | undefined,
 ): string | null {
-  for (const source of [live, remembered, configured]) {
+  for (const source of [live, configured, remembered]) {
     if (source != null && displayableControlValue(source) !== null) return source;
   }
   return null;
