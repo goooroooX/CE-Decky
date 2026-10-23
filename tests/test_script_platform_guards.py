@@ -90,6 +90,9 @@ REQUIREMENTS = {
     "target_archive_probe.py": {"needs_procfs": False},
     "target_ce_launch_probe.py": {},
     "target_decky_env_probe.py": {},
+    # Finds a running game, and the processes it ends, in `/proc`, which is
+    # the whole of what it needs beyond the `steam` client it hands a URI to.
+    "target_game_launch.py": {},
     "target_memory_watch.py": {},
     "target_plugin_log.py": {"needs_procfs": False},
     "target_plugin_install.py": {},
