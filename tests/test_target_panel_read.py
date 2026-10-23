@@ -113,3 +113,14 @@ def test_the_page_turns_are_the_labels_the_pager_draws():
     pager = (ROOT / "src" / "components" / "PagerFooter.tsx").read_text(encoding="utf-8")
     assert '"\\u2039 Previous"' in pager and '"Next \\u203a"' in pager
     assert panel_read.PAGE_TURNS == ("Next ›", "‹ Previous")
+
+
+def test_find_text_names_the_rows_that_say_it_whatever_they_are_called():
+    rows = [
+        {"testid": "cheat-row-7", "text": "One Hit KillsActivate · its script has not run yet"},
+        {"testid": "cheat-row-8", "text": "Damage MultiplierActivate"},
+        {"testid": "pinned-status", "text": "Pinned controls1 pinned not found in the running table."},
+    ]
+    assert panel_read.rows_saying(rows, "Its Script Has Not Run Yet") == ["cheat-row-7"]
+    assert panel_read.rows_saying(rows, "not found in the running table") == ["pinned-status"]
+    assert panel_read.rows_saying(rows, "nothing like this") == []

@@ -163,7 +163,9 @@ python3 scripts/target_panel_read.py --describe review-findings             # on
 python3 scripts/target_panel_read.py --press table-code-footer:Back          # navigation beside a modal's dense block
 python3 scripts/target_panel_read.py --wait-for 'runtime-row:Connected' --wait-seconds 60
 python3 scripts/target_panel_read.py --find cheat-row-61 --describe cheat-row-61   # pages to that row, naming every turn
+python3 scripts/target_panel_read.py --find-text 'its script has not run yet'      # pages until some row says it, and names that row
 ```
+
 The count a screen leads with is a row of its own, so it reads as text rather than from a capture: `cheats-summary` is the header of Configure cheats (`1 active (1 script)`, and what the table holds), and `pinned-status` is the panel's line about pinned cheats it cannot draw.
 
 It serialises every surface this plugin is drawing: each row by its `data-testid`, the text actually rendered, the controls beside it with their disabled and focused state, how many of its lines are clipped, whether the panel is drawing its mascot at all, and with `--metrics` the height of each row and of the surface. Buttons that sit in no row, such as Steam's full-width **Load table & start CE** and **Configure cheats**, which carry no test id, are listed under an `untagged-controls` row of the surface they are on, which `--wait-for` and a scoped `--press untagged-controls:<name>` take like any other row. That is a dozen lines where a capture is a megabyte, and it answers the questions a layout change is about. `target_screenshot.py` stays for what a picture is actually for: colour, overlap, and anything about the frame itself.

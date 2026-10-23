@@ -870,6 +870,12 @@ PAGE_TURNS = ("Next \u203a", "\u2039 Previous")
 MAX_PAGE_TURNS = 40
 
 
+def rows_saying(rows: list[dict[str, Any]], text: str) -> list[str]:
+    """The test ids of the rows whose words include `text`, ignoring case."""
+    wanted = text.casefold()
+    return [str(row.get("testid")) for row in rows if wanted in str(row.get("text") or "").casefold()]
+
+
 def page_through(
     present: Callable[[], bool], turn: Callable[[str], dict[str, Any]], limit: int = MAX_PAGE_TURNS,
 ) -> tuple[bool, list[str], str | None]:
@@ -1117,6 +1123,11 @@ def main() -> int:
         help="turn the pages of the screen in front until the row carrying this test id is on it;"
              " every turn is a press and is named",
     )
+    parser.add_argument(
+        "--find-text", metavar="TEXT",
+        help="turn the pages of the screen in front until a row says this, whatever it is called;"
+             " every turn is a press and is named",
+    )
     parser.add_argument("--testid", help="report only the rows carrying this test id")
     parser.add_argument(
         "--describe", nargs="?", const="", metavar="TESTID",
@@ -1131,6 +1142,10 @@ def main() -> int:
     host_platform.require("The panel reader", needs_procfs=False)
     if args.timeout < 1 or args.timeout > 120:
         parser.error("--timeout must be between 1 and 120 seconds")
+    if args.find and args.find_text:
+        parser.error("--find and --find-text each turn the pages; name one")
+    if args.find_text is not None and not args.find_text.strip():
+        parser.error("--find-text needs the words to look for")
     if args.wait_seconds < 1 or args.wait_seconds > 300:
         parser.error("--wait-seconds must be between 1 and 300 seconds")
 
@@ -1215,7 +1230,7 @@ def main() -> int:
             print(f"panel read: {exc}", file=sys.stderr)
             return 1
 
-    if args.find:
+    if args.find or args.find_text:
         def turn(label: str) -> dict[str, Any]:
             nonlocal pages
             answer = press(pages, label, args.timeout)
@@ -1231,14 +1246,26 @@ def main() -> int:
                 pages = _pages(args.endpoint, args.timeout)
             return answer
 
+        # A row is found by its words as readily as by its name: what a reader
+        # is looking for is often a sentence on some row of some page, such as
+        # a cheat waiting for its script, and which row says it is the answer.
+        found_in: list[str] = []
+
+        def on_page() -> bool:
+            if args.find:
+                return bool(describe(pages, args.find, args.timeout).get("rows"))
+            found_in[:] = rows_saying(describe(pages, None, args.timeout).get("rows") or [], args.find_text)
+            return bool(found_in)
+
         try:
-            reached, _turned, refusal = page_through(
-                lambda: bool(describe(pages, args.find, args.timeout).get("rows")), turn,
-            )
+            reached, _turned, refusal = page_through(on_page, turn)
         except ProbeError as exc:
             reached, refusal = False, str(exc)
+        if reached and args.find_text:
+            print(f"found {args.find_text!r} in {', '.join(found_in)}")
         if not reached:
-            print(f"panel read: {args.find} is on no page of the screen in front"
+            subject = args.find if args.find else repr(args.find_text)
+            print(f"panel read: {subject} is on no page of the screen in front"
                   + (f"; {refusal}" if refusal else ""), file=sys.stderr)
             if made:
                 print(f"this run pressed, in order: {', '.join(made)}", file=sys.stderr)
