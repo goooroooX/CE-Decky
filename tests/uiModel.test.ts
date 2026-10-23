@@ -1112,6 +1112,16 @@ describe("compact cheat rows", () => {
     const nestedFlag = { ...flag(31, "Shield"), path: ["Enable", "Player", "Shield"], structure: ["Enable", "Player", "Shield"] };
     expect(switchesToHoldOff([player], [script, player, nestedFlag], new Set([30]))).toEqual([]);
     expect(switchesLeftOn([player], [script, player, { ...nestedFlag, switch_off_is_safe: false }], new Set([30]))).toEqual([]);
+    // Inside an inner script this press leaves off, the record is never
+    // created, so writing it would wait for nothing; written once that runs.
+    const inner = { ...base, id: 50, path: ["Enable", "Inner"], structure: ["Enable", "Inner"], kind: "script" as const, has_assembler_script: true };
+    const deep = { ...flag(51, "Deep"), path: ["Enable", "Inner", "Deep"], structure: ["Enable", "Inner", "Deep"] };
+    expect(switchesToHoldOff([script], [script, inner, deep], new Set(), new Map([[10, true], [50, false]]))).toEqual([]);
+    expect(switchesToHoldOff([script], [script, inner, deep], new Set(), new Map([[10, true], [50, true]])).map((item) => item.control.id)).toEqual([51]);
+    // And named as left on where it is not written, since its script's on
+    // value is what the game reads; not named once it is written.
+    expect(switchesLeftOn([script], [script, inner, deep], new Set(), new Map([[10, true], [50, false]])).map((control) => control.id)).toEqual([51]);
+    expect(switchesLeftOn([script], [script, inner, deep], new Set(), new Map([[10, true], [50, true]]))).toEqual([]);
   });
 
   it("finds the records gone with a script that is off, and only those", () => {

@@ -908,12 +908,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         && enclosingIds.has(control.id)
         && activeById.get(control.id) === true
         && activeBefore.get(control.id) !== true);
-      const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds);
+      const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds, activeById);
       // What the same rule refuses to write: cheats that are on in the game
       // because this table's own code was not read as surviving them being
       // switched off. Only this press knows which scripts it started, so this
       // is where that list comes from.
-      leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds);
+      leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds, activeById);
       for (const { control, value } of heldOff) {
         if (control.id === null) continue;
         desired.push({

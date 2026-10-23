@@ -184,14 +184,15 @@ class TableControl:
     # table, because a symbol a script allocates is global once it runs and a
     # record reading it may sit anywhere. Backend only, so not in `as_dict`.
     script_owned: bool = False
-    # The one script that allocates this record's address, where the record is
-    # not inside it: a flag a table files beside its script rather than under
-    # it. Set only on evidence, exactly one script of the table defining one of
-    # the names the address is computed from, and then `declared_default` and
-    # `switch_off_is_safe` are read from that script's code, because the
-    # hand-down below only ever reaches what a script holds. Two scripts
-    # defining the name, or none, leave it unset, and the record keeps no
-    # declared default: an answer this cannot attribute decides nothing.
+    # The script whose start brings `declared_default` with it. For a record
+    # inside the script that declares it, the nearest such script above it.
+    # For one filed beside its script, or inside an unrelated one, the one
+    # script that allocates its address, set only on evidence: exactly one
+    # script of the table defining one of the names the address is computed
+    # from, and then `declared_default` and `switch_off_is_safe` are read from
+    # that script's code, because the hand-down only ever reaches what a
+    # script holds. Two scripts defining the name, or none, leave it unset, and
+    # an answer this cannot attribute decides nothing.
     owner_script_id: int | None = None
     # Where this record sits in the table: one token per level, its place among
     # its siblings there, so an equal prefix is the same record and nothing
@@ -583,6 +584,7 @@ def _walk_entry(
     owners: list[frozenset[str]] | None = None,
     structure: tuple[str, ...] = (),
     script_facts: list[ScriptFacts] | None = None,
+    declarers: dict[str, int | None] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -672,6 +674,9 @@ def _walk_entry(
     # `benableflag` to the same symbol; so are the script's answers below.
     symbol = address.strip().casefold()
     declared_default = (declared or {}).get(symbol) if symbol else None
+    # And which script that was, which is the script whose start brings this
+    # default with it: the nearest declaring one, as for the value itself.
+    declaring_script = (declarers or {}).get(symbol) if declared_default is not None else None
     # Whether this record's own flag was read and found safe to write off, asked
     # of the enclosing script for the same reason `declared_default` is: the
     # address is a symbol that script allocates and the code that reads it is
@@ -694,6 +699,7 @@ def _walk_entry(
             dropdown_read_only=dropdown_read_only,
             switch_on_value=switch_on_value,
             declared_default=declared_default,
+            owner_script_id=declaring_script,
             switch_off_is_safe=switch_off_is_safe,
             structure=structure,
         )
@@ -706,11 +712,13 @@ def _walk_entry(
     # well as those of the scripts above it; the nearest one wins, because that
     # is the one that allocated the symbol last.
     nested_declared = declared
+    nested_declarers = declarers
     nested_safe = safe
     if assembler_text:
         own = _declared_defaults(assembler_text)
         if own:
             nested_declared = {**(declared or {}), **own}
+            nested_declarers = {**(declarers or {}), **{name: record_id for name in own}}
         # Read once per script, beside its declarations, and handed down to the
         # records it holds: the answer is about this script's own code.
         #
@@ -728,7 +736,7 @@ def _walk_entry(
                 count += _walk_entry(
                     child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated, nested_safe,
                     allocated=allocated, owners=owners, structure=structure + (str(position),),
-                    script_facts=script_facts,
+                    script_facts=script_facts, declarers=nested_declarers,
                 )
                 position += 1
                 if count > MAX_INSPECTION_ENTRIES:

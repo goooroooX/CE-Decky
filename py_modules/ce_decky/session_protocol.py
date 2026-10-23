@@ -1714,9 +1714,24 @@ def _held_off_switch_preferences(
     held: dict[int, StartupPreference] = {}
     for record_id, control in _script_default_switches(preferences, controls, ambiguous).items():
         off = _switch_off_value(control)
-        if off is not None:
+        if off is not None and _materializes(control, controls, preferences):
             held[record_id] = StartupPreference(record_id=record_id, active=None, value=off)
     return list(held.values())
+
+
+def _materializes(control: object, controls: dict[int, object], preferences: list[StartupPreference]) -> bool:
+    """Whether every script this record sits inside is one the plan switches on.
+
+    The script that allocates a flag and the scripts that create its record are
+    two prerequisites, not one: a table can file a flag inside an unrelated
+    script, and starting the allocating one gives the flag its value without
+    creating the record. A write to that record waits for something that never
+    appears and rolls back the whole startup, so such a flag is not written;
+    its value is still on, so it is named instead. No script is started for
+    this: holding a default off is hygiene, and a script nobody chose is not.
+    """
+    on = {preference.record_id for preference in preferences if preference.active is True}
+    return all(script_id in on for script_id in _enclosing_script_ids(control, controls))
 
 
 def _script_default_switches(
@@ -1753,10 +1768,11 @@ def _script_default_switches(
     ]
     found: dict[int, object] = {}
     for script in switched_on:
-        # Below it by where it sits, never by name: a sibling script with the
-        # same name brings its own flags, not this one's. Or filed beside it
-        # and allocated by it, which the inspector attributes only where this
-        # one script is the one defining the name.
+        # The script whose start brings this flag's default, as the inspector
+        # attributes it: the nearest script declaring it above the record, or
+        # the one script allocating it where the record sits elsewhere. Never
+        # by name, because a sibling script with the same name brings its own
+        # flags; and by place only for a record with no attribution at all.
         script_at = tuple(getattr(script, "structure", ()))
         for record_id, control in controls.items():
             # A record whose ID this table uses twice is refused for the plan it
@@ -1765,8 +1781,9 @@ def _script_default_switches(
             if record_id in named or record_id in ambiguous or control is script:
                 continue
             at = tuple(getattr(control, "structure", ()))
+            owner = getattr(control, "owner_script_id", None)
             inside = len(at) > len(script_at) and at[:len(script_at)] == script_at
-            if not inside and getattr(control, "owner_script_id", None) != getattr(script, "id", None):
+            if (owner != getattr(script, "id", None)) if owner is not None else not inside:
                 continue
             on = getattr(control, "switch_on_value", None)
             values = getattr(control, "dropdown_values", ())
@@ -1792,6 +1809,7 @@ def startup_left_on(profile: GameProfile, inspection: TableInspection) -> tuple[
         record_id
         for record_id, control in _script_default_switches(expanded, controls, ambiguous).items()
         if getattr(control, "switch_off_is_safe", False) is not True
+        or not _materializes(control, controls, expanded)
     ))
 
 
@@ -2001,7 +2019,7 @@ def _without_values_nothing_reads(
         # script has run, so its off key is written where startup runs it, and
         # after it; where it does not, there is nothing to write to.
         owner = getattr(control, "owner_script_id", None)
-        if off_key and owner is not None and owner in on:
+        if off_key and not enclosing and owner is not None and owner in on:
             kept.append(preference)
             continue
         if preference.active is not None:
@@ -2061,31 +2079,49 @@ def _startup_actions(
 
 
 def _after_detached_owners(actions: list[StartupAction], controls: dict[int, object]) -> list[StartupAction]:
-    """Move each action on a flag filed beside its script to just after that script starts.
+    """Move each action on a flag outside its own script to just after what it needs.
 
-    Order by place puts a record before the scripts that create what is inside
-    it and never after one beside it, and a flag beside the script that
-    allocates it does not resolve until that script has run. Sorted by place
+    Order by place puts a record after the scripts that create it, and never
+    after a script beside it or elsewhere in the table, and a flag the table
+    files outside the script that allocates it does not resolve until that
+    script has run. What it needs is that script and every script it sits
+    inside, so it goes after the last of those to start; sorted by place
     alone, its write could land first and fail the whole startup.
     """
-    started = {action.record_id: index for index, action in enumerate(actions) if action.kind == "active" and action.value == "1"}
-    moving: dict[int, list[StartupAction]] = {}
+    position: dict[int, int] = {}
+    for action in actions:
+        if action.kind == "active" and action.value == "1":
+            position.setdefault(action.record_id, len(position))
+    if not position:
+        return actions
+    started = list(position)
+    moving: list[tuple[int, StartupAction]] = []
     kept: list[StartupAction] = []
     for action in actions:
-        owner = getattr(controls.get(action.record_id), "owner_script_id", None)
-        if owner is not None and owner in started and owner != action.record_id:
-            moving.setdefault(owner, []).append(action)
-        else:
+        control = controls.get(action.record_id)
+        owner = getattr(control, "owner_script_id", None)
+        needs = [owner] + _enclosing_script_ids(control, controls) if control is not None and owner is not None else []
+        if owner is None or owner == action.record_id or owner not in position or owner in needs[1:]:
             kept.append(action)
+            continue
+        last = max(position[script_id] for script_id in needs if script_id in position)
+        moving.append((started[last], action))
     if not moving:
         return actions
     ordered: list[StartupAction] = []
+    placed: set[int] = set()
     for action in kept:
         ordered.append(action)
         if action.kind == "active" and action.value == "1":
-            ordered.extend(moving.pop(action.record_id, []))
-    for rest in moving.values():
-        ordered.extend(rest)
+            for index, (after, moved) in enumerate(moving):
+                if after == action.record_id and index not in placed:
+                    placed.add(index)
+                    ordered.append(moved)
+    # What waits on a script that was itself moved has no anchor among the
+    # actions kept in place. It goes last rather than nowhere: every script it
+    # needs has started by then, and an action this dropped would be a choice
+    # the startup silently never made.
+    ordered.extend(moved for index, (_, moved) in enumerate(moving) if index not in placed)
     return ordered
 
 

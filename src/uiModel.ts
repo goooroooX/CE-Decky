@@ -1881,6 +1881,7 @@ export function switchesToHoldOff(
   scripts: readonly TableControl[],
   controls: readonly TableControl[],
   requested: ReadonlySet<number>,
+  running?: ReadonlyMap<number, boolean | null>,
 ): { control: TableControl; value: string; script: number }[] {
   // Only a flag whose own code was read and found to survive being written off.
   // A table's hook can turn a pointer into an offset, test the flag and, on the
@@ -1888,8 +1889,28 @@ export function switchesToHoldOff(
   // reads it as an address and dies minutes later, with nothing to say a cheat
   // table was involved. What was not established stays on, and `switchesLeftOn`
   // is what names it.
+  //
+  // And only a flag whose record will exist: one inside an inner script this
+  // press leaves off is never created, so its write waited for a record that
+  // could not appear and failed the whole press. No script is started for it.
   return switchCandidates(scripts, controls, requested)
-    .filter(({ control }) => control.switch_off_is_safe === true);
+    .filter(({ control }) => control.switch_off_is_safe === true && materializes(control, controls, running));
+}
+
+/**
+ * Whether every script this record sits inside will be running, so that the
+ * record exists to be written. Without an answer about what runs, assumed.
+ */
+function materializes(
+  control: TableControl,
+  controls: readonly TableControl[],
+  running: ReadonlyMap<number, boolean | null> | undefined,
+): boolean {
+  return !running || controls.every((candidate) =>
+    candidate.id === null
+    || candidate.kind !== "script"
+    || !encloses(candidate.structure, control.structure)
+    || running.get(candidate.id) === true);
 }
 
 /**
@@ -1905,9 +1926,12 @@ export function switchesLeftOn(
   scripts: readonly TableControl[],
   controls: readonly TableControl[],
   requested: ReadonlySet<number>,
+  running?: ReadonlyMap<number, boolean | null>,
 ): TableControl[] {
+  // Unsafe to write off, or not written because its record will not exist:
+  // either way it is on in the game, at the value its script gave it.
   return switchCandidates(scripts, controls, requested)
-    .filter(({ control }) => control.switch_off_is_safe !== true)
+    .filter(({ control }) => control.switch_off_is_safe !== true || !materializes(control, controls, running))
     .map(({ control }) => control);
 }
 

@@ -3330,10 +3330,10 @@ function Content() {
       // nothing, and holding those flags off wrote cheats the user had on.
       ? [...ancestors, ...(control.id !== null && control.kind === "script" && enclosingControlIds(controls).has(control.id) ? [control] : [])]
       : [];
-    const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
+    const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]), projected);
     // The other half of the same rule: what it refuses to write, which is a
     // cheat running in somebody's game that they did not ask for.
-    const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]));
+    const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]), projected);
     const desired = active
       ? [
           ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{

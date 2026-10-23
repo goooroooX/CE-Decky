@@ -661,6 +661,81 @@ def test_a_flag_filed_beside_its_script_is_that_scripts_and_is_held_off_after_it
     assert offered.get(3) == "0" and 4 not in offered
 
 
+NESTED_ELSEWHERE_TABLE = SIBLING_FLAG_TABLE.replace(
+    """    <CheatEntry>
+      <ID>3</ID><Description>bEnableSafe</Description><VariableType>4 Bytes</VariableType>
+      <Address>bEnableSafe</Address>
+      <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID><Description>bEnableUnsafe</Description><VariableType>4 Bytes</VariableType>
+      <Address>bEnableUnsafe</Address>
+      <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+    </CheatEntry>
+""",
+    """    <CheatEntry>
+      <ID>7</ID><Description>Display</Description><VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>3</ID><Description>bEnableSafe</Description><VariableType>4 Bytes</VariableType>
+          <Address>bEnableSafe</Address>
+          <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>4</ID><Description>bEnableUnsafe</Description><VariableType>4 Bytes</VariableType>
+          <Address>bEnableUnsafe</Address>
+          <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+""",
+)
+
+
+def test_a_flag_inside_an_unrelated_script_is_written_only_once_that_script_runs_too(tmp_path: Path):
+    """Script 1 allocates the flags; their records sit inside script 7.
+
+    Starting 1 gives the flags their on value without creating the records, so
+    a hold-off write waited for a record that never appeared and rolled back
+    the whole startup. The flag is named instead, and written only where 7
+    starts too, after both. Nothing starts 7 for the sake of it.
+    """
+    service = _service(tmp_path, "m69")
+    source = tmp_path / "nested-elsewhere.CT"
+    source.write_text(NESTED_ELSEWHERE_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    inspection = _inspection(service, table["sha256"])
+    shape = {control.id: control for control in inspection.controls}
+    assert (shape[3].owner_script_id, shape[3].declared_default, shape[3].switch_off_is_safe) == (1, "1", True)
+
+    def plan(remembered):
+        profile = _profile(table_sha256=table["sha256"], execution_consent_sha256=table["sha256"], remembered=remembered)
+        return [(action.record_id, action.kind, action.value) for action in effective_startup_plan(profile, inspection)], profile
+
+    # 1 starts, 7 stays off: no write to a record that cannot appear, the
+    # chosen cheat still loads, and both flags are named as left on.
+    steps, profile = plan([StartupPreference(2, True, None)])
+    assert not any(record_id in (3, 4, 7) for record_id, _, _ in steps)
+    assert (2, "active", "1") in steps
+    assert startup_left_on(profile, inspection) == (3, 4)
+
+    # Both start: the safe flag is written off after both, the unsafe one named.
+    steps, profile = plan([StartupPreference(2, True, None), StartupPreference(7, True, None)])
+    write = steps.index((3, "value", "0"))
+    assert steps.index((1, "active", "1")) < write and steps.index((7, "active", "1")) < write
+    assert not any(record_id == 4 and kind == "value" for record_id, kind, _ in steps)
+    assert startup_left_on(profile, inspection) == (4,)
+
+    # Switched off by hand, 7 off: nothing to write to, so nothing is written.
+    steps, _ = plan([StartupPreference(2, True, None), StartupPreference(3, False, "0")])
+    assert not any(record_id == 3 and kind == "value" for record_id, kind, _ in steps)
+
+
 def test_an_orphan_off_action_is_never_asked_of_a_record_its_script_will_not_create(tmp_path: Path):
     service = _service(tmp_path, "m12")
     table = _nested_profile(service, tmp_path, 921)
@@ -907,3 +982,33 @@ def test_a_read_only_record_with_no_declared_values_accepts_none_of_them(tmp_pat
     ):
         with pytest.raises(ValueError, match="read-only dropdown"):
             write()
+
+
+def test_an_action_waiting_on_a_script_that_was_itself_moved_is_kept():
+    """A flag whose script is itself a flag-like record placed after its own owner.
+
+    The move used to anchor each moved action to a script start kept in place,
+    so one anchored to a start that had moved too was dropped from the plan.
+    """
+    from types import SimpleNamespace
+
+    from ce_decky.session_protocol import StartupAction, _after_detached_owners
+
+    def control(record_id, structure, kind="value", owner=None):
+        return SimpleNamespace(
+            id=record_id, structure=structure, kind=kind, group_header=False, owner_script_id=owner,
+        )
+
+    controls = {
+        1: control(1, ("0",), "script"),
+        2: control(2, ("1",), "script", owner=1),
+        3: control(3, ("2",), owner=2),
+    }
+    actions = [
+        StartupAction(record_id=3, kind="value", value="0", path=()),
+        StartupAction(record_id=2, kind="active", value="1", path=()),
+        StartupAction(record_id=1, kind="active", value="1", path=()),
+    ]
+    ordered = _after_detached_owners(actions, controls)
+    assert sorted(ordered, key=lambda action: action.record_id) == sorted(actions, key=lambda action: action.record_id)
+    assert ordered.index(actions[2]) < ordered.index(actions[1]) < ordered.index(actions[0])
