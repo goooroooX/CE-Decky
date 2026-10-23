@@ -5,6 +5,7 @@ import {
   blockedRowLabel,
   blockedRowDetail,
   absentLiveTarget,
+  autoloadSettleRemainingMs,
   installedGameExecutables,
   declaredLaunchExecutable,
   gamesOnThisDevice,
@@ -966,6 +967,24 @@ describe("a target process chosen before the game has ever run", () => {
     }), "hl2.exe")).toBeNull();
     expect(absentLiveTarget(null, "hl2.exe")).toBeNull();
     expect(absentLiveTarget(observation({}), null)).toBeNull();
+  });
+
+  it("leaves a just-started target ten seconds to load, counted from its own start", () => {
+    const now = 1_000_000_000;
+    const game = (started: Record<string, number> | undefined, running = true) => ({
+      app_id: 10, running, pids: [1], windows_executables: ["Game.exe"], windows_executable_started: started,
+    }) as any;
+    // From the program's start, whatever the case of its name.
+    expect(autoloadSettleRemainingMs(game({ "Game.exe": now / 1000 - 3 }), "game.exe", now)).toBe(7000);
+    expect(autoloadSettleRemainingMs(game({ "Game.exe": now / 1000 - 60 }), "game.exe", now)).toBe(0);
+    // A start nobody could read waits for nothing, which is what Auto-load did
+    // before; nor does a game that is not running or a target not yet named.
+    expect(autoloadSettleRemainingMs(game(undefined), "game.exe", now)).toBe(0);
+    expect(autoloadSettleRemainingMs(game({ "Launcher.exe": now / 1000 }), "game.exe", now)).toBe(0);
+    expect(autoloadSettleRemainingMs(game({ "Game.exe": now / 1000 }, false), "game.exe", now)).toBe(0);
+    expect(autoloadSettleRemainingMs(game({ "Game.exe": now / 1000 }), "", now)).toBe(0);
+    // A start in the future is a clock moved under it, and waits the whole wait at most.
+    expect(autoloadSettleRemainingMs(game({ "Game.exe": now / 1000 + 3600 }), "game.exe", now)).toBe(10_000);
   });
 
   it("says nothing when all the game has running is Wine's own machinery", () => {

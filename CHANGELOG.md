@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.31 — 2026-10-23
 
+- [Changed] Auto-load gives a game ten seconds from the start of its program to load before starting Cheat Engine in it, so a table's scans no longer run against a game that has not loaded yet and fail; its row counts the wait down, and a panel opened later into the game does not wait at all.
 - [Fixed] Disable all puts back to off an on/off cheat that was already switched off but still held its on value, so it no longer runs in the game under a switch that says off; it says so apart from the cheats it switched off.
 - [Fixed] Switching on a script whose own flags sit inside an inner script that stays off no longer fails: those flags are named as left on rather than written, because their records do not exist until the inner script runs.
 - [Fixed] At Auto-load, a cheat flag a table files beside its script, rather than inside it, is held off with that script's other defaults when another cheat starts the script, or named as left on where switching it off is not proven safe. It came on unasked and unnamed, even when it was remembered off. One whose record sits inside another script that stays off is named rather than written, because that write waited for a record that never appeared and failed the whole Auto-load.

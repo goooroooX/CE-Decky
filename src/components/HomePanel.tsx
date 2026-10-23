@@ -194,6 +194,8 @@ interface Props {
   autoloadEnabled: boolean;
   /** Why auto-load cannot be changed right now, or `null` when it can. */
   autoloadBlockedReason: string | null;
+  /** Seconds left before Auto-load starts, while it gives a just-started game time to load. */
+  autoloadWaitSeconds?: number | null;
   onAutoloadChange: (enabled: boolean) => void;
   ceRunning: boolean;
   /** Why the global Cheat Engine identity cannot be changed, or `null`. */
@@ -280,6 +282,7 @@ export function HomePanel(props: Props) {
     onDisableAllCheats,
     autoloadEnabled,
     autoloadBlockedReason,
+    autoloadWaitSeconds = null,
     onAutoloadChange,
     ceRunning,
     ceIdentityBlockedReason,
@@ -687,7 +690,10 @@ export function HomePanel(props: Props) {
           {/* Marked so a device session can read and press it by name. */}
           <SwitchBox name="Auto-load" checked={autoloadEnabled} testId="autoload-row" style={CONTENTS_ONLY}><ToggleField
             label="Load last table & cheats"
-            description={autoloadBlockedReason ?? "This exact game and table SHA only."}
+            description={autoloadBlockedReason
+              ?? (autoloadWaitSeconds !== null && autoloadEnabled
+                ? `Auto-load starts in ${autoloadWaitSeconds} s, once the game has had time to load.`
+                : "This exact game and table SHA only.")}
             checked={autoloadEnabled}
             disabled={workflowBlocked || (autoloadBlockedReason !== null && !autoloadEnabled)}
             onChange={traceUiAction("home_panel.load_last_table_cheats", onAutoloadChange, (enabled) => ({ app_id: game?.appId, table_sha: table?.sha256, enabled }))}

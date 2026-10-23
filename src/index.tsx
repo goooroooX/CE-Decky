@@ -90,7 +90,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -356,15 +356,26 @@ function Content() {
   const autoloadRetryRef = useRef<{ key: string; attempts: number } | null>(null);
   const autoloadRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoloadRetryTick, setAutoloadRetryTick] = useState(0);
+  // Auto-load leaves a game time to load before starting Cheat Engine in it.
+  // The wait is not an attempt and spends none of the retry budget; it is kept
+  // apart so a retry's backoff and the wait never cancel one another.
+  const autoloadSettleTimerRef = useRef<{ key: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const [autoloadStartsAt, setAutoloadStartsAt] = useState<{ appId: number; at: number } | null>(null);
   const clearAutoloadRetry = useCallback(() => {
     if (autoloadRetryTimerRef.current !== null) {
       clearTimeout(autoloadRetryTimerRef.current);
       autoloadRetryTimerRef.current = null;
     }
     autoloadRetryRef.current = null;
+    if (autoloadSettleTimerRef.current !== null) {
+      clearTimeout(autoloadSettleTimerRef.current.timer);
+      autoloadSettleTimerRef.current = null;
+    }
+    setAutoloadStartsAt(null);
   }, []);
   useEffect(() => () => {
     if (autoloadRetryTimerRef.current !== null) clearTimeout(autoloadRetryTimerRef.current);
+    if (autoloadSettleTimerRef.current !== null) clearTimeout(autoloadSettleTimerRef.current.timer);
   }, []);
   const runningGamesRef = useRef<GameSummary[]>([]);
   const restoredSelectionRef = useRef(false);
@@ -3655,6 +3666,29 @@ function Content() {
             ? "The selected table file is missing. Download or open it again to re-import it."
             : null;
 
+  // The seconds left before Auto-load starts Cheat Engine, said on its own row
+  // so a game that has not been touched yet does not look like Auto-load did
+  // nothing. A second's tick only while there is a wait to count down: the
+  // attempt that ends the wait can step aside, for a busy panel among others,
+  // and a tick left running re-rendered the whole panel every second for good.
+  const [settleNow, setSettleNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (autoloadStartsAt === null) return;
+    setSettleNow(Date.now());
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setSettleNow(now);
+      if (now >= autoloadStartsAt.at) clearInterval(timer);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [autoloadStartsAt]);
+  const autoloadWaitSeconds = autoloadStartsAt !== null
+    && autoloadStartsAt.appId === selectedGame?.appId
+    && profile?.autoload_enabled
+    && autoloadStartsAt.at > settleNow
+    ? Math.ceil((autoloadStartsAt.at - settleNow) / 1000)
+    : null;
+
   useEffect(() => {
     if (!selectedGame || !profile?.autoload_enabled || !profile.table_sha256 || !profile.target_process) return;
     if (
@@ -3693,6 +3727,9 @@ function Content() {
     // for the same game, table and target: another one's backoff is no reason
     // to keep this one waiting.
     if (autoloadRetryTimerRef.current !== null && autoloadRetryRef.current?.key === key) return;
+    // The same holds for the wait for the game to load: its end is what asks
+    // again, and asking now would only read the same start time.
+    if (autoloadSettleTimerRef.current?.key === key) return;
     autoloadAttemptRef.current = key;
     void (async () => {
       try {
@@ -3719,6 +3756,28 @@ function Content() {
           clearAutoloadRetry();
           return;
         }
+        // A game whose program has only just started has not loaded what the
+        // table looks for, and a scan that runs too early fails and is recorded
+        // against the table. Wait out the rest of the settle time, counted from
+        // the program's own start, then ask again from the top.
+        const settleMs = autoloadSettleRemainingMs(capability.game, profile.target_process, Date.now());
+        if (settleMs > 0) {
+          autoloadAttemptRef.current = null;
+          if (autoloadSettleTimerRef.current !== null) clearTimeout(autoloadSettleTimerRef.current.timer);
+          autoloadSettleTimerRef.current = {
+            key,
+            // A quarter second past the end, so the next look finds the wait
+            // over rather than a few milliseconds of it left to schedule again.
+            timer: setTimeout(() => {
+              autoloadSettleTimerRef.current = null;
+              setAutoloadRetryTick(tick => tick + 1);
+            }, settleMs + 250),
+          };
+          setAutoloadStartsAt({ appId: selectedGame.appId, at: Date.now() + settleMs });
+          logUi("autoload.waiting_for_game", { app_id: selectedGame.appId, wait_ms: settleMs });
+          return;
+        }
+        setAutoloadStartsAt(null);
         // Capability discovery can yield while a detached workflow opens or the
         // selected profile changes. Revalidate the exact UI identity immediately
         // before acquiring the global mutation latch; never launch behind another
@@ -4506,6 +4565,7 @@ function Content() {
       onDisableAllCheats={disableAllCheats}
       autoloadEnabled={profile?.autoload_enabled ?? false}
       autoloadBlockedReason={autoloadBlockedReason}
+      autoloadWaitSeconds={autoloadWaitSeconds}
       onAutoloadChange={(enabled) => { void toggleAutoload(enabled); }}
       ceRunning={ceRunning}
       ceIdentityBlockedReason={ceIdentityBlockedReason}

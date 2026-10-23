@@ -335,6 +335,34 @@ export function absentLiveTarget(
   return candidates.length > 0 ? candidates : null;
 }
 
+/** How long Auto-load leaves a game to load after its program starts. */
+export const AUTOLOAD_SETTLE_MS = 10_000;
+
+/**
+ * How much longer Auto-load waits before starting Cheat Engine for this game.
+ *
+ * Counted from when the target program was started, which the backend reads
+ * out of the process itself, rather than from when this panel first saw it: a
+ * panel opened a minute into the game owes it nothing, and one that saw the
+ * game appear owes it the whole wait. A table's scans run against code the game
+ * may not have loaded yet in its first seconds, and a failure there is recorded
+ * against the table. A start this panel cannot read waits for nothing, which is
+ * what Auto-load did before, and a start in the future, which only a clock
+ * moved under it can produce, waits no longer than the whole wait.
+ */
+export function autoloadSettleRemainingMs(
+  game: GameContainerObservation | null | undefined,
+  profileTargetProcess: string | null | undefined,
+  nowMs: number,
+): number {
+  const target = (profileTargetProcess ?? "").trim().toLowerCase();
+  if (!game?.running || !target) return 0;
+  const started = Object.entries(game.windows_executable_started ?? {})
+    .find(([name]) => name.toLowerCase() === target)?.[1];
+  if (typeof started !== "number" || !Number.isFinite(started)) return 0;
+  return Math.min(AUTOLOAD_SETTLE_MS, Math.max(0, started * 1000 + AUTOLOAD_SETTLE_MS - nowMs));
+}
+
 export function isValidProcessBasename(value: string): boolean {
   return value.normalize("NFC") === value
     && new TextEncoder().encode(value).length <= MAX_PROCESS_NAME_BYTES

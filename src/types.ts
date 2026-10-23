@@ -700,6 +700,8 @@ export interface GameContainerObservation {
   compat_tool_paths: string[];
   /** Windows .exe basenames this game's own processes are running right now. */
   windows_executables?: string[];
+  /** When each of those was started, in wall-clock seconds; absent where it could not be read. */
+  windows_executable_started?: Record<string, number>;
   /** The executable Steam asked Proton to run for this game, observed in its own process table. */
   launch_executable?: string | null;
   conflicting_compat_data_paths: string[];

@@ -227,6 +227,40 @@ def test_observe_game_container_lists_the_running_windows_executables(tmp_path: 
     assert observation.windows_executables == ("Extra.exe", "Game-Win64-Shipping.exe", "Launcher_Steam.exe")
 
 
+def test_observe_game_container_reports_when_each_executable_started(tmp_path: Path, monkeypatch):
+    # Auto-load waits for the game to load, counted from when its program was
+    # started rather than from when the panel first saw it. Two processes of one
+    # program report the younger one: a game that restarted itself is loading
+    # again. A program whose start cannot be read is left out, not guessed.
+    import ce_decky.ce_launch as launch
+
+    proc = tmp_path / "proc"
+    environ = {"SteamAppId": "220", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/220"}
+    hz = os.sysconf("SC_CLK_TCK")
+
+    def stat(pid: int, ticks: int) -> None:
+        (proc / str(pid) / "stat").write_bytes(
+            f"{pid} (Game (x).exe) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {ticks} 0 0\n".encode()
+        )
+
+    _proc(proc, 20, environ, argv=["Z:\\games\\Game.exe"])
+    stat(20, 50 * hz)
+    _proc(proc, 21, environ, argv=["z:\\games\\GAME.exe"])
+    stat(21, 90 * hz)
+    _proc(proc, 30, environ, argv=["Z:\\games\\Launcher.exe"])
+    (proc / "uptime").write_text("100.00 400.00\n", encoding="ascii")
+    monkeypatch.setattr(launch.time, "time", lambda: 1_000_000.0)
+
+    observation = observe_game_container(220, proc_root=proc, start_times=True)
+    assert observation.windows_executable_started == (("Game.exe", 999_990.0),)
+    assert observation.public()["windows_executable_started"] == {"Game.exe": 999_990.0}
+    # Only where asked: the supervisor's repeating walk does not pay for it.
+    assert observe_game_container(220, proc_root=proc).windows_executable_started == ()
+
+    (proc / "uptime").unlink()
+    assert observe_game_container(220, proc_root=proc, start_times=True).windows_executable_started == ()
+
+
 def test_observe_game_container_reads_the_proton_launch_target(tmp_path: Path):
     """Steam launches a game as `<tool>/proton <verb> <exe>`, for library entries too.
 

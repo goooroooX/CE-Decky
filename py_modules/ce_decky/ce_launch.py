@@ -241,6 +241,13 @@ class GameContainerObservation:
     # that every existing construction of this observation, in the module and in
     # its tests, keeps meaning exactly what it meant.
     unreadable_pids: tuple[int, ...] = ()
+    # When each of `windows_executables` was started, as wall-clock seconds,
+    # taken from the youngest process running it. Auto-load waits on this for
+    # the game to finish loading: the moment a process appears is the moment its
+    # code is least likely to be in memory yet. Wall clock rather than an age, so
+    # the answer does not go stale on its way to the panel. An executable whose
+    # start time could not be read is absent from it.
+    windows_executable_started: tuple[tuple[str, float], ...] = ()
 
     def public(self) -> dict[str, object]:
         data = asdict(self)
@@ -249,6 +256,7 @@ class GameContainerObservation:
         # actually encountered, including on the paths that stop early, and it
         # is not separately capped.
         data["unreadable_processes"] = len(data.pop("unreadable_pids"))
+        data["windows_executable_started"] = dict(self.windows_executable_started)
         return data
 
 
@@ -741,7 +749,8 @@ def _host_path_from_wine_z(windows_path: str) -> str | None:
 
 
 def observe_game_container(
-    app_id: int, *, proc_root: Path = Path("/proc"), max_processes: int = MAX_SCANNED_PROCESSES
+    app_id: int, *, proc_root: Path = Path("/proc"), max_processes: int = MAX_SCANNED_PROCESSES,
+    start_times: bool = False,
 ) -> GameContainerObservation:
     """Find the running Steam game for ``app_id`` in the live process table.
 
@@ -752,13 +761,18 @@ def observe_game_container(
     This is the process-table walk both repeating paths run, so it is counted
     here once for every caller. Its time is inside its callers' time rather than
     beside it; see `poll_counters`.
+
+    `start_times` adds when each Windows executable was started, at one more
+    small read per process of the game that runs one. Only the panel's own
+    question asks for it; the supervisor's repeating walk does not pay for it.
     """
     with poll_counters.timed(poll_counters.PRIMITIVE_GAME_CONTAINER):
-        return _observe_game_container(app_id, proc_root=proc_root, max_processes=max_processes)
+        return _observe_game_container(app_id, proc_root=proc_root, max_processes=max_processes, start_times=start_times)
 
 
 def _observe_game_container(
-    app_id: int, *, proc_root: Path = Path("/proc"), max_processes: int = MAX_SCANNED_PROCESSES
+    app_id: int, *, proc_root: Path = Path("/proc"), max_processes: int = MAX_SCANNED_PROCESSES,
+    start_times: bool = False,
 ) -> GameContainerObservation:
     app_id = _app_id(app_id)
     if not proc_root.is_dir():
@@ -772,6 +786,7 @@ def _observe_game_container(
     tool_paths: list[str] = []
     windows_executables: list[str] = []
     seen_executables: set[str] = set()
+    start_ticks: dict[str, int] = {}
     unreadable: list[int] = []
     launch_targets: list[str] = []
     scanned = 0
@@ -849,6 +864,10 @@ def _observe_game_container(
             if key not in seen_executables and len(windows_executables) < MAX_OBSERVED_WINDOWS_EXECUTABLES:
                 seen_executables.add(key)
                 windows_executables.append(executable)
+            if start_times and key in seen_executables:
+                ticks = _process_start_time(int(entry.name), proc_root)
+                if ticks is not None:
+                    start_ticks[key] = max(ticks, start_ticks.get(key, ticks))
         launch_target = _proton_launch_target(argv)
         if launch_target is not None and launch_target.casefold() not in {
             candidate.casefold() for candidate in launch_targets
@@ -892,6 +911,34 @@ def _observe_game_container(
         unreadable_pids=tuple(unreadable),
         scanned=scanned,
         reason=reason,
+        windows_executable_started=_started_at(windows_executables, start_ticks, proc_root),
+    )
+
+
+def _started_at(
+    executables: Sequence[str], start_ticks: dict[str, int], proc_root: Path
+) -> tuple[tuple[str, float], ...]:
+    """Wall-clock start of each executable, from its ticks since boot.
+
+    ``/proc/<pid>/stat`` counts a process's start in clock ticks since boot, and
+    ``/proc/uptime`` is how long ago boot was, so one read of the latter turns
+    every start into a time the panel can compare with its own clock. Nothing
+    is reported when either is unreadable, which leaves Auto-load as it was.
+    """
+    if not start_ticks:
+        return ()
+    try:
+        uptime = float((proc_root / "uptime").read_text(encoding="ascii")[:64].split()[0])
+        ticks_per_second = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return ()
+    if ticks_per_second <= 0:
+        return ()
+    booted = time.time() - uptime
+    return tuple(
+        (name, round(booted + start_ticks[name.casefold()] / ticks_per_second, 2))
+        for name in sorted(executables, key=str.casefold)
+        if name.casefold() in start_ticks
     )
 
 
@@ -2155,7 +2202,7 @@ class CELaunchSupervisor:
             # Steam-owned and kernel-owned state a Game Mode user cannot repair
             # must degrade this capability, never fail the RPC that reports it.
             try:
-                observation = observe_game_container(app_id).public()
+                observation = observe_game_container(app_id, start_times=True).public()
             except (OSError, RuntimeError, ValueError):
                 observation = None
             try:

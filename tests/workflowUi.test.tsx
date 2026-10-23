@@ -6041,6 +6041,39 @@ describe("Launching the selected table", () => {
     }
   });
 
+  it("gives a game that has just started time to load before auto-loading into it", async () => {
+    // Auto-load fired on the first sight of the target, when the game had not
+    // loaded what the table scans for, and a failure there is recorded against
+    // the table. It now waits ten seconds from the program's own start, and
+    // says on its row how long is left.
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now() / 1000 - 3;
+      api.getCELaunchCapability.mockImplementation(async () => ({
+        ...launch, game: { ...launch.game, windows_executable_started: { "game.exe": startedAt } },
+      }));
+      api.getRuntimeStatus.mockResolvedValue(noRuntime());
+      api.prepareSession.mockResolvedValue({});
+      api.launchCEForGame.mockResolvedValue({
+        operation_id: "op", app_id: 10, mode: "attached", state: "connected",
+        session_id: "session", message: "connected", error: null,
+      });
+      renderContent();
+
+      await vi.waitFor(() => expect(screen.getByText(/Auto-load starts in 7 s/)).toBeTruthy());
+      expect(api.launchCEForGame).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(screen.getByText(/Auto-load starts in 5 s/)).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(api.launchCEForGame).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1500);
+      await vi.waitFor(() => expect(api.launchCEForGame).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText(/Auto-load starts in/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gives up on auto-load after a bounded number of retries rather than looping", async () => {
     vi.useFakeTimers();
     try {

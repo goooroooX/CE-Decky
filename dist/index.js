@@ -3535,6 +3535,30 @@ function absentLiveTarget(game, profileTargetProcess) {
     const candidates = withoutWineRuntimeProcesses(observed);
     return candidates.length > 0 ? candidates : null;
 }
+/** How long Auto-load leaves a game to load after its program starts. */
+const AUTOLOAD_SETTLE_MS = 10000;
+/**
+ * How much longer Auto-load waits before starting Cheat Engine for this game.
+ *
+ * Counted from when the target program was started, which the backend reads
+ * out of the process itself, rather than from when this panel first saw it: a
+ * panel opened a minute into the game owes it nothing, and one that saw the
+ * game appear owes it the whole wait. A table's scans run against code the game
+ * may not have loaded yet in its first seconds, and a failure there is recorded
+ * against the table. A start this panel cannot read waits for nothing, which is
+ * what Auto-load did before, and a start in the future, which only a clock
+ * moved under it can produce, waits no longer than the whole wait.
+ */
+function autoloadSettleRemainingMs(game, profileTargetProcess, nowMs) {
+    const target = (profileTargetProcess ?? "").trim().toLowerCase();
+    if (!game?.running || !target)
+        return 0;
+    const started = Object.entries(game.windows_executable_started ?? {})
+        .find(([name]) => name.toLowerCase() === target)?.[1];
+    if (typeof started !== "number" || !Number.isFinite(started))
+        return 0;
+    return Math.min(AUTOLOAD_SETTLE_MS, Math.max(0, started * 1000 + AUTOLOAD_SETTLE_MS - nowMs));
+}
 function isValidProcessBasename(value) {
     return value.normalize("NFC") === value
         && new TextEncoder().encode(value).length <= MAX_PROCESS_NAME_BYTES
@@ -4840,15 +4864,29 @@ function switchValuesFor(control) {
  * has run, which is exactly the case the runtime client's deferred path already
  * waits out.
  */
-function switchesToHoldOff(scripts, controls, requested) {
+function switchesToHoldOff(scripts, controls, requested, running) {
     // Only a flag whose own code was read and found to survive being written off.
     // A table's hook can turn a pointer into an offset, test the flag and, on the
     // branch taken when it is off, hand the game back the offset: the game then
     // reads it as an address and dies minutes later, with nothing to say a cheat
     // table was involved. What was not established stays on, and `switchesLeftOn`
     // is what names it.
+    //
+    // And only a flag whose record will exist: one inside an inner script this
+    // press leaves off is never created, so its write waited for a record that
+    // could not appear and failed the whole press. No script is started for it.
     return switchCandidates(scripts, controls, requested)
-        .filter(({ control }) => control.switch_off_is_safe === true);
+        .filter(({ control }) => control.switch_off_is_safe === true && materializes(control, controls, running));
+}
+/**
+ * Whether every script this record sits inside will be running, so that the
+ * record exists to be written. Without an answer about what runs, assumed.
+ */
+function materializes(control, controls, running) {
+    return !running || controls.every((candidate) => candidate.id === null
+        || candidate.kind !== "script"
+        || !encloses(candidate.structure, control.structure)
+        || running.get(candidate.id) === true);
 }
 /**
  * The cheats a script switches on that CE Decky has to leave on.
@@ -4859,9 +4897,11 @@ function switchesToHoldOff(scripts, controls, requested) {
  * not show them: they are values in the game rather than records Cheat Engine
  * has activated.
  */
-function switchesLeftOn(scripts, controls, requested) {
+function switchesLeftOn(scripts, controls, requested, running) {
+    // Unsafe to write off, or not written because its record will not exist:
+    // either way it is on in the game, at the value its script gave it.
     return switchCandidates(scripts, controls, requested)
-        .filter(({ control }) => control.switch_off_is_safe !== true)
+        .filter(({ control }) => control.switch_off_is_safe !== true || !materializes(control, controls, running))
         .map(({ control }) => control);
 }
 /** Every switch a script this press starts declares on and nobody asked for. */
@@ -5198,6 +5238,21 @@ function scriptDefaultsSentence(defaults) {
         : `${defaults.unsafe} of them ${one ? "stays" : "stay"}`;
     const rest = defaults.unsafe === defaults.on ? "" : " The rest are off unless you choose them.";
     return `${lead} ${which} on whenever another cheat from the same script is on, because CE Decky could not prove the game survives switching ${one ? "it" : "them"} off.${rest}`;
+}
+/**
+ * What Disable all says it did: the cheats it switched off, and apart from
+ * them the ones that were off already and still held their on value, which it
+ * put back. Neither is counted as the other.
+ */
+function disableAllSummary(deactivated, corrected) {
+    const plural = (count) => `${count} cheat${count === 1 ? "" : "s"}`;
+    if (deactivated === 0 && corrected === 0)
+        return "No cheat was active; Cheat Engine is still running.";
+    const parts = [
+        deactivated > 0 ? `Switched off ${plural(deactivated)}` : null,
+        corrected > 0 ? `${deactivated > 0 ? "put" : "Put"} ${plural(corrected)} that ${corrected === 1 ? "was" : "were"} already off back to off` : null,
+    ].filter(Boolean);
+    return `${parts.join(" and ")}; Cheat Engine is still running.`;
 }
 /**
  * The off key a call that only switches things off may write, per record.
@@ -8878,14 +8933,14 @@ async function applyRuntimeSelection(appId, desiredStates) {
  * the game stayed at 1. A comment inside the parameter list would land in the
  * committed bundle as trailing whitespace, which is why this is here.
  */
-async function deactivateAllActiveControls(appId, recordIds, offValues = new Map()) {
+async function deactivateAllActiveControls(appId, recordIds, offValues = new Map(), onValues = new Map()) {
     const unique = [...new Set(recordIds)];
     if (unique.length > MAX_LIVE_CONTROLS) {
         throw new RuntimeOperationError(`This table has ${unique.length} controls CE Decky can act on; live control is limited to ${MAX_LIVE_CONTROLS}. Switch cheats off from the picker instead.`, null);
     }
     if (unique.length === 0) {
         const empty = await queryRuntimeControls(appId, []);
-        return { queried: 0, active: 0, deactivated: 0, deactivatedIds: [], envelope: empty.envelope };
+        return { queried: 0, active: 0, deactivated: 0, deactivatedIds: [], corrected: 0, correctedIds: [], envelope: empty.envelope };
     }
     let queried;
     let queriedBeforeFailure = 0;
@@ -8917,60 +8972,76 @@ async function deactivateAllActiveControls(appId, recordIds, offValues = new Map
     const activeIds = queried.results
         .filter((result) => result.record_id !== null && result.active === true)
         .map((result) => result.record_id);
-    if (activeIds.length === 0) {
-        return { queried: unique.length, active: 0, deactivated: 0, deactivatedIds: [], envelope: queried.envelope };
+    // A switch already inactive can still hold its on key: releasing a freeze
+    // leaves the value it was frozen at, so the record says off while the game
+    // runs the cheat. Each one with an off key the backend allows is put back
+    // to it after everything active has been switched off. Only a value that is
+    // exactly its on key: any other is not a cheat this can prove is running,
+    // and may be the off key in another spelling, which a write could never read
+    // back as written. Numeric records have no keys here and are never touched.
+    const holdsOnKey = (result) => {
+        if (result.record_id === null || !result.ok || result.active !== false)
+            return false;
+        const on = onValues.get(result.record_id);
+        return offValues.has(result.record_id) && on !== undefined && readValue(result.value) === on;
+    };
+    const staleOff = queried.results.flatMap((result) => holdsOnKey(result) ? [result.record_id] : []);
+    if (activeIds.length === 0 && staleOff.length === 0) {
+        return { queried: unique.length, active: 0, deactivated: 0, deactivatedIds: [], corrected: 0, correctedIds: [], envelope: queried.envelope };
     }
-    let deactivatedBeforeFailure = 0;
-    try {
-        await runForRecordChunks(appId, activeIds, (recordId) => ({ kind: "set_active", record_id: recordId, value: "0" }), (results, completedBefore, envelope) => {
-            const failures = results.filter((result) => !result.ok || result.active !== false);
-            const successful = results.length - failures.length;
-            deactivatedBeforeFailure = completedBefore + successful;
-            if (failures.length === 0)
-                return;
-            const first = failures[0];
-            throw new RuntimeOperationError(`Bulk deactivation incomplete: ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not acknowledge inactive`}. No later batch was sent; refresh/query state before retrying.`, envelope);
-        }, queried.envelope);
-    }
-    catch (cause) {
-        if (cause instanceof RuntimeOperationError) {
-            const prefix = deactivatedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation incomplete:")
-                ? `Bulk deactivation interrupted after ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; `
-                : "";
-            throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+    let verified = queried;
+    if (activeIds.length > 0) {
+        let deactivatedBeforeFailure = 0;
+        try {
+            await runForRecordChunks(appId, activeIds, (recordId) => ({ kind: "set_active", record_id: recordId, value: "0" }), (results, completedBefore, envelope) => {
+                const failures = results.filter((result) => !result.ok || result.active !== false);
+                const successful = results.length - failures.length;
+                deactivatedBeforeFailure = completedBefore + successful;
+                if (failures.length === 0)
+                    return;
+                const first = failures[0];
+                throw new RuntimeOperationError(`Bulk deactivation incomplete: ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not acknowledge inactive`}. No later batch was sent; refresh/query state before retrying.`, envelope);
+            }, queried.envelope);
         }
-        throw cause;
-    }
-    let verified;
-    let verifiedBeforeFailure = 0;
-    try {
-        verified = await runForRecordChunks(appId, activeIds, (recordId) => ({ kind: "query", record_id: recordId }), (results, completedBefore, envelope) => {
-            // The mutation phase deliberately switches the deepest record off first,
-            // because an enclosing script destroys the records it created. Requiring
-            // every one of those records to still answer therefore made the intended
-            // successful end state indistinguishable from an error: child off, parent
-            // off, parent destroys child, child query returns "MemoryRecord missing",
-            // and Disable all threw - so the durable profile kept remembering cheats
-            // the user had just switched off. A record that has ceased to exist after
-            // its own deactivation was acknowledged is the desired outcome.
-            const failures = results.filter((result) => (!result.ok && result.error_code !== "record_missing")
-                || (result.ok && result.active !== false));
-            const successful = results.length - failures.length;
-            verifiedBeforeFailure = completedBefore + successful;
-            if (failures.length === 0)
-                return;
-            const first = failures[0];
-            throw new RuntimeOperationError(`Bulk deactivation verification incomplete: ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not verify inactive`}. No later verification batch was sent.`, envelope);
-        }, queried.envelope);
-    }
-    catch (cause) {
-        if (cause instanceof RuntimeOperationError) {
-            const prefix = verifiedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation verification incomplete:")
-                ? `Bulk deactivation verification interrupted after ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; `
-                : "";
-            throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+        catch (cause) {
+            if (cause instanceof RuntimeOperationError) {
+                const prefix = deactivatedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation incomplete:")
+                    ? `Bulk deactivation interrupted after ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; `
+                    : "";
+                throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+            }
+            throw cause;
         }
-        throw cause;
+        let verifiedBeforeFailure = 0;
+        try {
+            verified = await runForRecordChunks(appId, activeIds, (recordId) => ({ kind: "query", record_id: recordId }), (results, completedBefore, envelope) => {
+                // The mutation phase deliberately switches the deepest record off first,
+                // because an enclosing script destroys the records it created. Requiring
+                // every one of those records to still answer therefore made the intended
+                // successful end state indistinguishable from an error: child off, parent
+                // off, parent destroys child, child query returns "MemoryRecord missing",
+                // and Disable all threw - so the durable profile kept remembering cheats
+                // the user had just switched off. A record that has ceased to exist after
+                // its own deactivation was acknowledged is the desired outcome.
+                const failures = results.filter((result) => (!result.ok && result.error_code !== "record_missing")
+                    || (result.ok && result.active !== false));
+                const successful = results.length - failures.length;
+                verifiedBeforeFailure = completedBefore + successful;
+                if (failures.length === 0)
+                    return;
+                const first = failures[0];
+                throw new RuntimeOperationError(`Bulk deactivation verification incomplete: ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not verify inactive`}. No later verification batch was sent.`, envelope);
+            }, queried.envelope);
+        }
+        catch (cause) {
+            if (cause instanceof RuntimeOperationError) {
+                const prefix = verifiedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation verification incomplete:")
+                    ? `Bulk deactivation verification interrupted after ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; `
+                    : "";
+                throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+            }
+            throw cause;
+        }
     }
     // Every record that was switched off and declares an off key is put back to
     // it, after the release rather than before it, so the value the game keeps is
@@ -9000,13 +9071,43 @@ async function deactivateAllActiveControls(appId, recordIds, offValues = new Map
         }, verified.envelope);
         envelope = written.envelope;
     }
+    // Read again first, in this exact session: switching a script off destroys
+    // the records it created, and one that is gone has nothing to write to and
+    // its script's own disable is what put it back. Each write is then read back,
+    // because a flag the game holds at its on key under a switch that says off is
+    // the thing this is here to stop.
+    const correctedIds = [];
+    if (staleOff.length > 0) {
+        const reread = await queryRuntimeControlsPartial(appId, staleOff, envelope);
+        envelope = reread.envelope;
+        const correcting = reread.results.flatMap((result) => holdsOnKey(result) ? [result.record_id] : []);
+        if (correcting.length > 0) {
+            const written = await runForRecordChunks(appId, correcting, (recordId) => ({ kind: "set_value", record_id: recordId, value: offValues.get(recordId) }), (results, _completedBefore, batchEnvelope) => {
+                // Still at its on key is the failure; another spelling of off is not.
+                const failed = results.find((result) => !result.ok
+                    || (result.record_id !== null && readValue(result.value) === onValues.get(result.record_id)));
+                if (!failed)
+                    return;
+                throw new RuntimeOperationError(leadWithCause(failed.error ?? `MemoryRecord ${failed.record_id ?? "unknown"} read back ${describeReadBack(failed.value)}`, "A cheat that was already switched off still held its on value and could not be put back to off, so it may still be running in the game."), batchEnvelope);
+            }, envelope);
+            envelope = written.envelope;
+            correctedIds.push(...correcting);
+        }
+    }
     return {
         queried: unique.length,
         active: activeIds.length,
         deactivated: activeIds.length,
         deactivatedIds: activeIds,
+        corrected: correctedIds.length,
+        correctedIds,
         envelope,
     };
+}
+/** The value Cheat Engine read, or null for a blank or `??`, which is no value. */
+function readValue(value) {
+    const text = (value ?? "").trim();
+    return text && text !== "??" ? text : null;
 }
 /** How Cheat Engine answered a read-back, in words a user can act on. */
 function describeReadBack(value) {
@@ -9350,7 +9451,7 @@ const HEXPAW_DATA_URI = "data:image/png;base64,"
  * must be reachable without scrolling the quick-access column.
  */
 function HomePanel(props) {
-    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, runtimeLabel, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedMissing = 0, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, dirtyRunNotice = null, onClearDirtyRun = () => undefined, onAdvanced, busy, error, } = props;
+    const { pluginVersion, updateVersion, onUpdate, mascotVisible, updateRunning, ceReady, ceStatusText, installAvailable, installBusy, managedCancelling = false, setupPending, setupStatusError, onRetrySetupStatus, installOperation, ceSource, ceSha256, onInstall, onCancelInstall, reinstallLabel, onReinstall, game, appDetails, runningDetectionAvailable, runningGameCount, selectedGameRunning = false, targetProcess, targetNotRunning = null, onChooseGame, table, tableSource, onSearchTable, searchButtonRef, preferSearchFocus = false, selectedTableMissing = null, tableMarkedNotWorking = null, tableEvidence, tableBlocked = null, onOpenImportedTables, runtimeReady, runtimeText, runtimeTextComplete, runtimeLabel, liveControlsUnavailable, tableLoadFailed, liveSnapshotError, startRuntimeAvailable, startRuntimeBlockedReason, onStartRuntime, activeCheatLabels, activeCheatSnapshotReady, activeScriptCount, pinnedCount, pinnedMissing = 0, pinnedRows, pinnedBusyRecordId, onTogglePinnedCheat, onChooseCheats, onDisableAllCheats, autoloadEnabled, autoloadBlockedReason, autoloadWaitSeconds = null, onAutoloadChange, ceRunning, ceIdentityBlockedReason, launchPending, onStopCE, dirtyRunNotice = null, onClearDirtyRun = () => undefined, onAdvanced, busy, error, } = props;
     const workflowBlocked = busy || setupPending || updateRunning;
     const searchDisabled = workflowBlocked || !game;
     // See `preferSearchFocus`: the mount decides, and nothing after it does.
@@ -9422,7 +9523,10 @@ function HomePanel(props) {
                                 ? "Loading the table and waiting for Cheat Engine to answer, usually within fifteen seconds on a handheld. Cancel CE launch below stops it."
                                 : runtimeHint?.text ?? runtimeText, trailing: launchPending ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) }), pinnedRows.map((row) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { variant: "panel", testId: `pinned-cheat-${row.recordId}`, label: row.label, summary: row.summary, active: row.active, disabled: workflowBlocked || pinnedBusyRecordId !== null, highlighted: pinnedBusyRecordId === row.recordId, onActiveChange: traceUiAction("home_panel.toggle_cheat", (active) => onTogglePinnedCheat(row.recordId, active), (active) => ({ app_id: game?.appId, table_sha: table?.sha256, record_id: row.recordId, active })) }) }, row.recordId))), pinnedCount > 0 && pinnedRows.length === 0 && !(runtimeReady && activeCheatSnapshotReady) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "pinned-status", label: "Pinned controls", truncate: true, description: `${pinnedCount} pinned; connect Cheat Engine to use them here.` }) })), runtimeReady && activeCheatSnapshotReady && pinnedMissing > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "pinned-status", label: "Pinned controls", truncate: true, description: `${pinnedMissing} pinned not found in the running table.` }) })), pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: label, truncate: true }) }, `${index}:${label}`))), pinnedCount === 0 && activeCheatLabels.length > 4 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { label: `+${activeCheatLabels.length - 4} more`, truncate: true }) })), table && targetNotRunning && !startBlockedRowShown && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "panel-target-not-running", label: `${targetProcess} is not running in this game`, description: `This game is running ${targetNotRunning.join(", ")}. Cheat Engine attaches to one exact program, so set the target under Advanced before starting it.` }) })), table && !runtimeReady && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !startRuntimeAvailable, onClick: traceUiAction("home_panel.load_table_start_ce", () => onStartRuntime(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Load table & start CE" }) }), !launchPending && !startRuntimeAvailable && startRuntimeBlockedReason && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, label: "Cannot start yet", description: startRuntimeBlockedReason }) }))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: workflowBlocked || !table, onClick: traceUiAction("home_panel.configure_cheats", () => onChooseCheats(), { app_id: game?.appId, table_sha: table?.sha256 }), children: "Configure cheats" }) }), error && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "panel-error", label: "Attention", description: error }) }), dirtyRunNotice && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "dirty-run", truncate: true, label: "Restart the game first", description: dirtyRunNotice, actions: SP_JSX.jsx(SmallButton, { disabled: busy, onClick: traceUiAction("home_panel.clear_dirty_run", onClearDirtyRun, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Clear" }) }) })), SP_JSX.jsxs(ActionRow, { testId: "panel-actions", navEntryPreferPosition: DFL.NavEntryPositionPreferences.PREFERRED_CHILD, children: [SP_JSX.jsx(SmallButton, { grow: true, preferredFocus: !openOnSearch, disabled: workflowBlocked, onClick: traceUiAction("home_panel.advanced", onAdvanced, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Advanced\u2026" }), SP_JSX.jsx(SmallButton, { disabled: workflowBlocked || !runtimeReady || !activeCheatSnapshotReady, onClick: traceUiAction("home_panel.disable_all", onDisableAllCheats, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Disable all" }), launchPending
                                 ? SP_JSX.jsx(SmallButton, { onClick: traceUiAction("home_panel.cancel_ce_launch", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Cancel CE launch" })
-                                : ceRunning && SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.stop_ce", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Stop CE" })] })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Auto-load" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(SwitchBox, { name: "Auto-load", checked: autoloadEnabled, testId: "autoload-row", style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ToggleField, { label: "Load last table & cheats", description: autoloadBlockedReason ?? "This exact game and table SHA only.", checked: autoloadEnabled, disabled: workflowBlocked || (autoloadBlockedReason !== null && !autoloadEnabled), onChange: traceUiAction("home_panel.load_last_table_cheats", onAutoloadChange, (enabled) => ({ app_id: game?.appId, table_sha: table?.sha256, enabled })), bottomSeparator: "none" }) }) })] })] }));
+                                : ceRunning && SP_JSX.jsx(SmallButton, { disabled: workflowBlocked, onClick: traceUiAction("home_panel.stop_ce", onStopCE, { app_id: game?.appId, table_sha: table?.sha256 }), children: "Stop CE" })] })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Auto-load" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(SwitchBox, { name: "Auto-load", checked: autoloadEnabled, testId: "autoload-row", style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ToggleField, { label: "Load last table & cheats", description: autoloadBlockedReason
+                                    ?? (autoloadWaitSeconds !== null && autoloadEnabled
+                                        ? `Auto-load starts in ${autoloadWaitSeconds} s, once the game has had time to load.`
+                                        : "This exact game and table SHA only."), checked: autoloadEnabled, disabled: workflowBlocked || (autoloadBlockedReason !== null && !autoloadEnabled), onChange: traceUiAction("home_panel.load_last_table_cheats", onAutoloadChange, (enabled) => ({ app_id: game?.appId, table_sha: table?.sha256, enabled })), bottomSeparator: "none" }) }) })] })] }));
 }
 
 /**
@@ -12033,12 +12137,12 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 && enclosingIds.has(control.id)
                 && activeById.get(control.id) === true
                 && activeBefore.get(control.id) !== true);
-            const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds);
+            const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds, activeById);
             // What the same rule refuses to write: cheats that are on in the game
             // because this table's own code was not read as surviving them being
             // switched off. Only this press knows which scripts it started, so this
             // is where that list comes from.
-            leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds);
+            leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds, activeById);
             for (const { control, value } of heldOff) {
                 if (control.id === null)
                     continue;
@@ -14202,16 +14306,28 @@ function Content() {
     const autoloadRetryRef = SP_REACT.useRef(null);
     const autoloadRetryTimerRef = SP_REACT.useRef(null);
     const [autoloadRetryTick, setAutoloadRetryTick] = SP_REACT.useState(0);
+    // Auto-load leaves a game time to load before starting Cheat Engine in it.
+    // The wait is not an attempt and spends none of the retry budget; it is kept
+    // apart so a retry's backoff and the wait never cancel one another.
+    const autoloadSettleTimerRef = SP_REACT.useRef(null);
+    const [autoloadStartsAt, setAutoloadStartsAt] = SP_REACT.useState(null);
     const clearAutoloadRetry = SP_REACT.useCallback(() => {
         if (autoloadRetryTimerRef.current !== null) {
             clearTimeout(autoloadRetryTimerRef.current);
             autoloadRetryTimerRef.current = null;
         }
         autoloadRetryRef.current = null;
+        if (autoloadSettleTimerRef.current !== null) {
+            clearTimeout(autoloadSettleTimerRef.current.timer);
+            autoloadSettleTimerRef.current = null;
+        }
+        setAutoloadStartsAt(null);
     }, []);
     SP_REACT.useEffect(() => () => {
         if (autoloadRetryTimerRef.current !== null)
             clearTimeout(autoloadRetryTimerRef.current);
+        if (autoloadSettleTimerRef.current !== null)
+            clearTimeout(autoloadSettleTimerRef.current.timer);
     }, []);
     const runningGamesRef = SP_REACT.useRef([]);
     const restoredSelectionRef = SP_REACT.useRef(false);
@@ -17028,10 +17144,10 @@ function Content() {
             // nothing, and holding those flags off wrote cheats the user had on.
             ? [...ancestors, ...(control.id !== null && control.kind === "script" && enclosingControlIds(controls).has(control.id) ? [control] : [])]
             : [];
-        const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]));
+        const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]), projected);
         // The other half of the same rule: what it refuses to write, which is a
         // cheat running in somebody's game that they did not ask for.
-        const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]));
+        const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]), projected);
         const desired = active
             ? [
                 ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -17211,7 +17327,14 @@ function Content() {
             .flatMap((control) => control.id === null ? [] : [control.id]);
         void runAction(async () => {
             dropLiveSnapshot();
-            const result = await deactivateAllActiveControls(game.appId, recordIds, switchOffValues(currentInspection, controls));
+            const offValues = switchOffValues(currentInspection, controls);
+            // And the key each of those reads when it is on, which is how a switch
+            // already off that still holds its on value is recognised.
+            const onValues = new Map(controls.flatMap((control) => {
+                const keys = control.id !== null && offValues.has(control.id) ? switchValuesFor(control) : undefined;
+                return keys ? [[control.id, keys.on]] : [];
+            }));
+            const result = await deactivateAllActiveControls(game.appId, recordIds, offValues, onValues);
             // A child destroyed by a parent this call switched off is the intended
             // outcome; the helper already accepted it and the caller must not undo
             // that by demanding the record still answer.
@@ -17245,6 +17368,8 @@ function Content() {
                 gone_with_script_ids: goneWithScript.slice(0, 16),
                 already_off: alreadyOff.length,
                 already_off_ids: alreadyOff.slice(0, 16),
+                corrected: result.corrected,
+                corrected_ids: result.correctedIds.slice(0, 16),
             });
             // Every script is off after this, so a switch that went off inside one
             // is remembered off with no key, exactly as when its script is switched
@@ -17284,9 +17409,7 @@ function Content() {
             await refreshStatus().catch(() => undefined);
             toaster.toast({
                 title: "CE Decky",
-                body: result.deactivated === 0
-                    ? "No cheat was active; Cheat Engine is still running."
-                    : `Switched off ${result.deactivated} cheat${result.deactivated === 1 ? "" : "s"}; Cheat Engine is still running.`,
+                body: disableAllSummary(result.deactivated, result.corrected),
             });
         }).catch(() => undefined);
     };
@@ -17333,6 +17456,30 @@ function Content() {
                     : !activeTable
                         ? "The selected table file is missing. Download or open it again to re-import it."
                         : null;
+    // The seconds left before Auto-load starts Cheat Engine, said on its own row
+    // so a game that has not been touched yet does not look like Auto-load did
+    // nothing. A second's tick only while there is a wait to count down: the
+    // attempt that ends the wait can step aside, for a busy panel among others,
+    // and a tick left running re-rendered the whole panel every second for good.
+    const [settleNow, setSettleNow] = SP_REACT.useState(() => Date.now());
+    SP_REACT.useEffect(() => {
+        if (autoloadStartsAt === null)
+            return;
+        setSettleNow(Date.now());
+        const timer = setInterval(() => {
+            const now = Date.now();
+            setSettleNow(now);
+            if (now >= autoloadStartsAt.at)
+                clearInterval(timer);
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [autoloadStartsAt]);
+    const autoloadWaitSeconds = autoloadStartsAt !== null
+        && autoloadStartsAt.appId === selectedGame?.appId
+        && profile?.autoload_enabled
+        && autoloadStartsAt.at > settleNow
+        ? Math.ceil((autoloadStartsAt.at - settleNow) / 1000)
+        : null;
     SP_REACT.useEffect(() => {
         if (!selectedGame || !profile?.autoload_enabled || !profile.table_sha256 || !profile.target_process)
             return;
@@ -17374,6 +17521,10 @@ function Content() {
         // to keep this one waiting.
         if (autoloadRetryTimerRef.current !== null && autoloadRetryRef.current?.key === key)
             return;
+        // The same holds for the wait for the game to load: its end is what asks
+        // again, and asking now would only read the same start time.
+        if (autoloadSettleTimerRef.current?.key === key)
+            return;
         autoloadAttemptRef.current = key;
         void (async () => {
             try {
@@ -17398,6 +17549,29 @@ function Content() {
                     clearAutoloadRetry();
                     return;
                 }
+                // A game whose program has only just started has not loaded what the
+                // table looks for, and a scan that runs too early fails and is recorded
+                // against the table. Wait out the rest of the settle time, counted from
+                // the program's own start, then ask again from the top.
+                const settleMs = autoloadSettleRemainingMs(capability.game, profile.target_process, Date.now());
+                if (settleMs > 0) {
+                    autoloadAttemptRef.current = null;
+                    if (autoloadSettleTimerRef.current !== null)
+                        clearTimeout(autoloadSettleTimerRef.current.timer);
+                    autoloadSettleTimerRef.current = {
+                        key,
+                        // A quarter second past the end, so the next look finds the wait
+                        // over rather than a few milliseconds of it left to schedule again.
+                        timer: setTimeout(() => {
+                            autoloadSettleTimerRef.current = null;
+                            setAutoloadRetryTick(tick => tick + 1);
+                        }, settleMs + 250),
+                    };
+                    setAutoloadStartsAt({ appId: selectedGame.appId, at: Date.now() + settleMs });
+                    logUi("autoload.waiting_for_game", { app_id: selectedGame.appId, wait_ms: settleMs });
+                    return;
+                }
+                setAutoloadStartsAt(null);
                 // Capability discovery can yield while a detached workflow opens or the
                 // selected profile changes. Revalidate the exact UI identity immediately
                 // before acquiring the global mutation latch; never launch behind another
@@ -17983,7 +18157,7 @@ function Content() {
                 ? "The file for this game's selected table is gone. Download or open it again, or pick another."
                 : null, tableMarkedNotWorking: selectedTableMarkedNotWorking, tableEvidence: profile?.table_sha256
                 ? status?.table_compatibility?.entries.find((entry) => (entry.app_id === selectedGame?.appId && entry.table_sha256 === profile.table_sha256))
-                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, runtimeLabel: runtimeLabel, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedMissing: pinnedMissing, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, dirtyRunNotice: dirtyRunNotice(selectedRunHolds), onClearDirtyRun: () => {
+                : undefined, tableBlocked: selectedTableMark ?? null, onOpenImportedTables: openImportedTables, runtimeReady: runtimeReady, runtimeText: runtimeText, runtimeTextComplete: runtimeTextComplete, runtimeLabel: runtimeLabel, liveControlsUnavailable: beyondLiveControlBudget, tableLoadFailed: tableLoadFailed, liveSnapshotError: liveSnapshotError, startRuntimeAvailable: startRuntimeBlockedReason === null, startRuntimeBlockedReason: startRuntimeBlockedReason, onStartRuntime: startRuntimeForSelectedTable, activeCheatLabels: activeCheatLabels, activeScriptCount: activeScriptCount, activeCheatSnapshotReady: activeCheatSnapshotReady, pinnedCount: profile?.pinned.length ?? 0, pinnedMissing: pinnedMissing, pinnedRows: pinnedRows, pinnedBusyRecordId: pinnedBusyRecordId, onTogglePinnedCheat: togglePinnedCheat, onChooseCheats: openCheatSelection, onDisableAllCheats: disableAllCheats, autoloadEnabled: profile?.autoload_enabled ?? false, autoloadBlockedReason: autoloadBlockedReason, autoloadWaitSeconds: autoloadWaitSeconds, onAutoloadChange: (enabled) => { void toggleAutoload(enabled); }, ceRunning: ceRunning, ceIdentityBlockedReason: ceIdentityBlockedReason, launchPending: launchInProgress !== null && launchInProgress.appId === selectedGame?.appId, dirtyRunNotice: dirtyRunNotice(selectedRunHolds), onClearDirtyRun: () => {
                 const game = selectedGameRef.current;
                 if (!game)
                     return;
