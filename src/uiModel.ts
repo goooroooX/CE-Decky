@@ -2285,6 +2285,21 @@ export function scriptDefaultsSentence(defaults: { on: number; switches: number;
 }
 
 /**
+ * What Disable all says it did: the cheats it switched off, and apart from
+ * them the ones that were off already and still held their on value, which it
+ * put back. Neither is counted as the other.
+ */
+export function disableAllSummary(deactivated: number, corrected: number): string {
+  const plural = (count: number) => `${count} cheat${count === 1 ? "" : "s"}`;
+  if (deactivated === 0 && corrected === 0) return "No cheat was active; Cheat Engine is still running.";
+  const parts = [
+    deactivated > 0 ? `Switched off ${plural(deactivated)}` : null,
+    corrected > 0 ? `${deactivated > 0 ? "put" : "Put"} ${plural(corrected)} that ${corrected === 1 ? "was" : "were"} already off back to off` : null,
+  ].filter(Boolean);
+  return `${parts.join(" and ")}; Cheat Engine is still running.`;
+}
+
+/**
  * The off key a call that only switches things off may write, per record.
  *
  * The backend's answer, the one Stop CE acts on, never one worked out here: a

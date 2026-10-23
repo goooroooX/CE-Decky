@@ -97,7 +97,7 @@ describe("runtime ACK client", () => {
     api.getRuntimeStatus.mockResolvedValueOnce(live).mockResolvedValueOnce(live);
 
     await expect(applyRuntimeSelection(10, [])).resolves.toEqual({ envelope: live, results: [] });
-    await expect(deactivateAllActiveControls(10, [])).resolves.toEqual({ queried: 0, active: 0, deactivated: 0, deactivatedIds: [], envelope: live });
+    await expect(deactivateAllActiveControls(10, [])).resolves.toEqual({ queried: 0, active: 0, deactivated: 0, deactivatedIds: [], corrected: 0, correctedIds: [], envelope: live });
     expect(api.writeRuntimeCommands).not.toHaveBeenCalled();
   });
 
@@ -1131,6 +1131,86 @@ describe("nested MemoryRecord topology", () => {
   });
 });
 
+
+describe("Disable all and switches already off", () => {
+  // A bridge that holds each record's state and applies what it is sent, so
+  // what is asserted is what the game would be left holding.
+  type Held = { active: boolean; value: string; exists: boolean };
+  function fakeBridge(state: Map<number, Held>, onSetActive?: (recordId: number, active: boolean) => void, stuck: ReadonlySet<number> = new Set()) {
+    let generation = 1;
+    const results: any[] = [];
+    api.getRuntimeStatus.mockImplementation(async () => envelope(generation, [...results]));
+    api.writeRuntimeCommands.mockImplementation(async (_appId: number, commands: any[]) => {
+      for (const command of commands) {
+        const record = state.get(command.record_id);
+        if (!record || !record.exists) {
+          results.push({ generation, record_id: command.record_id, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" });
+        } else {
+          if (command.kind === "set_active") {
+            record.active = command.value === "1";
+            onSetActive?.(command.record_id, record.active);
+          }
+          if (command.kind === "set_value" && !stuck.has(command.record_id)) record.value = command.value;
+          results.push({ generation, record_id: command.record_id, ok: true, active: record.active, value: record.value, error: null });
+        }
+        generation += 1;
+      }
+      return { ok: true, count: commands.length, next_generation: generation };
+    });
+    return () => api.writeRuntimeCommands.mock.calls.flatMap((call: any[]) => call[1])
+      .filter((command: any) => command.kind !== "query")
+      .map((command: any) => [command.kind, command.record_id, command.value]);
+  }
+
+  it("puts a switch that is off but holds its on key back to off, and says it corrected it", async () => {
+    // Releasing a freeze leaves the value it was frozen at: off on the switch,
+    // on in the game. With nothing active the call used to return at once.
+    const state = new Map<number, Held>([[1, { active: false, value: "1", exists: true }]]);
+    const sent = fakeBridge(state);
+
+    const result = await deactivateAllActiveControls(10, [1], new Map([[1, "0"]]), new Map([[1, "1"]]));
+
+    expect(sent()).toEqual([["set_value", 1, "0"]]);
+    expect(state.get(1)!.value).toBe("0");
+    expect(result).toMatchObject({ deactivated: 0, corrected: 1, correctedIds: [1] });
+  });
+
+  it("corrects only switches with an allowed off key, never a number, never a record its script took away", async () => {
+    const state = new Map<number, Held>([
+      [1, { active: true, value: "1", exists: true }],    // an active switch
+      [2, { active: false, value: "1", exists: true }],   // off, holding on
+      [3, { active: false, value: "50", exists: true }],  // a number, off
+      [4, { active: false, value: "1", exists: true }],   // a flag the backend did not allow a key for
+      [5, { active: false, value: "00", exists: true }],  // off, in another spelling of its off key
+      [9, { active: true, value: "", exists: true }],     // a script
+      [8, { active: false, value: "1", exists: true }],   // its flag, gone when it goes off
+    ]);
+    const sent = fakeBridge(state, (recordId, active) => {
+      if (recordId === 9 && !active) state.get(8)!.exists = false;
+    });
+
+    const result = await deactivateAllActiveControls(
+      10, [8, 1, 2, 3, 4, 5, 9],
+      new Map([[1, "0"], [2, "0"], [5, "0"], [8, "0"]]),
+      new Map([[1, "1"], [2, "1"], [4, "1"], [5, "1"], [8, "1"]]),
+    );
+
+    const writes = sent().filter(([kind]) => kind === "set_value");
+    expect(writes).toEqual([["set_value", 1, "0"], ["set_value", 2, "0"]]);
+    expect(state.get(3)!.value).toBe("50");
+    expect(state.get(4)!.value).toBe("1");
+    expect(state.get(5)!.value).toBe("00");
+    expect(result).toMatchObject({ deactivatedIds: [1, 9], correctedIds: [2] });
+  });
+
+  it("does not call a correction made that did not read back", async () => {
+    // The game kept its on value: the write is reported, not counted as made.
+    const state = new Map<number, Held>([[1, { active: false, value: "1", exists: true }]]);
+    fakeBridge(state, undefined, new Set([1]));
+
+    await expect(deactivateAllActiveControls(10, [1], new Map([[1, "0"]]), new Map([[1, "1"]]))).rejects.toThrow(/could not be put back to off/);
+  });
+});
 
 describe("ambiguous runtime outcomes", () => {
   it("reports a lost write receipt as unknown rather than a definite failure", async () => {

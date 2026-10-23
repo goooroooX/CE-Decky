@@ -27,6 +27,7 @@ import {
   switchValueFor,
   switchesToHoldOff,
   absentUnderStoppedScripts,
+  disableAllSummary,
   inactiveAncestorControl,
   inactiveAncestorControls,
   switchValuesFor,
@@ -1122,6 +1123,13 @@ describe("compact cheat rows", () => {
     // value is what the game reads; not named once it is written.
     expect(switchesLeftOn([script], [script, inner, deep], new Set(), new Map([[10, true], [50, false]])).map((control) => control.id)).toEqual([51]);
     expect(switchesLeftOn([script], [script, inner, deep], new Set(), new Map([[10, true], [50, true]]))).toEqual([]);
+  });
+
+  it("says what Disable all switched off apart from what it put back", () => {
+    expect(disableAllSummary(0, 0)).toBe("No cheat was active; Cheat Engine is still running.");
+    expect(disableAllSummary(3, 0)).toBe("Switched off 3 cheats; Cheat Engine is still running.");
+    expect(disableAllSummary(3, 1)).toBe("Switched off 3 cheats and put 1 cheat that was already off back to off; Cheat Engine is still running.");
+    expect(disableAllSummary(0, 2)).toBe("Put 2 cheats that were already off back to off; Cheat Engine is still running.");
   });
 
   it("finds the records gone with a script that is off, and only those", () => {

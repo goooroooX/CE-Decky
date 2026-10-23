@@ -90,7 +90,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, absentUnderStoppedScripts, activeCheatsUnder, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -3520,7 +3520,14 @@ function Content() {
       .flatMap((control) => control.id === null ? [] : [control.id]);
     void runAction(async () => {
       dropLiveSnapshot();
-      const result = await deactivateAllActiveControls(game.appId, recordIds, switchOffValues(currentInspection, controls));
+      const offValues = switchOffValues(currentInspection, controls);
+      // And the key each of those reads when it is on, which is how a switch
+      // already off that still holds its on value is recognised.
+      const onValues = new Map(controls.flatMap((control) => {
+        const keys = control.id !== null && offValues.has(control.id) ? switchValuesFor(control) : undefined;
+        return keys ? [[control.id as number, keys.on] as const] : [];
+      }));
+      const result = await deactivateAllActiveControls(game.appId, recordIds, offValues, onValues);
       // A child destroyed by a parent this call switched off is the intended
       // outcome; the helper already accepted it and the caller must not undo
       // that by demanding the record still answer.
@@ -3555,6 +3562,8 @@ function Content() {
         gone_with_script_ids: goneWithScript.slice(0, 16),
         already_off: alreadyOff.length,
         already_off_ids: alreadyOff.slice(0, 16),
+        corrected: result.corrected,
+        corrected_ids: result.correctedIds.slice(0, 16),
       });
       // Every script is off after this, so a switch that went off inside one
       // is remembered off with no key, exactly as when its script is switched
@@ -3599,9 +3608,7 @@ function Content() {
       await refreshStatus().catch(() => undefined);
       toaster.toast({
         title: "CE Decky",
-        body: result.deactivated === 0
-          ? "No cheat was active; Cheat Engine is still running."
-          : `Switched off ${result.deactivated} cheat${result.deactivated === 1 ? "" : "s"}; Cheat Engine is still running.`,
+        body: disableAllSummary(result.deactivated, result.corrected),
       });
     }).catch(() => undefined);
   };

@@ -23,6 +23,9 @@ export interface DeactivateAllResult {
   deactivated: number;
   /** The exact records this call switched off, so the caller remembers only those. */
   deactivatedIds: readonly number[];
+  /** Records already off that still held their on key, written back to their off key. */
+  corrected: number;
+  correctedIds: readonly number[];
   envelope: RuntimeEnvelope;
 }
 
@@ -890,6 +893,7 @@ export async function deactivateAllActiveControls(
   appId: number,
   recordIds: readonly number[],
   offValues: ReadonlyMap<number, string> = new Map(),
+  onValues: ReadonlyMap<number, string> = new Map(),
 ): Promise<DeactivateAllResult> {
   const unique = [...new Set(recordIds)];
   if (unique.length > MAX_LIVE_CONTROLS) {
@@ -900,7 +904,7 @@ export async function deactivateAllActiveControls(
   }
   if (unique.length === 0) {
     const empty = await queryRuntimeControls(appId, []);
-    return { queried: 0, active: 0, deactivated: 0, deactivatedIds: [], envelope: empty.envelope };
+    return { queried: 0, active: 0, deactivated: 0, deactivatedIds: [], corrected: 0, correctedIds: [], envelope: empty.envelope };
   }
 
   let queried: Awaited<ReturnType<typeof runForRecordChunks>>;
@@ -941,78 +945,93 @@ export async function deactivateAllActiveControls(
   const activeIds = queried.results
     .filter((result) => result.record_id !== null && result.active === true)
     .map((result) => result.record_id as number);
-  if (activeIds.length === 0) {
-    return { queried: unique.length, active: 0, deactivated: 0, deactivatedIds: [], envelope: queried.envelope };
+  // A switch already inactive can still hold its on key: releasing a freeze
+  // leaves the value it was frozen at, so the record says off while the game
+  // runs the cheat. Each one with an off key the backend allows is put back
+  // to it after everything active has been switched off. Only a value that is
+  // exactly its on key: any other is not a cheat this can prove is running,
+  // and may be the off key in another spelling, which a write could never read
+  // back as written. Numeric records have no keys here and are never touched.
+  const holdsOnKey = (result: RuntimeResult): boolean => {
+    if (result.record_id === null || !result.ok || result.active !== false) return false;
+    const on = onValues.get(result.record_id);
+    return offValues.has(result.record_id) && on !== undefined && readValue(result.value) === on;
+  };
+  const staleOff = queried.results.flatMap((result) => holdsOnKey(result) ? [result.record_id as number] : []);
+  if (activeIds.length === 0 && staleOff.length === 0) {
+    return { queried: unique.length, active: 0, deactivated: 0, deactivatedIds: [], corrected: 0, correctedIds: [], envelope: queried.envelope };
   }
 
-  let deactivatedBeforeFailure = 0;
-  try {
-    await runForRecordChunks(
-      appId,
-      activeIds,
-      (recordId) => ({ kind: "set_active", record_id: recordId, value: "0" }),
-      (results, completedBefore, envelope) => {
-        const failures = results.filter((result) => !result.ok || result.active !== false);
-        const successful = results.length - failures.length;
-        deactivatedBeforeFailure = completedBefore + successful;
-        if (failures.length === 0) return;
-        const first = failures[0];
-        throw new RuntimeOperationError(
-          `Bulk deactivation incomplete: ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not acknowledge inactive`}. No later batch was sent; refresh/query state before retrying.`,
-          envelope,
-        );
-      },
-      queried.envelope,
-    );
-  } catch (cause) {
-    if (cause instanceof RuntimeOperationError) {
-      const prefix = deactivatedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation incomplete:")
-        ? `Bulk deactivation interrupted after ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; `
-        : "";
-      throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+  let verified: Awaited<ReturnType<typeof runForRecordChunks>> = queried;
+  if (activeIds.length > 0) {
+    let deactivatedBeforeFailure = 0;
+    try {
+      await runForRecordChunks(
+        appId,
+        activeIds,
+        (recordId) => ({ kind: "set_active", record_id: recordId, value: "0" }),
+        (results, completedBefore, envelope) => {
+          const failures = results.filter((result) => !result.ok || result.active !== false);
+          const successful = results.length - failures.length;
+          deactivatedBeforeFailure = completedBefore + successful;
+          if (failures.length === 0) return;
+          const first = failures[0];
+          throw new RuntimeOperationError(
+            `Bulk deactivation incomplete: ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not acknowledge inactive`}. No later batch was sent; refresh/query state before retrying.`,
+            envelope,
+          );
+        },
+        queried.envelope,
+      );
+    } catch (cause) {
+      if (cause instanceof RuntimeOperationError) {
+        const prefix = deactivatedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation incomplete:")
+          ? `Bulk deactivation interrupted after ${deactivatedBeforeFailure}/${activeIds.length} command(s) acknowledged inactive; `
+          : "";
+        throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+      }
+      throw cause;
     }
-    throw cause;
-  }
 
-  let verified: Awaited<ReturnType<typeof runForRecordChunks>>;
-  let verifiedBeforeFailure = 0;
-  try {
-    verified = await runForRecordChunks(
-      appId,
-      activeIds,
-      (recordId) => ({ kind: "query", record_id: recordId }),
-      (results, completedBefore, envelope) => {
-        // The mutation phase deliberately switches the deepest record off first,
-        // because an enclosing script destroys the records it created. Requiring
-        // every one of those records to still answer therefore made the intended
-        // successful end state indistinguishable from an error: child off, parent
-        // off, parent destroys child, child query returns "MemoryRecord missing",
-        // and Disable all threw - so the durable profile kept remembering cheats
-        // the user had just switched off. A record that has ceased to exist after
-        // its own deactivation was acknowledged is the desired outcome.
-        const failures = results.filter((result) =>
-          (!result.ok && result.error_code !== "record_missing")
-          || (result.ok && result.active !== false)
-        );
-        const successful = results.length - failures.length;
-        verifiedBeforeFailure = completedBefore + successful;
-        if (failures.length === 0) return;
-        const first = failures[0];
-        throw new RuntimeOperationError(
-          `Bulk deactivation verification incomplete: ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not verify inactive`}. No later verification batch was sent.`,
-          envelope,
-        );
-      },
-      queried.envelope,
-    );
-  } catch (cause) {
-    if (cause instanceof RuntimeOperationError) {
-      const prefix = verifiedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation verification incomplete:")
-        ? `Bulk deactivation verification interrupted after ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; `
-        : "";
-      throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+    let verifiedBeforeFailure = 0;
+    try {
+      verified = await runForRecordChunks(
+        appId,
+        activeIds,
+        (recordId) => ({ kind: "query", record_id: recordId }),
+        (results, completedBefore, envelope) => {
+          // The mutation phase deliberately switches the deepest record off first,
+          // because an enclosing script destroys the records it created. Requiring
+          // every one of those records to still answer therefore made the intended
+          // successful end state indistinguishable from an error: child off, parent
+          // off, parent destroys child, child query returns "MemoryRecord missing",
+          // and Disable all threw - so the durable profile kept remembering cheats
+          // the user had just switched off. A record that has ceased to exist after
+          // its own deactivation was acknowledged is the desired outcome.
+          const failures = results.filter((result) =>
+            (!result.ok && result.error_code !== "record_missing")
+            || (result.ok && result.active !== false)
+          );
+          const successful = results.length - failures.length;
+          verifiedBeforeFailure = completedBefore + successful;
+          if (failures.length === 0) return;
+          const first = failures[0];
+          throw new RuntimeOperationError(
+            `Bulk deactivation verification incomplete: ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; ${first.error ?? `MemoryRecord ${first.record_id ?? "unknown"} did not verify inactive`}. No later verification batch was sent.`,
+            envelope,
+          );
+        },
+        queried.envelope,
+      );
+    } catch (cause) {
+      if (cause instanceof RuntimeOperationError) {
+        const prefix = verifiedBeforeFailure > 0 && !cause.message.startsWith("Bulk deactivation verification incomplete:")
+          ? `Bulk deactivation verification interrupted after ${verifiedBeforeFailure}/${activeIds.length} record(s) re-queried inactive; `
+          : "";
+        throw new RuntimeOperationError(`${prefix}${cause.message}`, cause.envelope);
+      }
+      throw cause;
     }
-    throw cause;
   }
   // Every record that was switched off and declares an off key is put back to
   // it, after the release rather than before it, so the value the game keeps is
@@ -1051,13 +1070,55 @@ export async function deactivateAllActiveControls(
     );
     envelope = written.envelope;
   }
+  // Read again first, in this exact session: switching a script off destroys
+  // the records it created, and one that is gone has nothing to write to and
+  // its script's own disable is what put it back. Each write is then read back,
+  // because a flag the game holds at its on key under a switch that says off is
+  // the thing this is here to stop.
+  const correctedIds: number[] = [];
+  if (staleOff.length > 0) {
+    const reread = await queryRuntimeControlsPartial(appId, staleOff, envelope);
+    envelope = reread.envelope;
+    const correcting = reread.results.flatMap((result) => holdsOnKey(result) ? [result.record_id as number] : []);
+    if (correcting.length > 0) {
+      const written = await runForRecordChunks(
+        appId,
+        correcting,
+        (recordId) => ({ kind: "set_value", record_id: recordId, value: offValues.get(recordId)! }),
+        (results, _completedBefore, batchEnvelope) => {
+          // Still at its on key is the failure; another spelling of off is not.
+          const failed = results.find((result) => !result.ok
+            || (result.record_id !== null && readValue(result.value) === onValues.get(result.record_id)));
+          if (!failed) return;
+          throw new RuntimeOperationError(
+            leadWithCause(
+              failed.error ?? `MemoryRecord ${failed.record_id ?? "unknown"} read back ${describeReadBack(failed.value)}`,
+              "A cheat that was already switched off still held its on value and could not be put back to off, so it may still be running in the game.",
+            ),
+            batchEnvelope,
+          );
+        },
+        envelope,
+      );
+      envelope = written.envelope;
+      correctedIds.push(...correcting);
+    }
+  }
   return {
     queried: unique.length,
     active: activeIds.length,
     deactivated: activeIds.length,
     deactivatedIds: activeIds,
+    corrected: correctedIds.length,
+    correctedIds,
     envelope,
   };
+}
+
+/** The value Cheat Engine read, or null for a blank or `??`, which is no value. */
+function readValue(value: string | null): string | null {
+  const text = (value ?? "").trim();
+  return text && text !== "??" ? text : null;
 }
 
 /** How Cheat Engine answered a read-back, in words a user can act on. */

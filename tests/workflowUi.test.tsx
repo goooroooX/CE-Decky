@@ -6998,7 +6998,7 @@ describe("Pinned live controls", () => {
     api.getRuntimeStatus.mockResolvedValue(live);
     runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
     runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ ...{ envelope: live, results }, unavailable: [] });
-    runtimeClient.deactivateAllActiveControls.mockResolvedValue({ queried: 2, active: 2, deactivated: 2, deactivatedIds: [21, 20], envelope: live });
+    runtimeClient.deactivateAllActiveControls.mockResolvedValue({ queried: 2, active: 2, deactivated: 2, deactivatedIds: [21, 20], corrected: 0, correctedIds: [], envelope: live });
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
 
@@ -7009,7 +7009,7 @@ describe("Pinned live controls", () => {
     const disable = await screen.findByRole("button", { name: "Disable all" });
     fireEvent.click(disable);
 
-    await waitFor(() => expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, [21, 20], new Map()));
+    await waitFor(() => expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, [21, 20], new Map(), new Map()));
   });
 
   it("remembers only the cheats Disable all actually switched off", async () => {
@@ -7045,7 +7045,7 @@ describe("Pinned live controls", () => {
       .mockResolvedValue({ envelope: live, results: after, unavailable: [{ generation: 6, record_id: 21, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" }] });
     // Only the child and its script were active, so only they were switched off.
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 3, active: 2, deactivated: 2, deactivatedIds: [21, 20], envelope: live,
+      queried: 3, active: 2, deactivated: 2, deactivatedIds: [21, 20], corrected: 0, correctedIds: [], envelope: live,
     });
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
@@ -7102,7 +7102,7 @@ describe("Pinned live controls", () => {
       .mockResolvedValueOnce({ envelope: live, results, unavailable: [] })
       .mockResolvedValue({ envelope: live, results: after, unavailable: [{ generation: 6, record_id: 21, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" }] });
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 4, active: 4, deactivated: 4, deactivatedIds: [21, 24, 23, 20], envelope: live,
+      queried: 4, active: 4, deactivated: 4, deactivatedIds: [21, 24, 23, 20], corrected: 0, correctedIds: [], envelope: live,
     });
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
@@ -7157,7 +7157,7 @@ describe("Pinned live controls", () => {
       .mockResolvedValueOnce({ envelope: live, results, unavailable: [missing(21), missing(25)] })
       .mockResolvedValue({ envelope: live, results: after, unavailable: [missing(21), missing(25)] });
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 4, active: 1, deactivated: 1, deactivatedIds: [23], envelope: live,
+      queried: 4, active: 1, deactivated: 1, deactivatedIds: [23], corrected: 0, correctedIds: [], envelope: live,
     });
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
@@ -7211,7 +7211,7 @@ describe("Pinned live controls", () => {
       .mockResolvedValueOnce({ envelope: live, results, unavailable: [] })
       .mockResolvedValue({ envelope: live, results: after, unavailable: [] });
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 4, active: 3, deactivated: 3, deactivatedIds: [27, 26, 20], envelope: live,
+      queried: 4, active: 3, deactivated: 3, deactivatedIds: [27, 26, 20], corrected: 0, correctedIds: [], envelope: live,
     });
     api.setRememberedCheats.mockResolvedValue({});
     renderContent();
@@ -7220,7 +7220,7 @@ describe("Pinned live controls", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Disable all" }));
 
     await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
-    expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, expect.any(Array), new Map([[26, "0"]]));
+    expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, expect.any(Array), new Map([[26, "0"]]), new Map([[26, "1"]]));
     const [, , remembered] = api.setRememberedCheats.mock.calls[0];
     expect(remembered.find((item: any) => item.record_id === 23)).toEqual({ record_id: 23, active: false, value: "500" });
   });
@@ -9010,7 +9010,7 @@ describe("Durable writes reconcile one mutation at a time", () => {
     api.getRuntimeStatus.mockResolvedValue(live);
     const state = trackedStatus();
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], envelope: live,
+      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], corrected: 0, correctedIds: [], envelope: live,
     });
     const off = [{ generation: 2, record_id: 7, ok: true, active: false, value: "100", error: null }];
     runtimeClient.queryRuntimeControlsPartial
@@ -9037,7 +9037,7 @@ describe("Durable writes reconcile one mutation at a time", () => {
     api.getRuntimeStatus.mockResolvedValue(live);
     trackedStatus();
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], envelope: live,
+      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], corrected: 0, correctedIds: [], envelope: live,
     });
     const off = [{ generation: 2, record_id: 7, ok: true, active: false, value: "100", error: null }];
     runtimeClient.queryRuntimeControlsPartial
@@ -9295,7 +9295,7 @@ describe("Unknown durable outcomes are never stated as definite", () => {
     const live = liveRuntime();
     api.getRuntimeStatus.mockResolvedValue(live);
     runtimeClient.deactivateAllActiveControls.mockResolvedValue({
-      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], envelope: live,
+      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], corrected: 0, correctedIds: [], envelope: live,
     });
     const off = [{ generation: 2, record_id: 7, ok: true, active: false, value: "100", error: null }];
     runtimeClient.queryRuntimeControlsPartial
