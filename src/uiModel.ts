@@ -1903,14 +1903,16 @@ export function switchValuesFor(control: TableControl): { on: string; off: strin
  * key, unless the user asked for that one. It is sent as an ordinary desired
  * state with no active of its own: the record does not exist until the script
  * has run, which is exactly the case the runtime client's deferred path already
- * waits out.
+ * waits out. A flag the table files outside the script that allocates it
+ * carries that script in `after`, because its record exists before the script
+ * runs and its address does not.
  */
 export function switchesToHoldOff(
   scripts: readonly TableControl[],
   controls: readonly TableControl[],
   requested: ReadonlySet<number>,
   running?: ReadonlyMap<number, boolean | null>,
-): { control: TableControl; value: string; script: number }[] {
+): HeldOffSwitch[] {
   // Only a flag whose own code was read and found to survive being written off.
   // A table's hook can turn a pointer into an offset, test the flag and, on the
   // branch taken when it is off, hand the game back the offset: the game then
@@ -1963,21 +1965,38 @@ export function switchesLeftOn(
     .map(({ control }) => control);
 }
 
+/** A default a script brings with it, the key that holds it off, and what it waits for. */
+export interface HeldOffSwitch {
+  control: TableControl;
+  value: string;
+  /** The script whose start brings the default. */
+  script: number;
+  /** Scripts that must be on before the write, where its record sits outside `script`. */
+  after?: number[];
+}
+
 /** Every switch a script this press starts declares on and nobody asked for. */
 function switchCandidates(
   scripts: readonly TableControl[],
   controls: readonly TableControl[],
   requested: ReadonlySet<number>,
-): { control: TableControl; value: string; script: number }[] {
-  const held = new Map<number, { control: TableControl; value: string; script: number }>();
+): HeldOffSwitch[] {
+  const held = new Map<number, HeldOffSwitch>();
   for (const script of scripts) {
     // Only a script declares defaults; a value holding flags runs nothing.
     if (script.id === null || script.kind !== "script") continue;
     for (const control of controls) {
       if (control.id === null || control.id === script.id || requested.has(control.id)) continue;
-      // Below it by where it sits: a sibling script with the same name brings
-      // its own flags, not this one's.
-      if (!encloses(script.structure, control.structure)) continue;
+      // The script whose start brings this flag's default, as the inspector
+      // attributes it and as Auto-load reads it: the nearest script declaring
+      // it above the record, or the one script allocating it where the table
+      // files the record elsewhere. Never by name, because a sibling script
+      // with the same name brings its own flags; and by place only for a
+      // record the inspector attributed to no script, which an inspection made
+      // before this was recorded leaves every record as.
+      const owner = control.owner_script_id ?? null;
+      const inside = encloses(script.structure, control.structure);
+      if (owner !== null ? owner !== script.id : !inside) continue;
       // Only a flag this script declares as on: its address is a symbol the
       // script itself allocates, so it exists once the script has run, and
       // there is nothing to hold off about one the script leaves off anyway.
@@ -1986,8 +2005,12 @@ function switchCandidates(
       if (control.declared_default === null || control.declared_default !== control.switch_on_value) continue;
       const off = switchValueFor(control, false);
       // The script that brought it, so a later report can say which one did.
-      // The innermost wins: a flag under two nested scripts is that one's.
-      if (off !== null) held.set(control.id, { control, value: off, script: script.id });
+      // Where only place decides, the innermost wins: a flag under two
+      // nested scripts is that one's.
+      // Filed outside it, its record is there before the script runs and its
+      // address is not, so the write waits for the script by name rather than
+      // by where the record sits.
+      if (off !== null) held.set(control.id, { control, value: off, script: script.id, ...(inside ? {} : { after: [script.id] }) });
     }
   }
   return [...held.values()];

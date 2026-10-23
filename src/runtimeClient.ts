@@ -61,6 +61,13 @@ export interface RuntimeDesiredState {
    * readable value, from a press where they switched nothing on.
    */
   held_off?: boolean;
+  /**
+   * Scripts this call switches on that must have run before this record is
+   * written. A flag a table files beside the script that allocates it, or
+   * inside an unrelated one, has a record before that script runs and no
+   * address until it has, so neither its depth nor its place orders it.
+   */
+  after?: readonly number[];
 }
 
 export class RuntimeOperationError extends Error {
@@ -683,6 +690,14 @@ export async function applyRuntimeSelection(
   // for: enabling a nested cheat could never work on a dynamic table.
   const createdByAnAncestorHere = (state: RuntimeDesiredState): boolean =>
     ordered.some((other) => other !== state && other.active === true && isAncestorOf(other, state));
+  // A record that waits for a script this same call switches on, by name
+  // rather than by place, is written once that script has run: with the
+  // records it creates, after every activation here has been answered. The
+  // bridge answers a script's activation only once it has finished, so by
+  // then its allocation is there to write to.
+  const switchedOnHere = new Set(ordered.flatMap((state) => state.active === true ? [state.record_id] : []));
+  const waitsForAScriptHere = (state: RuntimeDesiredState): boolean =>
+    (state.after ?? []).some((recordId) => recordId !== state.record_id && switchedOnHere.has(recordId));
 
   const before = await queryRuntimeControlsPartial(appId, ids);
   const current = new Map(before.results.map((result) => [result.record_id, result]));
@@ -690,6 +705,10 @@ export async function applyRuntimeSelection(
   const alreadyAbsentOff = new Set<number>();
   const deferred: RuntimeDesiredState[] = [];
   for (const desired of ordered) {
+    if (desired.active !== false && waitsForAScriptHere(desired)) {
+      deferred.push(desired);
+      continue;
+    }
     if (!missing.has(desired.record_id)) continue;
     // Already unreachable and wanted off: its enclosing script is not running,
     // so the record is inactive by construction and there is nothing to send.
@@ -730,7 +749,9 @@ export async function applyRuntimeSelection(
   };
 
   const mutations: RuntimeCommandSpec[] = [];
+  const deferredIds = new Set(deferred.map((state) => state.record_id));
   for (const desired of ordered) {
+    if (deferredIds.has(desired.record_id)) continue;
     const observed = current.get(desired.record_id);
     if (!observed) continue;
     mutations.push(...commandsFor(desired, observed));

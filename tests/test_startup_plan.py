@@ -712,6 +712,8 @@ def test_a_flag_inside_an_unrelated_script_is_written_only_once_that_script_runs
     inspection = _inspection(service, table["sha256"])
     shape = {control.id: control for control in inspection.controls}
     assert (shape[3].owner_script_id, shape[3].declared_default, shape[3].switch_off_is_safe) == (1, "1", True)
+    # The panel decides the same from the payload it is sent.
+    assert shape[3].as_dict()["owner_script_id"] == 1
 
     def plan(remembered):
         profile = _profile(table_sha256=table["sha256"], execution_consent_sha256=table["sha256"], remembered=remembered)

@@ -41,7 +41,6 @@ import {
   displayableControlValue,
   presentableControlValue,
   effectiveStartupPreferences,
-  enclosingControlIds,
   scriptListedControlIds,
   filterControls,
   pageCount,
@@ -199,7 +198,6 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   // that query would discard the user's unapplied edits.
   const configuredByIdRef = useRef(new Map(configuredValues.map((item) => [item.record_id, item.value])));
   const sections = useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
-  const enclosingIds = useMemo(() => enclosingControlIds(safeControls), [safeControls]);
   // What the Scripts toggle hides, which is not what Apply treats as a
   // dependency: a script holding only its settings is a dependency of them and
   // is listed with the cheats, and an attach-only record is machinery although
@@ -902,10 +900,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       //
       // A script, never a value with flags filed under it: that starts nothing,
       // and holding its flags off wrote cheats the user had on under a script
-      // that was already running.
+      // that was already running. Any script, not only one holding records: a
+      // script whose flags the table files beside it holds none of them.
       const startedHere = safeControls.filter((control) => control.id !== null
         && control.kind === "script"
-        && enclosingIds.has(control.id)
         && activeById.get(control.id) === true
         && activeBefore.get(control.id) !== true);
       const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds, activeById);
@@ -914,7 +912,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // switched off. Only this press knows which scripts it started, so this
       // is where that list comes from.
       leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds, activeById);
-      for (const { control, value } of heldOff) {
+      for (const { control, value, after } of heldOff) {
         if (control.id === null) continue;
         desired.push({
           record_id: control.id,
@@ -924,6 +922,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           structure: control.structure,
           label: controlRowLabel(control),
           held_off: true,
+          ...(after ? { after } : {}),
         });
       }
 

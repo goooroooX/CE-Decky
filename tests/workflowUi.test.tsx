@@ -4896,6 +4896,88 @@ describe("Cheat selection workflow", () => {
     expect(byId.get(402)).toMatchObject({ active: null, value: "0", held_off: true });
   });
 
+  it("holds off a flag its script allocates though the table files it beside the script", async () => {
+    // Script 500 allocates both flags; the table files one beside it and one
+    // inside an unrelated script 510, which is how the inspector attributes
+    // them and how Auto-load reads them.
+    const script = (id: number, name: string) => ({
+      id, description: name, path: [name], structure: [name], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    });
+    const owned = (id: number, structure: string[]) => ({
+      id, description: structure.at(-1), path: structure, structure, variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1", switch_off_is_safe: true, owner_script_id: 500,
+    });
+    const controls = [script(500, "Allocate"), script(510, "Display"), owned(502, ["bBeside"]), owned(511, ["Display", "bInside"])];
+    const results = [500, 510, 502, 511].map((recordId) => ({
+      generation: 1, record_id: recordId, ok: true, active: false, value: recordId > 501 ? "1" : null, error: null,
+    }));
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: live, results, unavailable: [] });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 4, controls } as any });
+
+    // Script 510 holds a record, so the scripts are listed apart until shown.
+    fireEvent.click(within(await screen.findByTestId("show-scripts")).getByTestId("toggle"));
+    fireEvent.click(within(await screen.findByTestId("cheat-row-500")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const byId = new Map(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1].map((state: any) => [state.record_id, state]));
+    // The flag beside it is written off once the script has run; the one in
+    // the script that stays off has no record to write to and is left alone.
+    expect(byId.get(500)).toMatchObject({ active: true });
+    expect(byId.get(502)).toMatchObject({ active: null, value: "0", held_off: true, after: [500] });
+    expect(byId.has(511)).toBe(false);
+    expect(byId.has(510)).toBe(false);
+  });
+
+  it("writes no flag of another script's when only the script around it starts", async () => {
+    // Script 500 allocates both flags; the table files one beside it and one
+    // inside an unrelated script 510, which is how the inspector attributes
+    // them and how Auto-load reads them.
+    const script = (id: number, name: string) => ({
+      id, description: name, path: [name], structure: [name], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    });
+    const owned = (id: number, structure: string[]) => ({
+      id, description: structure.at(-1), path: structure, structure, variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1", switch_off_is_safe: true, owner_script_id: 500,
+    });
+    const controls = [script(500, "Allocate"), script(510, "Display"), owned(502, ["bBeside"]), owned(511, ["Display", "bInside"])];
+    const results = [500, 510, 502, 511].map((recordId) => ({
+      generation: 1, record_id: recordId, ok: true, active: false, value: recordId > 501 ? "1" : null, error: null,
+    }));
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: live, results, unavailable: [] });
+    renderCheatModal({ inspection: { ...inspect, total_entries: 4, controls } as any });
+
+    // Script 510 holds a record, so the scripts are listed apart until shown.
+    fireEvent.click(within(await screen.findByTestId("show-scripts")).getByTestId("toggle"));
+    fireEvent.click(within(await screen.findByTestId("cheat-row-510")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    // Its address is the other script's, which is not running: nothing to
+    // write to, and nothing written.
+    expect(sent.some((state: any) => state.held_off)).toBe(false);
+    expect(sent.map((state: any) => state.record_id)).toEqual([510]);
+  });
+
   it("writes nothing into the game for a value stored against a script that is off", async () => {
     // Measured on the device: the reader pinned two cheats, switched nothing on
     // and typed a value, and Apply came back with an error naming a flag they
@@ -6162,6 +6244,47 @@ describe("Pinned live controls", () => {
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
     const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
     expect(sent.filter((state: any) => state.active === true).map((state: any) => state.record_id)).toEqual([30, 31, 32]);
+  });
+
+  it("holds off from a pinned script a flag it allocates though the table files it beside it", async () => {
+    // Script 500 allocates both flags; the table files one beside it and one
+    // inside an unrelated script 510, which is how the inspector attributes
+    // them and how Auto-load reads them.
+    const script = (id: number, name: string) => ({
+      id, description: name, path: [name], structure: [name], variable_type: "Auto Assembler Script",
+      kind: "script", group_header: false, has_assembler_script: true,
+      dropdown_values: [], dropdown_read_only: false, switch_on_value: null,
+    });
+    const owned = (id: number, structure: string[]) => ({
+      id, description: structure.at(-1), path: structure, structure, variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["0", "Disabled"], ["1", "Enabled"]], dropdown_read_only: false,
+      switch_on_value: "1", declared_default: "1", switch_off_is_safe: true, owner_script_id: 500,
+    });
+    const controls = [script(500, "Allocate"), script(510, "Display"), owned(502, ["bBeside"]), owned(511, ["Display", "bInside"])];
+    const results = [500, 510, 502, 511].map((recordId) => ({
+      generation: 1, record_id: recordId, ok: true, active: false, value: recordId > 501 ? "1" : null, error: null,
+    }));
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    api.setRememberedCheats.mockResolvedValue({});
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: live, results, unavailable: [] });
+    const snapshot = status(true);
+    snapshot.profiles[0].pinned = [500];
+    api.getStatus.mockResolvedValue(snapshot);
+    api.inspectTableSha.mockResolvedValue({ ...inspect, total_entries: 4, controls });
+    renderContent();
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-500")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const byId = new Map(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1].map((state: any) => [state.record_id, state]));
+    expect(byId.get(500)).toMatchObject({ active: true });
+    expect(byId.get(502)).toMatchObject({ active: null, value: "0", held_off: true, after: [500] });
+    expect(byId.has(511)).toBe(false);
   });
 
   it("writes the value last typed for a pinned cheat waiting for its script, not an older read-back", async () => {

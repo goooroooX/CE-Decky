@@ -4862,7 +4862,9 @@ function switchValuesFor(control) {
  * key, unless the user asked for that one. It is sent as an ordinary desired
  * state with no active of its own: the record does not exist until the script
  * has run, which is exactly the case the runtime client's deferred path already
- * waits out.
+ * waits out. A flag the table files outside the script that allocates it
+ * carries that script in `after`, because its record exists before the script
+ * runs and its address does not.
  */
 function switchesToHoldOff(scripts, controls, requested, running) {
     // Only a flag whose own code was read and found to survive being written off.
@@ -4914,9 +4916,16 @@ function switchCandidates(scripts, controls, requested) {
         for (const control of controls) {
             if (control.id === null || control.id === script.id || requested.has(control.id))
                 continue;
-            // Below it by where it sits: a sibling script with the same name brings
-            // its own flags, not this one's.
-            if (!encloses(script.structure, control.structure))
+            // The script whose start brings this flag's default, as the inspector
+            // attributes it and as Auto-load reads it: the nearest script declaring
+            // it above the record, or the one script allocating it where the table
+            // files the record elsewhere. Never by name, because a sibling script
+            // with the same name brings its own flags; and by place only for a
+            // record the inspector attributed to no script, which an inspection made
+            // before this was recorded leaves every record as.
+            const owner = control.owner_script_id ?? null;
+            const inside = encloses(script.structure, control.structure);
+            if (owner !== null ? owner !== script.id : !inside)
                 continue;
             // Only a flag this script declares as on: its address is a symbol the
             // script itself allocates, so it exists once the script has run, and
@@ -4927,9 +4936,13 @@ function switchCandidates(scripts, controls, requested) {
                 continue;
             const off = switchValueFor(control, false);
             // The script that brought it, so a later report can say which one did.
-            // The innermost wins: a flag under two nested scripts is that one's.
+            // Where only place decides, the innermost wins: a flag under two
+            // nested scripts is that one's.
+            // Filed outside it, its record is there before the script runs and its
+            // address is not, so the write waits for the script by name rather than
+            // by where the record sits.
             if (off !== null)
-                held.set(control.id, { control, value: off, script: script.id });
+                held.set(control.id, { control, value: off, script: script.id, ...(inside ? {} : { after: [script.id] }) });
         }
     }
     return [...held.values()];
@@ -8753,12 +8766,23 @@ async function applyRuntimeSelection(appId, desiredStates) {
     // activation was ever sent, which is the one case the ordering above exists
     // for: enabling a nested cheat could never work on a dynamic table.
     const createdByAnAncestorHere = (state) => ordered.some((other) => other !== state && other.active === true && isAncestorOf(other, state));
+    // A record that waits for a script this same call switches on, by name
+    // rather than by place, is written once that script has run: with the
+    // records it creates, after every activation here has been answered. The
+    // bridge answers a script's activation only once it has finished, so by
+    // then its allocation is there to write to.
+    const switchedOnHere = new Set(ordered.flatMap((state) => state.active === true ? [state.record_id] : []));
+    const waitsForAScriptHere = (state) => (state.after ?? []).some((recordId) => recordId !== state.record_id && switchedOnHere.has(recordId));
     const before = await queryRuntimeControlsPartial(appId, ids);
     const current = new Map(before.results.map((result) => [result.record_id, result]));
     const missing = new Set(before.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
     const alreadyAbsentOff = new Set();
     const deferred = [];
     for (const desired of ordered) {
+        if (desired.active !== false && waitsForAScriptHere(desired)) {
+            deferred.push(desired);
+            continue;
+        }
         if (!missing.has(desired.record_id))
             continue;
         // Already unreachable and wanted off: its enclosing script is not running,
@@ -8796,7 +8820,10 @@ async function applyRuntimeSelection(appId, desiredStates) {
         return specs;
     };
     const mutations = [];
+    const deferredIds = new Set(deferred.map((state) => state.record_id));
     for (const desired of ordered) {
+        if (deferredIds.has(desired.record_id))
+            continue;
         const observed = current.get(desired.record_id);
         if (!observed)
             continue;
@@ -11449,7 +11476,6 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     // that query would discard the user's unapplied edits.
     const configuredByIdRef = SP_REACT.useRef(new Map(configuredValues.map((item) => [item.record_id, item.value])));
     const sections = SP_REACT.useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
-    const enclosingIds = SP_REACT.useMemo(() => enclosingControlIds(safeControls), [safeControls]);
     // What the Scripts toggle hides, which is not what Apply treats as a
     // dependency: a script holding only its settings is a dependency of them and
     // is listed with the cheats, and an attach-only record is machinery although
@@ -12131,10 +12157,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             //
             // A script, never a value with flags filed under it: that starts nothing,
             // and holding its flags off wrote cheats the user had on under a script
-            // that was already running.
+            // that was already running. Any script, not only one holding records: a
+            // script whose flags the table files beside it holds none of them.
             const startedHere = safeControls.filter((control) => control.id !== null
                 && control.kind === "script"
-                && enclosingIds.has(control.id)
                 && activeById.get(control.id) === true
                 && activeBefore.get(control.id) !== true);
             const heldOff = switchesToHoldOff(startedHere, safeControls, touchedIds, activeById);
@@ -12143,7 +12169,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // switched off. Only this press knows which scripts it started, so this
             // is where that list comes from.
             leftOnRef.current = switchesLeftOn(startedHere, safeControls, touchedIds, activeById);
-            for (const { control, value } of heldOff) {
+            for (const { control, value, after } of heldOff) {
                 if (control.id === null)
                     continue;
                 desired.push({
@@ -12154,6 +12180,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     structure: control.structure,
                     label: controlRowLabel(control),
                     held_off: true,
+                    ...(after ? { after } : {}),
                 });
             }
             // Any mutation/revalidation failure after this point makes the previous
@@ -17141,8 +17168,10 @@ function Content() {
         // holding them off exists to prevent.
         const startedHere = active
             // Only a script brings defaults: a value with flags filed under it starts
-            // nothing, and holding those flags off wrote cheats the user had on.
-            ? [...ancestors, ...(control.id !== null && control.kind === "script" && enclosingControlIds(controls).has(control.id) ? [control] : [])]
+            // nothing, and holding those flags off wrote cheats the user had on. Any
+            // script, not only one holding records: a script whose flags the table
+            // files beside it holds none of them and still brings them on.
+            ? [...ancestors, ...(control.id !== null && control.kind === "script" ? [control] : [])]
             : [];
         const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]), projected);
         // The other half of the same rule: what it refuses to write, which is a
@@ -17165,7 +17194,7 @@ function Content() {
                     structure: control.structure,
                     label: controlRowLabel(control),
                 },
-                ...heldOff.flatMap(({ control: held, value }) => held.id === null ? [] : [{
+                ...heldOff.flatMap(({ control: held, value, after }) => held.id === null ? [] : [{
                         record_id: held.id,
                         active: null,
                         value,
@@ -17173,6 +17202,7 @@ function Content() {
                         structure: held.structure,
                         label: controlRowLabel(held),
                         held_off: true,
+                        ...(after ? { after } : {}),
                     }]),
                 ...releasedRows,
             ]

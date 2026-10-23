@@ -279,6 +279,13 @@ export interface TableControl {
    */
   switch_off_is_safe?: boolean;
   /**
+   * The script whose start brings `declared_default` with it: the nearest
+   * script declaring it above the record, or, for a flag the table files
+   * outside it, the one script allocating its address. Absent where the
+   * inspector could attribute it to no script, and from an older inspection.
+   */
+  owner_script_id?: number | null;
+  /**
    * The record only attaches Cheat Engine to the game and changes nothing in
    * it. Table machinery rather than a cheat, so it is listed with the scripts.
    * Absent from an inspection made before this was recognised.

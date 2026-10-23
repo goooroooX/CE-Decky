@@ -3338,8 +3338,10 @@ function Content() {
     // holding them off exists to prevent.
     const startedHere = active
       // Only a script brings defaults: a value with flags filed under it starts
-      // nothing, and holding those flags off wrote cheats the user had on.
-      ? [...ancestors, ...(control.id !== null && control.kind === "script" && enclosingControlIds(controls).has(control.id) ? [control] : [])]
+      // nothing, and holding those flags off wrote cheats the user had on. Any
+      // script, not only one holding records: a script whose flags the table
+      // files beside it holds none of them and still brings them on.
+      ? [...ancestors, ...(control.id !== null && control.kind === "script" ? [control] : [])]
       : [];
     const heldOff = switchesToHoldOff(startedHere, controls, new Set([recordId]), projected);
     // The other half of the same rule: what it refuses to write, which is a
@@ -3362,7 +3364,7 @@ function Content() {
             structure: control.structure,
             label: controlRowLabel(control),
           },
-          ...heldOff.flatMap(({ control: held, value }) => held.id === null ? [] : [{
+          ...heldOff.flatMap(({ control: held, value, after }) => held.id === null ? [] : [{
             record_id: held.id,
             active: null,
             value,
@@ -3370,6 +3372,7 @@ function Content() {
             structure: held.structure,
             label: controlRowLabel(held),
             held_off: true,
+            ...(after ? { after } : {}),
           }]),
           ...releasedRows,
         ]

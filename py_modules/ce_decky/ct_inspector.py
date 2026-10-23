@@ -192,7 +192,8 @@ class TableControl:
     # from, and then `declared_default` and `switch_off_is_safe` are read from
     # that script's code, because the hand-down only ever reaches what a
     # script holds. Two scripts defining the name, or none, leave it unset, and
-    # an answer this cannot attribute decides nothing.
+    # an answer this cannot attribute decides nothing. The panel reads it too,
+    # for the presses that start a script, so it travels in `as_dict`.
     owner_script_id: int | None = None
     # Where this record sits in the table: one token per level, its place among
     # its siblings there, so an equal prefix is the same record and nothing

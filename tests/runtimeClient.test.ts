@@ -1281,3 +1281,62 @@ describe("live control budget and cancellation", () => {
     expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("a flag that waits for the script that allocates it", () => {
+  // A table can file a script's flag beside it rather than inside it. The
+  // flag's record exists before the script runs and its address does not, so
+  // a write sent before the script's activation is a write to nothing.
+  function allocatingBridge(scriptActive: { value: boolean }) {
+    let generation = 1;
+    const results: any[] = [];
+    const values = new Map<number, string>([[2, "1"]]);
+    api.getRuntimeStatus.mockImplementation(async () => envelope(generation, [...results]));
+    api.writeRuntimeCommands.mockImplementation(async (_appId: number, commands: any[]) => {
+      for (const command of commands) {
+        const record = command.record_id;
+        if (command.kind === "set_active" && record === 1) scriptActive.value = command.value === "1";
+        const unresolved = record === 2 && !scriptActive.value;
+        if (command.kind === "set_value" && record === 2 && !unresolved) values.set(2, command.value);
+        const ok = !(unresolved && command.kind === "set_value");
+        results.push({
+          generation, record_id: record, ok,
+          active: record === 1 ? scriptActive.value : false,
+          value: record === 1 ? "" : unresolved ? "??" : values.get(2),
+          error: ok ? null : "address could not be resolved",
+        });
+        generation += 1;
+      }
+      return { ok: true, count: commands.length, next_generation: generation };
+    });
+    return () => api.writeRuntimeCommands.mock.calls.flatMap((call: any[]) => call[1])
+      .filter((command: any) => command.kind !== "query")
+      .map((command: any) => [command.kind, command.record_id, command.value]);
+  }
+
+  it("writes the flag after the script it waits for, whatever order it was asked in", async () => {
+    const scriptActive = { value: false };
+    const sent = allocatingBridge(scriptActive);
+
+    await applyRuntimeSelection(10, [
+      {
+        record_id: 2, active: null, value: "0", structure: ["1"], label: "Flag",
+        switch_values: { on: "1", off: "0" }, held_off: true, after: [1],
+      },
+      { record_id: 1, active: true, value: null, structure: ["0"], label: "Script" },
+    ]);
+
+    expect(sent()).toEqual([["set_active", 1, "1"], ["set_value", 2, "0"]]);
+  });
+
+  it("waits for nothing a call does not switch on", async () => {
+    // The script already running is no reason to hold the write back.
+    const scriptActive = { value: true };
+    const sent = allocatingBridge(scriptActive);
+
+    await applyRuntimeSelection(10, [
+      { record_id: 2, active: null, value: "0", structure: ["1"], switch_values: { on: "1", off: "0" }, after: [1] },
+    ]);
+
+    expect(sent()).toEqual([["set_value", 2, "0"]]);
+  });
+});

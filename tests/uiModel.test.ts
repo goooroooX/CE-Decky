@@ -1144,6 +1144,43 @@ describe("compact cheat rows", () => {
     expect(switchesLeftOn([script], [script, inner, deep], new Set(), new Map([[10, true], [50, true]]))).toEqual([]);
   });
 
+  it("holds a flag off by the script that allocates it, wherever the table files it", () => {
+    // The inspector's attribution, the one Auto-load uses: script 40 allocates
+    // both flags, one filed beside it and one inside an unrelated script 41.
+    const scriptA = { ...base, id: 40, path: ["A"], structure: ["A"], kind: "script" as const, has_assembler_script: true };
+    const scriptB = { ...base, id: 41, path: ["B"], structure: ["B"], kind: "script" as const, has_assembler_script: true };
+    const owned = (id: number, structure: string[], safe = true) => ({
+      ...base, id, path: structure, structure, kind: "dropdown" as const,
+      dropdown_values: [["0", "Off"], ["1", "On"]] as [string, string][], switch_on_value: "1",
+      declared_default: "1", switch_off_is_safe: safe, owner_script_id: 40,
+    });
+    const beside = owned(42, ["Flag"]);
+    const insideB = owned(43, ["B", "Flag"]);
+    const controls = [scriptA, scriptB, beside, insideB];
+    const running = (a: boolean, b: boolean) => new Map([[40, a], [41, b]]);
+    // A alone: the flag beside it is held off once A has run; the one inside B
+    // has no record while B is off, so it is named as left on, not written.
+    expect(switchesToHoldOff([scriptA], controls, new Set(), running(true, false))
+      .map((item) => [item.control.id, item.value, item.script, item.after])).toEqual([[42, "0", 40, [40]]]);
+    expect(switchesLeftOn([scriptA], controls, new Set(), running(true, false)).map((control) => control.id)).toEqual([43]);
+    // B alone brings neither: B allocates nothing, and A has not run.
+    expect(switchesToHoldOff([scriptB], controls, new Set(), running(false, true))).toEqual([]);
+    expect(switchesLeftOn([scriptB], controls, new Set(), running(false, true))).toEqual([]);
+    // Both: each held off after A, the one inside B also after B by its place.
+    expect(switchesToHoldOff([scriptA, scriptB], controls, new Set(), running(true, true))
+      .map((item) => [item.control.id, item.after])).toEqual([[42, [40]], [43, [40]]]);
+    // Not proven safe: named, never written. Attributed to no script and
+    // inside none: nobody's to hold off.
+    const unsafe = owned(44, ["Unsafe"], false);
+    expect(switchesToHoldOff([scriptA], [scriptA, unsafe], new Set(), running(true, false))).toEqual([]);
+    expect(switchesLeftOn([scriptA], [scriptA, unsafe], new Set(), running(true, false)).map((control) => control.id)).toEqual([44]);
+    expect(switchesToHoldOff([scriptA], [scriptA, { ...beside, owner_script_id: null }], new Set())).toEqual([]);
+    // A flag inside its own declaring script waits for it by place, as before.
+    const own = { ...owned(46, ["A", "Own"]) };
+    expect(switchesToHoldOff([scriptA], [scriptA, own], new Set(), running(true, false))
+      .map((item) => [item.control.id, item.after])).toEqual([[46, undefined]]);
+  });
+
   it("says what Disable all switched off apart from what it put back", () => {
     expect(disableAllSummary(0, 0)).toBe("No cheat was active; Cheat Engine is still running.");
     expect(disableAllSummary(3, 0)).toBe("Switched off 3 cheats; Cheat Engine is still running.");
