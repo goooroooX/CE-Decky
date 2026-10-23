@@ -355,7 +355,7 @@ class SessionStore:
             status_path=wine_z_path(status_path),
             startup=tuple(_startup_actions(_effective_startup_preferences(profile), inspection, _startup_configured(profile))),
             is_shortcut=profile.is_shortcut,
-            switch_off=_switch_off_values(inspection),
+            switch_off=switch_off_values(inspection),
             # From the same inspection the user reviewed and consented to, so
             # the bridge does not have to read the table again to know whether
             # Cheat Engine has a question to ask about it.
@@ -1792,7 +1792,7 @@ def startup_left_on(profile: GameProfile, inspection: TableInspection) -> tuple[
     ))
 
 
-def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ...]:
+def switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ...]:
     """The key that switches each of this table's on/off records off.
 
     Every record the panel would draw as a switch, whatever its script declares
@@ -1824,6 +1824,10 @@ def _switch_off_values(inspection: TableInspection) -> tuple[tuple[int, str], ..
     Bounded, and the bound drops the rest rather than refusing the session: what
     a record past it loses is the write after the release, which is what every
     record got before this existed.
+
+    The panel's **Disable all** writes these same keys and no others, handed to
+    it with the inspection: a switch this leaves out is released there too, so
+    a flag whose off write was not proven safe is never written by either.
     """
     seen: dict[int, int] = {}
     for control in inspection.controls:

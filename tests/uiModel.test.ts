@@ -1054,7 +1054,10 @@ describe("compact cheat rows", () => {
     expect(switchValueFor(flag, false)).toBe("0");
     expect(switchValueFor(flag, null)).toBe(null);
     expect(switchValuesFor(flag)).toEqual({ on: "1", off: "0" });
-    expect([...switchOffValues([flag])]).toEqual([[7, "0"]]);
+    // Disable all writes the backend's off keys and no others: the backend
+    // knows which flags a script allocates and which of those are safe.
+    expect([...switchOffValues({ switch_off_values: [[7, "0"], [9, "0"]] }, [flag])]).toEqual([[7, "0"]]);
+    expect([...switchOffValues({}, [flag])]).toEqual([]);
   });
 
   it("writes the key the author gave each side, whatever its number", () => {

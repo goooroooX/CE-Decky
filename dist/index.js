@@ -5199,17 +5199,19 @@ function scriptDefaultsSentence(defaults) {
     const rest = defaults.unsafe === defaults.on ? "" : " The rest are off unless you choose them.";
     return `${lead} ${which} on whenever another cheat from the same script is on, because CE Decky could not prove the game survives switching ${one ? "it" : "them"} off.${rest}`;
 }
-/** Every switch record's off key, for a call that only switches things off. */
-function switchOffValues(controls) {
-    const values = new Map();
-    for (const control of controls) {
-        if (control.id === null)
-            continue;
-        const off = switchValueFor(control, false);
-        if (off !== null)
-            values.set(control.id, off);
-    }
-    return values;
+/**
+ * The off key a call that only switches things off may write, per record.
+ *
+ * The backend's answer, the one Stop CE acts on, never one worked out here: a
+ * flag a table's script allocates is written off only where its own code was
+ * read and found to survive it, and which records a script allocates is
+ * something only the backend reads. Every switch's own off key used to be
+ * written here, so Disable all wrote the one write that can crash a game a
+ * minute later and Stop CE refuses. A switch with no key here is released.
+ */
+function switchOffValues(inspection, controls) {
+    const ids = new Set(controls.flatMap((control) => control.id === null ? [] : [control.id]));
+    return new Map((inspection.switch_off_values ?? []).filter(([recordId]) => ids.has(recordId)));
 }
 /** True when this exact control accepts a typed value. */
 function controlAcceptsTypedValue(control) {
@@ -17209,7 +17211,7 @@ function Content() {
             .flatMap((control) => control.id === null ? [] : [control.id]);
         void runAction(async () => {
             dropLiveSnapshot();
-            const result = await deactivateAllActiveControls(game.appId, recordIds, switchOffValues(controls));
+            const result = await deactivateAllActiveControls(game.appId, recordIds, switchOffValues(currentInspection, controls));
             // A child destroyed by a parent this call switched off is the intended
             // outcome; the helper already accepted it and the caller must not undo
             // that by demanding the record still answer.
@@ -17225,15 +17227,24 @@ function Content() {
             // is a choice this call overruled, and left out of `touched` it stayed
             // remembered on, so the next Auto-load switched it back on after a
             // Disable all that reported success.
+            //
+            // So is one that reads off already, which this call had nothing to send:
+            // remembered on, it was switched back on by the next Auto-load. Only a
+            // record that answered, and answered off; a missing one is the rule
+            // above, and one that did not answer proves nothing.
             const rememberedOn = new Set(current.remembered.flatMap((item) => item.active === true ? [item.record_id] : []));
             const goneWithScript = [...absentUnderStoppedScripts(controls, finalState.results, finalState.unavailable)]
                 .filter((recordId) => rememberedOn.has(recordId));
-            const touched = new Set([...result.deactivatedIds, ...goneWithScript]);
+            const alreadyOff = finalState.results.flatMap((state) => state.record_id !== null && state.ok && state.active === false && rememberedOn.has(state.record_id)
+                && !result.deactivatedIds.includes(state.record_id) ? [state.record_id] : []);
+            const touched = new Set([...result.deactivatedIds, ...goneWithScript, ...alreadyOff]);
             logUi("cheats.disable_all_remembered", {
                 app_id: game.appId,
                 deactivated: result.deactivatedIds.length,
                 gone_with_script: goneWithScript.length,
                 gone_with_script_ids: goneWithScript.slice(0, 16),
+                already_off: alreadyOff.length,
+                already_off_ids: alreadyOff.slice(0, 16),
             });
             // Every script is off after this, so a switch that went off inside one
             // is remembered off with no key, exactly as when its script is switched

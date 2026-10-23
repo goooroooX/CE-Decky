@@ -534,6 +534,26 @@ def test_a_switch_no_script_creates_keeps_its_off_key_at_startup(tmp_path: Path)
     assert not any(record_id == 3 for record_id, _, _ in plan)
 
 
+def test_the_panel_is_given_only_the_off_keys_stop_ce_would_write(tmp_path: Path):
+    """Disable all wrote every switch's off key, including a flag whose off write
+    was not proven safe, which Stop CE refuses because it can crash the game."""
+    service = _service(tmp_path, "m67")
+    source = tmp_path / "unsafe-panel.CT"
+    source.write_text(UNSAFE_FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    offered = dict(map(tuple, service.inspect_table_sha(table["sha256"])["switch_off_values"]))
+    assert offered == {3: "0"}, "the safe flag only; the unsafe one is released, never written"
+
+    source = tmp_path / "game-switch-panel.CT"
+    source.write_text(TOP_SWITCH_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    offered = dict(map(tuple, service.inspect_table_sha(table["sha256"])["switch_off_values"]))
+    # A switch whose address the game owns needs its off key or it stays on;
+    # a flag a script allocates, read by no code found safe, does not get one.
+    assert offered.get(10) == "0"
+    assert 12 not in offered
+
+
 def test_an_orphan_off_action_is_never_asked_of_a_record_its_script_will_not_create(tmp_path: Path):
     service = _service(tmp_path, "m12")
     table = _nested_profile(service, tmp_path, 921)

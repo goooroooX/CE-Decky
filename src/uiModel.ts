@@ -2260,15 +2260,22 @@ export function scriptDefaultsSentence(defaults: { on: number; switches: number;
   return `${lead} ${which} on whenever another cheat from the same script is on, because CE Decky could not prove the game survives switching ${one ? "it" : "them"} off.${rest}`;
 }
 
-/** Every switch record's off key, for a call that only switches things off. */
-export function switchOffValues(controls: readonly TableControl[]): Map<number, string> {
-  const values = new Map<number, string>();
-  for (const control of controls) {
-    if (control.id === null) continue;
-    const off = switchValueFor(control, false);
-    if (off !== null) values.set(control.id, off);
-  }
-  return values;
+/**
+ * The off key a call that only switches things off may write, per record.
+ *
+ * The backend's answer, the one Stop CE acts on, never one worked out here: a
+ * flag a table's script allocates is written off only where its own code was
+ * read and found to survive it, and which records a script allocates is
+ * something only the backend reads. Every switch's own off key used to be
+ * written here, so Disable all wrote the one write that can crash a game a
+ * minute later and Stop CE refuses. A switch with no key here is released.
+ */
+export function switchOffValues(
+  inspection: Pick<TableInspection, "switch_off_values">,
+  controls: readonly TableControl[],
+): Map<number, string> {
+  const ids = new Set(controls.flatMap((control) => control.id === null ? [] : [control.id]));
+  return new Map((inspection.switch_off_values ?? []).filter(([recordId]) => ids.has(recordId)));
 }
 
 /** True when this exact control accepts a typed value. */

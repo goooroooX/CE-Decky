@@ -339,6 +339,13 @@ export interface TableInspection {
   controls: TableControl[];
   ambiguous_record_ids: number[];
   unsupported_record_id_count: number;
+  /**
+   * The off key the backend allows a bulk switch-off to write, per record: the
+   * rule Stop CE uses, which knows which flags a script allocates and leaves
+   * out one whose off write was not proven safe. Absent from an older backend,
+   * which leaves every switch released rather than written.
+   */
+  switch_off_values?: [number, string][];
 }
 
 export interface StartupPreference {

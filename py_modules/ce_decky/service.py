@@ -93,7 +93,7 @@ from .providers import (
     selectable_providers,
 )
 from .provider_sources import ProviderSourceSelection
-from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, startup_left_on, wine_z_path
+from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, startup_left_on, switch_off_values, wine_z_path
 from .table_blocklist import CAUSE_REFUSED, CAUSE_UNUSABLE, MAX_REASON_BYTES as MAX_BLOCKED_REASON_BYTES, BlockedTableError, TableBlocklist, is_compatibility_failure
 from . import frontend_journal, journal_records
 from .game_run_holds import GameRunHolds, RunHold, new_hold
@@ -1731,7 +1731,13 @@ class PluginService:
                     has_public_key=inspection.has_public_key,
                     public_key_bytes=inspection.public_key_bytes,
                 )
-        return inspection.as_dict()
+        payload = inspection.as_dict()
+        # The off key Disable all may write for each switch, decided here by the
+        # rule Stop CE uses rather than again in the panel, which cannot see
+        # which records a script allocates and so cannot tell a flag whose off
+        # write was proven safe from one that was not.
+        payload["switch_off_values"] = [[record_id, off] for record_id, off in switch_off_values(inspection)]
+        return payload
 
     def startup_left_on(self, app_id: int) -> dict[str, object]:
         """The cheats this game's startup leaves on that nobody asked for.

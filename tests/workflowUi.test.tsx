@@ -7172,6 +7172,59 @@ describe("Pinned live controls", () => {
     expect(remembered.find((item: any) => item.record_id === 25)).toEqual({ record_id: 25, active: true, value: "9" });
   });
 
+  it("remembers off what Disable all found already off, and writes only the backend's off keys", async () => {
+    // Remembered on and reading off already, so the call sent it nothing and
+    // it stayed remembered on for the next Auto-load. And every switch's own
+    // off key was written, including a flag whose off write is not proven safe,
+    // which the backend leaves out of the keys it hands over.
+    const flag = (id: number, name: string, structure: string[]) => ({
+      id, description: name, path: structure, structure, variable_type: "Byte", kind: "dropdown", group_header: false,
+      has_assembler_script: false, dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false, switch_on_value: "1",
+    });
+    const nested = {
+      ...inspect,
+      total_entries: 4,
+      switch_off_values: [[26, "0"]],
+      controls: [
+        { id: 20, description: "Parent", path: ["Parent"], structure: ["Parent"], variable_type: "Auto Assembler Script", kind: "script", group_header: false, has_assembler_script: true, dropdown_values: [], dropdown_read_only: false },
+        { id: 23, description: "Gold", path: ["Gold"], structure: ["Gold"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false, dropdown_values: [], dropdown_read_only: false },
+        flag(26, "No clip", ["No clip"]),
+        flag(27, "bEnableDrain", ["Parent", "bEnableDrain"]),
+      ],
+    };
+    const snapshot = status(true);
+    snapshot.profiles[0].remembered = [{ record_id: 23, active: true, value: "500" }];
+    api.getStatus.mockResolvedValue(snapshot);
+    const results = [
+      { generation: 1, record_id: 20, ok: true, active: true, value: null, error: null },
+      { generation: 1, record_id: 23, ok: true, active: false, value: "500", error: null },
+      { generation: 1, record_id: 26, ok: true, active: true, value: "1", error: null },
+      { generation: 1, record_id: 27, ok: true, active: true, value: "1", error: null },
+    ];
+    api.inspectTableSha.mockResolvedValue(nested);
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    const after = results.map((state) => ({ ...state, generation: 2, active: false }));
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial
+      .mockResolvedValueOnce({ envelope: live, results, unavailable: [] })
+      .mockResolvedValue({ envelope: live, results: after, unavailable: [] });
+    runtimeClient.deactivateAllActiveControls.mockResolvedValue({
+      queried: 4, active: 3, deactivated: 3, deactivatedIds: [27, 26, 20], envelope: live,
+    });
+    api.setRememberedCheats.mockResolvedValue({});
+    renderContent();
+
+    await screen.findByText(/^\d+ active/);
+    fireEvent.click(await screen.findByRole("button", { name: "Disable all" }));
+
+    await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
+    expect(runtimeClient.deactivateAllActiveControls).toHaveBeenCalledWith(10, expect.any(Array), new Map([[26, "0"]]));
+    const [, , remembered] = api.setRememberedCheats.mock.calls[0];
+    expect(remembered.find((item: any) => item.record_id === 23)).toEqual({ record_id: 23, active: false, value: "500" });
+  });
+
   it("says the game may still be changed when a failed Apply already mutated it", async () => {
     // The low-level helper does not roll back commands it already had
     // acknowledged, so the form used to keep showing the user's intent while
