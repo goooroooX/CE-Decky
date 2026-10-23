@@ -184,6 +184,15 @@ class TableControl:
     # table, because a symbol a script allocates is global once it runs and a
     # record reading it may sit anywhere. Backend only, so not in `as_dict`.
     script_owned: bool = False
+    # The one script that allocates this record's address, where the record is
+    # not inside it: a flag a table files beside its script rather than under
+    # it. Set only on evidence, exactly one script of the table defining one of
+    # the names the address is computed from, and then `declared_default` and
+    # `switch_off_is_safe` are read from that script's code, because the
+    # hand-down below only ever reaches what a script holds. Two scripts
+    # defining the name, or none, leave it unset, and the record keeps no
+    # declared default: an answer this cannot attribute decides nothing.
+    owner_script_id: int | None = None
     # Where this record sits in the table: one token per level, its place among
     # its siblings there, so an equal prefix is the same record and nothing
     # else. `path` is what the table calls those records and is for showing;
@@ -445,6 +454,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     repeated: set[str] = set()
     allocated: set[str] = set()
     owners: list[frozenset[str]] = []
+    script_facts: list[ScriptFacts] = []
     has_lua = False
     has_auto_assembler = False
     has_forms = False
@@ -481,7 +491,7 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
             if local_tag(child.tag) == "CheatEntry":
                 total_entries += _walk_entry(
                     child, (), controls, processes, sanitized, dropped, unrecognised, None, scans, repeated,
-                    allocated=allocated, owners=owners, structure=(str(position),),
+                    allocated=allocated, owners=owners, structure=(str(position),), script_facts=script_facts,
                 )
                 position += 1
                 if total_entries > MAX_INSPECTION_ENTRIES:
@@ -489,7 +499,8 @@ def inspect_table(path: Path, sha256: str) -> TableInspection:
     # Settled after the walk, because the script that allocates a symbol may
     # come after the record that reads it.
     controls = [
-        replace(control, script_owned=True) if not owner.isdisjoint(allocated) else control
+        _with_detached_owner(replace(control, script_owned=True), owner, script_facts)
+        if not owner.isdisjoint(allocated) else control
         for control, owner in zip(controls, owners)
     ]
 
@@ -571,6 +582,7 @@ def _walk_entry(
     allocated: set[str] | None = None,
     owners: list[frozenset[str]] | None = None,
     structure: tuple[str, ...] = (),
+    script_facts: list[ScriptFacts] | None = None,
 ) -> int:
     if len(parents) >= MAX_INSPECTION_DEPTH:
         raise ValueError(f".CT inspection exceeds nesting depth limit ({MAX_INSPECTION_DEPTH})")
@@ -616,12 +628,21 @@ def _walk_entry(
     dropdown = _parse_dropdown(_child_text(element, "DropDownList") or "", sanitized, dropped)
     dropdown_read_only = (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
     address = _child_text(element, "Address") or ""
+    # What this script's own code was read as surviving, read once: the script
+    # facts below and the hand-down to the records it holds both ask it.
+    own_safe = frozenset(flags_safe_to_switch_off(assembler_text)) if assembler_text else frozenset()
     if allocated is not None and assembler_text:
         # Unbounded on purpose. A bound would have to read the names past it
         # as the game's memory, which is a stop writing a flag nobody proved
         # safe, and what bounds this is already the file: every name is a
         # line of a script the size limit has admitted.
-        allocated.update(_allocated_symbols(assembler_text))
+        names = _allocated_symbols(assembler_text)
+        allocated.update(names)
+        if script_facts is not None:
+            script_facts.append(ScriptFacts(
+                record_id, structure, frozenset(names), _declared_defaults(assembler_text),
+                own_safe,
+            ))
     for candidate in _process_candidates(address, "CT Address"):
         processes.add(candidate)
     # Cheat Engine writes `{ Game : <exe> }` into every Auto Assembler script it
@@ -698,7 +719,6 @@ def _walk_entry(
         # script's hooks, so an answer another script gave for the same name is
         # not about this one. Union alone would let a parent's `safe` stand for
         # a child's unsafe hook, which is the one direction this may not err in.
-        own_safe = flags_safe_to_switch_off(assembler_text)
         nested_safe = ((safe or frozenset()) - set(own)) | own_safe
     nested = _first_child(element, "CheatEntries")
     if nested is not None:
@@ -708,6 +728,7 @@ def _walk_entry(
                 count += _walk_entry(
                     child, path, controls, processes, sanitized, dropped, unrecognised, nested_declared, scans, repeated, nested_safe,
                     allocated=allocated, owners=owners, structure=structure + (str(position),),
+                    script_facts=script_facts,
                 )
                 position += 1
                 if count > MAX_INSPECTION_ENTRIES:
@@ -796,6 +817,51 @@ def _public_key_bytes(element) -> int:
     if element is None:
         return 0
     return len((element.text or "").strip().encode("utf-8", "replace"))
+
+
+@dataclass(frozen=True)
+class ScriptFacts:
+    """What one script of a table allocates, declares and was read as surviving."""
+
+    record_id: int | None
+    structure: tuple[str, ...]
+    allocates: frozenset[str]
+    declares: dict[str, str]
+    safe: frozenset[str]
+
+
+def _with_detached_owner(
+    control: TableControl, symbols: frozenset[str], scripts: list[ScriptFacts],
+) -> TableControl:
+    """The record with the script that allocates it, where it sits outside that script.
+
+    A record under its script already has that script's declaration and its
+    answer about safety handed down to it. One filed beside the script had
+    neither, so the flag the script switches on by itself was neither held off
+    when the script started nor named among the cheats left on. Exactly one
+    script defining one of the names its address is computed from is the
+    evidence; two are a question this cannot answer, and an ID the table uses
+    for more than one script names none of them.
+    """
+    if not symbols:
+        return control
+    defining = [script for script in scripts if not symbols.isdisjoint(script.allocates)]
+    ids = {script.record_id for script in defining}
+    if len(defining) != 1 or None in ids:
+        return control
+    owner = defining[0]
+    if sum(1 for script in scripts if script.record_id == owner.record_id) != 1:
+        return control
+    if control.structure[:len(owner.structure)] == owner.structure:
+        # Inside it: the hand-down already answered, nearest script first.
+        return control
+    symbol = next(iter(sorted(symbols & owner.allocates)))
+    return replace(
+        control,
+        owner_script_id=owner.record_id,
+        declared_default=owner.declares.get(symbol),
+        switch_off_is_safe=symbol in owner.safe,
+    )
 
 
 def _allocated_symbols(script: str) -> set[str]:

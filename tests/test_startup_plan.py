@@ -548,10 +548,117 @@ def test_the_panel_is_given_only_the_off_keys_stop_ce_would_write(tmp_path: Path
     source.write_text(TOP_SWITCH_TABLE, encoding="utf-8")
     table = service.import_table(str(source))
     offered = dict(map(tuple, service.inspect_table_sha(table["sha256"])["switch_off_values"]))
-    # A switch whose address the game owns needs its off key or it stays on;
-    # a flag a script allocates, read by no code found safe, does not get one.
+    # A switch whose address the game owns needs its off key or it stays on,
+    # and a flag beside the script that allocates it gets one only because
+    # that script's own code was read as surviving it.
     assert offered.get(10) == "0"
-    assert 12 not in offered
+    assert offered.get(12) == "0"
+
+
+SIBLING_FLAG_TABLE = """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID><Description>Enable</Description><VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+lblSafe:
+cmp dword ptr [bEnableSafe],1
+jne short lblSafeSkip
+mulss xmm0,[fSafeMod]
+lblSafeSkip:
+jmp lblSafeRet
+lblUnsafe:
+sub rcx,rsi
+cmp dword ptr [bEnableUnsafe],1
+jne lblUnsafeSkip
+add rcx,rsi
+lblUnsafeSkip:
+jmp lblUnsafeRet
+bEnableSafe:
+  dd 1
+bEnableUnsafe:
+  dd 1
+bShared:
+  dd 1</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>2</ID><Description>Asked for</Description><VariableType>4 Bytes</VariableType>
+          <Address>game.exe+1234</Address>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID><Description>bEnableSafe</Description><VariableType>4 Bytes</VariableType>
+      <Address>bEnableSafe</Address>
+      <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>4</ID><Description>bEnableUnsafe</Description><VariableType>4 Bytes</VariableType>
+      <Address>bEnableUnsafe</Address>
+      <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>5</ID><Description>Other</Description><VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+bShared:
+  dd 1</AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID><Description>bShared</Description><VariableType>4 Bytes</VariableType>
+      <Address>bShared</Address>
+      <DropDownList>0:Disabled
+1:Enabled</DropDownList>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
+"""
+
+
+def test_a_flag_filed_beside_its_script_is_that_scripts_and_is_held_off_after_it(tmp_path: Path):
+    """A script's flag at the top level, beside the script that allocates it.
+
+    The declaration and the safety reading only ever reached records inside a
+    script, so this flag was neither held off when another cheat started its
+    script nor named among the cheats left on. One script defining the name is
+    the evidence; two leave it unattributed.
+    """
+    service = _service(tmp_path, "m68")
+    source = tmp_path / "sibling.CT"
+    source.write_text(SIBLING_FLAG_TABLE, encoding="utf-8")
+    table = service.import_table(str(source))
+    inspection = _inspection(service, table["sha256"])
+    shape = {control.id: control for control in inspection.controls}
+    assert (shape[3].owner_script_id, shape[3].declared_default, shape[3].switch_off_is_safe) == (1, "1", True)
+    assert (shape[4].owner_script_id, shape[4].declared_default, shape[4].switch_off_is_safe) == (1, "1", False)
+    assert (shape[6].owner_script_id, shape[6].declared_default) == (None, None)
+
+    def plan(remembered):
+        profile = _profile(table_sha256=table["sha256"], execution_consent_sha256=table["sha256"], remembered=remembered)
+        return [(action.record_id, action.kind, action.value) for action in effective_startup_plan(profile, inspection)], profile
+
+    # Another cheat starts the script: the safe flag is written off after it,
+    # the unsafe one is left on and named.
+    steps, profile = plan([StartupPreference(2, True, None)])
+    assert (3, "value", "0") in steps
+    assert steps.index((1, "active", "1")) < steps.index((3, "value", "0"))
+    assert not any(record_id == 4 for record_id, _, _ in steps)
+    assert startup_left_on(profile, inspection) == (4,)
+
+    # Switched off by hand with its off key, while startup runs its script:
+    # that key, once, after the script.
+    steps, _ = plan([StartupPreference(2, True, None), StartupPreference(3, False, "0")])
+    assert steps.count((3, "value", "0")) == 1
+    assert steps.index((1, "active", "1")) < steps.index((3, "value", "0"))
+
+    # Its script not started: nothing to write to, so nothing is written.
+    steps, _ = plan([StartupPreference(3, False, "0")])
+    assert not any(record_id == 3 and kind == "value" for record_id, kind, _ in steps)
+
+    # Stop CE and Disable all: the safe one's off key, never the unsafe one's.
+    offered = dict(map(tuple, service.inspect_table_sha(table["sha256"])["switch_off_values"]))
+    assert offered.get(3) == "0" and 4 not in offered
 
 
 def test_an_orphan_off_action_is_never_asked_of_a_record_its_script_will_not_create(tmp_path: Path):

@@ -1754,7 +1754,9 @@ def _script_default_switches(
     found: dict[int, object] = {}
     for script in switched_on:
         # Below it by where it sits, never by name: a sibling script with the
-        # same name brings its own flags, not this one's.
+        # same name brings its own flags, not this one's. Or filed beside it
+        # and allocated by it, which the inspector attributes only where this
+        # one script is the one defining the name.
         script_at = tuple(getattr(script, "structure", ()))
         for record_id, control in controls.items():
             # A record whose ID this table uses twice is refused for the plan it
@@ -1763,7 +1765,8 @@ def _script_default_switches(
             if record_id in named or record_id in ambiguous or control is script:
                 continue
             at = tuple(getattr(control, "structure", ()))
-            if len(at) <= len(script_at) or at[:len(script_at)] != script_at:
+            inside = len(at) > len(script_at) and at[:len(script_at)] == script_at
+            if not inside and getattr(control, "owner_script_id", None) != getattr(script, "id", None):
                 continue
             on = getattr(control, "switch_on_value", None)
             values = getattr(control, "dropdown_values", ())
@@ -1994,6 +1997,13 @@ def _without_values_nothing_reads(
         if off_key and not enclosing and not getattr(control, "script_owned", False):
             kept.append(preference)
             continue
+        # A flag filed beside the script that allocates it exists once that
+        # script has run, so its off key is written where startup runs it, and
+        # after it; where it does not, there is nothing to write to.
+        owner = getattr(control, "owner_script_id", None)
+        if off_key and owner is not None and owner in on:
+            kept.append(preference)
+            continue
         if preference.active is not None:
             kept.append(replace(preference, value=None))
     return kept
@@ -2033,6 +2043,7 @@ def _startup_actions(
             ))
     kind_rank = {"value": 0, "active": 1}
     actions.sort(key=lambda item: (len(item.path), tuple(part.casefold() for part in item.path), item.structure, kind_rank[item.kind], item.record_id))
+    actions = _after_detached_owners(actions, controls)
     # An activation with another activation of this plan nested inside it is the
     # enclosing script that cheat needs, not the cheat: switching it on proves
     # nothing on its own. What is left is what a successful startup may prove.
@@ -2047,6 +2058,35 @@ def _startup_actions(
         replace(action, proof=True) if action.kind == "active" and action.value == "1" and action.record_id in eligible else action
         for action in actions
     ]
+
+
+def _after_detached_owners(actions: list[StartupAction], controls: dict[int, object]) -> list[StartupAction]:
+    """Move each action on a flag filed beside its script to just after that script starts.
+
+    Order by place puts a record before the scripts that create what is inside
+    it and never after one beside it, and a flag beside the script that
+    allocates it does not resolve until that script has run. Sorted by place
+    alone, its write could land first and fail the whole startup.
+    """
+    started = {action.record_id: index for index, action in enumerate(actions) if action.kind == "active" and action.value == "1"}
+    moving: dict[int, list[StartupAction]] = {}
+    kept: list[StartupAction] = []
+    for action in actions:
+        owner = getattr(controls.get(action.record_id), "owner_script_id", None)
+        if owner is not None and owner in started and owner != action.record_id:
+            moving.setdefault(owner, []).append(action)
+        else:
+            kept.append(action)
+    if not moving:
+        return actions
+    ordered: list[StartupAction] = []
+    for action in kept:
+        ordered.append(action)
+        if action.kind == "active" and action.value == "1":
+            ordered.extend(moving.pop(action.record_id, []))
+    for rest in moving.values():
+        ordered.extend(rest)
+    return ordered
 
 
 def _wine_z_protocol_path(value: object, name: str) -> str:
