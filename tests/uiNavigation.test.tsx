@@ -576,6 +576,8 @@ describe("compact QAM home navigation", () => {
   it("explains a pin that cannot be controlled until Cheat Engine is connected", () => {
     render(<HomePanel {...props({ pinnedCount: 3, pinnedRows: [], runtimeReady: false })} />);
     expect(screen.getByText("3 pinned; connect Cheat Engine to use them here.")).toBeTruthy();
+    // Named, so a reader of the live panel can find it without a capture.
+    expect(screen.getByTestId("pinned-status").textContent).toContain("3 pinned");
   });
 
   it("bounds the active-cheat summary instead of creating an unbounded home focus list", () => {

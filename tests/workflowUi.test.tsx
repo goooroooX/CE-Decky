@@ -4672,6 +4672,8 @@ describe("Cheat selection workflow", () => {
     const inspection = { ...inspect, total_entries: 2, controls: [script(50, ["Outer"]), script(51, ["Outer", "Fly"])] } as any;
     const first = renderCheatModal({ inspection });
     expect(await screen.findByText(/^1 active \(1 script\)/)).toBeTruthy();
+    // Named, so a reader of the live screen gets the count as text.
+    expect(screen.getByTestId("cheats-summary").textContent).toMatch(/^1 active \(1 script\)/);
     first.unmount();
 
     // A pinned script is a cheat at the user's word, here as on the panel.
@@ -6119,7 +6121,7 @@ describe("Pinned live controls", () => {
     // Missing with no stopped script around it: no row, and said rather than
     // dropped, without telling a connected user to connect.
     expect(screen.queryByTestId("pinned-cheat-33")).toBeNull();
-    expect(screen.getByText("1 pinned not found in the running table.")).toBeTruthy();
+    expect(screen.getByTestId("pinned-status").textContent).toContain("1 pinned not found in the running table.");
     expect(screen.queryByText(/connect Cheat Engine to use them/)).toBeNull();
 
     fireEvent.click(within(row).getByTestId("toggle"));

@@ -1104,7 +1104,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   is a cheat. Nothing is dropped: the counts are the same
                   counts, separated the way every other summary here separates
                   them. */}
-              <div style={headerTextStyle}>
+              <div style={headerTextStyle} data-testid="cheats-summary">
                 <div style={headerLabelStyle}>
                   {`${activeLabel}${unsavedCount > 0 ? ` \u00b7 ${unsavedCount} unapplied` : ""}`}
                   {tight ? <span style={headerInlineCountStyle}>{` \u00b7 ${countsLine}`}</span> : null}

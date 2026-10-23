@@ -589,10 +589,10 @@ export function HomePanel(props: Props) {
           </PanelSectionRow>
         ))}
         {pinnedCount > 0 && pinnedRows.length === 0 && !(runtimeReady && activeCheatSnapshotReady) && (
-          <PanelSectionRow><PanelRow status label="Pinned controls" truncate description={`${pinnedCount} pinned; connect Cheat Engine to use them here.`} /></PanelSectionRow>
+          <PanelSectionRow><PanelRow status testId="pinned-status" label="Pinned controls" truncate description={`${pinnedCount} pinned; connect Cheat Engine to use them here.`} /></PanelSectionRow>
         )}
         {runtimeReady && activeCheatSnapshotReady && pinnedMissing > 0 && (
-          <PanelSectionRow><PanelRow status label="Pinned controls" truncate description={`${pinnedMissing} pinned not found in the running table.`} /></PanelSectionRow>
+          <PanelSectionRow><PanelRow status testId="pinned-status" label="Pinned controls" truncate description={`${pinnedMissing} pinned not found in the running table.`} /></PanelSectionRow>
         )}
         {pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (
           <PanelSectionRow key={`${index}:${label}`}><PanelRow label={label} truncate /></PanelSectionRow>
