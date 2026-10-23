@@ -16,12 +16,13 @@ for Steam to declare the AppID in a process environment, which is how the
 plugin itself observes a running game.
 
 `stop` ends that game's processes by PID and never by pattern: every process
-whose environment declares this exact `SteamAppId`, never one of CE Decky's own
-and never this helper or a process above it. It refuses while CE Decky's own
-Cheat Engine is still attached to that game, because ending a game under a live
-session is the plugin's stop to make, from the panel. It sends TERM, waits for
-the AppID to leave the process table, and sends KILL only to what is still
-there after that, saying so.
+whose environment declares this exact `SteamAppId`, or a `SteamGameId` equal to
+it or to its shortcut gameid, never one of CE Decky's own and never this helper
+or a process above it. It refuses while CE Decky's own Cheat Engine is still
+attached to that game, because ending a game under a live session is the
+plugin's stop to make, from the panel. It sends TERM, waits for the AppID to
+leave the process table, sends KILL only to what is still there after that, and
+calls the game stopped only once nothing of it is left, naming what survived.
 
 Whether an AppID is a non-Steam shortcut comes from the plugin's profile for
 it, which took it from the library, or from `--shortcut`/`--steam-app` when no
@@ -65,6 +66,7 @@ SHORTCUT_GAMEID_TYPE = 0x02000000
 MAX_APP_ID = 0xFFFFFFFF
 MAX_SCANNED = 32768
 EXIT_REFUSED = 2
+KILL_SETTLE_SECONDS = 5.0
 
 
 def game_id(app_id: int, *, shortcut: bool) -> int:
@@ -91,9 +93,11 @@ def _ancestors(pid: int, proc_root: Path) -> set[int]:
 def game_processes(app_id: int, proc_root: Path, protected: set[int]) -> tuple[list[int], list[int]]:
     """The PIDs declaring this AppID, and those of them CE Decky owns.
 
-    Read the same way the plugin reads a running game, from `SteamAppId` in the
-    environment Steam gave it, so the set is the launch Steam made rather than
-    whatever happens to mention the executable's name.
+    Read the way the plugin reads a running game, from what Steam put in the
+    environment it gave it, so the set is the launch Steam made rather than
+    whatever happens to mention the executable's name: `SteamAppId` equal to
+    this AppID, or `SteamGameId` equal to it or to this AppID's shortcut gameid,
+    which is what a shortcut's processes carry where they carry no AppID.
     """
     game: list[int] = []
     owned: list[int] = []
@@ -104,6 +108,7 @@ def game_processes(app_id: int, proc_root: Path, protected: set[int]) -> tuple[l
     if len(entries) > MAX_SCANNED:
         raise ValueError("the process table exceeds the bounded scan")
     wanted = str(app_id)
+    game_ids = {wanted, str(game_id(app_id, shortcut=True))}
     for entry in entries:
         pid = int(entry.name)
         if pid in protected:
@@ -115,7 +120,7 @@ def game_processes(app_id: int, proc_root: Path, protected: set[int]) -> tuple[l
         if not raw:
             continue
         environ = parse_environ(raw)
-        if environ.get("SteamAppId") != wanted:
+        if environ.get("SteamAppId") != wanted and environ.get("SteamGameId") not in game_ids:
             continue
         (owned if is_ce_decky_owned_environment(environ) else game).append(pid)
     return game, owned
@@ -204,7 +209,7 @@ def stop(
             "CE Decky's own Cheat Engine is still attached to this game; stop it from the panel first"
         )
     if not game:
-        return {"app_id": app_id, "running": False, "terminated": [], "killed": [], "seconds": 0.0}
+        return {"app_id": app_id, "running": False, "terminated": [], "killed": [], "survivors": [], "seconds": 0.0}
 
     def signal_all(pids: list[int], number: int) -> list[int]:
         sent: list[int] = []
@@ -224,8 +229,18 @@ def stop(
             break
         sleep(1.0)
     killed = signal_all(left, signal.SIGKILL) if left else []
-    return {"app_id": app_id, "running": False, "terminated": terminated, "killed": killed,
-            "seconds": round(clock() - started, 1)}
+    # A signal sent is not a process gone: what is still in the table after a
+    # short wait is reported, and the game is not called stopped while it is.
+    survivors: list[int] = []
+    if killed:
+        settle_until = clock() + KILL_SETTLE_SECONDS
+        while True:
+            survivors, _ = game_processes(app_id, proc_root, protected)
+            if not survivors or clock() >= settle_until:
+                break
+            sleep(0.5)
+    return {"app_id": app_id, "running": bool(survivors), "terminated": terminated, "killed": killed,
+            "survivors": survivors, "seconds": round(clock() - started, 1)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
             answer = stop(args.appid, wait_seconds=args.wait_seconds)
             if not answer["terminated"]:
                 line = f"game stop: AppID {args.appid} was not running"
+            elif answer["running"]:
+                line = (f"game stop: AppID {args.appid} is still running: {len(answer['survivors'])} processes"
+                        f" outlived TERM and KILL ({', '.join(map(str, answer['survivors'][:8]))})")
             else:
                 line = (f"game stop: AppID {args.appid} ended; TERM to {len(answer['terminated'])} processes"
                         + (f", KILL to {len(answer['killed'])} still there after {args.wait_seconds:g}s" if answer["killed"] else "")
@@ -271,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REFUSED
     print(json.dumps(answer, indent=2, sort_keys=True) if args.json else line)
     if args.command == "launch" and not answer["running"]:
+        return 1
+    if args.command == "stop" and answer["running"]:
         return 1
     return 0
 

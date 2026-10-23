@@ -136,3 +136,38 @@ def test_a_shortcut_is_taken_from_the_profile_or_from_the_caller_never_from_the_
     assert launcher._is_shortcut(3000000123, False, profiles) is False
     with pytest.raises(ValueError, match="--shortcut or --steam-app"):
         launcher._is_shortcut(3000000999, None, profiles)
+
+
+def test_stop_finds_a_shortcut_by_its_gameid_and_nothing_else_by_one(tmp_path: Path):
+    # A shortcut's processes may carry only the 64-bit gameid. Matching only
+    # SteamAppId reported such a game as not running and left it up.
+    proc = tmp_path / "proc"
+    shortcut = 3000000123
+    gameid = str(launcher.game_id(shortcut, shortcut=True))
+    _process(proc, 200, 1, {"SteamGameId": gameid})                                   # gameid only
+    _process(proc, 201, 1, {"SteamAppId": str(shortcut), "SteamGameId": gameid})       # both
+    _process(proc, 202, 1, {"SteamGameId": str(launcher.game_id(3000000999, shortcut=True))})  # another shortcut
+    _process(proc, 203, 1, {"SteamGameId": "900001"})                                 # a Steam game
+    sent: list[int] = []
+
+    def kill(pid: int, number: int) -> None:
+        sent.append(pid)
+        for child in (proc / str(pid)).iterdir():
+            child.unlink()
+        (proc / str(pid)).rmdir()
+
+    answer = launcher.stop(shortcut, wait_seconds=5, proc_root=proc, kill=kill, own_pid=999)
+
+    assert sorted(sent) == [200, 201]
+    assert answer["running"] is False and answer["survivors"] == []
+
+
+def test_stop_does_not_call_the_game_stopped_while_a_process_outlives_kill(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _process(proc, 200, 1, {"SteamAppId": "900001"})
+    clock = Clock()
+
+    answer = launcher.stop(900001, wait_seconds=5, proc_root=proc, kill=lambda pid, number: None,
+                           clock=clock, sleep=clock.sleep, own_pid=999)
+
+    assert answer["running"] is True and answer["survivors"] == [200] and answer["killed"] == [200]
