@@ -15,6 +15,7 @@ same-user sibling process the environment bytes it needs.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -37,7 +38,9 @@ from ce_decky.ce_launch import CELaunchSupervisor, observe_running_app_ids  # no
 from ce_decky.config import ConfigStore  # noqa: E402
 from ce_decky.game_run_holds import GameRunHolds  # noqa: E402
 from ce_decky.profiles import GameProfile, ProfileStore  # noqa: E402
-from ce_decky.session_protocol import SessionStore  # noqa: E402
+from ce_decky.ct_inspector import inspect_table  # noqa: E402
+from ce_decky.session_protocol import SessionStore, effective_startup_plan, startup_left_on  # noqa: E402
+from ce_decky.table_store import TableStore  # noqa: E402
 
 # A device holds a handful of profiles, and this is a diagnostic rather than an
 # export. The cap keeps one unusual state store from filling a report.
@@ -263,7 +266,65 @@ def _profile_detail(profile: GameProfile | None) -> dict[str, object] | None:
         for item in profile.remembered
     ]
     summary["pinned"] = list(profile.pinned)
+    # What Configure cheats stored as typed, which Auto-load writes over what
+    # was read back, and the explicit startup list: the rest of the selection a
+    # restore has to put back exactly.
+    summary["configured_values"] = [
+        {"record_id": item.record_id, "value": item.value} for item in profile.configured_values
+    ]
+    summary["startup"] = [
+        {"record_id": item.record_id, "active": item.active, "value": item.value} for item in profile.startup
+    ]
     return summary
+
+
+MAX_REPORTED_ACTIONS = 512
+MAX_ACTION_LABEL = 96
+
+
+def _startup_plan(profile: GameProfile | None, tables_root: Path) -> dict[str, object]:
+    """The exact actions Auto-load would carry for this game, record by record.
+
+    Built by the production planner from the profile and the stored table, so
+    it is the plan rather than a description of one: which scripts it starts,
+    which values it writes, which switches it holds off and which defaults it
+    has to leave on. Asked as if Auto-load were on, which is what
+    `validate_effective_startup_plan` asks too, and the answer says whether it
+    is. Read only: the table is read from the content store and parsed, and
+    nothing is written or recorded about it.
+    """
+    if profile is None or not profile.table_sha256:
+        reason = "no CE Decky profile for this AppID could be read" if profile is None else "no table is selected"
+        return {"table_sha256": None, "actions": [], "action_count": 0, "left_on": [], "error": reason}
+    digest = profile.table_sha256
+    try:
+        inspection = inspect_table(TableStore(tables_root).verified_blob(digest), digest)
+        planned = replace(profile, autoload_enabled=True)
+        actions = effective_startup_plan(planned, inspection)
+        left_on = list(startup_left_on(planned, inspection))
+    except (OSError, ValueError) as exc:
+        return {"table_sha256": digest, "actions": [], "action_count": 0, "left_on": [], "error": str(exc)[:512]}
+    labels = {
+        control.id: " › ".join(control.path)[:MAX_ACTION_LABEL]
+        for control in inspection.controls if control.id is not None
+    }
+    return {
+        "table_sha256": digest,
+        "autoload_enabled": profile.autoload_enabled,
+        "action_count": len(actions),
+        "actions": [
+            {
+                "record_id": action.record_id,
+                "kind": action.kind,
+                "value": action.value,
+                "proof": action.proof,
+                "label": labels.get(action.record_id),
+            }
+            for action in actions[:MAX_REPORTED_ACTIONS]
+        ],
+        "left_on": [{"record_id": record_id, "label": labels.get(record_id)} for record_id in left_on],
+        "error": None,
+    }
 
 
 def _read_environ(path: Path) -> bytes | None:
@@ -392,7 +453,9 @@ def _runtime_snapshot(
     }
 
 
-def probe(home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = Path("/proc")) -> dict[str, object]:
+def probe(
+    home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = Path("/proc"), *, startup_plan: bool = False,
+) -> dict[str, object]:
     home = _directory(home, "DECKY_USER_HOME")
     settings_dir = _directory(settings_dir, "DECKY_PLUGIN_SETTINGS_DIR")
     proc_root = _directory(proc_root, "proc root")
@@ -552,6 +615,8 @@ def probe(home: Path, settings_dir: Path, app_id: int | None, proc_root: Path = 
         profile = next((item for item in profiles if item.app_id == app_id), None) if profile_error is None else None
         report["app_id"] = app_id
         report["profile"] = _profile_detail(profile)
+        if startup_plan:
+            report["startup_plan"] = _startup_plan(profile, managed_root / "tables")
         launch = CELaunchSupervisor(home, ce_root, state_root, logging.getLogger("target-state-probe"))
         launch_observation = launch.inspect_owned_launch_record(app_id, proc_root=proc_root)
         report["owned_ce_launch"] = launch_observation
@@ -598,19 +663,26 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", type=Path, help="exact DECKY_USER_HOME; omitted, it is user_home from `target_plugin_install.py authority`")
     parser.add_argument("--settings-dir", type=Path, help="exact DECKY_PLUGIN_SETTINGS_DIR; omitted, it is settings_dir from `target_plugin_install.py authority`")
     parser.add_argument("--appid", type=int, help="exact Steam/non-Steam AppID for profile/session/runtime correlation")
+    parser.add_argument(
+        "--startup-plan", action="store_true",
+        help="with --appid, the exact actions Auto-load would carry for that game, from the production planner",
+    )
     parser.add_argument("--proc-root", type=Path, default=Path("/proc"), help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.startup_plan and args.appid is None:
+        parser.error("--startup-plan answers for one game; name it with --appid")
     try:
         host_platform.require("The plugin state probe")
     except host_platform.UnsupportedHost as exc:
         return host_platform.refuse(exc)
     try:
         home, settings_dir, paths_from = _paths(args.home, args.settings_dir)
-        report = probe(home, settings_dir, args.appid, args.proc_root)
+        report = probe(home, settings_dir, args.appid, args.proc_root, startup_plan=args.startup_plan)
         report["paths_from"] = paths_from
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"target state probe: {exc}", file=sys.stderr)

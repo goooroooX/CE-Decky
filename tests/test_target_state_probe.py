@@ -344,7 +344,82 @@ def test_the_appid_profile_names_each_remembered_record_and_pin(tmp_path: Path):
         {"record_id": 6, "active": False, "value": "100"},
     ]
     assert report["profile"]["pinned"] == [5]
+    assert report["profile"]["configured_values"] == []
+    assert report["profile"]["startup"] == []
     assert "remembered" not in report["profiles"][0]
+
+
+PLAN_TABLE = """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID><Description>Enable</Description><VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>2</ID><Description>Health</Description><VariableType>4 Bytes</VariableType>
+          <Address>game.exe+1234</Address>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>3</ID><Description>Ammo</Description><VariableType>4 Bytes</VariableType>
+          <Address>game.exe+5678</Address>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
+"""
+
+
+def test_the_startup_plan_is_the_planners_own_record_by_record(tmp_path: Path):
+    # Which values Auto-load writes and which scripts it starts was answered by
+    # a count, and the rest was reasoned out by hand from the profile.
+    from ce_decky.profiles import ConfiguredValue, StartupPreference
+    from ce_decky.table_store import TableStore
+
+    home, settings, proc = tmp_path / "home", tmp_path / "settings", tmp_path / "proc"
+    for path in (home, settings, proc):
+        path.mkdir()
+    managed = home / ".cheat-engine-decky"
+    (managed / "state").mkdir(parents=True)
+    source = tmp_path / "plan.CT"
+    source.write_text(PLAN_TABLE, encoding="utf-8")
+    sha = TableStore(managed / "tables").import_ct(str(source)).sha256
+    store = ProfileStore(managed / "state" / "profiles.json")
+    store.upsert(app_id=78, name="Safe Game", is_shortcut=False, table_sha256=sha, target_process=None)
+    store.set_remembered(app_id=78, table_sha256=sha, states=[StartupPreference(3, True, "5"), StartupPreference(2, False, None)])
+    store.set_configured_values(app_id=78, table_sha256=sha, values=[ConfiguredValue(2, "250")])
+
+    report = target_state_probe.probe(home, settings, 78, proc, startup_plan=True)
+
+    plan = report["startup_plan"]
+    assert plan["error"] is None and plan["autoload_enabled"] is False
+    steps = [(item["record_id"], item["kind"], item["value"]) for item in plan["actions"]]
+    assert (1, "active", "1") in steps
+    assert (3, "value", "5") in steps and (3, "active", "1") in steps
+    assert (2, "value", "250") in steps, "a setting typed in Configure under a script startup runs"
+    assert plan["action_count"] == len(steps)
+    assert next(item["label"] for item in plan["actions"] if item["record_id"] == 3) == "Enable › Ammo"
+    assert report["profile"]["configured_values"] == [{"record_id": 2, "value": "250"}]
+    assert plan["left_on"] == []
+
+    # Without the flag the table is not read at all.
+    assert "startup_plan" not in target_state_probe.probe(home, settings, 78, proc)
+
+
+def test_a_startup_plan_for_a_table_the_store_does_not_hold_says_so(tmp_path: Path):
+    home, settings, proc = tmp_path / "home", tmp_path / "settings", tmp_path / "proc"
+    for path in (home, settings, proc):
+        path.mkdir()
+    state = home / ".cheat-engine-decky" / "state"
+    state.mkdir(parents=True)
+    ProfileStore(state / "profiles.json").upsert(
+        app_id=79, name="Safe Game", is_shortcut=False, table_sha256="b" * 64, target_process=None,
+    )
+
+    plan = target_state_probe.probe(home, settings, 79, proc, startup_plan=True)["startup_plan"]
+
+    assert plan["actions"] == [] and plan["error"]
 
 
 def test_omitted_paths_come_from_the_install_authority(monkeypatch, tmp_path: Path):
