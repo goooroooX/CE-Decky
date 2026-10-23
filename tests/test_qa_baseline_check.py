@@ -18,6 +18,7 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument("--vitest", action="append", default=[])
 parser.add_argument("--pytest", action="append", default=[])
+parser.add_argument("--name", action="append", default=[])
 parser.parse_args()
 
 source = (root / "src" / "thing.txt").read_text().strip()
@@ -118,3 +119,40 @@ def test_both_runners_name_a_failed_test_in_their_own_way(tmp_path, line, expect
     # Deduplicated, because a failure is printed once in the dot summary and
     # again in the block underneath it.
     assert baseline._failures(log) == [expected]
+
+
+def test_a_name_filter_reaches_the_revisions_runner(tmp_path, monkeypatch, capsys):
+    # Narrowing to the new cases is what makes a large file affordable to prove,
+    # and the filter has to arrive at the runner rather than be dropped on the way.
+    root = _repo(tmp_path)
+    (root / "src" / "thing.txt").write_text("new\n", encoding="utf-8")
+    (root / "tests" / "probe.txt").write_text("new-test\n", encoding="utf-8")
+    monkeypatch.setattr(baseline, "ROOT", root)
+    seen: list[list[str]] = []
+    real_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if "--name" in list(command):
+            seen.append(list(command))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(baseline.subprocess, "run", run)
+    monkeypatch.setattr("sys.argv", [
+        "qa_baseline_check.py", "--rev", "HEAD", "--vitest", "tests/probe.txt",
+        "--name", "the case", "--name", "another",
+    ])
+
+    assert baseline.main() == 0
+    assert seen and seen[0][-4:] == ["--name", "the case", "--name", "another"]
+
+
+def test_a_revision_whose_runner_takes_no_name_is_refused_by_name(tmp_path, monkeypatch, capsys):
+    root = _repo(tmp_path)
+    (root / "scripts" / "qa.py").write_text(FAKE_QA.replace('"--name"', '"--other"'), encoding="utf-8")
+    run = ["git", "-c", "user.email=a@b", "-c", "user.name=t"]
+    subprocess.run([*run, "commit", "-qam", "older runner"], cwd=root, check=True)
+    monkeypatch.setattr(baseline, "ROOT", root)
+    monkeypatch.setattr("sys.argv", ["qa_baseline_check.py", "--rev", "HEAD", "--vitest", "tests/probe.txt", "--name", "x"])
+
+    assert baseline.main() == 2
+    assert "has no --name" in capsys.readouterr().out

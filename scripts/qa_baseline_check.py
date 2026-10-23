@@ -119,6 +119,11 @@ def main() -> int:
     parser.add_argument("--vitest", action="append", default=[], metavar="PATH_OR_PATTERN")
     parser.add_argument("--pytest", action="append", default=[], metavar="NODE_OR_PATH")
     parser.add_argument(
+        "--name", action="append", default=[], metavar="EXPR",
+        help="narrow the selection to the cases whose name matches, as qa.py --name does;"
+             " repeat it for the cases matching any of them",
+    )
+    parser.add_argument(
         "--expect-pass", action="store_true",
         help="succeed when the selection passes at the revision, for a control case",
     )
@@ -133,11 +138,19 @@ def main() -> int:
         _git("worktree", "add", "--detach", "--quiet", str(worktree), commit)
         _overlay_working_tests(worktree)
         _link_dependencies(worktree)
+        # The runner is the revision's own, so a name filter needs a revision
+        # whose qa.py takes one. Without it the run fails on the argument and
+        # names no test, which is a broken run rather than a proved regression.
+        if args.name and '"--name"' not in (worktree / "scripts" / "qa.py").read_text(encoding="utf-8"):
+            print(f"baseline {commit[:12]}: its scripts/qa.py has no --name; run the whole file instead")
+            return 2
         command = [sys.executable, str(worktree / "scripts" / "qa.py")]
         for selection in args.vitest:
             command += ["--vitest", selection]
         for selection in args.pytest:
             command += ["--pytest", selection]
+        for name in args.name:
+            command += ["--name", name]
         # A fresh worktree has no reuse record, so nothing is skipped here on the
         # strength of a pass the working tree earned.
         completed = subprocess.run(
@@ -153,7 +166,7 @@ def main() -> int:
         if summary:
             for log in _stage_logs(worktree / summary):
                 failures += [name for name in _failures(worktree / log) if name not in failures]
-        selection_text = " ".join(args.vitest + args.pytest)
+        selection_text = " ".join(args.vitest + args.pytest + [f"--name {name!r}" for name in args.name])
         if completed.returncode == 0:
             if args.expect_pass:
                 print(f"baseline {commit[:12]}: selection passes, as expected ({selection_text})")

@@ -114,7 +114,10 @@ A regression that passes on the commit it was written against says nothing about
 ```bash
 python3 scripts/qa_baseline_check.py --rev <reviewed-head> --vitest tests/providerCatalog.test.tsx
 python3 scripts/qa_baseline_check.py --rev <reviewed-head> --pytest tests/test_github_discovery_prod.py
+python3 scripts/qa_baseline_check.py --rev <reviewed-head> --vitest tests/workflowUi.test.tsx --name "the new case" --name "the other new case"
 ```
+
+`--name` narrows the selection exactly as `qa.py --name` does, which is what makes a file of a thousand cases affordable to prove a regression in. The revision's own `qa.py` runs the selection, so one too old to take `--name` is refused by name with exit 2 rather than read as a run that failed.
 
 It creates a temporary `git worktree` at that revision, puts this checkout's `tests/` on top of it so the tests being proved are the new ones, shares the restored dependency trees rather than restoring them again, runs the same routed selection there, and prints the tests that failed. The checkout being worked in is never written to, which is what makes it safe in a workflow whose every round ends in a commit, a push and an install onto a device. It exits non-zero when the selection passes at that revision, because a regression that passes there proves nothing, and again when the run fails without naming a test, because a run that could not start is not a proved defect. `--expect-pass` inverts it for a control case: a test asserting behaviour that is deliberately unchanged should still pass at the baseline.
 

@@ -118,7 +118,7 @@ An entry states what is true of the device now, not how the change came about. A
 | Exact Python case | `python scripts/qa.py --pytest <path-or-node>` |
 | Exact frontend test file | `python scripts/qa.py --vitest <path-or-pattern>` |
 | Only the frontend type check, between edits | `python scripts/qa.py --profile frontend --stage frontend-typecheck` |
-| A regression proved against the revision it was written for | `python3 scripts/qa_baseline_check.py --rev <sha> --vitest/--pytest <selection>` |
+| A regression proved against the revision it was written for | `python3 scripts/qa_baseline_check.py --rev <sha> --vitest/--pytest <selection> [--name <case>]` |
 | Whole backend/frontend | `--profile backend` / `--profile frontend` |
 | Full product gate, including the package | `--profile release` |
 | The archive the official Decky Store builds, which `release` never sees | `--profile store`; it needs podman or docker and reports INCOMPLETE without one |
