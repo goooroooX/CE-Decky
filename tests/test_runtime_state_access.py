@@ -21,6 +21,7 @@ def _readers(root):
     }
 
 
+@pytest.mark.denies_access
 @pytest.mark.parametrize("reader", ["pointer", "inventory", "tables", "launch"])
 def test_denied_parent_is_never_absent(tmp_path: Path, reader):
     parent = tmp_path / "private"

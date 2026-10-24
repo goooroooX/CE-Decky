@@ -42,6 +42,7 @@ def test_service_initializes_and_selftests(tmp_path: Path):
     assert paths.config_path.is_file()
 
 
+@pytest.mark.denies_access
 def test_unreadable_table_catalog_reaches_status_and_self_test_as_an_error(tmp_path: Path):
     paths = PluginPaths.for_tests(tmp_path)
     service = PluginService(paths, logging.getLogger("state-access-service"))

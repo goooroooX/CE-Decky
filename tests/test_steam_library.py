@@ -302,6 +302,7 @@ def test_a_manifest_whose_bytes_cannot_be_read_still_names_an_installed_game(tmp
     assert found["reason"] is None
 
 
+@pytest.mark.denies_access
 def test_a_library_folder_that_cannot_be_listed_is_a_reason_rather_than_its_contents(tmp_path: Path):
     # Nothing here knows how many manifests that folder holds, so what came back
     # is part of an answer. The panel reads a reason as "keep everything", which

@@ -77,6 +77,7 @@ def test_an_absence_is_a_reason_rather_than_an_empty_list(tmp_path: Path):
     assert native["cause"] == "no_windows_executable"
 
 
+@pytest.mark.denies_access
 def test_a_folder_that_could_not_be_read_is_never_proof_that_a_game_has_no_exe(tmp_path: Path):
     # `no_windows_executable` is the one answer a screen acts on: it hides the
     # process picker and refuses the press, on the ground that there is nothing
@@ -254,6 +255,7 @@ def test_a_deep_search_the_budget_stopped_is_not_proof_either(tmp_path: Path, mo
     assert game_executables(tmp_path / "home", 92)["cause"] == "too_many_files"
 
 
+@pytest.mark.denies_access
 def test_a_deep_folder_that_could_not_be_opened_is_not_proof_either(tmp_path: Path):
     deep = _native_install_with_a_deep_folder(tmp_path, 93)
     deep.chmod(0o000)
@@ -449,6 +451,7 @@ def test_two_files_of_one_name_are_both_reported(tmp_path: Path):
     assert len(found) == 2 and complete is True
 
 
+@pytest.mark.denies_access
 def test_a_subtree_this_could_not_read_is_not_a_finished_walk(tmp_path: Path):
     """A directory nobody could list may hold the second file of that name.
 
