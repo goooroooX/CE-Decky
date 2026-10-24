@@ -162,6 +162,20 @@ def test_stop_finds_a_shortcut_by_its_gameid_and_nothing_else_by_one(tmp_path: P
     assert answer["running"] is False and answer["survivors"] == []
 
 
+def test_stopping_a_store_app_leaves_a_shortcut_that_calls_itself_that_app(tmp_path: Path):
+    # A GOG build that ships `steam_appid.txt` runs as a shortcut whose
+    # processes carry the store app's SteamAppId; its prefix says what it is.
+    proc = tmp_path / "proc"
+    shortcut = 3000000123
+    compat = f"/lib/steamapps/compatdata/{shortcut}"
+    gameid = str(launcher.game_id(shortcut, shortcut=True))
+    _process(proc, 300, 1, {"SteamAppId": "424242", "SteamGameId": gameid, "STEAM_COMPAT_DATA_PATH": compat})
+    _process(proc, 301, 1, {"SteamAppId": "424242", "STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424242"})
+
+    assert launcher.game_processes(424242, proc, set()) == ([301], [])
+    assert launcher.game_processes(shortcut, proc, set()) == ([300], [])
+
+
 def test_stop_does_not_call_the_game_stopped_while_a_process_outlives_kill(tmp_path: Path):
     proc = tmp_path / "proc"
     _process(proc, 200, 1, {"SteamAppId": "900001"})

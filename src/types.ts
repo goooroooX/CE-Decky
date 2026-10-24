@@ -711,6 +711,8 @@ export interface GameContainerObservation {
   windows_executable_started?: Record<string, number>;
   /** The executable Steam asked Proton to run for this game, observed in its own process table. */
   launch_executable?: string | null;
+  /** `SteamAppId` values the game's processes carry besides its own library AppID. */
+  declared_steam_app_ids?: number[];
   conflicting_compat_data_paths: string[];
   conflicting_steam_client_install_paths: string[];
   conflicting_wine_prefixes: string[];

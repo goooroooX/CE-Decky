@@ -124,6 +124,9 @@ MAX_ENVIRON_BYTES = 512 * 1024
 MAX_SCANNED_PROCESSES = 8192
 MAX_OBSERVED_PIDS = 64
 MAX_OBSERVED_WINDOWS_EXECUTABLES = 32
+# Distinct foreign `SteamAppId` values one game's processes may report; one is
+# the ordinary answer and more is already worth a report.
+MAX_OBSERVED_STEAM_APP_IDS = 4
 # The only observation reason that proves the app has no process left at all.
 # Every other non-running reason means the scan itself could not answer.
 NO_MATCHING_PROCESS_REASON = "no running process reports this Steam AppID"
@@ -248,6 +251,11 @@ class GameContainerObservation:
     # the answer does not go stale on its way to the panel. An executable whose
     # start time could not be read is absent from it.
     windows_executable_started: tuple[tuple[str, float], ...] = ()
+    # `SteamAppId` values this game's processes carry that are not its own
+    # library AppID: the store app's, for a non-Steam shortcut whose files name
+    # one. Which processes belong to the game was decided by its compatibility
+    # data directory, and this says what else they claimed to be.
+    declared_steam_app_ids: tuple[int, ...] = ()
 
     def public(self) -> dict[str, object]:
         data = asdict(self)
@@ -461,6 +469,78 @@ class RunningAppObservation:
         return {"available": self.available, "app_ids": list(self.app_ids), "scanned": self.scanned, "reason": self.reason}
 
 
+_DECIMAL_RE = re.compile(r"[0-9]{1,20}")
+_CANONICAL_APP_ID_RE = re.compile(r"[1-9][0-9]{0,9}")
+
+
+def _canonical_app_id(value: str | None) -> int | None:
+    """The AppID ``value`` spells exactly, or None."""
+    if not value or not _CANONICAL_APP_ID_RE.fullmatch(value):
+        return None
+    try:
+        return _app_id(int(value))
+    except ValueError:
+        return None
+
+
+def _compat_data_app_id(value: str | None) -> int | None:
+    """The AppID an absolute ``.../compatdata/<AppID>`` path is named by, or None."""
+    if not value or not value.startswith("/"):
+        return None
+    parent, _, name = value.rstrip("/").rpartition("/")
+    if parent.rpartition("/")[2] != "compatdata":
+        return None
+    return _canonical_app_id(name)
+
+
+def steam_declares_game(environ: dict[str, str]) -> bool:
+    """Whether Steam started this process as a game rather than as anything else.
+
+    Steam sets `SteamAppId` only in the game itself and never for a Steam
+    game's install script, which otherwise runs with the same compatibility
+    environment, and sets it and `SteamGameId` only in a game's own process
+    tree, never on the client or its webhelper. A non-Steam shortcut runs with
+    no `SteamAppId` by Valve's account, and with a 64-bit `SteamGameId` as it
+    was seen on a device. `STEAM_COMPAT_APP_ID` is 0 only for a shortcut: for
+    a Steam game, its install script included, it is that game's AppID, which
+    is why nothing but 0 counts. Each of the three is enough on its own.
+    """
+    for name in ("SteamAppId", "SteamGameId"):
+        value = environ.get(name, "")
+        if _DECIMAL_RE.fullmatch(value) and int(value) != 0:
+            return True
+    return environ.get("STEAM_COMPAT_APP_ID") == "0"
+
+
+def declared_library_app_id(environ: dict[str, str]) -> int | None:
+    """The library AppID Steam started this process as, from Steam's own declarations.
+
+    The compatibility data directory answers first, because it is the one
+    declaration that names a non-Steam shortcut: Steam keeps a shortcut's
+    prefix in ``compatdata/<shortcut AppID>``, while `SteamAppId` is unset or
+    0 there, or carries the store app's AppID when the game's own files name
+    one, and `SteamGameId` is a 64-bit game id rather than an AppID. Without a
+    compatibility data directory, as for a native game, `SteamAppId` answers,
+    then a `SteamGameId` small enough to be an AppID.
+
+    Nothing answers for a process Steam did not start as a game, so a Steam
+    game's install script, which runs in the game's own prefix, is not the
+    game running. This chooses which library entry a process belongs to and
+    is never where a prefix comes from: an attached launch still requires the
+    observed directory to be the one resolved from the library.
+    """
+    if not steam_declares_game(environ):
+        return None
+    app_id = _compat_data_app_id(environ.get("STEAM_COMPAT_DATA_PATH"))
+    if app_id is not None:
+        return app_id
+    for name in ("SteamAppId", "SteamGameId"):
+        app_id = _canonical_app_id(environ.get(name))
+        if app_id is not None:
+            return app_id
+    return None
+
+
 def is_ce_decky_owned_environment(environ: dict[str, str]) -> bool:
     """True when this process environment is a Cheat Engine CE Decky launched.
 
@@ -489,8 +569,10 @@ def observe_running_app_ids(
     This exists only because some Steam builds expose no running-app query to
     the frontend at all. It offers the user a *candidate* game to select; it is
     never the source of a compatibility prefix, Proton identity or launch path,
-    and the caller still resolves those independently. ``SteamAppId`` is Steam's
-    own declaration in the process environment, not an inferred identity.
+    and the caller still resolves those independently. The AppID is what
+    `declared_library_app_id` reads from Steam's own declarations in the
+    process environment, so a running non-Steam shortcut is listed by its
+    shortcut AppID; nothing here is inferred.
 
     An incomplete scan is reported as unavailable rather than as a short list,
     because a truncated observation must never look like "that game is not
@@ -517,19 +599,11 @@ def observe_running_app_ids(
             continue
         if not raw:
             continue
-        # SteamGameId carries a 64-bit gameid for non-Steam shortcuts, so only
-        # SteamAppId can be trusted as the AppID the library is keyed by.
         environ = parse_environ(raw)
         if is_ce_decky_owned_environment(environ):
             continue
-        candidate = environ.get("SteamAppId")
-        if not candidate or not candidate.isdigit():
-            continue
-        try:
-            app_id = _app_id(int(candidate))
-        except ValueError:
-            continue
-        if app_id in app_ids:
+        app_id = declared_library_app_id(environ)
+        if app_id is None or app_id in app_ids:
             continue
         if len(app_ids) >= MAX_OBSERVED_RUNNING_APPS:
             return RunningAppObservation(False, (), scanned, "more running apps than the bounded observation supports")
@@ -553,13 +627,12 @@ def observe_any_running_steam_game(
     """Whether some process Steam launched as a game is running at all.
 
     A weaker question than `observe_running_app_ids`, and asked for a safety
-    decision rather than to choose a game, so it takes weaker evidence: a
-    non-Steam shortcut can run with only its 64-bit `SteamGameId`, which is no
-    AppID a profile is keyed by and still says a game is running. Steam sets
-    both only in a game's own process tree, never on the client or its
-    webhelper. CE Decky's own Cheat Engine carries the game's identity and does
-    not count. The first process that is evidence ends the walk; one that could
-    not be completed is not one that found none.
+    decision rather than to choose a game, so it takes weaker evidence: any
+    process `steam_declares_game` accepts, whether or not it names an AppID a
+    profile is keyed by, says a game is running. CE Decky's own Cheat Engine
+    carries the game's identity and does not count. The first process that is
+    evidence ends the walk; one that could not be completed is not one that
+    found none.
     """
     if not proc_root.is_dir():
         return RunningGameEvidence(False, False, 0, "process table is unavailable")
@@ -576,15 +649,15 @@ def observe_any_running_steam_game(
             raw = read_proc_bytes(Path(entry.path) / "environ", max_bytes=MAX_ENVIRON_BYTES)
         except (OSError, ValueError):
             continue
-        if not raw or (b"SteamAppId=" not in raw and b"SteamGameId=" not in raw):
+        if not raw or (
+            b"SteamAppId=" not in raw and b"SteamGameId=" not in raw and b"STEAM_COMPAT_APP_ID=" not in raw
+        ):
             continue
         environ = parse_environ(raw)
         if is_ce_decky_owned_environment(environ):
             continue
-        for name in ("SteamAppId", "SteamGameId"):
-            value = environ.get(name, "")
-            if value.isdigit() and int(value) != 0:
-                return RunningGameEvidence(True, True, scanned, None)
+        if steam_declares_game(environ):
+            return RunningGameEvidence(True, True, scanned, None)
     return RunningGameEvidence(True, False, scanned, None)
 
 
@@ -681,7 +754,6 @@ def observe_game_executable_paths(
     targets = {_app_id(app_id): basename for app_id, basename in targets.items() if _process_basename(basename)}
     if not targets:
         return {}
-    identities = {str(app_id): app_id for app_id in targets}
     if not proc_root.is_dir():
         return {}
     try:
@@ -707,11 +779,9 @@ def observe_game_executable_paths(
         environ = parse_environ(raw)
         if is_ce_decky_owned_environment(environ):
             continue
-        app_ids = {identities[value] for key in ("SteamAppId", "SteamGameId")
-                   if (value := environ.get(key)) in identities}
-        if len(app_ids) != 1:
+        app_id = declared_library_app_id(environ)
+        if app_id not in targets:
             continue
-        app_id = next(iter(app_ids))
         target = targets[app_id].casefold()
         argv = _read_argv(Path(entry.path) / "cmdline")
         if not argv:
@@ -777,8 +847,8 @@ def _observe_game_container(
     app_id = _app_id(app_id)
     if not proc_root.is_dir():
         return GameContainerObservation(app_id, False, (), None, None, None, None, None, (), (), (), (), (), (), 0, "process table is unavailable")
-    wanted = str(app_id)
     pids: list[int] = []
+    declared_steam_app_ids: list[int] = []
     compat_paths: list[str] = []
     client_paths: list[str] = []
     prefixes: list[str] = []
@@ -831,7 +901,7 @@ def _observe_game_container(
         environ = parse_environ(raw)
         if is_ce_decky_owned_environment(environ):
             continue
-        if environ.get("SteamAppId") != wanted and environ.get("SteamGameId") != wanted:
+        if declared_library_app_id(environ) != app_id:
             continue
         if len(pids) >= MAX_OBSERVED_PIDS:
             return GameContainerObservation(
@@ -840,6 +910,13 @@ def _observe_game_container(
                 unreadable_pids=tuple(unreadable),
             )
         pids.append(int(entry.name))
+        steam_app_id = _canonical_app_id(environ.get("SteamAppId"))
+        if (
+            steam_app_id is not None and steam_app_id != app_id
+            and steam_app_id not in declared_steam_app_ids
+            and len(declared_steam_app_ids) < MAX_OBSERVED_STEAM_APP_IDS
+        ):
+            declared_steam_app_ids.append(steam_app_id)
         for name, sink in (
             ("STEAM_COMPAT_DATA_PATH", compat_paths),
             ("STEAM_COMPAT_CLIENT_INSTALL_PATH", client_paths),
@@ -912,6 +989,7 @@ def _observe_game_container(
         scanned=scanned,
         reason=reason,
         windows_executable_started=_started_at(windows_executables, start_ticks, proc_root),
+        declared_steam_app_ids=tuple(sorted(declared_steam_app_ids)),
     )
 
 
@@ -1125,7 +1203,7 @@ def game_process_state(pid: int, app_id: int, *, proc_root: Path = Path("/proc")
 def _game_process_state(pid: int, app_id: int, *, proc_root: Path = Path("/proc")) -> str:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
         return "gone_or_reused"
-    wanted = str(_app_id(app_id))
+    app_id = _app_id(app_id)
     process_root = proc_root / str(pid)
     try:
         raw = read_proc_bytes(process_root / "environ", max_bytes=MAX_ENVIRON_BYTES)
@@ -1139,7 +1217,7 @@ def _game_process_state(pid: int, app_id: int, *, proc_root: Path = Path("/proc"
     if not raw:
         return "unreadable"
     environ = parse_environ(raw)
-    return "matched" if environ.get("SteamAppId") == wanted or environ.get("SteamGameId") == wanted else "gone_or_reused"
+    return "matched" if declared_library_app_id(environ) == app_id else "gone_or_reused"
 
 
 def baseline_is_gone(pids: Collection[int], app_id: int, *, proc_root: Path = Path("/proc")) -> bool:
@@ -1443,10 +1521,7 @@ def _declared_app_id_state(pid: int, app_id: int, proc_root: Path) -> str:
     if not raw:
         return "unreadable"
     environ = parse_environ(raw)
-    wanted = str(app_id)
-    if environ.get("SteamAppId") == wanted or environ.get("SteamGameId") == wanted:
-        return "matched"
-    return "mismatched"
+    return "matched" if declared_library_app_id(environ) == app_id else "mismatched"
 
 
 #: `confirmed` is the only answer that may stand in for a scan. `changed` says
@@ -2671,6 +2746,14 @@ class CELaunchSupervisor:
         observation = observe_game_container(app_id)
         if not observation.running:
             raise ValueError("the selected game is not running; start the game first")
+        if observation.declared_steam_app_ids:
+            # The game was found by its compatibility data directory while its
+            # processes also called themselves another app, which is the one
+            # identity this launch turned on that no other line records.
+            log_activity(
+                self.logger, "info", "ce_launch.steam_app_id_differs", app_id=app_id,
+                steam_app_ids=",".join(str(value) for value in observation.declared_steam_app_ids),
+            )
         # The panel refuses this too, but a stale overlapping frontend or a
         # direct RPC reaches here without that guard, and this is the boundary
         # that actually spawns the process.

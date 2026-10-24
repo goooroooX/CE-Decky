@@ -12,15 +12,15 @@ no game Steam launched is running at all: `rungameid` on a running game is
 refused and moves the input context off it, which is what `target_screenshot.py`
 records, and whether to replace one running game with another is a question for
 the person at the device rather than for a helper. It then waits, bounded,
-for Steam to declare the AppID in a process environment, which is how the
-plugin itself observes a running game.
+for a process environment to declare the AppID, read the way the plugin itself
+observes a running game.
 
 `stop` ends that game's processes by PID and never by pattern: every process
-whose environment declares this exact `SteamAppId`, or a `SteamGameId` equal to
-it or to its shortcut gameid, never one of CE Decky's own and never this helper
-or a process above it. It refuses while CE Decky's own Cheat Engine is still
-attached to that game, because ending a game under a live session is the
-plugin's stop to make, from the panel. It sends TERM, waits for the AppID to
+the plugin's own `declared_library_app_id` reads as this AppID, or whose
+`SteamGameId` is its shortcut gameid, never one of CE Decky's own and never
+this helper or a process above it. It refuses while CE Decky's own Cheat
+Engine is still attached to that game, because ending a game under a live
+session is the plugin's stop to make, from the panel. It sends TERM, waits for the AppID to
 leave the process table, sends KILL only to what is still there after that, and
 calls the game stopped only once nothing of it is left, naming what survived.
 
@@ -53,6 +53,7 @@ if str(MODULE_ROOT) not in sys.path:
 from ce_decky.atomic import read_proc_bytes  # noqa: E402
 from ce_decky.ce_launch import (  # noqa: E402
     MAX_ENVIRON_BYTES,
+    declared_library_app_id,
     is_ce_decky_owned_environment,
     observe_any_running_steam_game,
     observe_running_app_ids,
@@ -95,9 +96,12 @@ def game_processes(app_id: int, proc_root: Path, protected: set[int]) -> tuple[l
 
     Read the way the plugin reads a running game, from what Steam put in the
     environment it gave it, so the set is the launch Steam made rather than
-    whatever happens to mention the executable's name: `SteamAppId` equal to
-    this AppID, or `SteamGameId` equal to it or to this AppID's shortcut gameid,
-    which is what a shortcut's processes carry where they carry no AppID.
+    whatever happens to mention the executable's name: what
+    `declared_library_app_id` reads as this AppID, which for a Proton game is
+    its compatibility data directory, or a `SteamGameId` equal to this AppID's
+    shortcut gameid, which is all a native shortcut's processes carry. A
+    shortcut that calls itself a store app is not that store app, so stopping
+    the store app never ends it.
     """
     game: list[int] = []
     owned: list[int] = []
@@ -107,8 +111,7 @@ def game_processes(app_id: int, proc_root: Path, protected: set[int]) -> tuple[l
         raise ValueError(f"the process table is unreadable: {exc}") from exc
     if len(entries) > MAX_SCANNED:
         raise ValueError("the process table exceeds the bounded scan")
-    wanted = str(app_id)
-    game_ids = {wanted, str(game_id(app_id, shortcut=True))}
+    shortcut_game_id = str(game_id(app_id, shortcut=True))
     for entry in entries:
         pid = int(entry.name)
         if pid in protected:
@@ -120,7 +123,7 @@ def game_processes(app_id: int, proc_root: Path, protected: set[int]) -> tuple[l
         if not raw:
             continue
         environ = parse_environ(raw)
-        if environ.get("SteamAppId") != wanted and environ.get("SteamGameId") not in game_ids:
+        if declared_library_app_id(environ) != app_id and environ.get("SteamGameId") != shortcut_game_id:
             continue
         (owned if is_ce_decky_owned_environment(environ) else game).append(pid)
     return game, owned

@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.32 — 2026-10-24
 
+- [Fixed] A non-Steam shortcut running under Proton can start Cheat Engine. Its processes were looked for by `SteamAppId` and `SteamGameId`, and neither names a shortcut: Steam leaves the first unset or 0, or sets it to the store game's AppID when the game's own files name one, and the second is a 64-bit game id. So Advanced said "Proton not observed" while the game ran and a launch was refused with "the selected game is not running". A game running under Proton is now recognized by the compatibility data directory Steam gives it, and a Steam game's install script is not taken for the game.
 - [Fixed] A game running under a Proton that the distribution's package manager installed, such as `proton-cachyos` on CachyOS, can start Cheat Engine. Proton builds in `/usr/share/steam/compatibilitytools.d` and `/usr/local/share/steam/compatibilitytools.d` were never offered, so the launch was refused with "no installed Proton tool matches the running game's compatibility tool paths".
 
 ## 0.9.31 — 2026-10-23

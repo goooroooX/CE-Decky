@@ -24,6 +24,8 @@ from ce_decky.ce_launch import (
     GameContainerObservation,
     _describe_unfinished_bridge,
     _read_bridge_status,
+    NO_MATCHING_PROCESS_REASON,
+    declared_library_app_id,
     game_process_state,
     game_target_state,
     game_target_states,
@@ -31,6 +33,7 @@ from ce_decky.ce_launch import (
     launch_environment,
     match_observed_proton,
     observe_game_container,
+    observe_game_executable_paths,
     observe_any_running_steam_game,
     observe_running_app_ids,
     owned_descriptor_pids,
@@ -43,6 +46,8 @@ from ce_decky.ce_launch import (
     prepare_self_test_session,
     resolve_game_mode_display,
     resolve_compat_data,
+    resolve_target_identity,
+    steam_declares_game,
 )
 from ce_decky import managed_ce
 from ce_decky.managed_ce import ProtonTool, _steam_root_for_tool, discover_proton_tools
@@ -155,7 +160,8 @@ def test_resolve_game_mode_display_rejects_ambiguous_or_unbacked_values(tmp_path
 
 def test_observe_game_container_reports_the_running_game_environment(tmp_path: Path):
     proc = tmp_path / "proc"
-    _proc(proc, 10, {"SteamAppId": "1", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/220"})
+    # Another app's process, in its own prefix.
+    _proc(proc, 10, {"SteamAppId": "1", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/1"})
     _proc(
         proc,
         20,
@@ -1460,6 +1466,188 @@ def test_running_app_observation_lists_only_steam_declared_app_ids(tmp_path: Pat
     assert observation.available is True
     assert observation.app_ids == (220, 3086660526)
     assert observation.reason is None
+
+
+# -- which library entry a running process belongs to ------------------------
+
+SHORTCUT = 3000000123
+# The game id Steam gives that shortcut, `(AppID << 32) | 0x02000000`.
+SHORTCUT_GAME_ID = "12884902416314531840"
+SHORTCUT_COMPAT = f"/lib/steamapps/compatdata/{SHORTCUT}"
+
+
+@pytest.mark.parametrize(("environ", "expected"), [
+    # A Steam game declares itself the same way three times.
+    ({"SteamAppId": "424242", "SteamGameId": "424242", "STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424242"}, 424242),
+    # A non-Steam shortcut as Valve documents it: no SteamAppId at all.
+    ({"STEAM_COMPAT_APP_ID": "0", "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT}, SHORTCUT),
+    # The same shortcut as it was seen on a device.
+    ({"SteamAppId": "0", "SteamGameId": SHORTCUT_GAME_ID, "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT}, SHORTCUT),
+    # A shortcut whose own files name the store app it is a copy of.
+    ({"SteamAppId": "424242", "SteamGameId": SHORTCUT_GAME_ID, "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT}, SHORTCUT),
+    ({"SteamAppId": "424242", "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT + "/"}, SHORTCUT),
+    # A native game has no compatibility data directory.
+    ({"SteamAppId": "424242"}, 424242),
+    ({"SteamGameId": "424242"}, 424242),
+    # A native shortcut names no AppID anywhere, and nothing is made up for it.
+    ({"SteamAppId": "0", "SteamGameId": SHORTCUT_GAME_ID}, None),
+    # A Steam game's install script runs in the game's prefix without SteamAppId.
+    ({"STEAM_COMPAT_APP_ID": "424242", "STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424242"}, None),
+    # A tool pointed at the prefix by hand is not Steam starting the game.
+    ({"STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424242", "WINEPREFIX": "/lib/steamapps/compatdata/424242/pfx"}, None),
+    ({"SteamAppId": "0", "SteamGameId": "0", "STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424242"}, None),
+])
+def test_a_process_belongs_to_the_library_entry_steam_started_it_as(environ, expected):
+    assert declared_library_app_id(environ) == expected
+
+
+@pytest.mark.parametrize("compat", [
+    "steamapps/compatdata/3000000123",
+    "/lib/steamapps/compatdata/3000000123/pfx",
+    "/lib/steamapps/notcompat/3000000123",
+    "/lib/steamapps/compatdata/03000000123",
+    "/lib/steamapps/compatdata/0",
+    "/lib/steamapps/compatdata/99999999999",
+    "/lib/steamapps/compatdata/",
+    "/compatdata",
+])
+def test_only_an_exact_compatibility_data_directory_names_an_app(compat):
+    # Anything else is not that declaration, and SteamAppId answers instead.
+    assert declared_library_app_id({"SteamAppId": "424242", "STEAM_COMPAT_DATA_PATH": compat}) == 424242
+    assert declared_library_app_id({"STEAM_COMPAT_APP_ID": "0", "STEAM_COMPAT_DATA_PATH": compat}) is None
+
+
+def test_digits_that_are_not_ascii_declare_nothing():
+    arabic_indic = "\u0664\u0662\u0664"
+    assert steam_declares_game({"SteamAppId": arabic_indic}) is False
+    assert declared_library_app_id({"SteamAppId": arabic_indic}) is None
+    assert declared_library_app_id({"SteamAppId": "424242", "STEAM_COMPAT_DATA_PATH": "/lib/compatdata/" + arabic_indic}) == 424242
+
+
+def _running_shortcut(proc: Path, *, steam_app_id: str | None) -> None:
+    environ = {
+        "SteamGameId": SHORTCUT_GAME_ID,
+        "STEAM_COMPAT_APP_ID": "0",
+        "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT,
+        "WINEPREFIX": SHORTCUT_COMPAT + "/pfx",
+    }
+    if steam_app_id is not None:
+        environ["SteamAppId"] = steam_app_id
+    _proc(proc, 70, environ, argv=["/usr/bin/reaper", "SteamLaunch"])
+    _proc(proc, 71, environ, argv=["Z:\\games\\Example\\game.exe"])
+
+
+def test_a_running_non_steam_shortcut_is_listed_by_its_own_appid(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _running_shortcut(proc, steam_app_id="0")
+    _proc(proc, 80, {"SteamAppId": "424243", "STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424243"})
+    # Another game's install script is not that game running.
+    _proc(proc, 90, {"STEAM_COMPAT_APP_ID": "424244", "STEAM_COMPAT_DATA_PATH": "/lib/steamapps/compatdata/424244"})
+
+    observation = observe_running_app_ids(proc_root=proc)
+
+    assert observation.available is True
+    assert observation.app_ids == (424243, SHORTCUT)
+
+
+def test_a_shortcut_that_calls_itself_a_store_app_is_that_shortcut(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _running_shortcut(proc, steam_app_id="424242")
+
+    shortcut = observe_game_container(SHORTCUT, proc_root=proc)
+    assert shortcut.running is True
+    assert shortcut.pids == (70, 71)
+    assert shortcut.compat_data_path == SHORTCUT_COMPAT
+    assert shortcut.wine_prefix == SHORTCUT_COMPAT + "/pfx"
+    assert shortcut.windows_executables == ("game.exe",)
+    assert shortcut.declared_steam_app_ids == (424242,)
+    assert shortcut.public()["declared_steam_app_ids"] == (424242,)
+    # And the store app it named is not running: its prefix would be a
+    # different directory, and Cheat Engine would be started in that one.
+    store = observe_game_container(424242, proc_root=proc)
+    assert store.running is False
+    assert store.reason == NO_MATCHING_PROCESS_REASON
+    assert observe_running_app_ids(proc_root=proc).app_ids == (SHORTCUT,)
+
+
+def test_a_shortcut_as_valve_documents_it_is_found_and_reports_no_other_app(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _running_shortcut(proc, steam_app_id=None)
+    observation = observe_game_container(SHORTCUT, proc_root=proc)
+    assert observation.running is True
+    assert observation.declared_steam_app_ids == ()
+    evidence = observe_any_running_steam_game(proc_root=proc)
+    assert (evidence.available, evidence.running) == (True, True)
+
+
+def test_a_shortcut_with_only_its_compatibility_app_id_still_says_a_game_runs(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _proc(proc, 70, {"STEAM_COMPAT_APP_ID": "0", "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT})
+    evidence = observe_any_running_steam_game(proc_root=proc)
+    assert (evidence.available, evidence.running) == (True, True)
+
+
+def test_a_running_shortcut_stays_alive_and_keeps_its_target(tmp_path: Path):
+    # It calls itself the store app, which is the case that told the two apart
+    # wrongly before: the store app's own check matched these processes.
+    proc = tmp_path / "proc"
+    _running_shortcut(proc, steam_app_id="424242")
+    for pid in (70, 71):
+        (proc / str(pid) / "stat").write_text(f"{pid} (x) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5000 0 0", encoding="utf-8")
+
+    assert game_process_state(71, SHORTCUT, proc_root=proc) == "matched"
+    assert game_process_state(71, 424242, proc_root=proc) == "gone_or_reused"
+    identity = resolve_target_identity(SHORTCUT, "game.exe", (70, 71), proc_root=proc)
+    assert identity is not None and identity.pid == 71
+    assert resolve_target_identity(424242, "game.exe", (70, 71), proc_root=proc) is None
+
+
+def test_a_shortcut_executable_path_is_read_from_its_own_processes(tmp_path: Path):
+    proc = tmp_path / "proc"
+    game = tmp_path / "games/Example/game.exe"
+    game.parent.mkdir(parents=True)
+    game.write_bytes(b"MZ")
+    environ = {"SteamAppId": "424242", "SteamGameId": SHORTCUT_GAME_ID, "STEAM_COMPAT_DATA_PATH": SHORTCUT_COMPAT}
+    _proc(proc, 71, environ, argv=["Z:" + str(game).replace("/", "\\")])
+
+    assert observe_game_executable_paths({SHORTCUT: "game.exe", 424242: "game.exe"}, proc_root=proc) == {SHORTCUT: str(game)}
+
+
+def test_an_attached_launch_records_another_app_id_the_game_called_itself(tmp_path: Path, monkeypatch, caplog):
+    supervisor, executable = _supervisor(tmp_path)
+    steam_root = supervisor.user_home / ".local/share/Steam"
+    tool_root = steam_root / "steamapps/common/Proton 10"
+    compat = steam_root / f"steamapps/compatdata/{SHORTCUT}"
+    tool_root.mkdir(parents=True, exist_ok=True)
+    compat.mkdir(parents=True, exist_ok=True)
+    tool = _tool(tool_root)
+    monkeypatch.setattr(
+        "ce_decky.ce_launch.observe_game_container",
+        lambda app_id: GameContainerObservation(
+            app_id, True, (42,), str(compat), str(steam_root), None, ":1", "game.exe", (str(tool_root),),
+            ("game.exe",), (), (), (), (), 1, None, declared_steam_app_ids=(424242,),
+        ),
+    )
+    monkeypatch.setattr(
+        "ce_decky.ce_launch.resolve_compat_data",
+        lambda app_id, user_home: CompatDataResolution(app_id, "resolved", str(compat), (str(compat),), ()),
+    )
+
+    async def exercise():
+        await supervisor.start_attached(
+            [tool], executable, app_id=SHORTCUT, tool_id=tool.tool_id,
+            session_id="123e4567-e89b-42d3-a456-426614174000",
+            descriptor_path=tmp_path / "descriptor.txt", descriptor_sha256="d" * 64,
+            descriptor_md5="e" * 32, descriptor_windows_path="Z:\\descriptor.txt",
+            table_windows_path="Z:\\table.ct", table_sha256="b" * 64,
+            ce_sha256="c" * 64, status_path=tmp_path / "status.txt",
+        )
+
+    # The prefix is still checked after it: the game here reports none.
+    with caplog.at_level(logging.INFO, logger="ce-launch"), pytest.raises(ValueError, match="Wine prefix"):
+        asyncio.run(exercise())
+    [record] = [r for r in caplog.records if "ce_launch.steam_app_id_differs" in r.getMessage()]
+    assert f"app_id={SHORTCUT}" in record.getMessage() and "steam_app_ids=424242" in record.getMessage()
 
 
 def test_running_app_observation_refuses_a_truncated_process_table(tmp_path: Path):

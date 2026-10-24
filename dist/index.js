@@ -14316,6 +14316,10 @@ function Content() {
     // runs every three seconds, so failure and recovery are each logged once
     // rather than once a tick.
     const detectionFailedRef = SP_REACT.useRef(false);
+    // The running AppIDs the library could not resolve, as last logged. Such an
+    // AppID keeps the detector from selecting anything, so the set is logged when
+    // it changes rather than on every pass that holds it.
+    const unresolvedRunningRef = SP_REACT.useRef("");
     // Closing the panel has to stop the reads the panel started. A live refresh
     // walks every actionable record of the table in chunks, which for a large
     // table is over a hundred bridge round-trips: without this the whole sweep
@@ -15083,6 +15087,16 @@ function Content() {
             }
             runningGamesRef.current = snapshot.games;
             setRunningGames(snapshot);
+            const unresolvedRunningKey = (snapshot.unresolvedAppIds ?? []).join(",");
+            if (unresolvedRunningKey !== unresolvedRunningRef.current) {
+                unresolvedRunningRef.current = unresolvedRunningKey;
+                if (unresolvedRunningKey) {
+                    logUiWarning("games.running_unresolved", {
+                        app_ids: unresolvedRunningKey,
+                        resolved_app_ids: snapshot.games.map((candidate) => candidate.appId).join(","),
+                    });
+                }
+            }
             // A running game supersedes a game the user picked by hand while nothing
             // was running, so that pick must not be restored on any later remount.
             if (snapshot.games.length > 0)

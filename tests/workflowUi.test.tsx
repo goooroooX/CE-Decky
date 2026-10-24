@@ -9936,6 +9936,27 @@ describe("running-game detector logging", () => {
       readSupportLog().entries.filter((entry) => entry.event === "games.detection_failed"),
     ).toHaveLength(2));
   });
+
+  it("logs a running AppID the library could not resolve once per set, since it stops automatic selection", async () => {
+    const { resetSupportLog, readSupportLog } = await import("../src/supportLog");
+    resetSupportLog();
+    api.getStatus.mockResolvedValue(status(true));
+    steam.listRunningGames
+      .mockResolvedValueOnce({ available: true, games: [game], unresolvedAppIds: [3000000123] })
+      .mockResolvedValueOnce({ available: true, games: [game], unresolvedAppIds: [3000000123] })
+      .mockResolvedValue({ available: true, games: [game], unresolvedAppIds: [] });
+    const unresolved = () => readSupportLog().entries.filter((entry) => entry.event === "games.running_unresolved");
+
+    renderContent();
+
+    await waitFor(() => expect(unresolved()).toHaveLength(1));
+    expect(unresolved()[0].fields).toMatchObject({ app_ids: "3000000123", resolved_app_ids: String(game.appId) });
+    // The same set on the next pass is not a second line, and the set
+    // clearing is what the selection that follows already records.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+    expect(unresolved()).toHaveLength(1);
+  });
 });
 
 describe("cheat picker initial query logging", () => {
