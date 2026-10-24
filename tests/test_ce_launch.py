@@ -30,6 +30,8 @@ from ce_decky.ce_launch import (
     game_target_state,
     game_target_states,
     target_exit_is_proved,
+    game_exit_progress,
+    scan_is_due,
     launch_environment,
     match_observed_proton,
     observe_game_container,
@@ -1985,7 +1987,7 @@ def test_recovered_supervision_stops_owned_ce_the_game_left_behind_in_its_own_pr
         seen = iter(["present", "present", "absent"])
         # The baseline never empties, exactly as on the real machine.
         module.game_process_state = lambda pid, app_id, **kwargs: "matched"
-        module.target_liveness = lambda app_id, target, **kwargs: (next(seen, "absent"), None, False)
+        module.target_liveness = lambda app_id, target, **kwargs: (next(seen, "absent"), None, "unknown")
         try:
             assert await supervisor.resume_recovered_supervision(10) is True
             for _ in range(200):
@@ -2003,13 +2005,13 @@ def test_recovered_supervision_stops_owned_ce_the_game_left_behind_in_its_own_pr
 
 
 def _recovered_baseline_scenario(
-    tmp_path: Path, target_states: list[str], *, container_gone: bool = False,
+    tmp_path: Path, target_states: list[str], *, games: list[str] | None = None,
 ) -> list[dict]:
     """Run recovered supervision with a baseline that has completely vanished.
 
-    `container_gone` is the walk's own answer to whether anything on the machine
-    still reports this AppID, which is the only thing that can prove the game
-    left. It defaults to false because the scenario this helper sets up, every
+    `games` is the walk's own answer, scan by scan, to what is left of the game
+    (`target_liveness`'s third answer), the last repeated. It defaults to the
+    game still running, because the scenario this helper sets up, every
     launch-time PID retired, is an ordinary handoff with the game still there.
     """
     paths = PluginPaths.for_tests(tmp_path)
@@ -2036,6 +2038,8 @@ def _recovered_baseline_scenario(
         # driving what they actually consult.
         original_target = module.target_liveness
         states = iter(target_states)
+        answers = iter(games or ["running"])
+        last_game = [(games or ["running"])[-1]]
         # How many ticks this window actually gave the loop. A scenario that
         # ends with nothing terminated has to have run for that to mean
         # anything, and a window counted in wall clock does not say whether it
@@ -2045,7 +2049,8 @@ def _recovered_baseline_scenario(
 
         def target(app_id, target_process, **kwargs):
             ticks[0] += 1
-            return (next(states, target_states[-1]), None, container_gone)
+            last_game[0] = next(answers, last_game[0])
+            return (next(states, target_states[-1]), None, last_game[0])
 
         # Every PID observed when the launch started is gone: the launcher
         # handed off and exited, which is an ordinary way for a game to start.
@@ -2078,15 +2083,34 @@ def test_only_a_seen_target_or_a_gone_game_proves_a_session_is_over():
     """
     # The handoff: the game has not started its exact executable yet, and the
     # walk can still see the game.
-    assert target_exit_is_proved(state="absent", target_seen=False, container_gone=False) is False
-    # The two real exits.
-    assert target_exit_is_proved(state="absent", target_seen=True, container_gone=False) is True
-    assert target_exit_is_proved(state="absent", target_seen=False, container_gone=True) is True
+    assert target_exit_is_proved(state="absent", target_seen=False, game="running") is False
+    # The two exits that need no confirming.
+    assert target_exit_is_proved(state="absent", target_seen=True, game="running") is True
+    assert target_exit_is_proved(state="absent", target_seen=False, game="gone") is True
     # Nothing but a complete scan reaching absent proves anything at all.
     for state in ("present", "unknown"):
         for seen in (True, False):
-            for gone in (True, False):
-                assert target_exit_is_proved(state=state, target_seen=seen, container_gone=gone) is False
+            for game in ("running", "left", "gone", "unknown"):
+                assert target_exit_is_proved(
+                    state=state, target_seen=seen, game=game, game_seen=True, left_scans=5,
+                ) is False
+
+
+def test_a_game_that_left_only_its_proton_session_ends_a_never_seen_target_on_the_second_look():
+    """Cheat Engine keeps the game's Proton session alive, so waiting for it to go never ends.
+
+    The game's programs are gone and `wineserver`, the Proton chain and the
+    reaper still report its AppID because Cheat Engine is a client of that
+    session. A target that was never seen used to keep Cheat Engine attached
+    to that for as long as nobody pressed Stop.
+    """
+    assert target_exit_is_proved(state="absent", target_seen=False, game="left", game_seen=True, left_scans=2) is True
+    # One look is not enough: a launcher can exit a moment before its game starts.
+    assert target_exit_is_proved(state="absent", target_seen=False, game="left", game_seen=True, left_scans=1) is False
+    # And a session that never saw the game run cannot say it left: Proton may
+    # still be starting it.
+    assert target_exit_is_proved(state="absent", target_seen=False, game="left", game_seen=False, left_scans=9) is False
+    assert target_exit_is_proved(state="absent", target_seen=False, game="unknown", game_seen=True, left_scans=9) is False
 
 
 def test_recovered_supervision_keeps_ce_while_the_exact_target_is_alive(tmp_path: Path):
@@ -2130,8 +2154,44 @@ def test_recovered_supervision_stops_ce_once_the_game_itself_is_gone(tmp_path: P
     managed to see for itself, because there is no longer a game for it to
     appear in.
     """
-    terminated = _recovered_baseline_scenario(tmp_path, ["absent"], container_gone=True)
+    terminated = _recovered_baseline_scenario(tmp_path, ["absent"], games=["gone"])
     assert [item["session_id"] for item in terminated] == ["b0a3f2c1-1111-4222-8333-444455556666"]
+
+
+def test_each_walk_feeds_the_exit_evidence_the_same_way_in_both_supervisors():
+    seen, left = game_exit_progress("unknown", game_seen=False, left_scans=0)
+    assert (seen, left) == (False, 0)
+    seen, left = game_exit_progress("running", game_seen=seen, left_scans=left)
+    assert (seen, left) == (True, 0)
+    seen, left = game_exit_progress("left", game_seen=seen, left_scans=left)
+    assert (seen, left) == (True, 1)
+    # A walk that cannot answer is not a second look at the same thing.
+    seen, left = game_exit_progress("unknown", game_seen=seen, left_scans=left)
+    assert (seen, left) == (True, 0)
+    seen, left = game_exit_progress("left", game_seen=seen, left_scans=left)
+    assert game_exit_progress("left", game_seen=seen, left_scans=left) == (True, 2)
+
+
+def test_a_finding_that_the_game_left_is_looked_at_again_on_the_next_tick():
+    # Otherwise the second look waits for the interval, which is only a pause.
+    assert scan_is_due(tick=1, baseline_gone=False, baseline_was_gone=False, target_seen=False, confirming=True)
+    assert not scan_is_due(tick=1, baseline_gone=False, baseline_was_gone=False, target_seen=False)
+
+
+def test_recovered_supervision_stops_ce_once_the_game_left_only_its_proton_session(tmp_path: Path):
+    """Seen running, then gone on two consecutive walks, with Proton still there."""
+    terminated = _recovered_baseline_scenario(tmp_path, ["absent"], games=["running", "left", "left"])
+    assert [item["session_id"] for item in terminated] == ["b0a3f2c1-1111-4222-8333-444455556666"]
+
+
+def test_recovered_supervision_sits_through_a_launcher_that_exits_before_its_game(tmp_path: Path):
+    """One walk between the launcher and the game finds no program, and the next finds the game."""
+    assert _recovered_baseline_scenario(tmp_path, ["absent"], games=["running", "left", "running"]) == []
+
+
+def test_recovered_supervision_never_ends_a_session_that_never_saw_the_game_run(tmp_path: Path):
+    """After a reload the game has to be seen again before its leaving is believed."""
+    assert _recovered_baseline_scenario(tmp_path, ["absent"], games=["left"]) == []
 
 
 def test_recovered_supervision_waits_out_a_scan_that_cannot_answer(tmp_path: Path):
@@ -2171,7 +2231,7 @@ def test_recovered_supervision_never_stops_a_target_it_has_not_seen_alive(tmp_pa
             # Never seen alive, and the game itself is still running: the exact
             # executable simply is not the one the container is running yet.
             ticks[0] += 1
-            return ("absent", None, False)
+            return ("absent", None, "running")
 
         module.target_liveness = target
         try:
@@ -2231,7 +2291,7 @@ def test_supervision_watches_the_program_the_session_was_moved_to(tmp_path: Path
             if len(asked) >= 4:
                 # And now the game itself exits, which is the real end.
                 answers["game.exe"] = "absent"
-            return (answers.get(target_process, "unknown"), None, False)
+            return (answers.get(target_process, "unknown"), None, "running")
 
         module.game_process_state = lambda pid, app_id, **kwargs: "gone_or_reused"
         module.target_liveness = target
@@ -3050,6 +3110,63 @@ def _target_proc(root: Path, pid: int, *, app_id: int, executable: str, start_ti
     )
 
 
+def _proton_session(root: Path, *, app_id: int = 424242, wine_prefix: bool = True) -> None:
+    """What still reports a Proton game's AppID once its own programs have gone.
+
+    Steam's reaper, `wineserver`, a service Wine runs from the prefix's own
+    Windows directory, and the Cheat Engine this plugin attached, which is what
+    keeps the rest alive.
+    """
+    environ = {"SteamAppId": str(app_id), "STEAM_COMPAT_DATA_PATH": "/compat/data"}
+    if wine_prefix:
+        environ["WINEPREFIX"] = "/compat/data/pfx"
+    _proc(root, 100, environ, argv=["/steam/ubuntu12_32/reaper", "SteamLaunch", f"AppId={app_id}"])
+    _proc(root, 101, environ, argv=["/proton/files/bin/wineserver"])
+    _proc(root, 102, environ, argv=["C:\\windows\\system32\\services.exe"])
+    _proc(root, 103, {
+        **environ, "CE_DECKY_DESCRIPTOR": "Z:\\session\\descriptor.txt", "CE_DECKY_DESCRIPTOR_SHA256": "d" * 64,
+    }, argv=["Z:\\ce\\cheatengine-x86_64.exe"])
+
+
+def test_a_game_running_beside_its_proton_session_is_running(tmp_path):
+    proc = tmp_path / "proc"
+    _proton_session(proc)
+    _target_proc(proc, 104, app_id=424242, executable="game.exe")
+    state, identity, game = _ce_launch.target_liveness(424242, "game.exe", proc_root=proc)
+    assert (state, game) == ("present", "running") and identity is not None
+    # A target that is not the program running says nothing about the game.
+    assert _ce_launch.target_liveness(424242, "other.exe", proc_root=proc) == ("absent", None, "running")
+
+
+def test_a_proton_session_with_none_of_the_games_programs_left_in_it_is_left(tmp_path):
+    proc = tmp_path / "proc"
+    _proton_session(proc)
+    assert _ce_launch.target_liveness(424242, "game.exe", proc_root=proc) == ("absent", None, "left")
+
+
+def test_an_unreadable_process_running_a_windows_program_keeps_left_unproved(tmp_path):
+    proc = tmp_path / "proc"
+    _proton_session(proc)
+    # procfs refused its environment, so the walk cannot say whose it is.
+    (proc / "105").mkdir()
+    (proc / "105" / "environ").write_bytes(b"")
+    (proc / "105" / "cmdline").write_bytes(b"Z:\\games\\game.exe\0")
+    assert _ce_launch.target_liveness(424242, "other.exe", proc_root=proc) == ("absent", None, "unknown")
+
+
+def test_a_session_without_a_wine_prefix_is_never_called_left(tmp_path):
+    # A native game has no Proton session to leave behind.
+    proc = tmp_path / "proc"
+    _proton_session(proc, wine_prefix=False)
+    assert _ce_launch.target_liveness(424242, "game.exe", proc_root=proc) == ("absent", None, "unknown")
+
+
+def test_nothing_left_reporting_the_app_is_gone(tmp_path):
+    proc = tmp_path / "proc"
+    _proc(proc, 100, {"HOME": "/home/user"})
+    assert _ce_launch.target_liveness(424242, "game.exe", proc_root=proc) == ("absent", None, "gone")
+
+
 def _counts() -> dict[str, int]:
     from ce_decky import poll_counters
 
@@ -3203,7 +3320,7 @@ def test_an_unreadable_target_is_never_reported_absent(tmp_path):
     # confirms it rather than starting from another full scan.
     assert kept == identity
     (proc / "4321" / "environ").write_bytes(b"SteamAppId=620\x00")
-    assert _ce_launch.target_liveness(620, "game.exe", known=kept, proc_root=proc) == ("present", identity, False)
+    assert _ce_launch.target_liveness(620, "game.exe", known=kept, proc_root=proc) == ("present", identity, "running")
 
 
 def test_a_target_that_really_went_away_is_still_absent(tmp_path):
@@ -3216,7 +3333,7 @@ def test_a_target_that_really_went_away_is_still_absent(tmp_path):
     shutil.rmtree(proc / "4321")
 
     assert _ce_launch.inspect_target_identity(identity, proc_root=proc) == _ce_launch.TARGET_CHANGED
-    assert _ce_launch.target_liveness(620, "game.exe", known=identity, proc_root=proc) == ("absent", None, True)
+    assert _ce_launch.target_liveness(620, "game.exe", known=identity, proc_root=proc) == ("absent", None, "gone")
 
 
 def test_a_replaced_process_at_the_same_pid_is_still_absent(tmp_path):
@@ -3343,8 +3460,8 @@ def test_only_the_ambiguity_keeps_an_identity_on_a_non_present_state(tmp_path):
     import shutil
 
     shutil.rmtree(proc / "4321")
-    assert _ce_launch.target_liveness(620, "game.exe", known=identity, proc_root=proc) == ("absent", None, True)
-    assert _ce_launch.target_liveness(620, "", known=identity, proc_root=proc) == ("unknown", None, False)
+    assert _ce_launch.target_liveness(620, "game.exe", known=identity, proc_root=proc) == ("absent", None, "gone")
+    assert _ce_launch.target_liveness(620, "", known=identity, proc_root=proc) == ("unknown", None, "unknown")
 
 
 def test_an_unreadable_target_is_not_absent_even_with_nothing_cached(tmp_path):
@@ -3618,7 +3735,7 @@ def test_recovered_supervision_outlives_the_call_that_started_it(tmp_path: Path)
         # the real machine, because the recovered Cheat Engine holds the session.
         seen = iter(["present", "absent"])
         module.game_process_state = lambda pid, app_id, **kwargs: "matched"
-        module.target_liveness = lambda app_id, target, **kwargs: (next(seen, "absent"), None, False)
+        module.target_liveness = lambda app_id, target, **kwargs: (next(seen, "absent"), None, "unknown")
         try:
             # What the plugin's load does, as its own task, which is how the
             # host runs it. Awaited to completion here, exactly as `_main`

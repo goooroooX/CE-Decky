@@ -130,6 +130,15 @@ MAX_OBSERVED_STEAM_APP_IDS = 4
 # The only observation reason that proves the app has no process left at all.
 # Every other non-running reason means the scan itself could not answer.
 NO_MATCHING_PROCESS_REASON = "no running process reports this Steam AppID"
+# What one complete walk says about the game's own programs, apart from what
+# Steam and Proton run around them; see `_game_program_state`.
+GAME_RUNNING = "running"
+GAME_LEFT = "left"
+GAME_GONE = "gone"
+GAME_UNKNOWN = "unknown"
+# Consecutive walks that must find a game's programs gone, with only its Proton
+# session left behind, before that ends a launch whose target was never seen.
+GAME_LEFT_CONFIRMING_SCANS = 2
 # How many one-second supervision ticks pass between target-process scans. The
 # baseline check reads a handful of known PIDs; this one walks /proc.
 TARGET_SCAN_INTERVAL_TICKS = 3
@@ -578,6 +587,15 @@ def observe_running_app_ids(
     because a truncated observation must never look like "that game is not
     running".
     """
+    # Review note (static bug hunt of 0.9.32, F1, "residual Proton processes
+    # keep an exited game marked Running"): this observation is left as it is,
+    # by the maintainer's decision. What keeps a Proton session reporting the
+    # AppID after the game's own programs exit is the Cheat Engine this plugin
+    # attached, and while that is attached the game counting as running is what
+    # keeps Change refused, as DESIGN requires; supervision now stops that Cheat
+    # Engine once the game's programs are gone (`target_exit_is_proved`). How
+    # long a session lingers with no Cheat Engine at all is owed to a device
+    # measurement, in docs/FIELD_NOTES.md under Still worth checking.
     if not proc_root.is_dir():
         return RunningAppObservation(False, (), 0, "process table is unavailable")
     try:
@@ -1282,7 +1300,7 @@ def baseline_liveness(
 
 def scan_is_due(
     *, tick: int, baseline_gone: bool, baseline_was_gone: bool, target_seen: bool,
-    interval_ticks: int = TARGET_SCAN_INTERVAL_TICKS,
+    interval_ticks: int = TARGET_SCAN_INTERVAL_TICKS, confirming: bool = False,
 ) -> bool:
     """Whether this tick runs the full target scan rather than waiting for the interval.
 
@@ -1300,9 +1318,16 @@ def scan_is_due(
     actually running. Once the target has been seen, a baseline that is merely
     still gone is not news, and the ordinary interval applies again.
 
+    A walk that found the game's programs gone is confirmed by the very next
+    tick rather than the next interval (`confirming`), because the second look
+    is all that stands between that finding and a stop, and waiting three
+    seconds for it would only be a pause.
+
     Nothing here can end a launch. Only a complete scan returning `absent` may
     do that, and this only decides when a scan happens.
     """
+    if confirming:
+        return True
     if baseline_gone and not baseline_was_gone:
         return True
     if baseline_gone and not target_seen:
@@ -1310,7 +1335,20 @@ def scan_is_due(
     return tick % interval_ticks == 0
 
 
-def target_exit_is_proved(*, state: str, target_seen: bool, container_gone: bool) -> bool:
+def game_exit_progress(game: str, *, game_seen: bool, left_scans: int) -> tuple[bool, int]:
+    """What one walk adds to a session's evidence that its game left: `game_seen` and `left_scans`.
+
+    Both supervisors carry these two between walks and update them here, so the
+    rule `target_exit_is_proved` applies to them is fed the same way in both.
+    `left_scans` counts consecutive walks that found only the Proton session
+    left, and anything else resets it, `unknown` included.
+    """
+    return game_seen or game == GAME_RUNNING, left_scans + 1 if game == GAME_LEFT else 0
+
+
+def target_exit_is_proved(
+    *, state: str, target_seen: bool, game: str, game_seen: bool = False, left_scans: int = 0,
+) -> bool:
     """Whether a complete scan has proved this session's game is over.
 
     One rule, in one place, because there are two supervisors that have to
@@ -1322,16 +1360,32 @@ def target_exit_is_proved(*, state: str, target_seen: bool, container_gone: bool
     for had ever started.
 
     Only a complete scan reaching `absent` can prove anything here, and then
-    only in two situations. The target was seen alive earlier and is not there
-    now, which is the game's process exiting. Or nothing on the machine reports
-    this AppID at all, which is the game being gone whether or not this session
-    ever saw its target: there is no longer anything for the target to appear
-    in. Everything else, an ambiguous scan included, is a session still
-    converging, and the answer is to keep waiting.
+    only in three situations. The target was seen alive earlier and is not
+    there now, which is the game's process exiting. Or nothing on the machine
+    reports this AppID at all, which is the game being gone whether or not this
+    session ever saw its target: there is no longer anything for the target to
+    appear in.
+
+    Or the game's own programs have gone and what still reports its AppID is
+    the Proton session around them: `wineserver`, the Proton chain, Steam's
+    reaper and Wine's own services. Cheat Engine is a client of that session,
+    so it is what keeps the session alive, and waiting for the session to go
+    before stopping Cheat Engine never ends; a launch whose target was never
+    seen sat attached to a game that had exited for as long as nobody pressed
+    Stop. That is only believed of a session that has seen one of the game's
+    programs running, so a launch made while Proton was still starting the game
+    is not ended before the game arrives, and only on two consecutive walks, so
+    a launcher that exits a moment before the game it starts is not taken for
+    the game leaving.
+
+    Everything else, an ambiguous scan included, is a session still converging,
+    and the answer is to keep waiting.
     """
     if state != "absent":
         return False
-    return target_seen or container_gone
+    if target_seen or game == GAME_GONE:
+        return True
+    return game == GAME_LEFT and game_seen and left_scans >= GAME_LEFT_CONFIRMING_SCANS
 
 
 def game_target_state(
@@ -1692,6 +1746,39 @@ def run_identities_gone(identities: Sequence[TargetIdentity], *, proc_root: Path
     return True
 
 
+def _unreadable_program_candidate(observation: GameContainerObservation, proc_root: Path) -> bool:
+    """Whether a process the walk could not attribute is running some Windows program.
+
+    The same blind spot `_unreadable_target_candidate` covers for one exact
+    target, asked of any program: a game's program the walk skipped because
+    procfs refused its environment would otherwise be counted as gone.
+    """
+    return any(_declared_windows_executable(pid, proc_root) is not None for pid in observation.unreadable_pids)
+
+
+def _game_program_state(observation: GameContainerObservation, proc_root: Path) -> str:
+    """What one walk says about the game's own programs, apart from what runs around them.
+
+    A Proton game's own programs are the Windows executables it runs from its
+    install. Everything else that reports its AppID is the session around
+    them: Steam's reaper and launch wrapper, the Proton script, `wineserver`,
+    and the programs Wine runs from the prefix's own Windows directory, which
+    `windows_executables` already leaves out. `left` is only said of a walk
+    that could prove it: complete, with one unconflicted compatibility
+    environment and a Wine prefix, and no unreadable process running a Windows
+    program. A native game has no Wine prefix, so it is never `left`.
+    """
+    if not observation.running:
+        return GAME_GONE if observation.reason == NO_MATCHING_PROCESS_REASON else GAME_UNKNOWN
+    if observation.windows_executables:
+        return GAME_RUNNING
+    if observation.reason is not None or observation.wine_prefix is None:
+        return GAME_UNKNOWN
+    if _unreadable_program_candidate(observation, proc_root):
+        return GAME_UNKNOWN
+    return GAME_LEFT
+
+
 def target_liveness(
     app_id: int,
     target_process: str,
@@ -1699,8 +1786,8 @@ def target_liveness(
     known: TargetIdentity | None = None,
     proc_root: Path = Path("/proc"),
     max_processes: int = MAX_SCANNED_PROCESSES,
-) -> tuple[str, TargetIdentity | None, bool]:
-    """The target's state, the identity to confirm it by, and whether the game is gone.
+) -> tuple[str, TargetIdentity | None, str]:
+    """The target's state, the identity to confirm it by, and what is left of the game.
 
     The process-table walk is the most expensive thing this backend does, and
     almost all of what it costs is reading an environment for every process on
@@ -1712,24 +1799,26 @@ def target_liveness(
     ever answer `present`. Nothing may be called `absent` without a complete
     scan, because only the complete table can prove a process is not in it.
 
-    The third answer is the difference between two absences that look identical
+    The third answer is the difference between absences that look identical
     from outside and mean opposite things. A target can be absent because the
     game is running and has not started that executable yet, which is what an
-    ordinary launcher handoff looks like for as long as it takes; or because
-    nothing on the machine reports this AppID at all, which is the game itself
-    being gone. Only a complete walk that found no process for the app may say
-    the second, so a truncated table, an unreadable one and a bounded PID set
-    each say nothing here, exactly as they say nothing about `absent`.
+    ordinary launcher handoff looks like for as long as it takes (`running`);
+    because nothing on the machine reports this AppID at all (`gone`); or
+    because the game's programs have all exited and only the Proton session
+    that Cheat Engine keeps alive is left (`left`). Only a complete walk that
+    reached `absent` may say either of the last two, so a truncated table, an
+    unreadable one and a bounded PID set each say `unknown` here, exactly as
+    they say nothing about `absent`.
     """
     inspection = None
     if known is not None:
         inspection = inspect_target_identity(known, proc_root=proc_root)
         if inspection == TARGET_CONFIRMED:
-            return "present", known, False
+            return "present", known, GAME_RUNNING
 
     app_id = _app_id(app_id)
     if not _process_basename(target_process):
-        return "unknown", None, False
+        return "unknown", None, GAME_UNKNOWN
     # One walk, feeding both answers. Taking a second for the identity paid the
     # most expensive path here twice, and counted only the first of them.
     with poll_counters.timed(poll_counters.SUPERVISOR_TARGET_SCAN):
@@ -1741,27 +1830,23 @@ def target_liveness(
         )
 
     if state == "present":
-        return state, identity, False
+        return state, identity, GAME_RUNNING
     if inspection == TARGET_UNREADABLE:
         # The confirmation could not read the target's environment, and the scan
         # is blind in exactly the same way: it skips a process it cannot
         # attribute to an app. So nothing here may be called absent, and the
         # identity is kept rather than dropped, because the moment procfs
         # answers again the cheap confirmation settles it without another walk.
-        return ("unknown" if state == "absent" else state), known, False
+        return ("unknown" if state == "absent" else state), known, GAME_UNKNOWN
     # Read off the same walk, and only where that walk was allowed to prove an
     # absence at all: `state` is `absent` only for a complete table with no
     # unreadable process running the target, and the reason separates "walked
     # the whole table and nothing reports this app" from every bound and refusal
     # the walk reports instead.
-    container_gone = (
-        state == "absent"
-        and not observation.running
-        and observation.reason == NO_MATCHING_PROCESS_REASON
-    )
+    game = _game_program_state(observation, proc_root) if state == "absent" else GAME_UNKNOWN
     # Otherwise an identity is dropped the moment the scan stops confirming it,
     # so a stale one can never be offered back and re-confirmed by accident.
-    return state, None, container_gone
+    return state, None, game
 
 
 def owned_process_state(
@@ -3056,6 +3141,12 @@ class CELaunchSupervisor:
             # the game again before it was allowed to notice the game leaving,
             # so a game that exited during the reload was never noticed at all.
             target_seen = record.get("target_seen") is True
+            # Whether one of the game's programs has been seen running, which
+            # `target_exit_is_proved` asks before it believes the game left its
+            # Proton session behind. Not written down: after a reload it is
+            # learned again, and until then only the older proofs can end this.
+            game_seen = target_seen
+            left_scans = 0
             tick = 0
             # Whichever baseline PID last proved the game alive. An ordering
             # hint for the next tick and nothing else; see `baseline_liveness`.
@@ -3086,6 +3177,7 @@ class CELaunchSupervisor:
                     due = scan_is_due(
                         tick=tick, baseline_gone=baseline_gone,
                         baseline_was_gone=baseline_was_gone, target_seen=target_seen,
+                        confirming=left_scans > 0,
                     )
                     baseline_was_gone = baseline_gone
                     if not due:
@@ -3103,9 +3195,10 @@ class CELaunchSupervisor:
                             self.logger, "info", "ce_launch.supervised_target_changed",
                             app_id=app_id, session=str(record.get("session_id") or "")[:12],
                         )
-                    state, identity, container_gone = await asyncio.to_thread(
+                    state, identity, game = await asyncio.to_thread(
                         target_liveness, app_id, target_process, known=identity,
                     )
+                    game_seen, left_scans = game_exit_progress(game, game_seen=game_seen, left_scans=left_scans)
                     if state == "present" and not target_seen:
                         target_seen = True
                         await asyncio.to_thread(
@@ -3125,9 +3218,15 @@ class CELaunchSupervisor:
                     # PID set disappearing is the handoff this loop exists to
                     # sit through, not the game leaving.
                     if not target_exit_is_proved(
-                        state=state, target_seen=target_seen, container_gone=container_gone,
+                        state=state, target_seen=target_seen, game=game,
+                        game_seen=game_seen, left_scans=left_scans,
                     ):
                         continue
+                    if not target_seen and game == GAME_LEFT:
+                        log_activity(
+                            self.logger, "info", "ce_launch.game_left_session",
+                            app_id=app_id, session=str(record.get("session_id") or "")[:12],
+                        )
                 elif not baseline_gone:
                     # A record from before target identity existed has nothing
                     # else to supervise against.
@@ -3785,6 +3884,11 @@ class CELaunchSupervisor:
                     # process the session was prepared for is what actually
                     # observes the game leaving.
                     target_seen = target_seen_at_launch
+                    # Whether one of the game's programs has been seen running;
+                    # see `target_exit_is_proved`. A launch made while the game
+                    # runs one, which is the ordinary case, has seen it already.
+                    game_seen = target_seen or bool(observation is not None and observation.windows_executables)
+                    left_scans = 0
                     # A game normally starts through a launcher or a bootstrap
                     # process, and the PIDs observed at launch time are whatever
                     # was running at that instant. Every one of them can exit
@@ -3830,6 +3934,7 @@ class CELaunchSupervisor:
                         due = scan_is_due(
                             tick=tick, baseline_gone=baseline_gone,
                             baseline_was_gone=baseline_was_gone, target_seen=target_seen,
+                            confirming=left_scans > 0,
                         )
                         baseline_was_gone = baseline_gone
                         if not due:
@@ -3849,8 +3954,11 @@ class CELaunchSupervisor:
                                 self.logger, "info", "ce_launch.supervised_target_changed",
                                 app_id=plan.app_id, session=plan.session_id[:12],
                             )
-                        state, identity, container_gone = await asyncio.to_thread(
+                        state, identity, game = await asyncio.to_thread(
                             target_liveness, plan.app_id, target_process, known=identity,
+                        )
+                        game_seen, left_scans = game_exit_progress(
+                            game, game_seen=game_seen, left_scans=left_scans,
                         )
                         if state == "present" and not target_seen:
                             # Only a target that was actually seen may later be
@@ -3869,7 +3977,8 @@ class CELaunchSupervisor:
                             plan.app_id, plan.session_id, state, identity, target_seen, logged_target,
                         )
                         if target_exit_is_proved(
-                            state=state, target_seen=target_seen, container_gone=container_gone,
+                            state=state, target_seen=target_seen, game=game,
+                            game_seen=game_seen, left_scans=left_scans,
                         ):
                             # Absent alone ends a launch only for a target that
                             # was actually seen; a launch prepared before the
@@ -3886,11 +3995,17 @@ class CELaunchSupervisor:
                             # Engine in the middle of the startup this loop is
                             # supposed to wait out, on precisely the sessions
                             # whose target had not appeared yet.
-                            self._set(operation_id, message=(
-                                "The game's target process exited; stopping owned Cheat Engine"
-                                if target_seen else
-                                "The game is no longer running; stopping owned Cheat Engine"
-                            ))
+                            if target_seen:
+                                message = "The game's target process exited; stopping owned Cheat Engine"
+                            elif game == GAME_LEFT:
+                                message = "The game exited and only its Proton session is left; stopping owned Cheat Engine"
+                                log_activity(
+                                    self.logger, "info", "ce_launch.game_left_session",
+                                    app_id=plan.app_id, session=plan.session_id[:12],
+                                )
+                            else:
+                                message = "The game is no longer running; stopping owned Cheat Engine"
+                            self._set(operation_id, message=message)
                             await self._stop_process(operation_id)
                             break
                     if process.returncode is None:
