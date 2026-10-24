@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.32 — 2026-10-24
+
+- [Fixed] A game running under a Proton that the distribution's package manager installed, such as `proton-cachyos` on CachyOS, can start Cheat Engine. Proton builds in `/usr/share/steam/compatibilitytools.d` and `/usr/local/share/steam/compatibilitytools.d` were never offered, so the launch was refused with "no installed Proton tool matches the running game's compatibility tool paths".
+
 ## 0.9.31 — 2026-10-23
 
 - [Changed] Auto-load gives a game ten seconds from the start of its program to load before starting Cheat Engine in it, so a table's scans no longer run against a game that has not loaded yet and fail; its row counts the wait down, and a panel opened later into the game does not wait at all.

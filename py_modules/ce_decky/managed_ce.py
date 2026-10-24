@@ -242,6 +242,20 @@ def discover_steam_library_roots(user_home: Path) -> tuple[list[Path], list[Path
     return sorted(steam_roots, key=str), sorted(libraries, key=str)
 
 
+# The system-wide compatibility tool directories Steam reads beside each Steam
+# root's own, which is where a distribution package installs its Proton (the
+# CachyOS `proton-cachyos` packages, for one). A game running under one reports
+# it in `STEAM_COMPAT_TOOL_PATHS`, and a tool this discovery never offered can
+# never match that observation. `STEAM_EXTRA_COMPAT_TOOLS_PATHS` is the third
+# source Steam reads and is not read here: it is set in the Steam client's own
+# environment, which this backend does not share, so whatever it held would
+# be a guess. `docs/FIELD_NOTES.md` **Upstream references** names the sources.
+SYSTEM_COMPAT_TOOL_ROOTS: tuple[Path, ...] = (
+    Path("/usr/share/steam/compatibilitytools.d"),
+    Path("/usr/local/share/steam/compatibilitytools.d"),
+)
+
+
 def discover_proton_tools(user_home: Path) -> list[ProtonTool]:
     """Discover exact installed Proton scripts; the controller chooses one identity."""
     steam_roots, libraries = discover_steam_library_roots(user_home)
@@ -253,12 +267,15 @@ def discover_proton_tools(user_home: Path) -> list[ProtonTool]:
             for item in _bounded_directories(common, 512):
                 if item.name.casefold().startswith("proton") and (item / "proton").is_file():
                     candidates.append((item, "steam-library"))
-    for root in steam_roots:
-        custom = root / "compatibilitytools.d"
+    # System directories first: a tool reached from both answers under the
+    # user's own directory, because the later candidate of one identity wins.
+    custom_roots = [(root, "system-compatibilitytools.d") for root in SYSTEM_COMPAT_TOOL_ROOTS]
+    custom_roots += [(root / "compatibilitytools.d", "compatibilitytools.d") for root in steam_roots]
+    for custom, source in custom_roots:
         if custom.is_dir():
             for item in _bounded_directories(custom, 256):
                 if (item / "proton").is_file():
-                    candidates.append((item, "compatibilitytools.d"))
+                    candidates.append((item, source))
 
     tools: dict[str, ProtonTool] = {}
     for root, source in candidates:
@@ -1470,5 +1487,13 @@ def _steam_root_for_tool(tool_root: Path, user_home: Path) -> Path:
         except (OSError, RuntimeError, ValueError):
             continue
     if existing_roots:
-        return existing_roots[0]
+        # A tool outside every Steam root, such as a distribution's Proton or
+        # one in another library, runs under the Steam client Steam reports in
+        # `STEAM_COMPAT_CLIENT_INSTALL_PATH`, which Valve documents as the
+        # target of `~/.steam/root`. The launch compares the two, so answering
+        # with another root that happens to exist refused a game it could run.
+        try:
+            return (user_home / ".steam/root").resolve(strict=True)
+        except (OSError, RuntimeError):
+            return existing_roots[0]
     raise ValueError("Steam client root is unavailable for the selected Proton tool")

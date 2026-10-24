@@ -44,7 +44,8 @@ from ce_decky.ce_launch import (
     resolve_game_mode_display,
     resolve_compat_data,
 )
-from ce_decky.managed_ce import ProtonTool, discover_proton_tools
+from ce_decky import managed_ce
+from ce_decky.managed_ce import ProtonTool, _steam_root_for_tool, discover_proton_tools
 from ce_decky.paths import PluginPaths
 from ce_decky.session_protocol import RuntimeStatus, parse_descriptor, render_status
 
@@ -942,6 +943,55 @@ def test_discover_proton_tools_still_reads_declared_extra_libraries(tmp_path: Pa
     home = _steam_home(tmp_path, app_id=220, libraries=[second])
     tools = discover_proton_tools(home)
     assert [tool.name for tool in tools] == ["Proton 10"]
+
+
+def test_a_game_under_a_distribution_proton_is_matched_to_it(tmp_path: Path, monkeypatch):
+    # A distribution package installs its Proton outside every Steam root, and
+    # Steam names that directory in the game's own tool paths.
+    system = tmp_path / "usr/share/steam/compatibilitytools.d"
+    (system / "proton-cachyos-slr").mkdir(parents=True)
+    script = system / "proton-cachyos-slr/proton"
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    monkeypatch.setattr(managed_ce, "SYSTEM_COMPAT_TOOL_ROOTS", (system,))
+    home = _steam_home(tmp_path, app_id=424242)
+    steam = (home / ".local/share/Steam").resolve()
+    proc = tmp_path / "proc"
+    _proc(proc, 50, {
+        "SteamAppId": "424242",
+        "STEAM_COMPAT_DATA_PATH": str(steam / "steamapps/compatdata/424242"),
+        "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(steam),
+        "STEAM_COMPAT_TOOL_PATHS": f"{system / 'proton-cachyos-slr'}:{steam}/steamapps/common/SteamLinuxRuntime_sniper",
+    })
+
+    matched, reason = match_observed_proton(observe_game_container(424242, proc_root=proc), discover_proton_tools(home))
+
+    assert reason is None
+    assert matched is not None and matched.source == "system-compatibilitytools.d"
+    # Outside every Steam root, the tool runs under the user's own Steam
+    # client, which is what Steam reports to the game and what the launch
+    # compares that report with.
+    assert _steam_root_for_tool(Path(matched.path), home) == steam
+
+
+def test_a_tool_outside_every_steam_root_runs_under_the_client_steam_reports(tmp_path: Path):
+    # Steam reports the target of `~/.steam/root` to the game, and the launch
+    # compares that report with this answer, so another root that merely
+    # exists is the wrong one.
+    home = tmp_path / "home"
+    (home / ".local/share/Steam").mkdir(parents=True)
+    client = tmp_path / "steam-client"
+    client.mkdir()
+    (home / ".steam").mkdir()
+    (home / ".steam/root").symlink_to(client, target_is_directory=True)
+    tool = tmp_path / "usr/share/steam/compatibilitytools.d/proton-cachyos-slr"
+    tool.mkdir(parents=True)
+
+    assert _steam_root_for_tool(tool, home) == client.resolve()
+    # A tool inside a Steam root still answers with that root.
+    inside = home / ".local/share/Steam/compatibilitytools.d/GE-Proton10-28"
+    inside.mkdir(parents=True)
+    assert _steam_root_for_tool(inside, home) == (home / ".local/share/Steam").resolve()
 
 
 def test_module_documents_the_reused_proton_verb():

@@ -133,6 +133,56 @@ def test_installer_output_is_safe_for_qam_and_logs():
     assert _safe_status_text("before\n\x1b[31m\u202eafter", 100) == "before  [31m after"
 
 
+def _system_proton(root: Path, name: str) -> Path:
+    tool = root / name
+    tool.mkdir(parents=True)
+    script = tool / "proton"
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    return tool
+
+
+def test_proton_discovery_reads_the_system_compatibility_tool_directories(tmp_path: Path, monkeypatch):
+    paths = PluginPaths.for_tests(tmp_path)
+    paths.ensure()
+    _proton(paths)
+    usr = tmp_path / "usr/share/steam/compatibilitytools.d"
+    local = tmp_path / "usr/local/share/steam/compatibilitytools.d"
+    packaged = _system_proton(usr, "proton-cachyos-slr")
+    built = _system_proton(local, "GE-Proton10-28")
+    # A directory there that is not a Proton build is not offered.
+    (usr / "SteamTinkerLaunch").mkdir()
+    monkeypatch.setattr(managed_ce, "SYSTEM_COMPAT_TOOL_ROOTS", (usr, local, tmp_path / "missing"))
+
+    tools = discover_proton_tools(paths.user_home)
+
+    assert [(tool.name, tool.path, tool.source) for tool in tools] == [
+        ("GE-Proton10-28", str(built.resolve()), "system-compatibilitytools.d"),
+        ("Proton 10", str((paths.user_home / ".local/share/Steam/steamapps/common/Proton 10").resolve()), "steam-library"),
+        ("proton-cachyos-slr", str(packaged.resolve()), "system-compatibilitytools.d"),
+    ]
+
+
+def test_proton_discovery_names_a_tool_reached_from_both_by_the_users_directory(tmp_path: Path, monkeypatch):
+    paths = PluginPaths.for_tests(tmp_path)
+    paths.ensure()
+    usr = tmp_path / "usr/share/steam/compatibilitytools.d"
+    tool = _system_proton(usr, "proton-cachyos-slr")
+    steam = paths.user_home / ".local/share/Steam"
+    steam.mkdir(parents=True)
+    (steam / "compatibilitytools.d").symlink_to(usr, target_is_directory=True)
+    monkeypatch.setattr(managed_ce, "SYSTEM_COMPAT_TOOL_ROOTS", (usr,))
+
+    tools = discover_proton_tools(paths.user_home)
+
+    assert [(item.path, item.source) for item in tools] == [(str(tool.resolve()), "compatibilitytools.d")]
+
+
+def test_proton_discovery_reads_no_system_directory_a_test_did_not_name():
+    # The suite's own guard, which every other discovery test relies on.
+    assert managed_ce.SYSTEM_COMPAT_TOOL_ROOTS == ()
+
+
 def test_proton_discovery_returns_exact_script_identity(tmp_path: Path):
     paths = PluginPaths.for_tests(tmp_path)
     paths.ensure()

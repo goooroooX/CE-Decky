@@ -28,6 +28,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "py_modules"))
 
+from ce_decky.managed_ce import SYSTEM_COMPAT_TOOL_ROOTS  # noqa: E402
 from ce_decky.network_tls import build_verified_ssl_context, candidate_ca_bundles  # noqa: E402
 
 
@@ -104,6 +105,9 @@ def _compatibility_tools(home: Path) -> list[dict[str, object]]:
         home / ".steam/steam/steamapps/common",
         home / ".local/share/Steam/compatibilitytools.d",
         home / ".steam/steam/compatibilitytools.d",
+        # Where a distribution package installs its Proton, read from the
+        # production discovery's own list so the two cannot drift apart.
+        *SYSTEM_COMPAT_TOOL_ROOTS,
     ]
     items: list[dict[str, object]] = []
     seen: set[str] = set()
