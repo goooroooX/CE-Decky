@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add one entry to the top of the current version of `CHANGELOG.md`, or move its date.
+"""Add one entry to the top of the current version of `CHANGELOG.md`, move its date, or start the next version.
 
 Every bug-fix round ends by writing entries here, and the mechanical half of
 that is the same every time: find the newest version heading, and put the new
@@ -24,6 +24,16 @@ hand and forgetting the other is the failure it removes; it refuses a version
 the two files and `package.json` do not already agree on, because a date move
 is not how a version is changed.
 
+`version` is how a version is changed. It is written in four places, which
+`scripts/check_release.py` holds equal: `package.json`, the backend's
+`__version__`, `AGENTS.md` and a new changelog heading, which gets no entries
+until the first change on it is written there. The next version is the current
+one with its last component advanced, because before 1.0 nothing else moves; a
+version is named only for the step the maintainer takes on purpose, such as
+1.0.0. It refuses four places that do not already agree, a version that is
+not after the current one, a second component moved before 1.0, and a current
+version with no entries, which is the one a change belongs under.
+
 Standard library only, like every other script here.
 """
 
@@ -39,6 +49,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
 PACKAGE = ROOT / "package.json"
 AGENTS = ROOT / "AGENTS.md"
+BACKEND_INIT = ROOT / "py_modules" / "ce_decky" / "__init__.py"
 
 HEADING = re.compile(r"^## (?P<version>\S+) — (?P<date>\d{4}-\d{2}-\d{2})$")
 ALLOWED_LABELS = ("New", "Changed", "Fixed", "Security", "Limitation")
@@ -46,6 +57,9 @@ LABELLED = re.compile(r"^\[(?P<label>[A-Za-z]+)\] \S")
 EM_DASH = "—"
 AGENTS_VERSION = re.compile(r"^Current development version: \*\*(?P<version>\S+) — (?P<date>\d{4}-\d{2}-\d{2})\*\*$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+PACKAGE_VERSION = re.compile(r'^(?P<lead>\s*"version":\s*")(?P<version>[^"]+)(?P<tail>",?)$', re.MULTILINE)
+INIT_VERSION = re.compile(r'^(?P<lead>__version__\s*=\s*")(?P<version>[^"]+)(?P<tail>")$', re.MULTILINE)
 
 
 def _current_version() -> str:
@@ -118,12 +132,7 @@ def set_date(
     date: str, *, changelog: list[str], agents: list[str], version: str,
 ) -> tuple[list[str], list[str]]:
     """Both files with the current version's date set to `date`."""
-    if not DATE.match(date):
-        raise SystemExit(f"a date is YYYY-MM-DD, not {date!r}")
-    try:
-        datetime.date.fromisoformat(date)
-    except ValueError as error:
-        raise SystemExit(f"{date} is not a calendar date: {error}") from None
+    _checked_date(date)
     top = next((index for index, line in enumerate(changelog) if line.startswith("## ")), None)
     heading = HEADING.match(changelog[top]) if top is not None else None
     if heading is None:
@@ -146,6 +155,76 @@ def set_date(
     return changelog, agents
 
 
+def _checked_date(date: str) -> str:
+    if not DATE.match(date):
+        raise SystemExit(f"a date is YYYY-MM-DD, not {date!r}")
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError as error:
+        raise SystemExit(f"{date} is not a calendar date: {error}") from None
+    return date
+
+
+def _version_parts(version: str) -> tuple[int, int, int]:
+    match = VERSION.match(version)
+    if not match:
+        raise SystemExit(f"a version is MAJOR.MINOR.PATCH, not {version!r}")
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def start_version(
+    new: str | None, date: str, *, changelog: list[str], agents: list[str], package: str, backend_init: str,
+) -> tuple[str, list[str], list[str], str, str]:
+    """The next version, and all four places with it written in.
+
+    Returns the version and the changelog, `AGENTS.md`, `package.json` and
+    backend `__init__.py` as they should now read.
+    """
+    _checked_date(date)
+    top = next((index for index, line in enumerate(changelog) if line.startswith("## ")), None)
+    heading = HEADING.match(changelog[top]) if top is not None else None
+    if heading is None:
+        raise SystemExit("CHANGELOG.md has no well-formed newest version heading")
+    line = next((index for index, text in enumerate(agents) if AGENTS_VERSION.match(text)), None)
+    if line is None:
+        raise SystemExit("AGENTS.md has no `Current development version` line")
+    package_matches = list(PACKAGE_VERSION.finditer(package))
+    init_matches = list(INIT_VERSION.finditer(backend_init))
+    if len(package_matches) != 1 or len(init_matches) != 1:
+        raise SystemExit("package.json and the backend __init__.py each need exactly one version line")
+    versions = {
+        "package.json": package_matches[0].group("version"),
+        "__init__.py": init_matches[0].group("version"),
+        "CHANGELOG.md": heading.group("version"),
+        "AGENTS.md": AGENTS_VERSION.match(agents[line]).group("version"),
+    }
+    if len(set(versions.values())) != 1:
+        raise SystemExit(
+            "the version is not synchronized ("
+            + ", ".join(f"{name} {value}" for name, value in versions.items())
+            + "); synchronize it before starting another"
+        )
+    current = versions["package.json"]
+    following = next((index for index in range(top + 1, len(changelog)) if changelog[index].startswith("## ")), len(changelog))
+    if not any(changelog[index].startswith("- ") for index in range(top + 1, following)):
+        raise SystemExit(f"{current} has no entries yet; a change belongs under it rather than under another version")
+    before = _version_parts(current)
+    if new is None:
+        new = f"{before[0]}.{before[1]}.{before[2] + 1}"
+    after = _version_parts(new)
+    if after <= before:
+        raise SystemExit(f"{new} is not after {current}")
+    if before[0] == 0 and after[0] == 0 and after[1] != before[1]:
+        raise SystemExit(f"before 1.0 only the last component advances, so {new} cannot follow {current}")
+
+    changelog = changelog[:top] + [f"## {new} {EM_DASH} {date}", ""] + changelog[top:]
+    agents = list(agents)
+    agents[line] = f"Current development version: **{new} {EM_DASH} {date}**"
+    package = PACKAGE_VERSION.sub(lambda match: f"{match.group('lead')}{new}{match.group('tail')}", package)
+    backend_init = INIT_VERSION.sub(lambda match: f"{match.group('lead')}{new}{match.group('tail')}", backend_init)
+    return new, changelog, agents, package, backend_init
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -153,7 +232,30 @@ def main() -> None:
     adder.add_argument("entry", help='the entry, starting with its label: "[Fixed] ..."')
     dater = subcommands.add_parser("date", help="move the current version's date in AGENTS.md and CHANGELOG.md")
     dater.add_argument("date", nargs="?", help="YYYY-MM-DD; today's local date when omitted")
+    starter = subcommands.add_parser(
+        "version", help="start the next version in package.json, __init__.py, AGENTS.md and CHANGELOG.md",
+    )
+    starter.add_argument(
+        "version", nargs="?", help="the version to start; the current one with its last component advanced when omitted",
+    )
+    starter.add_argument("--date", help="YYYY-MM-DD; today's local date when omitted")
     arguments = parser.parse_args()
+
+    if arguments.command == "version":
+        new, changelog, agents, package, backend_init = start_version(
+            arguments.version,
+            arguments.date or datetime.date.today().isoformat(),
+            changelog=CHANGELOG.read_text(encoding="utf-8").splitlines(),
+            agents=AGENTS.read_text(encoding="utf-8").splitlines(),
+            package=PACKAGE.read_text(encoding="utf-8"),
+            backend_init=BACKEND_INIT.read_text(encoding="utf-8"),
+        )
+        CHANGELOG.write_text("\n".join(changelog) + "\n", encoding="utf-8")
+        AGENTS.write_text("\n".join(agents) + "\n", encoding="utf-8")
+        PACKAGE.write_text(package, encoding="utf-8")
+        BACKEND_INIT.write_text(backend_init, encoding="utf-8")
+        print(f"changelog: started {new} in package.json, __init__.py, AGENTS.md and CHANGELOG.md")
+        return
 
     version = _current_version()
     if arguments.command == "date":

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.changelog import add_entry, set_date
+from scripts.changelog import add_entry, set_date, start_version
 
 CURRENT = [
     "# Changelog",
@@ -128,3 +128,73 @@ def test_a_date_move_is_not_a_version_change():
     # the date would hide that behind a matching day.
     with pytest.raises(SystemExit, match="not synchronized"):
         set_date("2026-09-05", changelog=list(CURRENT), agents=list(AGENTS_LINES), version="0.9.15")
+
+
+PACKAGE = '{\n  "name": "ce-decky",\n  "version": "0.9.14",\n  "license": "GPL-3.0"\n}\n'
+BACKEND_INIT = '"""CE Decky backend package."""\n\n__version__ = "0.9.14"\n'
+
+
+def _start(new=None, *, changelog=CURRENT, agents=AGENTS_LINES, package=PACKAGE, backend_init=BACKEND_INIT):
+    return start_version(
+        new, "2026-09-06", changelog=list(changelog), agents=list(agents),
+        package=package, backend_init=backend_init,
+    )
+
+
+def test_the_next_version_is_written_in_all_four_places_and_takes_its_first_entry():
+    version, changelog, agents, package, backend_init = _start()
+
+    assert version == "0.9.15"
+    assert changelog[4:7] == ["## 0.9.15 — 2026-09-06", "", "## 0.9.14 — 2026-09-04"]
+    assert agents[2] == "Current development version: **0.9.15 — 2026-09-06**"
+    assert package == PACKAGE.replace('"0.9.14"', '"0.9.15"')
+    assert backend_init == BACKEND_INIT.replace('"0.9.14"', '"0.9.15"')
+    # And the first entry lands under the new heading, with the older version
+    # kept apart from it.
+    written = add_entry("[Fixed] The first change on it.", lines=changelog, version=version)
+    assert written[4:9] == [
+        "## 0.9.15 — 2026-09-06", "", "- [Fixed] The first change on it.", "", "## 0.9.14 — 2026-09-04",
+    ]
+
+
+def test_a_version_after_the_ninth_is_compared_as_a_number():
+    # There is no 0.10, and 0.9.10 follows 0.9.9 rather than coming before it.
+    nine = {
+        "changelog": [line.replace("0.9.14", "0.9.9") for line in CURRENT],
+        "agents": [line.replace("0.9.14", "0.9.9") for line in AGENTS_LINES],
+        "package": PACKAGE.replace("0.9.14", "0.9.9"),
+        "backend_init": BACKEND_INIT.replace("0.9.14", "0.9.9"),
+    }
+    assert _start(**nine)[0] == "0.9.10"
+    with pytest.raises(SystemExit, match="is not after"):
+        _start("0.9.8", **nine)
+
+
+@pytest.mark.parametrize(("new", "message"), [
+    ("0.9.14", "is not after"),
+    ("0.9.13", "is not after"),
+    ("0.10.0", "only the last component advances"),
+    ("0.9", "MAJOR.MINOR.PATCH"),
+])
+def test_a_version_that_is_not_the_next_step_is_refused(new, message):
+    with pytest.raises(SystemExit, match=message):
+        _start(new)
+
+
+def test_the_maintainers_own_step_to_one_is_taken_as_named():
+    version, changelog, *_ = _start("1.0.0")
+    assert version == "1.0.0" and changelog[4] == "## 1.0.0 — 2026-09-06"
+
+
+def test_a_version_is_not_started_over_four_places_that_disagree():
+    with pytest.raises(SystemExit, match="not synchronized"):
+        _start(backend_init=BACKEND_INIT.replace("0.9.14", "0.9.13"))
+
+
+def test_a_version_with_no_entries_is_where_a_change_goes_rather_than_another():
+    _, empty, *_ = _start()
+    with pytest.raises(SystemExit, match="has no entries yet"):
+        start_version(
+            None, "2026-09-07", changelog=empty, agents=["Current development version: **0.9.15 — 2026-09-06**"],
+            package=PACKAGE.replace("0.9.14", "0.9.15"), backend_init=BACKEND_INIT.replace("0.9.14", "0.9.15"),
+        )

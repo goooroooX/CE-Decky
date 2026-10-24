@@ -666,6 +666,20 @@ It changes those two lines and nothing else, and refuses a malformed or
 impossible date and a version the two files and `package.json` do not already
 agree on, because moving a date is not how a version is changed.
 
+Starting the next version writes it in all four places it lives, `package.json`,
+the backend `__version__`, `AGENTS.md` and a new empty changelog heading that the
+next `add` fills:
+
+```bash
+python scripts/changelog.py version                  # 0.9.32 becomes 0.9.33, dated today
+python scripts/changelog.py version 1.0.0 --date 2026-11-01
+```
+
+Without a version it advances the last component, which is the only one that
+moves before 1.0. It refuses four places that disagree, a version that is not
+after the current one, a second component moved before 1.0, and a current
+version that has no entries yet, because that one is where the change belongs.
+
 To prepare a release without publishing it:
 
 1. Confirm the synchronized development version and date in `package.json`, `AGENTS.md`, and `CHANGELOG.md`.
