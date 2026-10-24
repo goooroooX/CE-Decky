@@ -96,6 +96,35 @@ def test_frontend_ts_component_tests_are_classified_as_frontend_changes():
     assert qa._is_frontend_change("tests/uiModel.test.ts") is True
 
 
+@pytest.fixture
+def toolchains(monkeypatch, tmp_path: Path) -> None:
+    """Both runners installed, whatever this checkout has.
+
+    A test about the command a stage would run is not a test of whether the
+    machine running it was bootstrapped: without this, a fresh clone builds an
+    INCOMPLETE stage with no command and the test fails on a tree with no
+    defect. What a missing toolchain does is tested on its own.
+    """
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    vitest = tmp_path / "node_modules/vitest/vitest.mjs"
+    vitest.parent.mkdir(parents=True)
+    vitest.write_text("", encoding="utf-8")
+    monkeypatch.setattr(qa, "_node", lambda: "node")
+    monkeypatch.setattr(qa, "_development_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(qa, "_python_has", lambda *_args: True)
+
+
+def test_a_focused_selection_without_its_toolchain_is_incomplete_rather_than_failed(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    monkeypatch.setattr(qa, "_node", lambda: "node")
+    monkeypatch.setattr(qa, "_development_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(qa, "_python_has", lambda *_args: False)
+    [frontend] = qa._explicit_vitest_stages(["tests/uiModel.test.ts"])
+    assert (frontend.command, frontend.incomplete_reason) == ((), "frontend toolchain is absent; rerun with --bootstrap")
+    [backend] = qa._explicit_pytest_stages(["tests/test_qa.py"])
+    assert (backend.command, backend.incomplete_reason) == ((), "Python dev dependencies are absent; rerun with --bootstrap")
+
+
 def test_frontend_core_is_incomplete_instead_of_failed_when_typescript_is_missing(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(qa, "ROOT", tmp_path)
     monkeypatch.setattr(qa, "_node", lambda: "/usr/bin/node")
@@ -540,13 +569,11 @@ def test_explicit_safe_and_linux_nodes_are_split_on_windows(monkeypatch):
     assert [stage.key for stage in stages] == ["backend-explicit", "backend-linux-explicit"]
 
 
-def test_a_focused_frontend_selection_runs_only_what_it_names(monkeypatch):
+def test_a_focused_frontend_selection_runs_only_what_it_names(monkeypatch, toolchains):
     # The whole component stage is half a minute across eighteen files, so
     # iterating on one of them paid for the other seventeen every time. It is
     # the frontend counterpart of `--pytest`, and it routes the same way: the
     # named selection and the repository guards, nothing else.
-    monkeypatch.setattr(qa, "_node", lambda: "node")
-    monkeypatch.setattr(qa.Path, "is_file", lambda _self: True)
     monkeypatch.setattr(qa, "_repo_preflight_stages", lambda: [])
     monkeypatch.setattr(qa, "_repo_final_stages", lambda: [])
     stages = qa._profile_stages("auto", [], [], ["tests/uiModel.test.ts"])
@@ -557,11 +584,7 @@ def test_a_focused_frontend_selection_runs_only_what_it_names(monkeypatch):
     assert "--vitest tests/uiModel.test.ts" in stages[0].rerun_command
 
 
-def test_focused_backend_and_frontend_selections_run_together(monkeypatch):
-    monkeypatch.setattr(qa, "_node", lambda: "node")
-    monkeypatch.setattr(qa.Path, "is_file", lambda _self: True)
-    monkeypatch.setattr(qa, "_development_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(qa, "_python_has", lambda *_args: True)
+def test_focused_backend_and_frontend_selections_run_together(monkeypatch, toolchains):
     monkeypatch.setattr(qa, "_repo_preflight_stages", lambda: [])
     monkeypatch.setattr(qa, "_repo_final_stages", lambda: [])
     stages = qa._profile_stages("auto", [], ["tests/test_qa.py"], ["tests/uiModel.test.ts"])
@@ -1018,7 +1041,7 @@ def test_a_failing_stage_prints_the_names_and_the_first_reason(tmp_path, capsys,
     assert 'Received: "Fixed"' in printed
 
 
-def test_narrowing_a_selection_uses_each_runner_s_own_filter():
+def test_narrowing_a_selection_uses_each_runner_s_own_filter(toolchains):
     """One case of the component suite is under two seconds; the file is 45."""
     [backend] = qa._explicit_pytest_stages(["tests/test_qa.py"], "says what failed")
     # In the syntax `-k` parses: `pytest` reads it as an expression, so the
@@ -1098,7 +1121,7 @@ def test_a_phrase_is_narrowed_the_way_each_runner_reads_it():
     assert qa._pytest_filter("quiesce") == "quiesce"
 
 
-def test_several_names_run_the_cases_matching_any_of_them():
+def test_several_names_run_the_cases_matching_any_of_them(toolchains):
     """`--name` was one value, so a second replaced the first in silence.
 
     A run naming a case in each of two files ran one case and reported a pass
