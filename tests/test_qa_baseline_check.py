@@ -19,6 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--vitest", action="append", default=[])
 parser.add_argument("--pytest", action="append", default=[])
 parser.add_argument("--name", action="append", default=[])
+parser.add_argument("--exclude", action="append", default=[])
 parser.parse_args()
 
 source = (root / "src" / "thing.txt").read_text().strip()
@@ -139,11 +140,11 @@ def test_a_name_filter_reaches_the_revisions_runner(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(baseline.subprocess, "run", run)
     monkeypatch.setattr("sys.argv", [
         "qa_baseline_check.py", "--rev", "HEAD", "--vitest", "tests/probe.txt",
-        "--name", "the case", "--name", "another",
+        "--name", "the case", "--name", "another", "--exclude", "slow",
     ])
 
     assert baseline.main() == 0
-    assert seen and seen[0][-4:] == ["--name", "the case", "--name", "another"]
+    assert seen and seen[0][-6:] == ["--name", "the case", "--name", "another", "--exclude", "slow"]
 
 
 def test_a_revision_whose_runner_takes_no_name_is_refused_by_name(tmp_path, monkeypatch, capsys):
@@ -156,3 +157,15 @@ def test_a_revision_whose_runner_takes_no_name_is_refused_by_name(tmp_path, monk
 
     assert baseline.main() == 2
     assert "has no --name" in capsys.readouterr().out
+
+
+def test_a_revision_whose_runner_takes_no_exclude_is_refused_by_name(tmp_path, monkeypatch, capsys):
+    root = _repo(tmp_path)
+    (root / "scripts" / "qa.py").write_text(FAKE_QA.replace('"--exclude"', '"--other"'), encoding="utf-8")
+    run = ["git", "-c", "user.email=a@b", "-c", "user.name=t"]
+    subprocess.run([*run, "commit", "-qam", "older runner"], cwd=root, check=True)
+    monkeypatch.setattr(baseline, "ROOT", root)
+    monkeypatch.setattr("sys.argv", ["qa_baseline_check.py", "--rev", "HEAD", "--vitest", "tests/probe.txt", "--exclude", "x"])
+
+    assert baseline.main() == 2
+    assert "has no --exclude" in capsys.readouterr().out

@@ -1116,9 +1116,86 @@ def test_a_phrase_is_narrowed_the_way_each_runner_reads_it():
     which is a run nobody gets an answer from.
     """
     assert qa._pytest_filter("holds off the flags") == "holds and off and the and flags"
-    # An expression somebody wrote on purpose is theirs.
-    assert qa._pytest_filter("quiesce and not stop") == "quiesce and not stop"
     assert qa._pytest_filter("quiesce") == "quiesce"
+    # A phrase is always text. One holding ` not ` was passed through as an
+    # expression and refused by pytest, so the run ran nothing; a word `-k`
+    # reserves is joined to its neighbours the way a test's own name spells it.
+    assert qa._pytest_filter("could not resolve") == "could_not_resolve"
+    assert qa._pytest_filter("not proof either") == "not_proof and either"
+    assert qa._pytest_filter("quiesce and not stop") == "quiesce_and_not_stop"
+    # A character `-k` does not take inside a word separates words instead.
+    assert qa._pytest_filter("runner's own filter") == "runner and s and own and filter"
+
+
+@pytest.mark.parametrize("phrase", ["not", "OR", "''", "  "])
+def test_a_phrase_with_nothing_k_can_match_is_refused_by_name(phrase):
+    with pytest.raises(ValueError, match="names no part of a test"):
+        qa._pytest_filter(phrase)
+
+
+def test_excluded_cases_are_left_out_in_each_runner_s_own_terms(toolchains):
+    [backend] = qa._explicit_pytest_stages(["tests/test_qa.py"], ["narrowing", "several names"], ["matched nothing"])
+    assert backend.command[-2:] == ("-k", "((narrowing) or (several and names)) and not (matched and nothing)")
+    assert backend.named_cases is True
+    [only] = qa._explicit_pytest_stages(["tests/test_qa.py"], exclude=["slow", "device"])
+    assert only.command[-2:] == ("-k", "not (slow) and not (device)")
+    # An exclusion alone still narrows, so a run it left empty is not a pass.
+    assert only.named_cases is True
+
+    [frontend] = qa._explicit_vitest_stages(["tests/a.test.ts"], ["clock"], ["negative", "wall clock"])
+    assert frontend.command[-2:] == ("-t", "^(?!.*(?:(?:negative)|(?:wall clock)))(?=.*(?:clock))")
+    [alone] = qa._explicit_vitest_stages(["tests/a.test.ts"], exclude=["negative"])
+    assert alone.command[-2:] == ("-t", "^(?!.*(?:negative))")
+    assert alone.named_cases is True
+
+
+def test_a_vitest_phrase_is_matched_as_the_text_it_is():
+    # `-t` is a regular expression, so a bracket in a case's name either did
+    # not compile or matched something else.
+    pattern = qa._vitest_filter(("Fixed (Local) [1.0] a+b",), ("a.c",))
+    assert re.search(pattern, "Configure cheats Fixed (Local) [1.0] a+b")
+    assert not re.search(pattern, "Configure cheats Fixed Local 1.0 aab")
+    assert not re.search(pattern, "a.c Fixed (Local) [1.0] a+b")
+    assert re.search(pattern, "abc Fixed (Local) [1.0] a+b")
+
+
+def test_the_k_expression_built_from_phrases_is_one_pytest_parses_and_means(tmp_path: Path):
+    probe = tmp_path / "test_probe.py"
+    probe.write_text(
+        "def test_a_folder_that_could_not_be_read_is_never_proof():\n    pass\n\n"
+        "def test_each_runner_s_own_filter():\n    pass\n\n"
+        "def test_a_narrowed_run_that_matched_nothing():\n    pass\n",
+        encoding="utf-8",
+    )
+    expression = qa._pytest_selection(("could not be read", "runner's own filter"), ("matched nothing",))
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "-k", expression, str(probe)],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert sorted(line.rsplit("::", 1)[-1] for line in completed.stdout.splitlines() if "::" in line) == [
+        "test_a_folder_that_could_not_be_read_is_never_proof", "test_each_runner_s_own_filter",
+    ]
+
+
+def test_a_rerun_names_the_exclusions_back(toolchains):
+    stage = qa.Stage("backend-explicit")
+    rerun = qa._qa_rerun_command("auto", ["tests/test_qa.py"], stage, None, ["narrowing"], ["matched nothing"])
+    assert "--name narrowing --exclude 'matched nothing'" in rerun
+
+
+def test_an_exclusion_without_a_selection_is_refused(monkeypatch):
+    monkeypatch.setattr(qa, "_changed_files", lambda: ([], "test"))
+    with pytest.raises(SystemExit) as refused:
+        qa.main(["--exclude", "slow"])
+    assert refused.value.code == 2
+
+
+def test_a_phrase_k_cannot_match_is_a_usage_error_rather_than_an_empty_run(monkeypatch, toolchains):
+    monkeypatch.setattr(qa, "_changed_files", lambda: ([], "test"))
+    with pytest.raises(SystemExit) as refused:
+        qa.main(["--pytest", "tests/test_qa.py", "--name", "not"])
+    assert refused.value.code == 2
 
 
 def test_several_names_run_the_cases_matching_any_of_them(toolchains):
@@ -1159,7 +1236,7 @@ def test_a_pytest_selection_that_collected_nothing_says_so_rather_than_a_number(
     result = qa._run_stage(stage, tmp_path)
 
     assert result["status"] == "failed"
-    assert result["reason"] == "--name matched no test, so nothing ran"
+    assert result["reason"] == "--name and --exclude left no test to run, so nothing ran"
 
 
 def test_user_bin_is_reached_without_shadowing_system_tools(monkeypatch, tmp_path: Path):

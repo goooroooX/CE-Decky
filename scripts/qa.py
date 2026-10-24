@@ -698,17 +698,37 @@ def _names(name: str | Iterable[str] | None) -> tuple[str, ...]:
     return tuple(item for item in name if item)
 
 
-def _vitest_filter(names: tuple[str, ...]) -> str:
-    """Several `--name`s as one `-t`, which vitest reads as a pattern.
+_REGEX_SPECIAL = re.compile(r"[.*+?^${}()|[\]\\/]")
 
-    A case runs when any of them matches. `--name` was a single value, so a
-    second one replaced the first in silence and a run that named two cases
-    ran one of them.
+
+def _vitest_text(phrase: str) -> str:
+    """A phrase as the text it is, inside the regular expression `-t` builds."""
+    return _REGEX_SPECIAL.sub(lambda match: "\\" + match.group(0), phrase)
+
+
+def _vitest_filter(names: tuple[str, ...], excludes: tuple[str, ...] = ()) -> str:
+    """`--name`s and `--exclude`s as one `-t`, which vitest compiles as a pattern.
+
+    A case runs when its full name, its `describe` blocks and its own name,
+    holds any of the names and none of the excludes. Each phrase is escaped:
+    `-t` is a regular expression, and a bracket in a test's name made one that
+    either did not compile or matched something else. `--name` was a single
+    value once, so a second replaced the first in silence and a run that named
+    two cases ran one of them.
     """
-    return names[0] if len(names) == 1 else "|".join(f"(?:{name})" for name in names)
+    def any_of(phrases: tuple[str, ...]) -> str:
+        texts = [_vitest_text(phrase) for phrase in phrases]
+        return texts[0] if len(texts) == 1 else "|".join(f"(?:{text})" for text in texts)
+
+    if not excludes:
+        return any_of(names)
+    pattern = f"^(?!.*(?:{any_of(excludes)}))"
+    return f"{pattern}(?=.*(?:{any_of(names)}))" if names else pattern
 
 
-def _explicit_vitest_stages(selections: list[str], name: str | Iterable[str] | None = None) -> list[Stage]:
+def _explicit_vitest_stages(
+    selections: list[str], name: str | Iterable[str] | None = None, exclude: str | Iterable[str] | None = None,
+) -> list[Stage]:
     """One focused component run, the frontend counterpart of `--pytest`.
 
     The whole component stage is half a minute and covers eighteen files, so
@@ -722,10 +742,10 @@ def _explicit_vitest_stages(selections: list[str], name: str | Iterable[str] | N
         return []
     # `-t` is vitest's own, for the same reason: the component suite is 45
     # seconds and one case of it is under two.
-    names = _names(name)
-    narrowed = (*selections, "-t", _vitest_filter(names)) if names else tuple(selections)
+    names, excludes = _names(name), _names(exclude)
+    narrowed = (*selections, "-t", _vitest_filter(names, excludes)) if names or excludes else tuple(selections)
     stage = _frontend_stage("frontend-explicit", "vitest/vitest.mjs", "run", "--reporter=dot", *narrowed)
-    stage.named_cases = bool(names)
+    stage.named_cases = bool(names or excludes)
     return [stage]
 
 
@@ -830,43 +850,69 @@ def _backend_focused_stages(tests: list[str]) -> list[Stage]:
 
 
 # What `-k` reads as an operator rather than as part of a name.
-_PYTEST_FILTER_SYNTAX = (" and ", " or ", " not ", "(", ")")
+# What `-k` accepts inside one word, and the words it reserves for itself.
+_PYTEST_WORD = re.compile(r"[\w:+\-.\[\]\\/]+")
+_PYTEST_KEYWORDS = frozenset({"and", "or", "not"})
 
 
-def _pytest_filter(name: str) -> str:
-    """One `--name` in the syntax `-k` actually parses.
+def _pytest_filter(phrase: str) -> str:
+    """One `--name` or `--exclude` phrase in the syntax `-k` actually parses.
 
     `pytest` reads `-k` as an expression, so a phrase such as `holds off the
     flags` is a syntax error rather than a filter, while `vitest -t` takes the
     same phrase as text. The words are joined into the expression that means
-    what the phrase meant - every one of them is in the name - so one `--name`
-    works for both runners. An expression somebody wrote on purpose is passed
-    through untouched.
+    what the phrase meant, every one of them is in the name, so one phrase
+    works for both runners. A phrase is always text: `could not resolve` was
+    once passed through as an expression because it held ` not `, and pytest
+    refused it and ran nothing. A word `-k` reserves cannot stand on its own,
+    so it is joined to the words beside it by `_`, which is how a test's own
+    name spells it, and a character `-k` does not take inside a word, such as
+    an apostrophe, separates words instead of breaking the expression.
+    Exclusion is `--exclude`, not `not` written into a name.
     """
-    if any(token in name for token in _PYTEST_FILTER_SYNTAX):
-        return name
-    return " and ".join(name.split()) or name
+    terms: list[str] = []
+    joining = False
+    for word in _PYTEST_WORD.findall(phrase):
+        keyword = word.casefold() in _PYTEST_KEYWORDS
+        if terms and (keyword or joining):
+            terms[-1] = f"{terms[-1]}_{word}"
+        else:
+            terms.append(word)
+        joining = keyword
+    if not terms or any(term.casefold() in _PYTEST_KEYWORDS for term in terms):
+        raise ValueError(f"{phrase!r} names no part of a test that -k can match; name more of it")
+    return " and ".join(terms)
 
 
-def _explicit_pytest_stages(tests: list[str], name: str | Iterable[str] | None = None) -> list[Stage]:
+def _pytest_selection(names: tuple[str, ...], excludes: tuple[str, ...]) -> str:
+    """`--name`s and `--exclude`s as one `-k`: any of the names, none of the excludes."""
+    kept = " or ".join(f"({_pytest_filter(name)})" for name in names) if len(names) > 1 else (
+        _pytest_filter(names[0]) if names else ""
+    )
+    dropped = " and ".join(f"not ({_pytest_filter(exclude)})" for exclude in excludes)
+    if kept and dropped:
+        return f"({kept}) and {dropped}"
+    return kept or dropped
+
+
+def _explicit_pytest_stages(
+    tests: list[str], name: str | Iterable[str] | None = None, exclude: str | Iterable[str] | None = None,
+) -> list[Stage]:
     if not tests:
         return []
-    names = _names(name)
+    names, excludes = _names(name), _names(exclude)
     # `-k` is pytest's own narrowing, passed through rather than reimplemented:
     # a file of a hundred cases is one run either way, and reading one failure
     # by running all of them is the cost this exists to remove. It is added to
     # each command rather than to the selection, because the selection is split
     # by which tests need Linux and a flag is not a test.
-    # Several `--name`s are any of them, as they are for vitest.
-    expression = (
-        _pytest_filter(names[0]) if len(names) == 1
-        else " or ".join(f"({_pytest_filter(item)})" for item in names)
-    )
-    narrow = ("-k", expression) if names else ()
+    # Several `--name`s are any of them, as they are for vitest, and an
+    # `--exclude` drops what it matches from whatever they kept.
+    narrow = ("-k", _pytest_selection(names, excludes)) if names or excludes else ()
     if os.name != "nt":
         stage = _backend_focused_stage([*tests, *narrow], key="backend-explicit")
         if stage:
-            stage.named_cases = bool(names)
+            stage.named_cases = bool(names or excludes)
         return [stage] if stage else []
     safe = [item for item in tests if not _linux_test_selection(item)]
     linux = [item for item in tests if _linux_test_selection(item)]
@@ -874,14 +920,14 @@ def _explicit_pytest_stages(tests: list[str], name: str | Iterable[str] | None =
     if safe:
         stage = _backend_focused_stage([*safe, *narrow], key="backend-explicit")
         if stage:
-            stage.named_cases = bool(names)
+            stage.named_cases = bool(names or excludes)
             stages.append(stage)
     if linux:
         command, reason = _wsl_backend_command(
             ("-m", "pytest", "--tb=short", "--disable-warnings", *linux, *narrow))
         stages.append(Stage(
             "backend-linux-explicit", command or (), timeout=1200.0,
-            incomplete_reason=reason, named_cases=bool(names),
+            incomplete_reason=reason, named_cases=bool(names or excludes),
         ))
     return stages
 
@@ -959,14 +1005,15 @@ def _store_artifact_stage() -> Stage:
 def _profile_stages(
     profile: str, changed: list[str], explicit_pytest: list[str],
     explicit_vitest: list[str] | None = None, name: str | Iterable[str] | None = None,
+    exclude: str | Iterable[str] | None = None,
 ) -> list[Stage]:
     python = str(_development_python())
     explicit_vitest = explicit_vitest or []
     if explicit_pytest or explicit_vitest:
         return [
             *_repo_preflight_stages(),
-            *_explicit_pytest_stages(explicit_pytest, name),
-            *_explicit_vitest_stages(explicit_vitest, name),
+            *_explicit_pytest_stages(explicit_pytest, name, exclude),
+            *_explicit_vitest_stages(explicit_vitest, name, exclude),
             *_repo_final_stages(),
         ]
     if profile == "auto":
@@ -1020,6 +1067,7 @@ def _command_text(command: tuple[str, ...]) -> str:
 def _qa_rerun_command(
     profile: str, explicit_pytest: list[str], stage: Stage,
     explicit_vitest: list[str] | None = None, name: str | Iterable[str] | None = None,
+    exclude: str | Iterable[str] | None = None,
 ) -> str:
     command: list[str] = ["python", "scripts/qa.py", "--profile", profile]
     for node in explicit_pytest:
@@ -1028,6 +1076,8 @@ def _qa_rerun_command(
         command.extend(("--vitest", node))
     for item in _names(name):
         command.extend(("--name", item))
+    for item in _names(exclude):
+        command.extend(("--exclude", item))
     if stage.incomplete_reason and "rerun with --bootstrap" in stage.incomplete_reason:
         command.append("--bootstrap")
     command.extend(("--stage", stage.key))
@@ -1037,10 +1087,11 @@ def _qa_rerun_command(
 def _with_rerun_commands(
     profile: str, explicit_pytest: list[str], stages: list[Stage],
     explicit_vitest: list[str] | None = None, name: str | Iterable[str] | None = None,
+    exclude: str | Iterable[str] | None = None,
 ) -> list[Stage]:
     for stage in stages:
         if stage.rerun_command is None:
-            stage.rerun_command = _qa_rerun_command(profile, explicit_pytest, stage, explicit_vitest, name)
+            stage.rerun_command = _qa_rerun_command(profile, explicit_pytest, stage, explicit_vitest, name, exclude)
     return stages
 
 
@@ -1245,7 +1296,7 @@ def _run_stage(stage: Stage, run_root: Path) -> dict[str, object]:
     collected_nothing = completed is not None and completed.returncode == PYTEST_NOTHING_COLLECTED
     if stage.named_cases and (_ran_no_cases(combined) or collected_nothing):
         status = "failed"
-        reason = "--name matched no test, so nothing ran"
+        reason = "--name and --exclude left no test to run, so nothing ran"
     return {
         "key": stage.key,
         "status": status,
@@ -1455,9 +1506,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pytest", action="append", default=[], metavar="NODE_OR_PATH", help="run an explicit focused pytest selection")
     parser.add_argument("--vitest", action="append", default=[], metavar="PATH_OR_PATTERN", help="run an explicit focused vitest selection")
     parser.add_argument(
-        "--name", action="append", default=[], metavar="EXPR",
-        help="narrow a --pytest or --vitest selection to the cases whose name matches,"
+        "--name", action="append", default=[], metavar="PHRASE",
+        help="narrow a --pytest or --vitest selection to the cases whose name matches PHRASE,"
              " through the runner's own -k and -t; repeat it to run the cases matching any of them",
+    )
+    parser.add_argument(
+        "--exclude", action="append", default=[], metavar="PHRASE",
+        help="leave out of a --pytest or --vitest selection the cases --name would match on PHRASE;"
+             " repeat it to leave out the cases matching any of them",
     )
     parser.add_argument(
         "--stage", action="append", default=[], metavar="STAGE",
@@ -1475,11 +1531,14 @@ def main(argv: list[str] | None = None) -> int:
         return _check_environment()
 
     changed, source = _changed_files()
-    if args.name and not (args.pytest or args.vitest):
+    if (args.name or args.exclude) and not (args.pytest or args.vitest):
         # It narrows a selection, so without one it would quietly narrow
         # nothing: a run that looks focused and is the whole gate.
-        parser.error("--name narrows --pytest or --vitest; name one of those too")
-    preliminary = _profile_stages(args.profile, changed, args.pytest, args.vitest, args.name)
+        parser.error("--name and --exclude narrow --pytest or --vitest; name one of those too")
+    try:
+        preliminary = _profile_stages(args.profile, changed, args.pytest, args.vitest, args.name, args.exclude)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         preliminary = _select_stage(preliminary, args.stage)
     except ValueError as exc:
@@ -1498,8 +1557,8 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_INCOMPLETE
         _development_python.cache_clear()
 
-    stages = _profile_stages(args.profile, changed, args.pytest, args.vitest, args.name)
-    stages = _with_rerun_commands(args.profile, args.pytest, stages, args.vitest, args.name)
+    stages = _profile_stages(args.profile, changed, args.pytest, args.vitest, args.name, args.exclude)
+    stages = _with_rerun_commands(args.profile, args.pytest, stages, args.vitest, args.name, args.exclude)
     try:
         stages = _select_stage(stages, args.stage)
     except ValueError as exc:
