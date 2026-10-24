@@ -1183,3 +1183,19 @@ def test_every_failed_stage_is_named_not_only_the_first(tmp_path, capsys, monkey
     # One account of why, from the first; the second says what and how to rerun.
     assert "backend-full why:" in printed and "frontend-component why:" not in printed
     assert printed.count("  rerun: ") == 2
+
+
+def test_the_development_python_is_probed_once_until_a_bootstrap_clears_it(monkeypatch):
+    """`--bootstrap` cleared a cache this lookup no longer had, and every run with it died."""
+    probes: list[Path] = []
+    monkeypatch.setattr(qa, "_venv_python", lambda venv: Path(sys.executable))
+    monkeypatch.setattr(qa, "_pinned_python_requirements_satisfied", lambda python: probes.append(python) or True)
+    qa._development_python.cache_clear()
+    try:
+        assert qa._development_python() == qa._development_python() == Path(sys.executable)
+        assert len(probes) == 1
+        qa._development_python.cache_clear()
+        qa._development_python()
+        assert len(probes) == 2
+    finally:
+        qa._development_python.cache_clear()

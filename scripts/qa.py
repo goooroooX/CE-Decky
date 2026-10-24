@@ -292,6 +292,9 @@ def _store_container_engine() -> str | None:
     return None
 
 
+# Cached because every stage that runs Python asks, and each answer runs a
+# probe. `main` clears it once a bootstrap has changed what the answer is.
+@lru_cache(maxsize=1)
 def _development_python() -> Path:
     candidate = _venv_python(ROOT / ".venv")
     if candidate.is_file() and _pinned_python_requirements_satisfied(candidate):
