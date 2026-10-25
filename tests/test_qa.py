@@ -1299,3 +1299,19 @@ def test_the_development_python_is_probed_once_until_a_bootstrap_clears_it(monke
         assert len(probes) == 2
     finally:
         qa._development_python.cache_clear()
+
+
+def test_bootstrap_rebuilds_a_venv_its_interpreter_has_outgrown(monkeypatch, tmp_path):
+    """A system Python upgrade left `.venv` with no pip, and every bootstrap failed installing into it."""
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    (tmp_path / "requirements-dev.txt").write_text("pytest==1\n", encoding="utf-8")
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(qa, "_pinned_python_requirements_satisfied", lambda candidate: False)
+    monkeypatch.setattr(qa, "_python_has", lambda candidate, modules: "pip" not in modules)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(qa.subprocess, "run", lambda command, **kwargs: commands.append(command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    assert qa._bootstrap_python() == python
+    assert commands[0] == [sys.executable, "-m", "venv", "--clear", str(tmp_path / ".venv")]
+    assert commands[1][1:4] == ["-m", "pip", "install"]

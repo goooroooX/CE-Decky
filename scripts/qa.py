@@ -310,8 +310,11 @@ def _bootstrap_python() -> Path:
         return current
     venv = ROOT / ".venv"
     python = _venv_python(venv)
-    if not python.is_file():
-        completed = subprocess.run([sys.executable, "-m", "venv", str(venv)], cwd=ROOT)
+    # A system Python upgrade leaves `.venv/bin/python` resolving to the new
+    # interpreter, whose site-packages the venv never had, so it has no pip
+    # to restore from: such a venv is rebuilt rather than installed into.
+    if not python.is_file() or not _python_has(python, ("pip",)):
+        completed = subprocess.run([sys.executable, "-m", "venv", "--clear", str(venv)], cwd=ROOT)
         if completed.returncode:
             raise RuntimeError("could not create .venv")
     fingerprint = _hash_files(ROOT / "requirements-dev.txt")
