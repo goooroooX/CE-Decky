@@ -7,6 +7,7 @@ One file per tag, `v<version>.md`, published as the GitHub Release body with the
 They are short, and written for a user deciding whether to update: they know the panel and their games, not how CE Decky is built. `CHANGELOG.md` is the complete record; this is not a copy of it.
 
 - **One sentence on why to update**, under the title.
+- **Rank by what the release is for, not by `CHANGELOG.md`**, whose newest-first order is when the work landed. The opening sentence and the first lines are the changes that let a user do what they could not do at all; a fix for something they could already get past on screen, such as by pressing **Stop CE**, comes after them and stays out of the opening sentence.
 - **One short line per change**, only for what a user would notice: what they can now do, or what no longer goes wrong for them. Use the names on their screen. Say harm plainly (a crash, a cheat switching itself on, a failed start), because that is the reason to update.
 - **Never how.** No module, function, file, Python version or other internals; a cause only when the user must act on it, such as an affected Decky Loader version.
 - **Leave out** what a user would never notice: internals, tests, tooling, logging, docs.
