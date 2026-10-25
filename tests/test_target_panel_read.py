@@ -34,6 +34,16 @@ def test_a_test_id_in_front_names_the_one_row_to_look_in():
     assert "untagged-controls" in panel_read._READ and "untagged-controls" in panel_read._PRESS
 
 
+def test_a_press_steam_greys_by_its_class_is_read_and_refused_as_disabled():
+    """Steam's DialogButton is disabled by its `Disabled` class, with the element's own property left false.
+
+    Read by the property alone, the panel's greyed Change, held while the game
+    runs, was reported as a live control, and a press on one was not refused.
+    """
+    for program in (panel_read._READ, panel_read._PRESS):
+        assert 'classList.contains("Disabled")' in program
+
+
 def test_a_control_whose_own_wording_carries_a_colon_keeps_it():
     """A scope is one hyphenated token, which a sentence is not.
 

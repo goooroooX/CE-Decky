@@ -165,7 +165,10 @@ _READ = """
     const tag = el.tagName.toLowerCase();
     const label = tag === "button" ? text(el) : (el.getAttribute("aria-label") || el.getAttribute("placeholder") || "");
     const item = { kind: tag, label };
-    if (el.disabled) item.disabled = true;
+    // Steam's DialogButton is disabled by its `Disabled` class and leaves the
+    // element's own property false, so the property alone reported every
+    // greyed press on this plugin's panel as live.
+    if (el.disabled || el.classList.contains("Disabled")) item.disabled = true;
     if (tag === "input" && el.type === "checkbox") item.checked = Boolean(el.checked);
     else if (tag === "input") {
       item.value = String(el.value ?? "");
@@ -534,7 +537,7 @@ _PRESS = r"""
     });
   }
   const only = facing[0];
-  if (only.button.disabled) {
+  if (only.button.disabled || only.button.classList.contains("Disabled")) {
     return JSON.stringify({ pressed: false, where: only.where, reason: "that control is disabled right now" });
   }
   only.button.click();
