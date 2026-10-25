@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import base64
+import re
 import shutil
 import subprocess
 import tempfile
@@ -66,6 +67,24 @@ def _derive(ffmpeg: str, master: Path, work: Path) -> bytes:
     return scaled.read_bytes()
 
 
+def _embedded_png(module: str) -> bytes | None:
+    chunks = re.findall(r'\+ "([A-Za-z0-9+/=]+)"', module)
+    return base64.b64decode("".join(chunks)) if chunks else None
+
+
+def _pixels(ffmpeg: str, png: bytes, work: Path) -> tuple[str, bytes]:
+    """The decoded size and RGBA of a PNG, which is what the panel draws."""
+    image = work / "decoded.png"
+    image.write_bytes(png)
+    result = subprocess.run(
+        [ffmpeg, "-loglevel", "error", "-i", str(image), "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"ffmpeg failed: {result.stderr.decode(errors='replace').strip()[-2000:]}")
+    return png[16:24].hex(), result.stdout
+
+
 def _module_source(png: bytes) -> str:
     encoded = base64.b64encode(png).decode("ascii")
     body = "\n".join(f'  + "{chunk}"' for chunk in textwrap.wrap(encoded, 100))
@@ -100,13 +119,22 @@ def main() -> None:
         raise SystemExit(f"master artwork is missing: {MASTER.relative_to(ROOT)}")
     ffmpeg = _ffmpeg()
     with tempfile.TemporaryDirectory() as directory:
-        source = _module_source(_derive(ffmpeg, MASTER, Path(directory)))
-    if arguments.check:
-        current = MODULE.read_text(encoding="utf-8") if MODULE.is_file() else ""
-        if current != source:
-            raise SystemExit(f"{MODULE.relative_to(ROOT)} is stale: rerun without --check")
-        print(f"{MODULE.relative_to(ROOT)} matches {MASTER.relative_to(ROOT)}")
-        return
+        work = Path(directory)
+        derived = _derive(ffmpeg, MASTER, work)
+        if arguments.check:
+            current = MODULE.read_text(encoding="utf-8") if MODULE.is_file() else ""
+            embedded = _embedded_png(current)
+            # Pixels rather than bytes: another ffmpeg build compresses the
+            # same image differently, and that is not drift from the master.
+            if (
+                embedded is None
+                or current != _module_source(embedded)
+                or _pixels(ffmpeg, embedded, work) != _pixels(ffmpeg, derived, work)
+            ):
+                raise SystemExit(f"{MODULE.relative_to(ROOT)} is stale: rerun without --check")
+            print(f"{MODULE.relative_to(ROOT)} matches {MASTER.relative_to(ROOT)}")
+            return
+    source = _module_source(derived)
     MODULE.parent.mkdir(parents=True, exist_ok=True)
     MODULE.write_text(source, encoding="utf-8")
     print(f"wrote {MODULE.relative_to(ROOT)} from {MASTER.relative_to(ROOT)}")
