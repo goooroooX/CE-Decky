@@ -239,3 +239,50 @@ def test_launch_refuses_before_asking_steam(monkeypatch, tmp_path: Path, capsys)
     monkeypatch.setattr(launcher, "launch", lambda *args, **kwargs: pytest.fail("Steam was asked"))
     assert launcher.main(["launch", "--appid", "621", "--steam-app"]) == launcher.EXIT_REFUSED
     assert "AppID 621 is not started" in capsys.readouterr().err
+
+
+def test_wait_target_waits_past_the_appid_for_the_program_a_table_attaches_to(tmp_path: Path):
+    """The AppID is declared as Proton starts, well before the program Cheat Engine attaches to."""
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    clock = Clock()
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if clock.now >= 2 and not (proc / "900").exists():
+            _process(proc, 900, 1, {"SteamAppId": "900001", "SteamGameId": "900001"})
+        if clock.now >= 8 and not (proc / "901").exists():
+            _process(proc, 901, 900, {"SteamAppId": "900001", "SteamGameId": "900001"})
+            (proc / "901" / "cmdline").write_bytes(b"Z:\\games\\x\\Game.exe\0")
+
+    answer = launcher.launch(900001, shortcut=False, wait_seconds=30, proc_root=proc, run=lambda _: None,
+                             clock=clock, sleep=sleep, target_process="game.exe")
+
+    assert answer["running"] is True and answer["seconds"] == 2.0
+    assert answer["target_present"] is True and answer["target_seconds"] == 8.0
+
+
+def test_wait_target_says_when_the_program_never_came_up(tmp_path: Path):
+    proc = tmp_path / "proc"
+    _process(proc, 900, 1, {"SteamAppId": "900001", "SteamGameId": "900001"})
+    clock = Clock()
+    # Another game running would refuse the launch, so this one appears only once Steam was asked.
+    (proc / "900").rename(tmp_path / "900")
+
+    def run(_command: list[str]) -> None:
+        (tmp_path / "900").rename(proc / "900")
+
+    answer = launcher.launch(900001, shortcut=False, wait_seconds=10, proc_root=proc, run=run,
+                             clock=clock, sleep=clock.sleep, target_process="Game.exe")
+
+    assert answer["running"] is True and answer["seconds"] == 0.0
+    assert answer["target_present"] is False and "target_seconds" not in answer
+
+
+def test_wait_target_needs_a_target_process_to_wait_for(monkeypatch, tmp_path: Path, capsys):
+    _library(monkeypatch, steam=[620])
+    monkeypatch.setattr(launcher.host_platform, "require", lambda name: None)
+    monkeypatch.setattr(launcher, "_user_home", lambda: tmp_path)
+    monkeypatch.setattr(launcher, "launch", lambda *args, **kwargs: pytest.fail("Steam was asked"))
+    assert launcher.main(["launch", "--appid", "620", "--steam-app", "--wait-target"]) == launcher.EXIT_REFUSED
+    assert "no target process" in capsys.readouterr().err

@@ -13,7 +13,10 @@ refused and moves the input context off it, which is what `target_screenshot.py`
 records, and whether to replace one running game with another is a question for
 the person at the device rather than for a helper. It then waits, bounded,
 for a process environment to declare the AppID, read the way the plugin itself
-observes a running game.
+observes a running game. That happens as Proton starts, well before the program
+a table attaches to, so `--wait-target` goes on waiting, inside the same bound,
+until the profile's target process is present by the test Cheat Engine's own
+supervisor uses, `game_target_state`.
 
 `stop` ends that game's processes by PID and never by pattern: every process
 the plugin's own `declared_library_app_id` reads as this AppID, or whose
@@ -65,6 +68,7 @@ from ce_decky.atomic import read_proc_bytes  # noqa: E402
 from ce_decky.ce_launch import (  # noqa: E402
     MAX_ENVIRON_BYTES,
     declared_library_app_id,
+    game_target_state,
     is_ce_decky_owned_environment,
     observe_any_running_steam_game,
     observe_running_app_ids,
@@ -219,6 +223,7 @@ def launch(
     run: Callable[[list[str]], object] | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    target_process: str | None = None,
 ) -> dict[str, object]:
     observed = observe_any_running_steam_game(proc_root=proc_root)
     if not observed.available:
@@ -241,14 +246,22 @@ def launch(
     ))
     started = clock()
     runner(["steam", url])
+    answer: dict[str, object] = {"app_id": app_id, "gameid": gameid, "url": url, "running": False}
+    if target_process is not None:
+        answer.update(target_process=target_process, target_present=False)
     while True:
-        running = observe_running_app_ids(proc_root=proc_root)
-        if running.available and app_id in running.app_ids:
-            return {"app_id": app_id, "gameid": gameid, "url": url, "running": True,
-                    "seconds": round(clock() - started, 1)}
+        if not answer["running"]:
+            running = observe_running_app_ids(proc_root=proc_root)
+            if running.available and app_id in running.app_ids:
+                answer.update(running=True, seconds=round(clock() - started, 1))
+        if answer["running"] and target_process is None:
+            return answer
+        if answer["running"] and game_target_state(app_id, target_process, proc_root=proc_root) == "present":
+            answer.update(target_present=True, target_seconds=round(clock() - started, 1))
+            return answer
         if clock() - started >= wait_seconds:
-            return {"app_id": app_id, "gameid": gameid, "url": url, "running": False,
-                    "seconds": round(clock() - started, 1)}
+            answer.setdefault("seconds", round(clock() - started, 1))
+            return answer
         sleep(2.0)
 
 
@@ -318,6 +331,9 @@ def main(argv: list[str] | None = None) -> int:
                               help="the AppID is a non-Steam shortcut; needed only when no CE Decky profile names it")
             kind.add_argument("--steam-app", dest="shortcut", action="store_false",
                               help="the AppID is a Steam app; needed only when no CE Decky profile names it")
+            sub.add_argument("--wait-target", action="store_true",
+                             help="go on waiting, inside --wait-seconds, until the profile's target process is"
+                                  " present, which is what an attached Cheat Engine needs")
             sub.add_argument("--through-launcher", action="store_true",
                              help="start a shortcut whose program is not the game's own target process, such as"
                                   " a launcher; only for a game known to be installed, because a launcher may install it")
@@ -333,15 +349,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "launch":
             user_home = _user_home()
             shortcut = _is_shortcut(args.appid, args.shortcut, None if args.shortcut is not None else _profiles_path(user_home))
+            target_process = _target_process(args.appid, _profiles_path(user_home))
+            if args.wait_target and not target_process:
+                raise ValueError(f"AppID {args.appid} has no target process in its CE Decky profile to wait for")
             refusal = not_here_reason(args.appid, shortcut=shortcut, user_home=user_home,
-                                      through_launcher=args.through_launcher,
-                                      target_process=_target_process(args.appid, _profiles_path(user_home)))
+                                      through_launcher=args.through_launcher, target_process=target_process)
             if refusal:
                 raise ValueError(f"AppID {args.appid} is not started: {refusal}")
-            answer = launch(args.appid, shortcut=shortcut, wait_seconds=args.wait_seconds)
-            line = (f"game launch: AppID {args.appid} is running after {answer['seconds']}s"
-                    if answer["running"] else
-                    f"game launch: Steam was asked ({answer['url']}) and AppID {args.appid} was not running after {answer['seconds']}s")
+            answer = launch(args.appid, shortcut=shortcut, wait_seconds=args.wait_seconds,
+                            target_process=target_process if args.wait_target else None)
+            if not answer["running"]:
+                line = f"game launch: Steam was asked ({answer['url']}) and AppID {args.appid} was not running after {answer['seconds']}s"
+            elif not args.wait_target:
+                line = f"game launch: AppID {args.appid} is running after {answer['seconds']}s"
+            elif answer["target_present"]:
+                line = (f"game launch: AppID {args.appid} is running after {answer['seconds']}s,"
+                        f" and {target_process} is present after {answer['target_seconds']}s")
+            else:
+                line = (f"game launch: AppID {args.appid} is running after {answer['seconds']}s,"
+                        f" but {target_process} was not present within {args.wait_seconds:g}s")
         else:
             answer = stop(args.appid, wait_seconds=args.wait_seconds)
             if not answer["terminated"]:
@@ -357,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"game {args.command}: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     print(json.dumps(answer, indent=2, sort_keys=True) if args.json else line)
-    if args.command == "launch" and not answer["running"]:
+    if args.command == "launch" and not (answer["running"] and answer.get("target_present", True)):
         return 1
     if args.command == "stop" and answer["running"]:
         return 1
