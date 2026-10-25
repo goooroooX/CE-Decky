@@ -27,6 +27,17 @@ calls the game stopped only once nothing of it is left, naming what survived.
 Whether an AppID is a non-Steam shortcut comes from the plugin's profile for
 it, which took it from the library, or from `--shortcut`/`--steam-app` when no
 profile names it. It is never inferred from the number.
+
+A profile is not an install: it outlives the game it was made for, and Steam's
+URI for a game that is not here offers to download it. So `launch` first asks
+the plugin's own `local_library` whether this device holds the game, and refuses
+one it does not. A shortcut is started only when the program it names is the
+game's own target process from that profile, and otherwise only with
+`--through-launcher` for a game known to be installed: a store front puts a
+shortcut in the library for every game an account owns, the launcher it names
+is on the disk whether or not the game is, and starting it for one that is not
+installs it. What a launcher is called, and whether it is a Windows program
+itself, is no test of one, so neither is used.
 """
 from __future__ import annotations
 
@@ -60,6 +71,7 @@ from ce_decky.ce_launch import (  # noqa: E402
     parse_environ,
 )
 from ce_decky.profiles import ProfileStore  # noqa: E402
+from ce_decky.steam_library import local_library, shortcut_program  # noqa: E402
 
 # Steam's own gameid for a non-Steam shortcut: the shortcut's AppID in the high
 # word and the shortcut type in the low one. A Steam app's gameid is its AppID.
@@ -139,7 +151,17 @@ def _is_shortcut(app_id: int, flag: bool | None, profiles: Path | None) -> bool:
     raise ValueError("no CE Decky profile names this AppID; say which it is with --shortcut or --steam-app")
 
 
-def _profiles_path() -> Path | None:
+def _target_process(app_id: int, profiles: Path) -> str | None:
+    profile = ProfileStore(profiles).get(app_id) if profiles.is_file() else None
+    return profile.target_process if profile is not None else None
+
+
+def starts_the_game(program: str | None, target_process: str | None) -> bool:
+    """Whether a shortcut's program is the game's own target process rather than something that starts it."""
+    return bool(program and target_process) and Path(program).name.casefold() == target_process.casefold()
+
+
+def _user_home() -> Path:
     if __package__:
         from .target_plugin_install import resolve_install_authority
     else:
@@ -147,10 +169,45 @@ def _profiles_path() -> Path | None:
     try:
         home = resolve_install_authority().get("user_home")
     except (OSError, RuntimeError, ValueError) as exc:
-        raise ValueError(
-            f"CE Decky's profiles could not be found ({exc}); say which it is with --shortcut or --steam-app"
-        ) from exc
-    return Path(str(home)) / ".cheat-engine-decky" / "state" / "profiles.json" if home else None
+        raise ValueError(f"CE Decky's user home could not be resolved ({exc})") from exc
+    if not home:
+        raise ValueError("CE Decky's install authority names no user home")
+    return Path(str(home))
+
+
+def _profiles_path(user_home: Path) -> Path:
+    return user_home / ".cheat-engine-decky" / "state" / "profiles.json"
+
+
+def not_here_reason(
+    app_id: int, *, shortcut: bool, user_home: Path, through_launcher: bool, target_process: str | None = None,
+) -> str | None:
+    """Why this device cannot be shown to hold the game, or None when it can."""
+    library = local_library(user_home)
+    # What a partial read did list is there; only an absence it cannot vouch
+    # for is unknown rather than a refusal of its own.
+    if shortcut:
+        if app_id not in library["shortcut_app_ids"]:
+            if library["shortcuts_reason"]:
+                return f"whether this shortcut is on this device is unknown: {library['shortcuts_reason']}"
+            return "this device's shortcuts.vdf holds no such shortcut, or the program it starts is not on this disk"
+        program = shortcut_program(user_home, app_id)
+        if through_launcher or starts_the_game(program, target_process):
+            return None
+        starts = program or "a command with no absolute program"
+        wanted = f"the game's target process {target_process}" if target_process else "a target process CE Decky knows for this game"
+        return (
+            f"this shortcut starts {starts} rather than {wanted}, so it may be a launcher: whether the game"
+            " behind it is installed is not visible here, and a launcher may install it. Pass --through-launcher"
+            " only once you know the game is installed"
+        )
+    if app_id not in library["steam_app_ids"]:
+        if library["reason"]:
+            return f"whether this game is installed is unknown: {library['reason']}"
+        return "Steam has no fully installed manifest for this AppID here, and its URI would offer to download it"
+    if app_id in library["unstartable_app_ids"]:
+        return "Steam declares no way to start this AppID"
+    return None
 
 
 def launch(
@@ -261,6 +318,9 @@ def main(argv: list[str] | None = None) -> int:
                               help="the AppID is a non-Steam shortcut; needed only when no CE Decky profile names it")
             kind.add_argument("--steam-app", dest="shortcut", action="store_false",
                               help="the AppID is a Steam app; needed only when no CE Decky profile names it")
+            sub.add_argument("--through-launcher", action="store_true",
+                             help="start a shortcut whose program is not the game's own target process, such as"
+                                  " a launcher; only for a game known to be installed, because a launcher may install it")
         sub.add_argument("--json", action="store_true", help="print the whole answer as JSON")
     args = parser.parse_args(argv)
     try:
@@ -271,7 +331,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--wait-seconds must be between 1 and 300")
     try:
         if args.command == "launch":
-            shortcut = _is_shortcut(args.appid, args.shortcut, None if args.shortcut is not None else _profiles_path())
+            user_home = _user_home()
+            shortcut = _is_shortcut(args.appid, args.shortcut, None if args.shortcut is not None else _profiles_path(user_home))
+            refusal = not_here_reason(args.appid, shortcut=shortcut, user_home=user_home,
+                                      through_launcher=args.through_launcher,
+                                      target_process=_target_process(args.appid, _profiles_path(user_home)))
+            if refusal:
+                raise ValueError(f"AppID {args.appid} is not started: {refusal}")
             answer = launch(args.appid, shortcut=shortcut, wait_seconds=args.wait_seconds)
             line = (f"game launch: AppID {args.appid} is running after {answer['seconds']}s"
                     if answer["running"] else

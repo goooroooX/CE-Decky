@@ -185,3 +185,57 @@ def test_stop_does_not_call_the_game_stopped_while_a_process_outlives_kill(tmp_p
                            clock=clock, sleep=clock.sleep, own_pid=999)
 
     assert answer["running"] is True and answer["survivors"] == [200] and answer["killed"] == [200]
+
+
+def _library(monkeypatch, *, steam=(), unstartable=(), shortcuts=(), programs=None, reason=None):
+    monkeypatch.setattr(launcher, "local_library", lambda home: {
+        "steam_app_ids": list(steam), "unstartable_app_ids": list(unstartable),
+        "shortcut_app_ids": list(shortcuts), "reason": reason, "shortcuts_reason": reason,
+    })
+    monkeypatch.setattr(launcher, "shortcut_program", lambda home, app_id: (programs or {}).get(app_id))
+
+
+def test_a_game_this_device_does_not_hold_is_not_started(monkeypatch, tmp_path: Path):
+    """A profile outlives its game, and Steam's URI for one that is not here offers to download it."""
+    _library(monkeypatch, steam=[620, 228980], unstartable=[228980], shortcuts=[3000000123],
+             programs={3000000123: "/games/x/Game.EXE"})
+    reason = launcher.not_here_reason
+    assert reason(620, shortcut=False, user_home=tmp_path, through_launcher=False) is None
+    assert "fully installed" in reason(621, shortcut=False, user_home=tmp_path, through_launcher=False)
+    assert "no way to start" in reason(228980, shortcut=False, user_home=tmp_path, through_launcher=False)
+    assert reason(3000000123, shortcut=True, user_home=tmp_path, through_launcher=False, target_process="game.exe") is None
+    assert "shortcuts.vdf" in reason(3000000124, shortcut=True, user_home=tmp_path, through_launcher=False)
+    # A read in part vouches for what it listed and for nothing it did not.
+    _library(monkeypatch, steam=[620], shortcuts=[3000000123], programs={3000000123: "/games/x/Game.exe"},
+             reason="a Steam library on this device could not be read whole")
+    assert reason(620, shortcut=False, user_home=tmp_path, through_launcher=False) is None
+    assert reason(3000000123, shortcut=True, user_home=tmp_path, through_launcher=False, target_process="Game.exe") is None
+    assert "unknown" in reason(621, shortcut=False, user_home=tmp_path, through_launcher=False)
+    assert "unknown" in reason(3000000124, shortcut=True, user_home=tmp_path, through_launcher=False)
+
+
+def test_a_shortcut_that_does_not_start_the_game_itself_waits_for_through_launcher(monkeypatch, tmp_path: Path):
+    """A store front's launcher is on the disk whether or not the game behind it is, and may install it.
+
+    Its name and whether it is a Windows program are no test of one, so a
+    launcher `.exe`, a native one, a command and a game with no target process
+    are all refused alike.
+    """
+    programs = {3000000123: "/plugins/Store/bin/store-launcher", 3000000124: "/games/x/Launcher.exe",
+                3000000125: "/games/x/Game.exe"}
+    _library(monkeypatch, shortcuts=[3000000123, 3000000124, 3000000125, 3000000126], programs=programs)
+    for app_id, target in ((3000000123, "Game.exe"), (3000000124, "Game.exe"), (3000000125, None), (3000000126, "Game.exe")):
+        refusal = launcher.not_here_reason(app_id, shortcut=True, user_home=tmp_path, through_launcher=False,
+                                           target_process=target)
+        assert refusal and "--through-launcher" in refusal
+        assert launcher.not_here_reason(app_id, shortcut=True, user_home=tmp_path, through_launcher=True,
+                                        target_process=target) is None
+
+
+def test_launch_refuses_before_asking_steam(monkeypatch, tmp_path: Path, capsys):
+    _library(monkeypatch)
+    monkeypatch.setattr(launcher.host_platform, "require", lambda name: None)
+    monkeypatch.setattr(launcher, "_user_home", lambda: tmp_path)
+    monkeypatch.setattr(launcher, "launch", lambda *args, **kwargs: pytest.fail("Steam was asked"))
+    assert launcher.main(["launch", "--appid", "621", "--steam-app"]) == launcher.EXIT_REFUSED
+    assert "AppID 621 is not started" in capsys.readouterr().err

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Emit one bounded read-only CE Decky state snapshot for target correlation.
 
-The probe reads only plugin-owned config/profile/session/launch records plus an
-allowlisted process marker used by the managed CE installer.  It never calls a
+The probe reads only plugin-owned config/profile/session/launch/table records,
+an allowlisted process marker used by the managed CE installer, and, through
+the plugin's own `local_library`, the Steam manifests and shortcut store that
+say whether a profile's game is on this device.  It never calls a
 mutation RPC, never prints launch-option contents, and never emits installer
 operation markers or environment values.  The exact DECKY_USER_HOME and
 DECKY_PLUGIN_SETTINGS_DIR come from ``--home`` and ``--settings-dir``, or else
@@ -26,8 +28,10 @@ import time
 
 if __package__:
     from . import host_platform
+    from .target_game_launch import starts_the_game
 else:
     import host_platform
+    from target_game_launch import starts_the_game
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_ROOT = ROOT / "py_modules"
@@ -40,6 +44,9 @@ from ce_decky.game_run_holds import GameRunHolds  # noqa: E402
 from ce_decky.profiles import GameProfile, ProfileStore  # noqa: E402
 from ce_decky.ct_inspector import inspect_table  # noqa: E402
 from ce_decky.session_protocol import SessionStore, effective_startup_plan, startup_left_on  # noqa: E402
+from ce_decky.steam_library import local_library, shortcut_program  # noqa: E402
+from ce_decky.table_blocklist import TableBlocklist  # noqa: E402
+from ce_decky.table_compatibility import TableCompatibility  # noqa: E402
 from ce_decky.table_store import TableStore  # noqa: E402
 
 # A device holds a handful of profiles, and this is a diagnostic rather than an
@@ -276,6 +283,99 @@ def _profile_detail(profile: GameProfile | None) -> dict[str, object] | None:
         {"record_id": item.record_id, "active": item.active, "value": item.value} for item in profile.startup
     ]
     return summary
+
+
+def _with_device_presence(summary: dict[str, object] | None, library: dict[str, object], home: Path) -> None:
+    """Say whether this device holds the profile's game, which a profile never does.
+
+    A profile outlives the game it was made for, so a list of them is not a list
+    of what can be started here. `on_device` is the plugin's own `local_library`
+    answer, None where the game is not listed and that answer was read only in
+    part. A shortcut also says what it
+    `starts`, because one that starts a store front's launcher is on the device
+    whether or not the game behind it is, and `starts_the_game` when that is the
+    profile's own target process, which is the test `target_game_launch.py`
+    starts one by.
+    """
+    if summary is None:
+        return
+    app_id = summary["app_id"]
+    if summary["is_shortcut"]:
+        known = not library["shortcuts_reason"]
+        present = app_id in library["shortcut_app_ids"]
+        summary["starts"] = shortcut_program(home, app_id) if present else None
+        summary["starts_the_game"] = starts_the_game(summary["starts"], summary["target_process"])
+    else:
+        known = not library["reason"]
+        present = app_id in library["steam_app_ids"] and app_id not in library["unstartable_app_ids"]
+    summary["on_device"] = True if present else (False if known else None)
+
+
+def _table_evidence(state_root: Path, tables_root: Path) -> tuple[dict[str, object], dict[str, str]]:
+    """Which tables are held, which worked, and which are marked not working.
+
+    `worked` follows the rule the backend's own compatibility snapshot applies
+    first: a positive record stands while it was not invalidated and no failure
+    has been recorded against those bytes since, which is what the failure
+    epochs say. The backend then also compares the game's build with the one the
+    table worked on and may ask for a retest; that comparison is not repeated
+    here, so each record carries the version it worked on instead.
+    """
+    errors: dict[str, str] = {}
+    try:
+        held = {str(item["sha256"]): str(item["filename"]) for item in TableStore(tables_root).list_tables()}
+    except (OSError, ValueError, KeyError) as exc:
+        held, errors["tables"] = None, str(exc)[:512]
+    blocklist = TableBlocklist(state_root / "blocked_tables.json")
+    try:
+        not_working = {entry.sha256: entry.cause for entry in blocklist.list_blocked() if entry.sha256}
+    except (OSError, ValueError) as exc:
+        not_working, errors["blocked_tables"] = None, str(exc)[:512]
+    try:
+        floor, epochs = blocklist.failure_epochs()
+    except (OSError, ValueError) as exc:
+        floor, epochs = None, {}
+        errors.setdefault("blocked_tables", str(exc)[:512])
+    snapshot = TableCompatibility(state_root / "table_compatibility.json").snapshot()
+    if snapshot["reason"] or floor is None:
+        worked = None
+        if snapshot["reason"]:
+            errors["table_compatibility"] = snapshot["reason"]
+    else:
+        worked = {
+            (row["app_id"], row["table_sha256"]): {
+                "last_working_at": row["last_working_at"],
+                "target_process": row["target_process"],
+                "pe_version": row["pe_version"],
+                "steam_build_id": row["steam_build_id"],
+            }
+            for row in snapshot["entries"]
+            if not row["invalidated"] and row["failure_epoch"] == epochs.get(row["table_sha256"], floor)
+        }
+    return {"held": held, "not_working": not_working, "worked": worked}, errors
+
+
+def _with_tables(summary: dict[str, object] | None, profile: GameProfile | None,
+                 evidence: dict[str, object], *, detail: bool) -> None:
+    """Count, or with `detail` list, what this game's own table library holds."""
+    if summary is None or profile is None:
+        return
+    held, not_working, worked = evidence["held"], evidence["not_working"], evidence["worked"]
+    library = list(profile.table_library)
+    summary["tables_held"] = None if held is None else sum(digest in held for digest in library)
+    summary["tables_worked"] = None if worked is None else sum((profile.app_id, digest) in worked for digest in library)
+    summary["tables_not_working"] = None if not_working is None else sum(digest in not_working for digest in library)
+    if detail:
+        summary["tables"] = [
+            {
+                "sha256": digest,
+                "filename": None if held is None else held.get(digest),
+                "held": None if held is None else digest in held,
+                "worked": None if worked is None else worked.get((profile.app_id, digest)),
+                "not_working": None if not_working is None else not_working.get(digest),
+            }
+            for digest in library
+        ]
 
 
 MAX_REPORTED_ACTIONS = 512
@@ -525,6 +625,12 @@ def probe(
     # An unreadable profile store reports nothing rather than an empty list that
     # would read as a device with no profiles; `profile_state_error` says why.
     reported_profiles = _bounded_profiles(profiles, running_app_ids) if profile_error is None else []
+    library = local_library(home)
+    table_evidence, table_evidence_errors = _table_evidence(state_root, managed_root / "tables")
+    by_app_id = {item.app_id: item for item in profiles}
+    for summary in reported_profiles:
+        _with_device_presence(summary, library, home)
+        _with_tables(summary, by_app_id.get(summary["app_id"]), table_evidence, detail=False)
 
     session_store = SessionStore(state_root, home)
     try:
@@ -606,6 +712,9 @@ def probe(
         # is armed at all.
         "provider_caches": provider_caches,
         "provider_cache_error": provider_cache_error,
+        # Per store, which of the three the table counts above could not read;
+        # a count from a store that failed is None rather than 0.
+        "table_evidence_errors": table_evidence_errors,
         "privacy": "launch-option values and installer environment markers are never emitted",
     }
 
@@ -615,6 +724,8 @@ def probe(
         profile = next((item for item in profiles if item.app_id == app_id), None) if profile_error is None else None
         report["app_id"] = app_id
         report["profile"] = _profile_detail(profile)
+        _with_device_presence(report["profile"], library, home)
+        _with_tables(report["profile"], profile, table_evidence, detail=True)
         if startup_plan:
             report["startup_plan"] = _startup_plan(profile, managed_root / "tables")
         launch = CELaunchSupervisor(home, ce_root, state_root, logging.getLogger("target-state-probe"))

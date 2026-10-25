@@ -437,3 +437,80 @@ def test_omitted_paths_come_from_the_install_authority(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(target_plugin_install, "resolve_install_authority", lambda: {"source": "recorded_install", "user_home": None, "settings_dir": None})
     with pytest.raises(ValueError, match="pass --home"):
         target_state_probe._paths(None, None)
+
+
+def test_every_profile_says_whether_this_device_holds_its_game(tmp_path: Path, monkeypatch):
+    """A profile outlives its game, so the list is not a list of what can be started here."""
+    home, settings = _target_home(tmp_path)
+    store = ProfileStore(home / ".cheat-engine-decky" / "state" / "profiles.json")
+    store.upsert(app_id=620, name="A", is_shortcut=False, table_sha256=None, target_process=None)
+    store.upsert(app_id=621, name="B", is_shortcut=False, table_sha256=None, target_process=None)
+    store.upsert(app_id=3000000123, name="C", is_shortcut=True, table_sha256=None, target_process=None)
+    store.upsert(app_id=3000000124, name="D", is_shortcut=True, table_sha256=None, target_process=None)
+    monkeypatch.setattr(target_state_probe, "local_library", lambda _home: {
+        "steam_app_ids": [620], "unstartable_app_ids": [], "shortcut_app_ids": [3000000123],
+        "reason": None, "shortcuts_reason": None,
+    })
+    monkeypatch.setattr(target_state_probe, "shortcut_program", lambda _home, app_id: "/store/bin/launcher")
+
+    report = target_state_probe.probe(home, settings, 3000000123, tmp_path / "proc")
+
+    rows = {row["app_id"]: row for row in report["profiles"]}
+    assert {app_id: row["on_device"] for app_id, row in rows.items()} == {
+        620: True, 621: False, 3000000123: True, 3000000124: False,
+    }
+    assert rows[3000000123]["starts"] == "/store/bin/launcher" and rows[3000000124]["starts"] is None
+    assert rows[3000000123]["starts_the_game"] is False
+    assert "starts" not in rows[620]
+    assert report["profile"]["on_device"] is True and report["profile"]["starts"] == "/store/bin/launcher"
+
+    # Read in part: what was listed is there, and an absence is not an answer.
+    monkeypatch.setattr(target_state_probe, "local_library", lambda _home: {
+        "steam_app_ids": [620], "unstartable_app_ids": [], "shortcut_app_ids": [3000000123],
+        "reason": "partial", "shortcuts_reason": "partial",
+    })
+    rows = {row["app_id"]: row["on_device"] for row in target_state_probe.probe(home, settings, None, tmp_path / "proc")["profiles"]}
+    assert rows == {620: True, 621: None, 3000000123: True, 3000000124: None}
+
+
+def test_every_profile_says_which_of_its_tables_are_held_worked_and_do_not_work(tmp_path: Path, monkeypatch):
+    """Which game a device check can use turns on these, and reading three state files by hand was the route."""
+    from ce_decky.table_blocklist import CAUSE_REFUSED, TableBlocklist
+    from ce_decky.table_compatibility import TableCompatibility
+
+    home, settings = _target_home(tmp_path)
+    state = home / ".cheat-engine-decky" / "state"
+    a, b, c = "a" * 64, "b" * 64, "c" * 64
+    store = ProfileStore(state / "profiles.json")
+    for digest in (a, b, c):
+        store.upsert(app_id=620, name="A", is_shortcut=False, table_sha256=digest, target_process="a.exe")
+    compatibility = TableCompatibility(state / "table_compatibility.json")
+    for digest in (a, b):
+        compatibility.record(620, digest, "a.exe", {"pe_version": "1.0"}, failure_epoch="0" * 32)
+    # A failure recorded after b worked is what undoes b's record.
+    TableBlocklist(state / "blocked_tables.json").block(sha256=b, reason="refused", app_id=620, cause=CAUSE_REFUSED)
+    monkeypatch.setattr(target_state_probe.TableStore, "list_tables",
+                        lambda self: [{"sha256": a, "filename": "a.CT"}, {"sha256": b, "filename": "b.CT"}])
+
+    report = target_state_probe.probe(home, settings, 620, tmp_path / "proc")
+
+    assert report["table_evidence_errors"] == {}
+    row = report["profiles"][0]
+    assert (row["tables_held"], row["tables_worked"], row["tables_not_working"]) == (2, 1, 1)
+    tables = {item["sha256"]: item for item in report["profile"]["tables"]}
+    assert tables[a]["filename"] == "a.CT" and tables[a]["worked"]["pe_version"] == "1.0" and tables[a]["not_working"] is None
+    assert tables[b]["worked"] is None and tables[b]["not_working"] == CAUSE_REFUSED
+    assert tables[c] == {"sha256": c, "filename": None, "held": False, "worked": None, "not_working": None}
+
+
+def test_a_state_file_that_cannot_be_read_gives_no_count_rather_than_zero(tmp_path: Path):
+    home, settings = _target_home(tmp_path)
+    state = home / ".cheat-engine-decky" / "state"
+    ProfileStore(state / "profiles.json").upsert(app_id=620, name="A", is_shortcut=False, table_sha256="a" * 64, target_process=None)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "table_compatibility.json").write_text("{", encoding="utf-8")
+
+    report = target_state_probe.probe(home, settings, None, tmp_path / "proc")
+
+    assert "table_compatibility" in report["table_evidence_errors"]
+    assert report["profiles"][0]["tables_worked"] is None
