@@ -19,6 +19,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --tables <dir> --flags
     python3 scripts/ct_scan_survey.py --tables <dir> --parameters --include-installed --json
     python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --include-installed --json
+    python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --baseline HEAD
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -472,7 +473,7 @@ def parameters_one(table: Path) -> dict[str, object]:
     return {"table": str(table), "sha256": found.sha256, "controls": len(found.controls), "candidates": candidates}
 
 
-def _corpus(roots: list[Path], one) -> dict[str, object]:
+def _corpus(roots: list[Path], one, *, progress: bool = False) -> dict[str, object]:
     """Every distinct table under `roots` through `one`, with where it came from.
 
     Deduplicated by SHA-256, so a table both in a corpus and installed on the
@@ -493,12 +494,19 @@ def _corpus(roots: list[Path], one) -> dict[str, object]:
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.suffix.lower() != ".ct":
                 continue
+            started = time.monotonic()
             try:
                 answer = one(path)
             except (OSError, ValueError, ET.ParseError) as exc:
                 errors.append({"table": str(path), "error": str(exc)})
                 counts["unreadable"] += 1
                 continue
+            if progress:
+                # On stderr, so `--json` stays one document. A corpus holds a
+                # few tables of several thousand records each that take most of
+                # a run, and a run that says nothing looks the same as a hung one.
+                print(f"ct scan survey: {len(seen) + copies + 1} read, {answer['sha256'][:8]} "
+                      f"{answer['controls']} controls in {time.monotonic() - started:.1f}s", file=sys.stderr, flush=True)
             if answer["sha256"] in seen:
                 copies += 1
                 counts["duplicate_copies"] += 1
@@ -594,8 +602,8 @@ def startup_plans_one(table: Path) -> dict[str, object]:
             "scripts": len(scripts), "cheats": len(cheats), "plans": plans}
 
 
-def startup_plans_corpus(roots: list[Path]) -> dict[str, object]:
-    answer = _corpus(roots, startup_plans_one)
+def startup_plans_corpus(roots: list[Path], *, progress: bool = False) -> dict[str, object]:
+    answer = _corpus(roots, startup_plans_one, progress=progress)
     tables = answer["results"]
     totals = {}
     for shape in STARTUP_SHAPES:
@@ -607,6 +615,100 @@ def startup_plans_corpus(roots: list[Path]) -> dict[str, object]:
         }
     answer["shapes"] = totals
     return answer
+
+
+def compare_startup_plans(baseline: dict[str, object], candidate: dict[str, object]) -> dict[str, object]:
+    """How the plans of one corpus moved between two revisions, shape by shape.
+
+    Per shape: how many tables planned the same, how many moved, the actions
+    each side has that the other does not, by kind, and how many refusals each
+    side made. A table one side read and the other did not is named apart,
+    because a changed inspector moves which tables there are before any plan.
+    """
+    before = {table["sha256"]: table for table in baseline["results"]}
+    after = {table["sha256"]: table for table in candidate["results"]}
+    shapes: dict[str, object] = {}
+    for shape in STARTUP_SHAPES:
+        row = {"same": 0, "moved": 0, "removed": collections.Counter(), "added": collections.Counter(),
+               "refused": [0, 0], "examples": []}
+        for digest in sorted(before.keys() & after.keys()):
+            old, new = before[digest]["plans"][shape], after[digest]["plans"][shape]
+            row["refused"][0] += isinstance(old, dict)
+            row["refused"][1] += isinstance(new, dict)
+            if old == new:
+                row["same"] += 1
+                continue
+            row["moved"] += 1
+            if isinstance(old, list) and isinstance(new, list):
+                gone = {tuple(action) for action in old} - {tuple(action) for action in new}
+                came = {tuple(action) for action in new} - {tuple(action) for action in old}
+                row["removed"].update(action[1] for action in gone)
+                row["added"].update(action[1] for action in came)
+            if len(row["examples"]) < 3:
+                row["examples"].append(digest[:8])
+        row["removed"] = dict(row["removed"])
+        row["added"] = dict(row["added"])
+        shapes[shape] = row
+    return {
+        "tables": len(before.keys() & after.keys()),
+        "only_baseline": sorted(digest[:8] for digest in before.keys() - after.keys()),
+        "only_candidate": sorted(digest[:8] for digest in after.keys() - before.keys()),
+        "shapes": shapes,
+    }
+
+
+def startup_plans_against(rev: str, roots: list[Path], *, tables: Path | None, include_installed: bool) -> dict[str, object]:
+    """This tree's startup plans of a corpus, compared with those of `rev`.
+
+    `rev` is checked out into a temporary worktree and asked by this same
+    script, copied in, so a revision from before `--startup-plans` existed
+    is asked the same question; only its planner and inspector are its own.
+    It runs beside this tree's own pass, and the worktree is removed whatever
+    happens. Read only, like every other mode here.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    roots = [root.resolve() for root in roots]
+    scratch = Path(tempfile.mkdtemp(prefix="ct-scan-baseline-"))
+    tree = scratch / "tree"
+    added = subprocess.run(["git", "worktree", "add", "--detach", "--quiet", str(tree), rev], cwd=ROOT,
+                           capture_output=True, text=True, check=False)
+    if added.returncode != 0:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise RuntimeError(f"cannot check out {rev}: {added.stderr.strip() or 'git worktree add failed'}")
+    child = None
+    try:
+        shutil.copy2(Path(__file__).resolve(), tree / "scripts" / "ct_scan_survey.py")
+        # The same corpus by the same flags, so both sides resolve the
+        # installed store through the same authority.
+        command = [sys.executable, str(tree / "scripts" / "ct_scan_survey.py"), "--startup-plans", "--json"]
+        if tables is not None:
+            command += ["--tables", str(tables.resolve())]
+        if include_installed:
+            command.append("--include-installed")
+        # Its own progress is not printed beside this tree's, which would
+        # interleave; it is kept, and its end is what a failure reports.
+        with (scratch / "baseline.json").open("w", encoding="utf-8") as output, \
+                (scratch / "baseline.err").open("w", encoding="utf-8") as errors:
+            child = subprocess.Popen(command, cwd=tree, stdout=output, stderr=errors)
+            candidate = startup_plans_corpus(roots, progress=True)
+            if child.wait() != 0:
+                tail = (scratch / "baseline.err").read_text(encoding="utf-8").strip().splitlines()[-3:]
+                raise RuntimeError(f"the survey at {rev} failed with exit code {child.returncode}: {' / '.join(tail)}")
+        baseline = json.loads((scratch / "baseline.json").read_text(encoding="utf-8"))["startup_plans_corpus"]
+    finally:
+        # A pass on this side that failed leaves the other one running.
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait()
+        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=ROOT, check=False,
+                       capture_output=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+    resolved = subprocess.run(["git", "rev-parse", rev], cwd=ROOT, capture_output=True, text=True, check=False)
+    return {"baseline": resolved.stdout.strip() or rev, "candidate_corpus_sha256": candidate["corpus_sha256"],
+            "baseline_corpus_sha256": baseline["corpus_sha256"], **compare_startup_plans(baseline, candidate)}
 
 
 # How many examples of each shape `--scripts` names. They are there to be
@@ -803,6 +905,10 @@ def main() -> int:
         help="the production startup plan of every table for each synthetic profile shape; no execution",
     )
     parser.add_argument(
+        "--baseline", metavar="REV",
+        help="with --startup-plans: compare this tree's plans with those of REV, shape by shape, from a temporary worktree",
+    )
+    parser.add_argument(
         "--include-installed", action="store_true",
         help="with --parameters or --startup-plans: also read tables under user_home from the install authority, deduplicated by SHA",
     )
@@ -823,6 +929,8 @@ def main() -> int:
         parser.error("--parameters and --startup-plans are separate read-only survey modes")
     if args.parameters and args.startup_plans:
         parser.error("name one of --parameters and --startup-plans")
+    if args.baseline and not args.startup_plans:
+        parser.error("--baseline needs --startup-plans")
     if args.tables is None and args.table is None and not args.include_installed:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
@@ -836,8 +944,12 @@ def main() -> int:
                 if not home:
                     raise ValueError("the install authority reports no user_home")
                 roots.append(Path(str(home)) / ".cheat-engine-decky" / "tables" / "sha256")
-            if args.startup_plans:
-                answer["startup_plans_corpus"] = startup_plans_corpus(roots)
+            if args.startup_plans and args.baseline:
+                answer["startup_plans_diff"] = startup_plans_against(
+                    args.baseline, roots, tables=args.tables, include_installed=args.include_installed,
+                )
+            elif args.startup_plans:
+                answer["startup_plans_corpus"] = startup_plans_corpus(roots, progress=True)
             else:
                 answer["parameters_corpus"] = parameters_corpus(roots)
         elif args.tables is not None and args.scripts:
@@ -869,6 +981,8 @@ def main() -> int:
     if args.json:
         print(json.dumps(answer, indent=2, sort_keys=True))
         return 0
+    if isinstance(answer.get("startup_plans_diff"), dict):
+        print(json.dumps(answer["startup_plans_diff"], indent=2, sort_keys=True))
     parameters = answer.get("parameters_corpus") or answer.get("parameters") or answer.get("startup_plans_corpus")
     if isinstance(parameters, dict):
         print(json.dumps({key: value for key, value in parameters.items() if key not in {"results", "unlinked"}}, indent=2, sort_keys=True))

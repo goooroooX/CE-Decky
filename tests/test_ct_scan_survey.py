@@ -200,3 +200,46 @@ def test_startup_plan_survey_asks_the_planner_about_every_shape(tmp_path: Path):
     assert [61, "active", "1"] in plans["all_on"]
     corpus = survey.startup_plans_corpus([tmp_path])
     assert corpus["tables"] == 1 and set(corpus["shapes"]) == set(survey.STARTUP_SHAPES)
+
+
+def _plans(plans: dict) -> dict:
+    return {"sha256": "ab" * 32, "controls": 3, "plans": {shape: plans.get(shape, []) for shape in survey.STARTUP_SHAPES}}
+
+
+def test_two_revisions_plans_are_compared_shape_by_shape():
+    before = {"results": [_plans({"read_back": [[61, "value", "1"], [22, "active", "1"]]}),
+                          {**_plans({}), "sha256": "cd" * 32}]}
+    after = {"results": [_plans({"read_back": [[22, "active", "1"]], "all_on": {"error": "past the limit"}}),
+                         {**_plans({}), "sha256": "ef" * 32}]}
+    diff = survey.compare_startup_plans(before, after)
+    assert diff["tables"] == 1
+    assert diff["only_baseline"] == ["cdcdcdcd"] and diff["only_candidate"] == ["efefefef"]
+    assert diff["shapes"]["read_back"]["removed"] == {"value": 1} and diff["shapes"]["read_back"]["added"] == {}
+    assert diff["shapes"]["all_on"]["refused"] == [0, 1] and diff["shapes"]["all_on"]["moved"] == 1
+    assert diff["shapes"]["remembered_off"] == {"same": 1, "moved": 0, "removed": {}, "added": {}, "refused": [0, 0], "examples": []}
+
+
+def test_a_corpus_pass_says_how_far_it_is_on_stderr_only(tmp_path: Path, capsys):
+    _parameters(tmp_path)
+    answer = survey.startup_plans_corpus([tmp_path], progress=True)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "1 read" in captured.err and answer["tables"] == 1
+
+
+def test_a_baseline_needs_the_startup_plans(monkeypatch, capsys):
+    import sys
+
+    import pytest
+
+    monkeypatch.setattr(sys, "argv", ["ct_scan_survey.py", "--tables", ".", "--baseline", "HEAD"])
+    with pytest.raises(SystemExit):
+        survey.main()
+    assert "--baseline needs --startup-plans" in capsys.readouterr().err
+
+
+def test_a_baseline_that_does_not_exist_is_a_sentence(tmp_path: Path):
+    import pytest
+
+    with pytest.raises(RuntimeError, match="cannot check out no-such-revision"):
+        survey.startup_plans_against("no-such-revision", [tmp_path], tables=tmp_path, include_installed=False)
