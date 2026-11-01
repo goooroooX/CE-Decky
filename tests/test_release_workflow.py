@@ -64,3 +64,44 @@ def test_the_release_is_titled_by_its_tag() -> None:
     # the subject of the CI commit its tag pointed at.
     create = _workflow().split("gh release create", 1)[1].split("\n\n", 1)[0]
     assert '--title "$GITHUB_REF_NAME"' in create
+
+
+# The separator the update window reads a release body to. What follows is the
+# commit list GitHub generates, which is not written for a user deciding to
+# update, so the marker has to be where the notes end and nowhere else.
+def test_the_release_body_puts_the_marker_between_the_notes_and_the_commit_list() -> None:
+    from ce_decky.plugin_update import NOTES_END_MARKER
+
+    workflow = _workflow()
+    notes = workflow.index('cp "$notes" release-body.md')
+    marker = workflow.index(NOTES_END_MARKER)
+    generated = workflow.index("releases/generate-notes")
+    assert notes < marker < generated
+    assert workflow.count(NOTES_END_MARKER) == 1
+
+
+NOTES = sorted((ROOT / "docs" / "release-notes").glob("v*.md"))
+
+
+@pytest.mark.parametrize("path", NOTES, ids=[path.name for path in NOTES])
+def test_every_release_notes_file_reads_in_the_update_window(path: Path) -> None:
+    from ce_decky.plugin_update import NOTES_END_MARKER, release_notes
+
+    text = path.read_text(encoding="utf-8")
+    # Either would end the notes early: the marker itself, or a line the
+    # window takes for the start of the generated list.
+    assert NOTES_END_MARKER not in text
+    assert not any(line.strip().startswith(("## What's Changed", "**Full Changelog**")) for line in text.splitlines())
+    # Assembled as the release workflow assembles it.
+    body = f"{text}\n{NOTES_END_MARKER}\n\n## What's Changed\n* a commit by @someone\n"
+    notes, cut = release_notes(body)
+    assert notes and not cut
+    assert "## Install" in text and "## Install" not in notes
+    # The opening line is the reason to update, which the window shows alone
+    # under the two versions. The rule and the window both arrived with 0.9.33,
+    # and releases published before it keep the bodies they were published with.
+    from ce_decky.plugin_update import parse_version
+
+    if parse_version("0.9.33") <= parse_version(path.stem[1:]):
+        assert not notes.splitlines()[0].startswith(("#", "-", "*", "+"))
+    assert "commit by @someone" not in notes
