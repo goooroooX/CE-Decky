@@ -90,7 +90,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, settingsForStartedScripts, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure } from "./modals/ActionFailureModal";
@@ -3188,7 +3188,7 @@ function Content() {
           close();
           toaster.toast({
             title: "CE Decky",
-            body: configurationOnly ? "Settings saved; this record uses them when switched on."
+            body: configurationOnly ? "Values saved; each is written when its cheat or its script is switched on."
               : envelope
               ? "Cheats applied and the confirmed state was saved for this exact table."
               : armAutoload
@@ -3362,6 +3362,13 @@ function Content() {
     // The other half of the same rule: what it refuses to write, which is a
     // cheat running in somebody's game that they did not ask for.
     const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]), projected);
+    // The settings saved for what those scripts read, as Configure cheats and
+    // Auto-load write them when they start the same scripts.
+    const settings = settingsForStartedScripts(
+      startedHere, controls, projected,
+      new Map((current.configured_values ?? []).map((item) => [item.record_id, item.value])),
+      new Set([recordId, ...heldOff.flatMap(({ control: held }) => held.id === null ? [] : [held.id])]),
+    );
     const desired = active
       ? [
           ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -3389,6 +3396,14 @@ function Content() {
             held_off: true,
             ...(after ? { after } : {}),
           }]),
+          ...settings.map(({ control: setting, value, running }) => ({
+            record_id: setting.id,
+            active: null,
+            value,
+            structure: setting.structure,
+            label: controlRowLabel(setting),
+            ...(running.length > 0 ? { requires_active: running } : {}),
+          })),
           ...releasedRows,
         ]
       : [

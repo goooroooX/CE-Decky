@@ -1289,9 +1289,32 @@ describe("a flag that waits for the script that allocates it", () => {
       error: missing ? "MemoryRecord missing" : null, error_code: missing ? "record_missing" : null }];
     api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValue(envelope(2, results));
     api.writeRuntimeCommands.mockResolvedValue({ ok: true, count: 1, next_generation: 2 });
-    await expect(applyRuntimeSelection(10, [{ record_id: 7, active: null, value: "8", require_active: true }]))
+    await expect(applyRuntimeSelection(10, [{ record_id: 7, active: null, value: "8", requires_active: [7] }]))
       .rejects.toThrow(/no longer enabled/);
     expect(api.writeRuntimeCommands.mock.calls.flatMap((call) => call[1]).every((command: any) => command.kind === "query")).toBe(true);
+  });
+
+  it.each([[false, true], [true, false]])("writes a setting only while the script it belongs to still runs (running=%s)", async (running, refused) => {
+    // The script is not part of the call, so the preflight has to ask for it.
+    const results = [
+      { generation: 1, record_id: 21, ok: true, active: false, value: "2", error: null, error_code: null },
+      { generation: 2, record_id: 20, ok: true, active: running, value: null, error: null, error_code: null },
+    ];
+    api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValue(envelope(3, results));
+    // Past the preflight is all this asks about, so the write itself ends the call.
+    api.writeRuntimeCommands.mockImplementation(async (_appId: number, commands: any[]) => {
+      if (commands.some((command) => command.kind === "set_value")) throw new Error("stop after the write");
+      return { ok: true, count: commands.length, next_generation: commands[0].generation + commands.length };
+    });
+    const call = applyRuntimeSelection(10, [{ record_id: 21, active: null, value: "8", requires_active: [20], label: "Multiplier" }]);
+    if (refused) {
+      await expect(call).rejects.toThrow(/script Multiplier belongs to is no longer running/);
+    } else {
+      await call.catch(() => undefined);
+    }
+    const commands = api.writeRuntimeCommands.mock.calls.flatMap((item) => item[1]);
+    expect(commands.some((command: any) => command.kind === "query" && command.record_id === 20)).toBe(true);
+    expect(commands.some((command: any) => command.kind === "set_value" && command.record_id === 21)).toBe(!refused);
   });
 
   // A table can file a script's flag beside it rather than inside it. The

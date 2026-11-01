@@ -58,6 +58,9 @@ import {
   absentUnderStoppedScripts,
   activeCountLabel,
   pinnedControlValue,
+  enclosingScripts,
+  readByRunningScripts,
+  settingsForStartedScripts,
 } from "../uiModel";
 import type { ConfiguredValue, RuntimeEnvelope, RuntimeResult, StartupPreference, TableControl, TableInspection } from "../types";
 import { describeError, leadWithCause } from "../errors";
@@ -180,7 +183,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     ? `${liveUnavailableReason} Apply saves the selection for this exact table and does not change the Cheat Engine running now; it is applied the next time this game starts Cheat Engine.`
     : autoloadEnabled
       ? "Nothing is running for this table, so Apply saves the selection for this exact table and CE Decky applies it when this game next starts."
-      : "Nothing is running for this table. Apply saves the selection for this exact table, and switching a cheat on also switches on Load last table & cheats, so CE Decky starts Cheat Engine with this game and applies it; switching every cheat off again switches that back off. A value on its own is only stored, and is written when its cheat is switched on.";
+      : "Nothing is running for this table. Apply saves the selection for this exact table, and switching a cheat on also switches on Load last table & cheats, so CE Decky starts Cheat Engine with this game and applies it; switching every cheat off again switches that back off. A value on its own is only stored: a script's setting is written when that script runs, and any other value when its cheat is switched on.";
   // Pinning is a profile write, never a runtime mutation, so it is committed
   // immediately and kept out of the Apply diff.
   const [pinnedView, setPinnedView] = useState<number[]>(pinned);
@@ -839,18 +842,35 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         // Emptying the field asks for the stored configuration to be dropped,
         // not for a blank to be written into the game's memory.
         //
-        // Review note (2026-11-01, maintainer): the former unfrozen-write
-        // exception from F5 is withdrawn. Off edits save only; enabling this
-        // record applies its saved choice. Parent scripts add no write authority.
-        // Readable records with no choice keep ordinary freeze behavior; an
+        // Review note (static review 2026-10-21, F5; maintainer 2026-11-01):
+        // the review asked that a value typed for a cheat that stays off never
+        // reach game memory. Followed for a cheat of its own, whose value now
+        // waits for it to be switched on. Not for a setting of scripts that are
+        // all running, by the maintainer's decision: that is written once and
+        // unfrozen, exactly where Auto-load writes it (`readByRunningScripts`),
+        // and nothing is frozen that was not itself switched on.
+        //
+        // A record this press switches on gets its saved choice. One with no
+        // choice and a readable value is switched on over what it holds; an
         // unreadable one needs its remembered fallback sent explicitly.
         const valueOnEnable = active === true && controlNeedsValueInput(control)
           && (configuredByIdRef.current.has(control.id) || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
-        const value = state.active === true && (touchedValues.has(control.id) || valueOnEnable)
-          && !deferredValues.has(control.id)
+        const setting = state.active !== true && touchedValues.has(control.id)
+          && readByRunningScripts(control, safeControls, activeById);
+        const value = !deferredValues.has(control.id)
+          && (state.active === true && (touchedValues.has(control.id) || valueOnEnable) || setting)
           ? displayableControlValue(state.value)
           : null;
         if (active === null && value === null) return [];
+        // What has to be on still when the value lands: the record itself for
+        // a cheat that is on, and the scripts already running around a setting.
+        const requiresActive = active === null && value !== null
+          ? [
+            ...(state.active === true ? [control.id] : []),
+            ...enclosingScripts(control, safeControls).flatMap((script) =>
+              script.id !== null && !effectiveTouchedActive.has(script.id) ? [script.id] : []),
+          ]
+          : [];
         return [{
           record_id: control.id,
           active,
@@ -858,7 +878,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           switch_values: releasedWithOnKey.has(control.id) ? undefined : switchValuesFor(control),
           structure: control.structure,
           label: controlRowLabel(control),
-          ...(active === null && value !== null ? { require_active: true } : {}),
+          ...(requiresActive.length > 0 ? { requires_active: requiresActive } : {}),
         }];
       });
       // A script carries the table author's own defaults with it, so every
@@ -905,6 +925,21 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           label: controlRowLabel(control),
           held_off: true,
           ...(after ? { after } : {}),
+        });
+      }
+      // And the settings saved for what those scripts read, which Auto-load
+      // writes when it starts them: started here instead, they would run on
+      // the table's own defaults while the rows showed the saved values.
+      for (const { control, value, running } of settingsForStartedScripts(
+        startedHere, safeControls, activeById, configuredByIdRef.current, touchedIds,
+      )) {
+        desired.push({
+          record_id: control.id,
+          active: null,
+          value,
+          structure: control.structure,
+          label: controlRowLabel(control),
+          ...(running.length > 0 ? { requires_active: running } : {}),
         });
       }
 
@@ -1349,14 +1384,21 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                           {/* A switch has no value of its own to save, so only
                               the first half of this is ever true of one: it is
                               about to switch its enclosing script on with it. */}
-                          {(blockedBy(control) && state?.active === true || controlAcceptsTypedValue(control)
-                            && (storedOnly || state?.active !== true)) && (
+                          {/* The script is switched on by this press, or with
+                              nothing running by the startup that switches this
+                              record on. A record switched on is never told its
+                              value waits for it to be switched on, and one with
+                              nothing typed or saved has no value to wait. */}
+                          {blockedBy(control) && state?.active === true && (storedOnly || touchedActive.has(recordId)) ? (
+                            <PanelNote>{`Also switches on \u201c${controlRowLabel(blockedBy(control)!)}\u201d.`}</PanelNote>
+                          ) : controlAcceptsTypedValue(control) && state?.active !== true
+                            && (touchedValues.has(recordId) || configuredByIdRef.current.has(recordId)) ? (
                             <PanelNote>
-                              {blockedBy(control) && state?.active === true && touchedActive.has(recordId)
-                                ? `Also switches on \u201c${controlRowLabel(blockedBy(control)!)}\u201d.`
+                              {enclosingScripts(control, safeControls).length > 0
+                                ? "Value saved; written while its script runs."
                                 : "Value saved; written when this record is switched on."}
                             </PanelNote>
-                          )}
+                          ) : null}
                           {/* One press for the field the ordinary path does not
                               need. The list is the answer for a record that has
                               one, and the value a record can only reach by

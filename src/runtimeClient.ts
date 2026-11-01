@@ -68,8 +68,15 @@ export interface RuntimeDesiredState {
    * address until it has, so neither its depth nor its place orders it.
    */
   after?: readonly number[];
-  /** A value-only edit must not write if the record has since gone off. */
-  require_active?: boolean;
+  /**
+   * Records that must already be on when this value is written, read in the
+   * same query that precedes every write: the record itself for a value edit
+   * on a cheat that is on, and the scripts it belongs to for a setting of
+   * running scripts. One that has since gone off refuses the whole call before
+   * anything is sent, because the value would freeze nothing, or land on an
+   * address its script no longer holds.
+   */
+  requires_active?: readonly number[];
 }
 
 export class RuntimeOperationError extends Error {
@@ -701,15 +708,19 @@ export async function applyRuntimeSelection(
   const waitsForAScriptHere = (state: RuntimeDesiredState): boolean =>
     (state.after ?? []).some((recordId) => recordId !== state.record_id && switchedOnHere.has(recordId));
 
-  const before = await queryRuntimeControlsPartial(appId, ids);
+  const required = ordered.flatMap((state) => state.requires_active ?? []);
+  const before = await queryRuntimeControlsPartial(appId, [...new Set([...ids, ...required])]);
   const current = new Map(before.results.map((result) => [result.record_id, result]));
   for (const desired of ordered) {
-    if (desired.require_active && current.get(desired.record_id)?.active !== true) {
-      throw new RuntimeOperationError(
-        `${desired.label ?? `MemoryRecord ${desired.record_id}`} is no longer enabled. Its saved value was not written.`,
-        before.envelope,
-      );
-    }
+    const stopped = (desired.requires_active ?? []).find((recordId) => current.get(recordId)?.active !== true);
+    if (stopped === undefined) continue;
+    const name = desired.label ?? `MemoryRecord ${desired.record_id}`;
+    throw new RuntimeOperationError(
+      stopped === desired.record_id
+        ? `${name} is no longer enabled. Its saved value was not written.`
+        : `The script ${name} belongs to is no longer running. Its saved value was not written.`,
+      before.envelope,
+    );
   }
   const missing = new Set(before.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
   const alreadyAbsentOff = new Set<number>();

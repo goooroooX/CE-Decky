@@ -2795,6 +2795,78 @@ export function sitsInsideScript(control: TableControl, controls: readonly Table
 }
 
 /**
+ * The scripts this record sits inside, outermost first, found exactly as the
+ * startup plan finds them (`_enclosing_script_ids` in `session_protocol.py`):
+ * the first record at each place above it, groups skipped, counted only when
+ * it is a script. The live screens and Auto-load decide whether a value is a
+ * script's setting from this one answer, so they cannot disagree about it.
+ */
+export function enclosingScripts(control: TableControl, controls: readonly TableControl[]): TableControl[] {
+  const found: TableControl[] = [];
+  for (let depth = 1; depth < control.structure.length; depth += 1) {
+    const prefix = control.structure.slice(0, depth);
+    const candidate = controls.find((other) => other.id !== null && other.id !== control.id
+      && other.kind !== "group" && !other.group_header && sameRecordPlace(other.structure, prefix));
+    if (candidate?.kind === "script") found.push(candidate);
+  }
+  return found;
+}
+
+/**
+ * Whether a value typed for this record is a setting its running scripts read.
+ *
+ * True only inside at least one script, every one of which is on in
+ * `activeById`. That is where Auto-load writes a typed value for a record it
+ * leaves off, once and unfrozen, and where a live session does the same: the
+ * script reads it whether or not the record itself is frozen. A record no
+ * script encloses is a cheat of its own, and its value waits for it to be
+ * switched on. A switch is never a setting, because its value is its toggle.
+ */
+export function readByRunningScripts(
+  control: TableControl,
+  controls: readonly TableControl[],
+  activeById: ReadonlyMap<number, boolean | null>,
+): boolean {
+  if (controlIsSwitch(control)) return false;
+  const scripts = enclosingScripts(control, controls);
+  return scripts.length > 0 && scripts.every((script) => activeById.get(script.id!) === true);
+}
+
+/**
+ * The saved settings a script started by this press has to be given now.
+ *
+ * Every record left off under one of `started`, with a value saved in
+ * Configure cheats, whose scripts are all on once the press is done: what
+ * Auto-load writes when it starts the same scripts, once and unfrozen. A
+ * record in `skip` is already being written by the press for its own reasons.
+ */
+export function settingsForStartedScripts(
+  started: readonly TableControl[],
+  controls: readonly TableControl[],
+  activeById: ReadonlyMap<number, boolean | null>,
+  configured: ReadonlyMap<number, string>,
+  skip: ReadonlySet<number>,
+): { control: TableControl & { id: number }; value: string; running: number[] }[] {
+  const startedIds = new Set(started.flatMap((script) => script.id === null ? [] : [script.id]));
+  if (startedIds.size === 0) return [];
+  return controls.flatMap((control) => {
+    if (control.id === null || skip.has(control.id) || activeById.get(control.id) === true) return [];
+    const value = configured.get(control.id);
+    if (value == null || displayableControlValue(value) === null || !controlNeedsValueInput(control)) return [];
+    const scripts = enclosingScripts(control, controls);
+    if (!scripts.some((script) => startedIds.has(script.id!))) return [];
+    if (!readByRunningScripts(control, controls, activeById)) return [];
+    return [{
+      control: control as TableControl & { id: number },
+      value,
+      // The scripts that were running before the press, which have to be
+      // running still when the value is written.
+      running: scripts.flatMap((script) => startedIds.has(script.id!) ? [] : [script.id!]),
+    }];
+  });
+}
+
+/**
  * Records that are missing because a script around them is not running.
  *
  * Proven rather than assumed: the record answered `record_missing`, and a

@@ -4,7 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.33 — 2026-11-01
 
-- [Fixed] An off record keeps its configured value visible instead of reverting to the current memory value. Editing it saves without writing memory or changing Auto-load; explicitly switching the numeric record on applies the saved choice. Existing startup behavior is preserved.
+- [Fixed] An off record keeps its configured value visible instead of reverting to the current memory value, which is shown beside it as `Current` where the two differ. A value saved for a script's setting is written once, without freezing it, while that script runs and whenever it is switched on, from Configure cheats, a pinned switch and Auto-load alike; a value for any other cheat waits until that cheat is switched on, which applies it. Editing a value never switches a cheat or a script on and leaves Auto-load as it was.
 
 ## 0.9.32 — 2026-10-25
 

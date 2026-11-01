@@ -1964,9 +1964,12 @@ def _without_values_nothing_reads(
     startup runs, or on a switch no script creates or allocates, which is there
     to be written whatever else startup does.
 
-    Review note (static review 2026-10-21, F5): the maintainer withdrew the live
-    unfrozen-write exception on 2026-11-01. Live off edits now save only; this
-    startup policy remains unchanged, including the separate N2 decision below.
+    Review note (static review 2026-10-21, F5): the maintainer narrowed the live
+    unfrozen-write exception on 2026-11-01 to this function's own rule. A live
+    edit of a record left off is written once, unfrozen, only as a setting of
+    scripts that are all running (`readByRunningScripts` in `uiModel.ts`, which
+    finds them as `_enclosing_script_ids` does); a cheat of its own waits for it
+    to be switched on, and nothing is frozen that was not itself switched on.
 
     Review note (static review 2026-10-22, N2): the review asked that a value
     cheat switched off receive no startup write while a sibling keeps its script

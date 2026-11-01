@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  enclosingScripts,
+  readByRunningScripts,
+  settingsForStartedScripts,
   selfTestCheckLabel,
   selfTestSummary,
   blockedRowLabel,
@@ -2251,5 +2254,49 @@ describe("records told apart by where they sit", () => {
   it("keeps a script whose own cheat is on, whatever its twin has on", () => {
     const active = new Map<number, boolean | null>([[1, true], [3, false], [4, true], [6, true]]);
     expect(unusedActiveScripts(controls, active, { chosen: new Set(), switchedOff: new Set([3]) })).toEqual([1]);
+  });
+});
+
+describe("a value its running scripts read", () => {
+  const place = (id: number, structure: string[], kind: string, extra: Record<string, unknown> = {}) => ({
+    id, description: structure[structure.length - 1], path: structure, structure, variable_type: kind === "script" ? "Auto Assembler Script" : "4 Bytes",
+    kind, group_header: false, has_assembler_script: kind === "script", dropdown_values: [], dropdown_read_only: false, ...extra,
+  }) as any;
+  // `Activate` > `Jump` > `Multiplier`, beside `Stats` (a value with records
+  // under it) > `Level`, and a group header `Group` > `Health`.
+  const controls = [
+    place(1, ["Activate"], "script"),
+    place(2, ["Activate", "Jump"], "script"),
+    place(3, ["Activate", "Jump", "Multiplier"], "value"),
+    place(4, ["Stats"], "value"),
+    place(5, ["Stats", "Level"], "value"),
+    place(6, ["Group"], "group", { group_header: true }),
+    place(7, ["Group", "Health"], "value"),
+    place(8, ["Activate", "Flag"], "dropdown", { dropdown_values: [["0", "Off"], ["1", "On"]], switch_on_value: "1" }),
+  ];
+
+  it("finds the scripts the startup plan finds, and only scripts", () => {
+    expect(enclosingScripts(controls[2], controls).map((control) => control.id)).toEqual([1, 2]);
+    // A value with records under it creates none of them, and a group is not a record.
+    expect(enclosingScripts(controls[4], controls)).toEqual([]);
+    expect(enclosingScripts(controls[6], controls)).toEqual([]);
+  });
+
+  it("is a setting only while every script around it runs, and never a switch", () => {
+    const on = new Map<number, boolean | null>([[1, true], [2, true]]);
+    expect(readByRunningScripts(controls[2], controls, on)).toBe(true);
+    expect(readByRunningScripts(controls[2], controls, new Map([[1, true], [2, false]]))).toBe(false);
+    expect(readByRunningScripts(controls[4], controls, on)).toBe(false);
+    expect(readByRunningScripts(controls[7], controls, on)).toBe(false);
+  });
+
+  it("gives a script started now the settings saved under it, naming the ones that were already running", () => {
+    const after = new Map<number, boolean | null>([[1, true], [2, true], [3, false]]);
+    const configured = new Map([[3, "2.5"], [5, "40"], [8, "1"]]);
+    expect(settingsForStartedScripts([controls[1]], controls, after, configured, new Set()))
+      .toEqual([{ control: controls[2], value: "2.5", running: [1] }]);
+    expect(settingsForStartedScripts([controls[1]], controls, after, configured, new Set([3]))).toEqual([]);
+    expect(settingsForStartedScripts([controls[1]], controls, new Map([[1, true], [2, true], [3, true]]), configured, new Set())).toEqual([]);
+    expect(settingsForStartedScripts([], controls, after, configured, new Set())).toEqual([]);
   });
 });

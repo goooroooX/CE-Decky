@@ -5660,6 +5660,72 @@ function sitsInsideScript(control, controls) {
     return controls.some((candidate) => candidate.id !== null && candidate.kind === "script" && encloses(candidate.structure, control.structure));
 }
 /**
+ * The scripts this record sits inside, outermost first, found exactly as the
+ * startup plan finds them (`_enclosing_script_ids` in `session_protocol.py`):
+ * the first record at each place above it, groups skipped, counted only when
+ * it is a script. The live screens and Auto-load decide whether a value is a
+ * script's setting from this one answer, so they cannot disagree about it.
+ */
+function enclosingScripts(control, controls) {
+    const found = [];
+    for (let depth = 1; depth < control.structure.length; depth += 1) {
+        const prefix = control.structure.slice(0, depth);
+        const candidate = controls.find((other) => other.id !== null && other.id !== control.id
+            && other.kind !== "group" && !other.group_header && sameRecordPlace(other.structure, prefix));
+        if (candidate?.kind === "script")
+            found.push(candidate);
+    }
+    return found;
+}
+/**
+ * Whether a value typed for this record is a setting its running scripts read.
+ *
+ * True only inside at least one script, every one of which is on in
+ * `activeById`. That is where Auto-load writes a typed value for a record it
+ * leaves off, once and unfrozen, and where a live session does the same: the
+ * script reads it whether or not the record itself is frozen. A record no
+ * script encloses is a cheat of its own, and its value waits for it to be
+ * switched on. A switch is never a setting, because its value is its toggle.
+ */
+function readByRunningScripts(control, controls, activeById) {
+    if (controlIsSwitch(control))
+        return false;
+    const scripts = enclosingScripts(control, controls);
+    return scripts.length > 0 && scripts.every((script) => activeById.get(script.id) === true);
+}
+/**
+ * The saved settings a script started by this press has to be given now.
+ *
+ * Every record left off under one of `started`, with a value saved in
+ * Configure cheats, whose scripts are all on once the press is done: what
+ * Auto-load writes when it starts the same scripts, once and unfrozen. A
+ * record in `skip` is already being written by the press for its own reasons.
+ */
+function settingsForStartedScripts(started, controls, activeById, configured, skip) {
+    const startedIds = new Set(started.flatMap((script) => script.id === null ? [] : [script.id]));
+    if (startedIds.size === 0)
+        return [];
+    return controls.flatMap((control) => {
+        if (control.id === null || skip.has(control.id) || activeById.get(control.id) === true)
+            return [];
+        const value = configured.get(control.id);
+        if (value == null || displayableControlValue(value) === null || !controlNeedsValueInput(control))
+            return [];
+        const scripts = enclosingScripts(control, controls);
+        if (!scripts.some((script) => startedIds.has(script.id)))
+            return [];
+        if (!readByRunningScripts(control, controls, activeById))
+            return [];
+        return [{
+                control: control,
+                value,
+                // The scripts that were running before the press, which have to be
+                // running still when the value is written.
+                running: scripts.flatMap((script) => startedIds.has(script.id) ? [] : [script.id]),
+            }];
+    });
+}
+/**
  * Records that are missing because a script around them is not running.
  *
  * Proven rather than assumed: the record answered `record_missing`, and a
@@ -8772,12 +8838,17 @@ async function applyRuntimeSelection(appId, desiredStates) {
     // then its allocation is there to write to.
     const switchedOnHere = new Set(ordered.flatMap((state) => state.active === true ? [state.record_id] : []));
     const waitsForAScriptHere = (state) => (state.after ?? []).some((recordId) => recordId !== state.record_id && switchedOnHere.has(recordId));
-    const before = await queryRuntimeControlsPartial(appId, ids);
+    const required = ordered.flatMap((state) => state.requires_active ?? []);
+    const before = await queryRuntimeControlsPartial(appId, [...new Set([...ids, ...required])]);
     const current = new Map(before.results.map((result) => [result.record_id, result]));
     for (const desired of ordered) {
-        if (desired.require_active && current.get(desired.record_id)?.active !== true) {
-            throw new RuntimeOperationError(`${desired.label ?? `MemoryRecord ${desired.record_id}`} is no longer enabled. Its saved value was not written.`, before.envelope);
-        }
+        const stopped = (desired.requires_active ?? []).find((recordId) => current.get(recordId)?.active !== true);
+        if (stopped === undefined)
+            continue;
+        const name = desired.label ?? `MemoryRecord ${desired.record_id}`;
+        throw new RuntimeOperationError(stopped === desired.record_id
+            ? `${name} is no longer enabled. Its saved value was not written.`
+            : `The script ${name} belongs to is no longer running. Its saved value was not written.`, before.envelope);
     }
     const missing = new Set(before.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
     const alreadyAbsentOff = new Set();
@@ -11464,7 +11535,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         ? `${liveUnavailableReason} Apply saves the selection for this exact table and does not change the Cheat Engine running now; it is applied the next time this game starts Cheat Engine.`
         : autoloadEnabled
             ? "Nothing is running for this table, so Apply saves the selection for this exact table and CE Decky applies it when this game next starts."
-            : "Nothing is running for this table. Apply saves the selection for this exact table, and switching a cheat on also switches on Load last table & cheats, so CE Decky starts Cheat Engine with this game and applies it; switching every cheat off again switches that back off. A value on its own is only stored, and is written when its cheat is switched on.";
+            : "Nothing is running for this table. Apply saves the selection for this exact table, and switching a cheat on also switches on Load last table & cheats, so CE Decky starts Cheat Engine with this game and applies it; switching every cheat off again switches that back off. A value on its own is only stored: a script's setting is written when that script runs, and any other value when its cheat is switched on.";
     // Pinning is a profile write, never a runtime mutation, so it is committed
     // immediately and kept out of the Apply diff.
     const [pinnedView, setPinnedView] = SP_REACT.useState(pinned);
@@ -12098,19 +12169,35 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 // Emptying the field asks for the stored configuration to be dropped,
                 // not for a blank to be written into the game's memory.
                 //
-                // Review note (2026-11-01, maintainer): the former unfrozen-write
-                // exception from F5 is withdrawn. Off edits save only; enabling this
-                // record applies its saved choice. Parent scripts add no write authority.
-                // Readable records with no choice keep ordinary freeze behavior; an
+                // Review note (static review 2026-10-21, F5; maintainer 2026-11-01):
+                // the review asked that a value typed for a cheat that stays off never
+                // reach game memory. Followed for a cheat of its own, whose value now
+                // waits for it to be switched on. Not for a setting of scripts that are
+                // all running, by the maintainer's decision: that is written once and
+                // unfrozen, exactly where Auto-load writes it (`readByRunningScripts`),
+                // and nothing is frozen that was not itself switched on.
+                //
+                // A record this press switches on gets its saved choice. One with no
+                // choice and a readable value is switched on over what it holds; an
                 // unreadable one needs its remembered fallback sent explicitly.
                 const valueOnEnable = active === true && controlNeedsValueInput(control)
                     && (configuredByIdRef.current.has(control.id) || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
-                const value = state.active === true && (touchedValues.has(control.id) || valueOnEnable)
-                    && !deferredValues.has(control.id)
+                const setting = state.active !== true && touchedValues.has(control.id)
+                    && readByRunningScripts(control, safeControls, activeById);
+                const value = !deferredValues.has(control.id)
+                    && (state.active === true && (touchedValues.has(control.id) || valueOnEnable) || setting)
                     ? displayableControlValue(state.value)
                     : null;
                 if (active === null && value === null)
                     return [];
+                // What has to be on still when the value lands: the record itself for
+                // a cheat that is on, and the scripts already running around a setting.
+                const requiresActive = active === null && value !== null
+                    ? [
+                        ...(state.active === true ? [control.id] : []),
+                        ...enclosingScripts(control, safeControls).flatMap((script) => script.id !== null && !effectiveTouchedActive.has(script.id) ? [script.id] : []),
+                    ]
+                    : [];
                 return [{
                         record_id: control.id,
                         active,
@@ -12118,7 +12205,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                         switch_values: releasedWithOnKey.has(control.id) ? undefined : switchValuesFor(control),
                         structure: control.structure,
                         label: controlRowLabel(control),
-                        ...(active === null && value !== null ? { require_active: true } : {}),
+                        ...(requiresActive.length > 0 ? { requires_active: requiresActive } : {}),
                     }];
             });
             // A script carries the table author's own defaults with it, so every
@@ -12166,6 +12253,19 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     label: controlRowLabel(control),
                     held_off: true,
                     ...(after ? { after } : {}),
+                });
+            }
+            // And the settings saved for what those scripts read, which Auto-load
+            // writes when it starts them: started here instead, they would run on
+            // the table's own defaults while the rows showed the saved values.
+            for (const { control, value, running } of settingsForStartedScripts(startedHere, safeControls, activeById, configuredByIdRef.current, touchedIds)) {
+                desired.push({
+                    record_id: control.id,
+                    active: null,
+                    value,
+                    structure: control.structure,
+                    label: controlRowLabel(control),
+                    ...(running.length > 0 ? { requires_active: running } : {}),
                 });
             }
             // Any mutation/revalidation failure after this point makes the previous
@@ -12405,10 +12505,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                             ].filter(Boolean).join(" \u00b7 ");
                                             return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { testId: `cheat-row-${recordId}`, label: controlRowLabel(control), summary: summary, active: state?.active ?? null, disabled: applying || pinning, highlighted: isExpanded, onActiveChange: traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active })), actions: (SP_JSX.jsx(DFL.DialogButton, { style: cheatRowActionStyle, disabled: applying, onClick: traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId }), children: isExpanded ? "Less" : "More" })), body: isExpanded ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelNote, { children: control.path.join(" \u203a ") }), control.description.trim() && control.description.trim() !== controlRowLabel(control)
                                                                 ? SP_JSX.jsx(PanelNote, { children: control.description.trim() })
-                                                                : null, searchable && listed && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), (blockedBy(control) && state?.active === true || controlAcceptsTypedValue(control)
-                                                                && (storedOnly || state?.active !== true)) && (SP_JSX.jsx(PanelNote, { children: blockedBy(control) && state?.active === true && touchedActive.has(recordId)
-                                                                    ? `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.`
-                                                                    : "Value saved; written when this record is switched on." })), controlAcceptsTypedValue(control) && listed && !typing && (SP_JSX.jsx(SmallButton, { disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.type_a_value", () => setTypedValue(recordId), { record_id: recordId }), children: "Type a value instead" })), typing && (SP_JSX.jsx(DFL.TextField, { label: listed ? "Custom value" : "Value", value: state?.value ?? "", onChange: traceUiEdit("cheat_selection_modal.edit_value", (event) => {
+                                                                : null, searchable && listed && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), blockedBy(control) && state?.active === true && (storedOnly || touchedActive.has(recordId)) ? (SP_JSX.jsx(PanelNote, { children: `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.` })) : controlAcceptsTypedValue(control) && state?.active !== true
+                                                                && (touchedValues.has(recordId) || configuredByIdRef.current.has(recordId)) ? (SP_JSX.jsx(PanelNote, { children: enclosingScripts(control, safeControls).length > 0
+                                                                    ? "Value saved; written while its script runs."
+                                                                    : "Value saved; written when this record is switched on." })) : null, controlAcceptsTypedValue(control) && listed && !typing && (SP_JSX.jsx(SmallButton, { disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.type_a_value", () => setTypedValue(recordId), { record_id: recordId }), children: "Type a value instead" })), typing && (SP_JSX.jsx(DFL.TextField, { label: listed ? "Custom value" : "Value", value: state?.value ?? "", onChange: traceUiEdit("cheat_selection_modal.edit_value", (event) => {
                                                                     // Typing in it is asking for it, which is what
                                                                     // keeps it open: a field shown because the
                                                                     // record held a value its list does not offer
@@ -17003,7 +17103,7 @@ function Content() {
                     close();
                     toaster.toast({
                         title: "CE Decky",
-                        body: configurationOnly ? "Settings saved; this record uses them when switched on."
+                        body: configurationOnly ? "Values saved; each is written when its cheat or its script is switched on."
                             : envelope
                                 ? "Cheats applied and the confirmed state was saved for this exact table."
                                 : armAutoload
@@ -17181,6 +17281,9 @@ function Content() {
         // The other half of the same rule: what it refuses to write, which is a
         // cheat running in somebody's game that they did not ask for.
         const leftOn = switchesLeftOn(startedHere, controls, new Set([recordId]), projected);
+        // The settings saved for what those scripts read, as Configure cheats and
+        // Auto-load write them when they start the same scripts.
+        const settings = settingsForStartedScripts(startedHere, controls, projected, new Map((current.configured_values ?? []).map((item) => [item.record_id, item.value])), new Set([recordId, ...heldOff.flatMap(({ control: held }) => held.id === null ? [] : [held.id])]));
         const desired = active
             ? [
                 ...ancestors.flatMap((ancestor) => ancestor.id === null ? [] : [{
@@ -17208,6 +17311,14 @@ function Content() {
                         held_off: true,
                         ...(after ? { after } : {}),
                     }]),
+                ...settings.map(({ control: setting, value, running }) => ({
+                    record_id: setting.id,
+                    active: null,
+                    value,
+                    structure: setting.structure,
+                    label: controlRowLabel(setting),
+                    ...(running.length > 0 ? { requires_active: running } : {}),
+                })),
                 ...releasedRows,
             ]
             : [

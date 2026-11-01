@@ -6936,10 +6936,11 @@ describe("Pinned live controls", () => {
     ],
   };
 
-  function renderChained(pinned: number[], before: any[], after: any[], inspection: any = chained, remembered: any[] = []) {
+  function renderChained(pinned: number[], before: any[], after: any[], inspection: any = chained, remembered: any[] = [], configured: any[] = []) {
     const snapshot = pinnedStatus();
     snapshot.profiles[0].pinned = pinned;
     snapshot.profiles[0].remembered = remembered;
+    snapshot.profiles[0].configured_values = configured;
     api.getStatus.mockResolvedValue(snapshot);
     api.inspectTableSha.mockResolvedValue(inspection);
     const live = liveRuntime();
@@ -6979,6 +6980,24 @@ describe("Pinned live controls", () => {
     // around it is CE Decky's own, so it is not.
     await waitFor(() => expect(api.setRememberedCheats).toHaveBeenCalled());
     expect(api.setRememberedCheats.mock.calls[0][2]).toEqual([{ record_id: 31, active: true, value: null }]);
+  });
+
+  it("gives a pinned script the setting saved for it, once and unfrozen", async () => {
+    renderChained([31], [
+      { generation: 1, record_id: 30, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 31, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 32, ok: true, active: false, value: "2", error: null },
+    ], [
+      { generation: 2, record_id: 30, ok: true, active: true, value: null, error: null },
+      { generation: 2, record_id: 31, ok: true, active: true, value: null, error: null },
+      { generation: 2, record_id: 32, ok: true, active: false, value: "3", error: null },
+    ], chained, [], [{ record_id: 32, value: "3" }]);
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-31")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledTimes(1));
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired.map((item: any) => [item.record_id, item.active, item.value])).toEqual([[30, true, null], [31, true, null], [32, null, "3"]]);
   });
 
   it("leaves a script switched on earlier alone when another pinned cheat is pressed", async () => {
@@ -8936,7 +8955,7 @@ describe("Selection and staged-change persistence", () => {
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     // The reason it is not written now is stated as an aside, not as another
     // control the user has to deal with.
-    expect(within(child).getByText(/Value saved; written when/)).toBeTruthy();
+    expect(within(child).getByText("Value saved; written while its script runs.")).toBeTruthy();
     // Nothing is written while the script that creates the address is off, but
     // the choice is kept for this exact table.
     expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toEqual([]);
@@ -9031,7 +9050,7 @@ describe("Selection and staged-change persistence", () => {
     expect(onSaveConfiguredValues).toHaveBeenCalledWith([{ record_id: 7, value: "8" }]);
     const desired = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
     expect(desired.some((item: any) => item.value === "8")).toBe(writes);
-    if (writes && !toggle) expect(desired[0].require_active).toBe(true);
+    if (writes && !toggle) expect(desired[0].requires_active).toEqual([7]);
     expect(results[0].value).toBe(writes ? "8" : read);
     expect((within(row).getByLabelText("Value") as HTMLInputElement).value).toBe("8");
     if (!writes && !toggle) expect(onApplied.mock.calls[0][3]).toBe(true);
@@ -9061,7 +9080,10 @@ describe("Selection and staged-change persistence", () => {
     expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toContainEqual(expect.objectContaining({ record_id: 7, active: true, value: null }));
   });
 
-  it.each([[true, false], [false, true]])("does not enable a parent or write an off child when editing its value (parent=%s, child=%s)", async (parent, child) => {
+  // A setting of a running script is written once and unfrozen, as Auto-load
+  // writes it; under a script that is off it waits, and neither press
+  // switches the script on or freezes the setting.
+  it.each([[true, false], [false, true]])("writes an off setting only while its script runs (parent=%s, child=%s)", async (parent, child) => {
     const results = [
       { generation: 1, record_id: 20, ok: true, active: parent, value: null, error: null },
       { generation: 1, record_id: 21, ok: true, active: child, value: "2", error: null },
@@ -9073,10 +9095,12 @@ describe("Selection and staged-change persistence", () => {
     fireEvent.change(within(row).getByLabelText("Value"), { target: { value: "8" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
-    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toEqual([]);
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toEqual(parent
+      ? [expect.objectContaining({ record_id: 21, active: null, value: "8", requires_active: [20] })]
+      : []);
   });
 
-  it("does not apply a saved child value when only its parent script is enabled", async () => {
+  it("gives a script switched on here the settings saved for it, without freezing them", async () => {
     const results = [
       { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null },
       { generation: 1, record_id: 21, ok: true, active: false, value: "2", error: null },
@@ -9087,7 +9111,10 @@ describe("Selection and staged-change persistence", () => {
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
     const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
     expect(desired).toContainEqual(expect.objectContaining({ record_id: 20, active: true }));
-    expect(desired.some((item: any) => item.record_id === 21)).toBe(false);
+    expect(desired.filter((item: any) => item.record_id === 21)).toEqual([
+      expect.objectContaining({ record_id: 21, active: null, value: "8" }),
+    ]);
+    expect(desired.find((item: any) => item.record_id === 21).requires_active).toBeUndefined();
   });
 
   it("keeps settings-only offline edits separate from auto-load selection", async () => {
@@ -9137,6 +9164,31 @@ describe("Selection and staged-change persistence", () => {
     await screen.findByText("Remembered state could not be saved");
     expect(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1]).toEqual([]);
     expect(screen.getByTestId("cheat-row-7").textContent).toContain("Current: 3");
+  });
+
+  // With nothing running, a script CE Decky switches on by itself is never
+  // remembered, so every cheat remembered on under one reads as blocked by it.
+  it.each([false, true])("says a cheat remembered on switches its script on, never that it waits (switch=%s)", async (asSwitch) => {
+    const child = asSwitch
+      ? { ...nestedInspection.controls[1], kind: "dropdown", dropdown_values: [["0", "Off"], ["1", "On"]], dropdown_read_only: false, switch_on_value: "1" }
+      : nestedInspection.controls[1];
+    renderConfigured({
+      live: false,
+      inspection: { ...nestedInspection, controls: [nestedInspection.controls[0], child] },
+      rememberedPreferences: [{ record_id: 21, active: true, value: asSwitch ? "1" : "8" }],
+    }, []);
+    const row = await screen.findByTestId("cheat-row-21");
+    await revealDetails(within(row));
+    expect(within(row).getByText(/Also switches on .Party Damage Reduction./)).toBeTruthy();
+    expect(within(row).queryByText(/Value saved/)).toBeNull();
+  });
+
+  it("tells a record remembered on nothing about waiting to be switched on", async () => {
+    renderConfigured({ live: false, rememberedPreferences: [{ record_id: 7, active: true, value: "8" }] }, []);
+    const row = await screen.findByTestId("cheat-row-7");
+    await revealDetails(within(row));
+    expect(within(row).queryByText(/Value saved/)).toBeNull();
+    expect(within(row).queryByText(/Also switches on/)).toBeNull();
   });
 
   it("offers an empty field rather than Cheat Engine's own unreadable placeholder", async () => {
