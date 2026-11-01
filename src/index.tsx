@@ -68,6 +68,7 @@ import {
   setUpdateAutoCheck,
   checkForUpdate,
   startPluginUpdate,
+  notePanelOpened,
   pollPluginUpdate,
   cancelPluginUpdate,
   startCESelfTest,
@@ -816,6 +817,16 @@ function Content() {
   // mount is still fixed.
   const quickAccessVisible = QUICK_ACCESS_VISIBLE ? QUICK_ACCESS_VISIBLE() : true;
   useEffect(() => { logUi("panel.visibility_changed", { visible: quickAccessVisible }); }, [quickAccessVisible]);
+  // Opening the panel is what arms the daily update check: a search used to be
+  // the whole of it, and somebody who set a table up once and then only opened
+  // the panel to play was never told about an update again. The backend paces
+  // it; this says only that the panel is in view, including on a mount that is
+  // already visible, and nothing the panel shows waits for it.
+  useEffect(() => {
+    if (!quickAccessVisible) return;
+    void Promise.resolve().then(() => notePanelOpened())
+      .catch((cause) => logUiFailure("update.panel_opened_unrecorded", cause));
+  }, [quickAccessVisible]);
   // Whether the panel has a status snapshot at all yet. This is a dependency of
   // the reread below rather than a bare read of the ref, because a panel that
   // mounts already visible never sees a visibility transition: the loader

@@ -560,6 +560,86 @@ def test_a_search_asks_now_rather_than_at_the_next_tick(tmp_path: Path):
     assert manager.snapshot()["update_available"] is True
 
 
+def test_opening_the_panel_arms_the_check_with_no_search_at_all(tmp_path: Path, caplog):
+    """A user who set a table up once and then only opens the panel to play.
+
+    A search was the whole of what armed the check, so that user was never
+    asked about an update again. Opening the panel arms it now, writes the
+    moment down so a reload inside the day keeps it, and asks at once.
+    """
+    network = FakeNetwork()
+    never = time.time() - 30 * 24 * 60 * 60
+    manager = _manager(tmp_path, network, searched_at=never)
+    assert manager.should_check() is False
+
+    async def scenario():
+        manager.note_panel_opened()
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if network.calls:
+                break
+        await manager.close()
+
+    with caplog.at_level(logging.INFO, logger="test-update"):
+        asyncio.run(scenario())
+    assert len(network.calls) == 1
+    assert manager.snapshot()["update_available"] is True
+    assert "panel_opened" in caplog.text
+    # The moment survives a reload, and the day it buys is spent by that check.
+    reloaded = _manager(tmp_path, network, searched_at=never)
+    assert reloaded._is_armed() is True
+    assert reloaded.should_check() is False
+
+
+def test_the_check_asks_at_most_once_a_day_even_after_a_failure(tmp_path: Path, monkeypatch):
+    network = FakeNetwork()
+    clock = _Clock(time.time())
+    monkeypatch.setattr(update_manager.time, "time", clock)
+    manager = _manager(tmp_path, network, searched_at=None)
+    manager._last_search_activity = clock
+    network.failure = OSError("offline")
+    asyncio.run(manager.check(forced=False))
+    assert manager.snapshot()["last_error"]
+    clock.advance(23 * 60 * 60)
+    assert manager.should_check() is False
+    clock.advance(60 * 60)
+    assert manager.should_check() is True
+
+
+def test_opening_the_panel_writes_its_moment_at_most_once_an_hour(tmp_path: Path, monkeypatch):
+    network = FakeNetwork()
+    clock = _Clock(time.time())
+    monkeypatch.setattr(update_manager.time, "time", clock)
+    manager = _manager(tmp_path, network, auto_check=False)
+    manager.note_panel_opened()
+    first = manager._stored()["active_at"]
+    clock.advance(30 * 60)
+    manager.note_panel_opened()
+    assert manager._stored()["active_at"] == first
+    clock.advance(31 * 60)
+    manager.note_panel_opened()
+    assert manager._stored()["active_at"] > first
+    # The switch off still asks GitHub nothing, whatever arms the check.
+    assert network.calls == []
+
+
+@pytest.mark.parametrize("recorded", ["not a time", time.time() + 7 * 24 * 60 * 60])
+def test_opening_the_panel_rewrites_a_moment_it_cannot_age(tmp_path: Path, recorded):
+    # One a damaged file holds, and one in this clock's future, which a device
+    # booting with its clock behind writes: neither may stop it being recorded.
+    manager = _manager(tmp_path, FakeNetwork(), auto_check=False)
+    manager.state.update(active_at=recorded)
+    manager.note_panel_opened()
+    assert abs(manager._stored()["active_at"] - time.time()) < 60
+
+
+def test_opening_the_panel_records_nothing_while_plugin_data_is_deleted(tmp_path: Path):
+    manager = _manager(tmp_path, FakeNetwork())
+    manager.suspend()
+    manager.note_panel_opened()
+    assert "active_at" not in manager._stored()
+
+
 def test_a_search_asks_for_nothing_the_rules_already_refuse(tmp_path: Path):
     network = FakeNetwork()
     off = _manager(tmp_path / "off", network, auto_check=False)

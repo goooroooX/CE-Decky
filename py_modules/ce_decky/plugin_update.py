@@ -53,14 +53,20 @@ MAX_SUMS_BYTES = 64 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_UPDATE_STATE_BYTES = 16 * 1024
 
-# How long after the last table search the plugin still considers its user
-# active enough to owe an update check. The same day the provider index uses,
-# and for the same reason: a device nobody is using should not ask GitHub
-# anything, for ever, on a timer.
+# How long after the user last opened this plugin's panel, or searched for a
+# table, the plugin still considers them active enough to owe an update check.
+# A device nobody is using should not ask GitHub anything, for ever, on a timer.
+# A search alone used to be the whole of it, so a user who set a table up once
+# and then only opened the panel to play was never asked about an update again.
 ACTIVE_WINDOW_SECONDS = 24 * 60 * 60
-# How often an armed device actually asks. One request, so the cost is the
-# round trip rather than the budget; a release is not published hourly.
-CHECK_INTERVAL_SECONDS = 6 * 60 * 60
+# How often an armed device actually asks, counted from the last attempt
+# whatever it answered: once a day, so a device that cannot reach GitHub asks
+# once a day as well. Check now is the press for anybody who will not wait.
+CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+# How stale the recorded moment of activity may get before opening the panel
+# writes it again. Its job is a 24 hour window, and writing the file on every
+# opening of the panel answers that no better than once an hour does.
+ACTIVITY_RECORD_SECONDS = 60 * 60
 # How often the scheduler looks at whether a check is owed, and how long it
 # waits before the first look. Steam, Decky and every other plugin start in the
 # same seconds, and nothing here is owed that soon.

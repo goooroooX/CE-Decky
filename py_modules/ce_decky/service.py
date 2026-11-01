@@ -428,8 +428,8 @@ class PluginService:
         )
         # Updating this plugin shares the transport the providers use and
         # nothing else with them: its own record, its own host policy, and a
-        # check armed by the same search activity the provider index is armed
-        # by. `auto_check` is read through the config store on every ask rather
+        # check armed by the panel being opened or by the same search activity
+        # the provider index is armed by. `auto_check` is read through the config store on every ask rather
         # than captured, because the switch is in Advanced and this object
         # outlives the press.
         self.plugin_updates = PluginUpdateManager(
@@ -2471,8 +2471,8 @@ class PluginService:
         try:
             return await self.provider_catalog.search(display_name, executable, _search_token(progress_token))
         finally:
-            # A search is the whole of what arms the update check, and waiting
-            # for the next tick to notice it meant a user who searched and then
+            # A search arms the update check, as opening the panel does, and
+            # waiting for the next tick to notice it meant a user who searched and then
             # looked at the panel saw nothing for up to five minutes. The check
             # is owed now; the pacing, the switch and the interval still decide
             # whether one actually happens, and the search's own answer is never
@@ -2884,6 +2884,16 @@ class PluginService:
     async def check_for_update(self) -> dict[str, object]:
         """The Check now press: one request, whatever the arming says."""
         return await self.plugin_updates.check(forced=True)
+
+    async def note_panel_opened(self) -> dict[str, object]:
+        """The panel came into view, which arms the daily update check.
+
+        Asynchronous so it runs on the loop beside the check that writes the
+        same record, rather than racing it from a worker thread. It answers at
+        once: the check it may start is not part of the answer.
+        """
+        self.plugin_updates.note_panel_opened()
+        return {"ok": True}
 
     async def start_plugin_update(self, expected_version: object) -> dict[str, object]:
         """Download the release the user confirmed, verify it, and hand it to Decky.

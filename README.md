@@ -46,7 +46,7 @@ Updating is the same steps with a newer ZIP; Decky replaces the plugin in place 
 
 After the first install CE Decky can update itself. When a newer release exists, the panel shows an orange **Update to vX.Y.Z** button. Pressing it asks you to confirm, warns that Steam's interface restarts, then downloads the release, checks it against the published checksum and hands it to Decky to install. You can stop the download; once the install starts you cannot.
 
-CE Decky checks for updates only after you have searched for a table recently, and at most once every few hours. **Advanced… → Plugin updates** has **Check now** and a switch to turn automatic checking off; with it off, nothing is checked and no button appears. If an install fails, the downloaded release is kept in your home folder and that screen gives you the path, so you can install it from Decky by hand.
+CE Decky checks for an update at most once a day, when you open its panel or search for a table; a device nobody opens it on asks nothing. **Advanced… → Plugin updates** has **Check now** and a switch to turn automatic checking off; with it off, nothing is checked and no button appears. If an install fails, the downloaded release is kept in your home folder and that screen gives you the path, so you can install it from Decky by hand.
 
 ## First run: install Cheat Engine
 

@@ -318,6 +318,9 @@ class Plugin:
     async def check_for_update(self):
         return await self.operations.create(self._svc().check_for_update(), label="check_for_update")
 
+    async def note_panel_opened(self):
+        return await self.operations.create(self._svc().note_panel_opened(), label="note_panel_opened")
+
     async def start_plugin_update(self, expected_version: str):
         return await self.operations.create(
             self._svc().start_plugin_update(expected_version), label="start_plugin_update",

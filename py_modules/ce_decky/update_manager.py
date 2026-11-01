@@ -41,6 +41,7 @@ from .operations import drainable_tasks
 from .paths import PluginPaths
 from .plugin_update import (
     ACTIVE_WINDOW_SECONDS,
+    ACTIVITY_RECORD_SECONDS,
     API_HOSTS,
     ASSET_HOSTS,
     CHECK_INTERVAL_SECONDS,
@@ -703,9 +704,15 @@ class PluginUpdateManager:
 
     # --------------------------------------------------------------- checking
 
+    def _last_activity(self) -> float:
+        """When somebody last opened this panel or searched, whichever is later."""
+        opened = self._stored().get("active_at")
+        opened = float(opened) if isinstance(opened, (int, float)) else 0.0
+        return max(opened, float(self._last_search_activity() or 0.0))
+
     def _is_armed(self) -> bool:
         """Whether somebody has used this device recently enough to owe a check."""
-        return time.time() - float(self._last_search_activity() or 0.0) <= ACTIVE_WINDOW_SECONDS
+        return time.time() - self._last_activity() <= ACTIVE_WINDOW_SECONDS
 
     def _is_due(self) -> bool:
         record = self._stored()
@@ -739,7 +746,7 @@ class PluginUpdateManager:
             and self._is_due()
         )
 
-    async def check(self, *, forced: bool) -> dict[str, object]:
+    async def check(self, *, forced: bool, trigger: str | None = None) -> dict[str, object]:
         """Ask GitHub once what the newest stable release is.
 
         A forced check ignores the arming and the interval, because it is a
@@ -792,6 +799,7 @@ class PluginUpdateManager:
             log_failure(
                 self.logger, "update.check_failed", exc,
                 expected=isinstance(exc, (UpdateError, NetworkError, ValueError, OSError)), forced=forced,
+                trigger=trigger or ("forced" if forced else "timer"),
             )
             return self.snapshot()
         finally:
@@ -806,7 +814,8 @@ class PluginUpdateManager:
         self._record(**answer, **self._settled_result_fields())
         log_activity(
             self.logger, "info", "update.checked",
-            forced=forced, current=self.current_version, latest=latest,
+            forced=forced, trigger=trigger or ("forced" if forced else "timer"),
+            current=self.current_version, latest=latest,
             available=offer is not None, unwritten=sorted(self._unwritten),
         )
         return self.snapshot()
@@ -859,18 +868,41 @@ class PluginUpdateManager:
             raise UpdateError("the release answer is not readable JSON") from exc
         return str(release_version(payload)), parse_release(payload, current_version=self.current_version)
 
-    def note_user_activity(self) -> None:
+    def note_panel_opened(self) -> None:
+        """The user opened this plugin's panel, which arms the daily check.
+
+        Written down, so that a reload inside the window does not forget it,
+        and only once the recorded moment is an hour old: the panel opens far
+        more often than the 24 hour window needs to hear about it. Then a check
+        is offered exactly as a search offers one. It never raises: the caller
+        is a panel opening, and nothing about this is part of what it shows.
+        """
+        try:
+            if self._closing or self._suspended:
+                return
+            recorded = self._stored().get("active_at")
+            age = time.time() - float(recorded) if isinstance(recorded, (int, float)) else None
+            # A moment in this clock's future is rewritten as well as a stale
+            # one, for the reason `_is_due` gives: a device whose clock went
+            # back would otherwise keep it until wall time caught up with it.
+            if age is None or age < 0 or age >= ACTIVITY_RECORD_SECONDS:
+                self._record(active_at=time.time())
+        except Exception as exc:  # noqa: BLE001 - opening the panel never fails over this
+            log_failure(self.logger, "update.activity_not_recorded", exc, expected=True)
+        self.note_user_activity(trigger="panel_opened")
+
+    def note_user_activity(self, *, trigger: str = "search") -> None:
         """Somebody just used the plugin, so ask now rather than at the next tick.
 
         The timer exists for the device nobody is touching. When a search has
-        just happened the user is here, and holding the answer for up to one
-        whole interval is what made a panel say nothing about an update that was
-        one request away. Everything that decides whether a check happens at all
-        is unchanged: the switch, the interval since the last check, and a check
-        already running.
+        just happened, or the panel has just been opened, the user is here, and
+        holding the answer for up to one whole interval is what made a panel say
+        nothing about an update that was one request away. Everything that
+        decides whether a check happens at all is unchanged: the switch, the
+        interval since the last attempt, and a check already running.
 
         It never raises and never waits: the caller is a search returning its
-        own answer, and this is not part of that answer.
+        own answer, or a panel opening, and this is not part of either.
         """
         try:
             if not self.should_check():
@@ -883,11 +915,11 @@ class PluginUpdateManager:
             return
         if self._activity_task is not None and not self._activity_task.done():
             return
-        self._activity_task = loop.create_task(self._checked_after_activity())
+        self._activity_task = loop.create_task(self._checked_after_activity(trigger))
 
-    async def _checked_after_activity(self) -> None:
+    async def _checked_after_activity(self, trigger: str) -> None:
         try:
-            await self.check(forced=False)
+            await self.check(forced=False, trigger=trigger)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the check records its own failures

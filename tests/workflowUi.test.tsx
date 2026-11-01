@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   validateEffectiveStartupPlan: vi.fn(),
+  notePanelOpened: vi.fn(),
   associateTable: vi.fn(), blockTable: vi.fn(), deleteTable: vi.fn(), revokeTable: vi.fn(), deleteManagedData: vi.fn(), cancelManagedCEInstall: vi.fn(), clearBlockedTables: vi.fn(),
   clearStartupPreference: vi.fn(), completeManagedCEInstall: vi.fn(), listBlockedTables: vi.fn(), unblockTable: vi.fn(),
   getCELaunchCapability: vi.fn(), getManagedCECapability: vi.fn(), getRuntimeStatus: vi.fn(), getStatus: vi.fn(),
@@ -1223,6 +1224,26 @@ describe("Home panel and managed setup", () => {
     await act(async () => { quickAccess.visible = true; quickAccess.listeners.forEach((notify) => notify()); });
 
     expect(await screen.findByText("No table selected")).toBeTruthy();
+  });
+
+  it("says the panel is in view on mount and each time it comes back, which arms the update check", async () => {
+    quickAccess.visible = true;
+    api.getStatus.mockResolvedValue(status(true));
+    renderContent();
+    await waitFor(() => expect(api.notePanelOpened).toHaveBeenCalledTimes(1));
+
+    await act(async () => { quickAccess.visible = false; quickAccess.listeners.forEach((notify) => notify()); });
+    expect(api.notePanelOpened).toHaveBeenCalledTimes(1);
+    await act(async () => { quickAccess.visible = true; quickAccess.listeners.forEach((notify) => notify()); });
+    await waitFor(() => expect(api.notePanelOpened).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the panel working when saying it is in view fails", async () => {
+    quickAccess.visible = true;
+    api.notePanelOpened.mockRejectedValueOnce(new Error("backend away"));
+    api.getStatus.mockResolvedValue(status(true));
+    renderContent();
+    expect(await screen.findByText("Game.CT")).toBeTruthy();
   });
 
   it("re-reads the authority on a panel that is created already visible", async () => {

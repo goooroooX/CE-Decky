@@ -1408,7 +1408,7 @@ export function AdvancedModal(props: Props) {
             testId="update-state"
             label={updateSummaryView.label}
             description={updateError ?? updateSummaryView.description}
-            help="CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens only after you have searched for a table recently, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version."
+            help="CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens at most once a day, and only on a day you have opened this panel or searched for a table, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version."
             actions={onCheckForUpdate ? (
               <SmallButton
                 disabled={blocked}
@@ -1461,7 +1461,7 @@ export function AdvancedModal(props: Props) {
             <PanelSectionRow>
               <SwitchBox name="auto-check" testId="update-auto-check" checked={Boolean(updateView?.auto_check)} style={CONTENTS_ONLY}><ToggleField
                 label="Check for updates automatically"
-                description="Only after you search for a table, and at most once every few hours. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed."
+                description="Once a day at most, on a day you open this panel or search for a table. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed."
                 checked={Boolean(updateView?.auto_check)}
                 disabled={blocked}
                 onChange={traceUiAction("advanced_modal.update_auto_check", (enabled: boolean) => {

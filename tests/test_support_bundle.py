@@ -598,6 +598,9 @@ def test_bundle_carries_what_an_update_did_while_the_plugin_was_being_replaced(t
         checked_at=1.0, latest_version="0.9.28", last_error=None,
         install={"version": "0.9.28", "started_at": 2.0},
     )
+    # The moment the panel was last opened, which is what armed the check: a
+    # report that a device was never offered an update is answered from it.
+    service.plugin_updates.note_panel_opened()
     (paths.log_dir / "plugin-update-runner.jsonl").write_text(
         '{"at":3.0,"event":"update_runner.started","version":"0.9.28"}\n', encoding="utf-8",
     )
@@ -607,5 +610,6 @@ def test_bundle_carries_what_an_update_did_while_the_plugin_was_being_replaced(t
         runner = archive.read("logs/plugin-update-runner.jsonl").decode("utf-8")
     assert state["latest_version"] == "0.9.28"
     assert state["install"]["version"] == "0.9.28"
+    assert isinstance(state["active_at"], float)
     assert "update_runner.started" in runner
     assert preferences["mascot_visible"] is False
