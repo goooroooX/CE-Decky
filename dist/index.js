@@ -11759,17 +11759,17 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const noteCurrentValues = (results) => {
         currentValuesRef.current = new Map(results.flatMap((result) => result.record_id === null ? [] : [[result.record_id, result.value]]));
     };
-    const resolvedValue = (recordId, live) => pinnedControlValue(live, rememberedPreferences.find((item) => item.record_id === recordId)?.value, configuredByIdRef.current.get(recordId));
+    const resolvedValue = (recordId, live, remembered = rememberedPreferences) => pinnedControlValue(live, remembered.find((item) => item.record_id === recordId)?.value, configuredByIdRef.current.get(recordId));
     // A record missing because a script around it is off is a cheat waiting for
     // that script, not a broken control. It is staged off, so it has a switch,
     // and so an inner script in that state is one Apply switches on on the way
     // to a cheat inside it. Left without a state it had no switch at all, and a
     // cheat a script creates could not be switched on here.
-    const withWaitingRecords = (states, results, unavailable) => {
+    const withWaitingRecords = (states, results, unavailable, remembered = rememberedPreferences) => {
         for (const recordId of absentUnderStoppedScripts(safeControls, results, unavailable)) {
             if (recordId in states)
                 continue;
-            states[recordId] = { active: false, value: resolvedValue(recordId, null) };
+            states[recordId] = { active: false, value: resolvedValue(recordId, null, remembered) };
         }
         return states;
     };
@@ -12494,7 +12494,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                             : resolvedValue(result.record_id, result.value),
                 };
             }
-            withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
+            withWaitingRecords(confirmedState, finalState.results, finalState.unavailable, remembered);
             setStaged(confirmedState);
             // Cheat Engine has been mutated and verified, but the remembered state
             // and auto-load are written by the parent. Adopting the confirmed state

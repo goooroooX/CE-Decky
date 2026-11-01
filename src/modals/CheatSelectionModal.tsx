@@ -273,9 +273,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     currentValuesRef.current = new Map(results.flatMap((result) =>
       result.record_id === null ? [] : [[result.record_id, result.value] as const]));
   };
-  const resolvedValue = (recordId: number, live: string | null | undefined): string | null => pinnedControlValue(
+  const resolvedValue = (recordId: number, live: string | null | undefined, remembered: readonly StartupPreference[] = rememberedPreferences): string | null => pinnedControlValue(
     live,
-    rememberedPreferences.find((item) => item.record_id === recordId)?.value,
+    remembered.find((item) => item.record_id === recordId)?.value,
     configuredByIdRef.current.get(recordId),
   );
 
@@ -288,10 +288,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     states: Record<number, StagedState>,
     results: readonly RuntimeResult[],
     unavailable: readonly RuntimeResult[],
+    remembered: readonly StartupPreference[] = rememberedPreferences,
   ): Record<number, StagedState> => {
     for (const recordId of absentUnderStoppedScripts(safeControls, results, unavailable)) {
       if (recordId in states) continue;
-      states[recordId] = { active: false, value: resolvedValue(recordId, null) };
+      states[recordId] = { active: false, value: resolvedValue(recordId, null, remembered) };
     }
     return states;
   };
@@ -1032,7 +1033,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
               : resolvedValue(result.record_id, result.value),
         };
       }
-      withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
+      withWaitingRecords(confirmedState, finalState.results, finalState.unavailable, remembered);
       setStaged(confirmedState);
       // Cheat Engine has been mutated and verified, but the remembered state
       // and auto-load are written by the parent. Adopting the confirmed state

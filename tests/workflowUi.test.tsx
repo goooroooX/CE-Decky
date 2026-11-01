@@ -9212,6 +9212,33 @@ describe("Selection and staged-change persistence", () => {
     expect(onApplied.mock.calls[0][0].find((item: any) => item.record_id === 7)).toBeUndefined();
   });
 
+  it("clearing a setting missing under a stopped script leaves it empty", async () => {
+    const parent = { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null };
+    const missing = { generation: 1, record_id: 21, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: [parent], unavailable: [missing] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: [parent] });
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    const onSaveConfiguredValues = vi.fn().mockResolvedValue(undefined);
+    render(<CheatSelectionModal
+      appId={10} inspection={nestedInspection as any} live pinned={[]}
+      startupPreferences={[]} rememberedPreferences={[{ record_id: 21, active: null, value: "8" }]}
+      configuredValues={[{ record_id: 21, value: "8" }]}
+      onSaveConfiguredValues={onSaveConfiguredValues}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])} onApplied={onApplied} onCancel={vi.fn()}
+    />);
+    const row = await screen.findByTestId("cheat-row-21");
+    await revealDetails(within(row));
+    expect((within(row).getByLabelText("Value") as HTMLInputElement).value).toBe("8");
+    fireEvent.change(within(row).getByLabelText("Value"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(onSaveConfiguredValues).toHaveBeenCalledWith([]);
+    expect(onApplied.mock.calls[0][0].find((item: any) => item.record_id === 21)).toBeUndefined();
+    expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, []);
+    expect((within(row).getByLabelText("Value") as HTMLInputElement).value).toBe("");
+  });
+
   it("clearing the value of a cheat that is on keeps it on and drops only the value", async () => {
     const onApplied = vi.fn().mockResolvedValue(undefined);
     renderConfigured({ live: false, configuredValues: [{ record_id: 7, value: "8" }],
