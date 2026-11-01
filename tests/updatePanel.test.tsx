@@ -157,6 +157,9 @@ describe("the update confirmation", () => {
     const styled = screen.getByTestId("update-note-2");
     expect(styled.querySelector("b")?.textContent).toBe("Load table & start CE");
     expect(styled.querySelector("code")?.textContent).toBe("proton-cachyos");
+    // The whole line is one block, so a bold name wraps with its sentence
+    // rather than standing beside it as a column of its own.
+    expect(styled.querySelector("b")?.parentElement?.textContent).toBe("\u2022 Load table & start CE works with proton-cachyos.");
     expect(screen.queryByTestId("update-notes-cut")).toBeNull();
   });
 

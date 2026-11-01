@@ -63,15 +63,21 @@ interface Props {
 }
 
 const NOTE_CODE: CSSProperties = { fontFamily: "monospace", fontSize: "0.92em" };
+// One block for the whole line. A row's label is a flex container in Steam's
+// own field, and each run handed to it bare became a column of its own: on the
+// device a bold name stood beside the sentence it was in, broken a few letters
+// to a line.
+const NOTE_LINE: CSSProperties = { display: "block" };
 
 /** One line of notes as text, bold and code set, and nothing interpreted. */
-function NoteText({ spans }: { spans: ReleaseNoteSpan[] }) {
+function NoteText({ spans, prefix }: { spans: ReleaseNoteSpan[]; prefix?: string }) {
   return (
-    <>
+    <span style={NOTE_LINE}>
+      {prefix}
       {spans.map((span, index) => span.strong
         ? <b key={index}>{span.text}</b>
         : span.code ? <code key={index} style={NOTE_CODE}>{span.text}</code> : <span key={index}>{span.text}</span>)}
-    </>
+    </span>
   );
 }
 
@@ -247,9 +253,9 @@ export function UpdateModal(
               <PanelSectionRow key={index}>
                 <PanelRow
                   testId={`update-note-${index}`}
-                  label={block.kind === "item"
-                    ? <>{"\u2022 "}<NoteText spans={block.spans} /></>
-                    : block.kind === "heading" ? <b><NoteText spans={block.spans} /></b> : <NoteText spans={block.spans} />}
+                  label={block.kind === "heading"
+                    ? <b><NoteText spans={block.spans} /></b>
+                    : <NoteText spans={block.spans} prefix={block.kind === "item" ? "\u2022 " : undefined} />}
                 />
               </PanelSectionRow>
             ))}
