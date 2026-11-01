@@ -41,9 +41,9 @@ import subprocess
 import sys
 
 if __package__:
-    from .frontend_source_digest import STAMP as FRONTEND_STAMP, stamp as stamp_frontend_digest
+    from .frontend_source_digest import STAMP as FRONTEND_STAMP, is_current as frontend_is_current, stamp as stamp_frontend_digest
 else:
-    from frontend_source_digest import STAMP as FRONTEND_STAMP, stamp as stamp_frontend_digest
+    from frontend_source_digest import STAMP as FRONTEND_STAMP, is_current as frontend_is_current, stamp as stamp_frontend_digest
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
@@ -64,6 +64,32 @@ def _previous_version(version: str) -> str:
     if patch == 0:
         raise SystemExit(f"cannot derive a version below {version}; pass --version")
     return f"{major}.{minor}.{patch - 1}"
+
+
+def _published_version() -> str | None:
+    """The newest stable release this checkout has the tag of, if any.
+
+    Read from the local tags, so a checkout that has not fetched the newest one
+    answers with the one before it, and says which it used.
+    """
+    result = subprocess.run(["git", "tag", "--list", "v*"], cwd=ROOT, capture_output=True, text=True, check=False)
+    versions = [tag[1:] for tag in result.stdout.split() if VERSION_RE.fullmatch(tag[1:])]
+    return max(versions, key=_key) if versions else None
+
+
+def _key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _default_target(current: str, published: str | None) -> str:
+    """One below the published release, which is the version it offers itself to.
+
+    One below this tree's own version used to be the default, and on a tree one
+    version ahead of the release that is the release itself: equal is not older,
+    so the device was offered nothing.
+    """
+    base = published if published is not None and _key(published) <= _key(current) else current
+    return _previous_version(base)
 
 
 def _rewrite(version: str, target: str) -> dict[Path, str]:
@@ -93,7 +119,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--version",
-        help="the version to stamp; defaults to one below this tree's own patch component",
+        help="the version to stamp; defaults to one below the newest release tag this checkout has, so the published release is offered to it",
     )
     parser.add_argument(
         "--allow-dirty",
@@ -103,13 +129,24 @@ def main() -> None:
     args = parser.parse_args()
 
     current = _current_version()
-    target = args.version or _previous_version(current)
+    published = _published_version()
+    target = args.version or _default_target(current, published)
     if not VERSION_RE.fullmatch(target):
         raise SystemExit(f"--version must be a plain released version, not {target!r}")
-    if tuple(int(part) for part in target.split(".")) >= tuple(int(part) for part in current.split(".")):
+    if _key(target) >= _key(current):
         raise SystemExit(f"{target} is not below this tree's version {current}")
     if not args.allow_dirty and not _tree_is_clean():
         raise SystemExit("the working tree has uncommitted changes; commit them or pass --allow-dirty")
+    # The stamp below is re-taken for the rewritten tree, so it would vouch for
+    # whatever `dist/index.js` holds. A bundle built before the last change to
+    # the frontend sources then packaged as if it were this tree's, and the
+    # device check that followed ran the old panel. Refused before anything is
+    # rewritten, while the stamp still says what the bundle was built from.
+    if not frontend_is_current():
+        raise SystemExit(
+            "dist/index.js is not built from this tree's frontend sources; rebuild it first with "
+            "`python scripts/qa.py --profile frontend --stage frontend-build`"
+        )
 
     originals = _rewrite(current, target)
     # `package.json` is one of the files the frontend bundle is stamped against,
@@ -143,6 +180,12 @@ def main() -> None:
     print(f"downgrade package: {artifact}")
     print(f"sha256: {digest.hexdigest()}")
     print(f"it reports {target}; this tree is {current}")
+    if published is None:
+        print("no release tag in this checkout: fetch the tags to know which release it will be offered")
+    elif _key(target) >= _key(published):
+        print(f"no update is offered to it until a release newer than {target} is published (newest tag here: v{published})")
+    else:
+        print(f"the published v{published} is offered to it")
     # Printed whole, because the installer refuses a package whose version is not
     # this checkout's unless it is told which version to expect, and that refusal
     # is the check doing its job rather than something to work around.

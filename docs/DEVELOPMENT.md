@@ -477,9 +477,18 @@ stamped below the published release:
 python scripts/build_downgrade_package.py --version 0.9.27
 ```
 
+Without `--version` it stamps one below the newest release tag the checkout
+has, which is the version the published release is offered to; it prints which
+release that is, and says so when the version it built will be offered nothing
+yet, which is what a build for testing the next release wants.
+
 It refuses a dirty tree, because it rewrites two tracked files and restores them
 afterwards and cannot tell its own edit from yours; `--allow-dirty` overrides
-that and still restores them. The artifact is named
+that and still restores them. It also refuses a `dist/index.js` that was not
+built from the frontend sources in front of it, before rewriting anything: the
+bundle stamp is re-taken for the rewritten tree, so a stale bundle would
+otherwise be packaged as this tree's and a device check would run the old
+panel. The artifact is named
 `artifacts/CE-Decky-downgrade-v<version>.zip` so it is never mistaken for a
 release, and the SHA-256 it prints is what the install command takes:
 
