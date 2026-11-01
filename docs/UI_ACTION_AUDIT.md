@@ -223,5 +223,6 @@ Each identifier below names one owned callback location, even when several rows 
 | `table_search_modal.close` | `src/modals/TableSearchModal.tsx` | `cancel` |
 | `update_modal.cancel_back` | `src/modals/UpdateModal.tsx` | `() => { if (!busyRef.current && !installing) onClose(); }` |
 | `update_modal.close_overdue` | `src/modals/UpdateModal.tsx` | `() => onClose()` |
+| `update_modal.note_line` | `src/modals/UpdateModal.tsx` | `() => undefined`: makes a line of release notes a focus stop where Steam's scroll panel was not found |
 | `update_modal.not_now` | `src/modals/UpdateModal.tsx` | `() => { if (inFlight) { void abandon(); return; } if (!busyRef.current) onClose(); }` |
 | `update_modal.update` | `src/modals/UpdateModal.tsx` | `() => { void confirm(); }` |

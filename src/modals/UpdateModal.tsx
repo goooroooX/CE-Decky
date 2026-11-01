@@ -1,14 +1,14 @@
 import { useUiSurface } from "../useUiSurface";
 import { traceUiAction, startUiOperation } from "../uiActions";
-import { DialogButton, Focusable, ModalRoot, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
-import { useEffect, useRef, useState } from "react";
+import { DialogButton, Focusable, ModalRoot, PanelSection, PanelSectionRow, ScrollPanelGroup, Spinner, scrollPanelClasses } from "@decky/ui";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DensePanel, PanelRow, SectionHeading } from "../components/PanelDensity";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
 import type { PluginUpdateOperation } from "../types";
 import { releaseNoteBlocks, type ReleaseNoteSpan } from "../uiModel";
-import type { CSSProperties } from "react";
+import type { ComponentType, CSSProperties, ReactElement, ReactNode, RefAttributes } from "react";
 
 /** How often this asks the backend what the update it started is doing. */
 const POLL_INTERVAL_MS = 1000;
@@ -73,15 +73,40 @@ const NOTE_LINE: CSSProperties = { display: "block" };
 // in the panel's own palette rather than a colour of their own. Bounded in
 // height and scrolled inside, so the warning and the two presses stay on a
 // handheld's screen however long a release's notes run.
-const NOTES_BOX: CSSProperties = {
+const NOTES_FRAME: CSSProperties = {
   maxHeight: "min(40vh, 340px)",
-  overflowY: "auto",
   margin: "2px 0 6px",
-  padding: "4px 0",
   borderRadius: 4,
   background: "hsla(210, 45%, 45%, 0.14)",
   borderLeft: "3px solid hsla(210, 70%, 68%, 0.55)",
 };
+// Steam's panel takes a ref and a style, and its `Focusable` takes `focusable`,
+// which makes a stop of a container with nothing to press; the library's
+// declarations name none of them, so they are typed here once.
+const SteamScrollPanel = ScrollPanelGroup as unknown as ComponentType<
+  { children?: ReactNode; focusable?: boolean; style?: CSSProperties } & RefAttributes<HTMLElement>
+> | undefined;
+const SteamFocusable = Focusable as unknown as ComponentType<
+  { children?: ReactNode; focusable?: boolean; noFocusRing?: boolean }
+>;
+// Steam's own scroll panel, bounded by the frame it sits in.
+const NOTES_PANEL: CSSProperties = { flex: 1, minHeight: 0 };
+const NOTES_FRAME_PANEL: CSSProperties = { ...NOTES_FRAME, display: "flex", flexDirection: "column" };
+// Where Steam's scroll panel was not found, a box the browser scrolls.
+const NOTES_FRAME_PLAIN: CSSProperties = { ...NOTES_FRAME, overflowY: "auto" };
+const NOTES_CONTENT: CSSProperties = { padding: "4px 0" };
+const NOTES_CLASS = "ce-decky-update-notes";
+// The rule brightens while focus is in the notes, which is the whole of what
+// says so: their one stop carries no ring of its own, so that the ring Steam
+// moves between controls has nothing to travel to inside a scrolling box. A
+// thin scrollbar says there is more.
+const notesCss = (panel: string | undefined) => [
+  `.${NOTES_CLASS}:has(.gpfocuswithin), .${NOTES_CLASS}:has(.gpfocus) { border-left-color: hsla(210, 85%, 74%, 0.95); }`,
+  ...(panel ? [
+    `.${NOTES_CLASS} .${panel}::-webkit-scrollbar { display: initial !important; width: 4px; }`,
+    `.${NOTES_CLASS} .${panel}::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background-color: hsla(210, 70%, 68%, 0.45); }`,
+  ] : []),
+].join("\n");
 const NOTE_ROW: CSSProperties = { padding: "3px 12px", fontSize: 14, lineHeight: 1.35 };
 const NOTE_HEADING: CSSProperties = { ...NOTE_ROW, paddingTop: 6, fontSize: 13, fontWeight: 700, color: "hsla(210, 70%, 82%, 0.95)" };
 
@@ -94,6 +119,32 @@ function NoteText({ spans, prefix }: { spans: ReleaseNoteSpan[]; prefix?: string
         ? <b key={index}>{span.text}</b>
         : span.code ? <code key={index} style={NOTE_CODE}>{span.text}</code> : <span key={index}>{span.text}</span>)}
     </span>
+  );
+}
+
+/** The lines of a release's notes, each a stop of its own where `stops` asks. */
+function NoteLines({ lines, truncated, pageUrl, stops = false }: {
+  lines: ReturnType<typeof releaseNoteBlocks>;
+  truncated: boolean;
+  pageUrl?: string;
+  stops?: boolean;
+}) {
+  const stop = (key: number | string, line: ReactElement) => (stops
+    ? <Focusable key={key} onActivate={traceUiAction("update_modal.note_line", () => undefined)}>{line}</Focusable>
+    : <div key={key}>{line}</div>);
+  return (
+    <div style={NOTES_CONTENT}>
+      {lines.map((block, index) => stop(index, (
+        <div data-testid={`update-note-${index}`} style={block.kind === "heading" ? NOTE_HEADING : NOTE_ROW}>
+          <NoteText spans={block.spans} prefix={block.kind === "item" ? "\u2022 " : undefined} />
+        </div>
+      )))}
+      {truncated && stop("cut", (
+        <div data-testid="update-notes-cut" style={NOTE_ROW}>
+          {`The rest is on the release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}`}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -125,6 +176,16 @@ export function UpdateModal(
   const noteBlocks = releaseNoteBlocks(notes);
   const lead = noteBlocks[0]?.kind === "paragraph" ? noteBlocks[0] : null;
   const noteLines = lead ? noteBlocks.slice(1) : noteBlocks;
+  // Whether the notes run past their box, which is when they need a stop to
+  // scroll from; and where it cannot be measured, they get one regardless,
+  // since notes nobody can reach are worse than one stop too many.
+  const notesPanelRef = useRef<HTMLElement | null>(null);
+  const [notesScroll, setNotesScroll] = useState(true);
+  useLayoutEffect(() => {
+    const panel = notesPanelRef.current;
+    if (!panel || !panel.clientHeight) return;
+    setNotesScroll(panel.scrollHeight > panel.clientHeight);
+  }, [notes]);
   // An operation that has already ended is not something to adopt. The panel
   // does not pass one, and this window does not act on one either: it opens as
   // the ordinary confirmation, which is what a user pressing Update after a
@@ -270,26 +331,32 @@ export function UpdateModal(
             </PanelSectionRow>
             {!operation && (noteLines.length > 0 || notesTruncated) && (
               <PanelSectionRow>
-                <div data-testid="update-notes" style={NOTES_BOX}>
-                  {/* Each line a focus stop of its own, which is what scrolls
-                      the box on a controller: Steam moves a view by moving
-                      focus, and a `Focusable` is a stop only where it can be
-                      activated, as `PanelRow` records. */}
-                  {noteLines.map((block, index) => (
-                    <Focusable key={index} onActivate={() => undefined}>
-                      <div data-testid={`update-note-${index}`} style={block.kind === "heading" ? NOTE_HEADING : NOTE_ROW}>
-                        <NoteText spans={block.spans} prefix={block.kind === "item" ? "\u2022 " : undefined} />
-                      </div>
-                    </Focusable>
-                  ))}
-                  {notesTruncated && (
-                    <Focusable onActivate={() => undefined}>
-                      <div data-testid="update-notes-cut" style={NOTE_ROW}>
-                        {`The rest is on the release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}`}
-                      </div>
-                    </Focusable>
-                  )}
-                </div>
+                {SteamScrollPanel ? (
+                  /* Steam's own scroll panel, with the notes as one stop that
+                     carries no ring: the D-pad scrolls the panel and leaves it
+                     at either end. A stop per line scrolled a box the browser
+                     moved while Steam's ring flew to where the line had been,
+                     outside the window while a direction was held, and focus
+                     was sometimes lost on the way. The same shape as maintained
+                     plugins use; `docs/FIELD_NOTES.md` names them. */
+                  <div className={NOTES_CLASS} data-testid="update-notes" style={NOTES_FRAME_PANEL}>
+                    <style>{notesCss(scrollPanelClasses?.ScrollPanel)}</style>
+                    <SteamScrollPanel ref={notesPanelRef} focusable={false} style={NOTES_PANEL}>
+                      <SteamFocusable noFocusRing focusable={notesScroll}>
+                        <NoteLines lines={noteLines} truncated={notesTruncated} pageUrl={pageUrl} />
+                      </SteamFocusable>
+                    </SteamScrollPanel>
+                  </div>
+                ) : (
+                  /* Where Steam's scroll panel was not found: a box the browser
+                     scrolls, each line a stop of its own, because Steam moves a
+                     view only by moving focus and a `Focusable` is a stop only
+                     where it can be activated, as `PanelRow` records. */
+                  <div className={NOTES_CLASS} data-testid="update-notes" style={NOTES_FRAME_PLAIN}>
+                    <style>{notesCss(undefined)}</style>
+                    <NoteLines lines={noteLines} truncated={notesTruncated} pageUrl={pageUrl} stops />
+                  </div>
+                )}
               </PanelSectionRow>
             )}
             {/* Both things there is no discovering afterwards, in one row so

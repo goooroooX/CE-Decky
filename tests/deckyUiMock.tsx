@@ -101,8 +101,20 @@ export function deckyUiBase(): Record<string, unknown> {
     // no layout at all, so the measurement under test was never the one that
     // runs on a device.
     Focusable: React.forwardRef(({ children, ...props }: any, ref: any) => (
-      <div ref={ref} data-testid={props["data-testid"]} data-flow-children={props["flow-children"]}>{children}</div>
+      <div
+        ref={ref}
+        data-testid={props["data-testid"]}
+        data-flow-children={props["flow-children"]}
+        data-focusable={props.focusable === undefined ? undefined : String(props.focusable)}
+        data-no-focus-ring={props.noFocusRing ? "true" : undefined}
+      >{children}</div>
     )),
+    // Steam's scroll panel, which a screen bounds with a style and measures
+    // through a ref; the double keeps both, and says it is one.
+    ScrollPanelGroup: React.forwardRef(({ children, style }: any, ref: any) => (
+      <div ref={ref} style={style} data-scroll-panel="true">{children}</div>
+    )),
+    scrollPanelClasses: { ScrollPanel: "ScrollPanel", ScrollBoth: "ScrollBoth", ScrollX: "ScrollX", ScrollY: "ScrollY" },
     ModalRoot: ({ children }: any) => <div>{children}</div>,
     // The value Steam's own enum carries, which the footer row passes through
     // to a focus container. A file that renders `Focusable` with its navigation

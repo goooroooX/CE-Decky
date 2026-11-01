@@ -7,7 +7,14 @@ vi.mock("@decky/ui", async () => (await import("./deckyUiMock")).deckyUiMock({
   DialogButton: ({ children, onClick, disabled, style }: any) => (
     <button disabled={disabled} data-background={style?.background} onClick={onClick}>{children}</button>
   ),
-  Focusable: ({ children, onActivate }: any) => <div data-testid="focusable" onClick={() => onActivate?.(new CustomEvent("activate"))}>{children}</div>,
+  Focusable: ({ children, onActivate, focusable, noFocusRing }: any) => (
+    <div
+      data-testid="focusable"
+      data-focusable={focusable === undefined ? undefined : String(focusable)}
+      data-no-focus-ring={noFocusRing ? "true" : undefined}
+      onClick={() => onActivate?.(new CustomEvent("activate"))}
+    >{children}</div>
+  ),
   ModalRoot: ({ children, onCancel }: any) => <div role="dialog"><button onClick={() => onCancel?.()}>controller-back</button>{children}</div>,
   PanelSection: ({ title, children }: any) => <section aria-label={title || "section"}>{children}</section>,
   PanelSectionRow: ({ children }: any) => <div>{children}</div>,
@@ -166,7 +173,15 @@ describe("the update confirmation", () => {
     const box = screen.getByTestId("update-notes");
     expect(box.contains(screen.getByTestId("update-note-2"))).toBe(true);
     expect(box.contains(screen.getByTestId("update-restart-warning"))).toBe(false);
-    expect(box.style.overflowY).toBe("auto");
+    // Steam's own scroll panel holds them, as one stop with no ring of its
+    // own: a stop per line sent Steam's ring outside the window while a
+    // direction was held, and lost focus on the way.
+    const panel = box.querySelector("[data-scroll-panel]") as HTMLElement;
+    expect(panel).not.toBeNull();
+    const stops = box.querySelectorAll("[data-focusable]");
+    expect(stops).toHaveLength(1);
+    expect(stops[0].getAttribute("data-no-focus-ring")).toBe("true");
+    expect(stops[0].contains(screen.getByTestId("update-note-0"))).toBe(true);
     // The blue rule marks the notes alone; the row naming the versions has a
     // ground and no accent edge, or it reads as their first line.
     expect(box.style.borderLeft).toContain("solid");

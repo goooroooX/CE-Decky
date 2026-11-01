@@ -11367,15 +11367,36 @@ const NOTE_LINE = { display: "block" };
 // in the panel's own palette rather than a colour of their own. Bounded in
 // height and scrolled inside, so the warning and the two presses stay on a
 // handheld's screen however long a release's notes run.
-const NOTES_BOX = {
+const NOTES_FRAME = {
     maxHeight: "min(40vh, 340px)",
-    overflowY: "auto",
     margin: "2px 0 6px",
-    padding: "4px 0",
     borderRadius: 4,
     background: "hsla(210, 45%, 45%, 0.14)",
     borderLeft: "3px solid hsla(210, 70%, 68%, 0.55)",
 };
+// Steam's panel takes a ref and a style, and its `Focusable` takes `focusable`,
+// which makes a stop of a container with nothing to press; the library's
+// declarations name none of them, so they are typed here once.
+const SteamScrollPanel = DFL.ScrollPanelGroup;
+const SteamFocusable = DFL.Focusable;
+// Steam's own scroll panel, bounded by the frame it sits in.
+const NOTES_PANEL = { flex: 1, minHeight: 0 };
+const NOTES_FRAME_PANEL = { ...NOTES_FRAME, display: "flex", flexDirection: "column" };
+// Where Steam's scroll panel was not found, a box the browser scrolls.
+const NOTES_FRAME_PLAIN = { ...NOTES_FRAME, overflowY: "auto" };
+const NOTES_CONTENT = { padding: "4px 0" };
+const NOTES_CLASS = "ce-decky-update-notes";
+// The rule brightens while focus is in the notes, which is the whole of what
+// says so: their one stop carries no ring of its own, so that the ring Steam
+// moves between controls has nothing to travel to inside a scrolling box. A
+// thin scrollbar says there is more.
+const notesCss = (panel) => [
+    `.${NOTES_CLASS}:has(.gpfocuswithin), .${NOTES_CLASS}:has(.gpfocus) { border-left-color: hsla(210, 85%, 74%, 0.95); }`,
+    ...(panel ? [
+        `.${NOTES_CLASS} .${panel}::-webkit-scrollbar { display: initial !important; width: 4px; }`,
+        `.${NOTES_CLASS} .${panel}::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background-color: hsla(210, 70%, 68%, 0.45); }`,
+    ] : []),
+].join("\n");
 const NOTE_ROW = { padding: "3px 12px", fontSize: 14, lineHeight: 1.35 };
 const NOTE_HEADING = { ...NOTE_ROW, paddingTop: 6, fontSize: 13, fontWeight: 700, color: "hsla(210, 70%, 82%, 0.95)" };
 /** One line of notes as text, bold and code set, and nothing interpreted. */
@@ -11383,6 +11404,13 @@ function NoteText({ spans, prefix }) {
     return (SP_JSX.jsxs("span", { style: NOTE_LINE, children: [prefix, spans.map((span, index) => span.strong
                 ? SP_JSX.jsx("b", { children: span.text }, index)
                 : span.code ? SP_JSX.jsx("code", { style: NOTE_CODE, children: span.text }, index) : SP_JSX.jsx("span", { children: span.text }, index))] }));
+}
+/** The lines of a release's notes, each a stop of its own where `stops` asks. */
+function NoteLines({ lines, truncated, pageUrl, stops = false }) {
+    const stop = (key, line) => (stops
+        ? SP_JSX.jsx(DFL.Focusable, { onActivate: traceUiAction("update_modal.note_line", () => undefined), children: line }, key)
+        : SP_JSX.jsx("div", { children: line }, key));
+    return (SP_JSX.jsxs("div", { style: NOTES_CONTENT, children: [lines.map((block, index) => stop(index, (SP_JSX.jsx("div", { "data-testid": `update-note-${index}`, style: block.kind === "heading" ? NOTE_HEADING : NOTE_ROW, children: SP_JSX.jsx(NoteText, { spans: block.spans, prefix: block.kind === "item" ? "\u2022 " : undefined }) })))), truncated && stop("cut", (SP_JSX.jsx("div", { "data-testid": "update-notes-cut", style: NOTE_ROW, children: `The rest is on the release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}` })))] }));
 }
 /**
  * The one confirmation an update gets, and then the only view of it there is.
@@ -11410,6 +11438,17 @@ function UpdateModal({ currentVersion, targetVersion, adopted = null, onStart, o
     const noteBlocks = releaseNoteBlocks(notes);
     const lead = noteBlocks[0]?.kind === "paragraph" ? noteBlocks[0] : null;
     const noteLines = lead ? noteBlocks.slice(1) : noteBlocks;
+    // Whether the notes run past their box, which is when they need a stop to
+    // scroll from; and where it cannot be measured, they get one regardless,
+    // since notes nobody can reach are worse than one stop too many.
+    const notesPanelRef = SP_REACT.useRef(null);
+    const [notesScroll, setNotesScroll] = SP_REACT.useState(true);
+    SP_REACT.useLayoutEffect(() => {
+        const panel = notesPanelRef.current;
+        if (!panel || !panel.clientHeight)
+            return;
+        setNotesScroll(panel.scrollHeight > panel.clientHeight);
+    }, [notes]);
     // An operation that has already ended is not something to adopt. The panel
     // does not pass one, and this window does not act on one either: it opens as
     // the ordinary confirmation, which is what a user pressing Update after a
@@ -11542,7 +11581,20 @@ function UpdateModal({ currentVersion, targetVersion, adopted = null, onStart, o
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("update_modal.cancel_back", () => { if (stranded || (!busyRef.current && !installing))
             onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "aside", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: lead && !operation
                                         ? SP_JSX.jsx(NoteText, { spans: lead.spans })
-                                        : "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), !operation && (noteLines.length > 0 || notesTruncated) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { "data-testid": "update-notes", style: NOTES_BOX, children: [noteLines.map((block, index) => (SP_JSX.jsx(DFL.Focusable, { onActivate: () => undefined, children: SP_JSX.jsx("div", { "data-testid": `update-note-${index}`, style: block.kind === "heading" ? NOTE_HEADING : NOTE_ROW, children: SP_JSX.jsx(NoteText, { spans: block.spans, prefix: block.kind === "item" ? "\u2022 " : undefined }) }) }, index))), notesTruncated && (SP_JSX.jsx(DFL.Focusable, { onActivate: () => undefined, children: SP_JSX.jsx("div", { "data-testid": "update-notes-cut", style: NOTE_ROW, children: `The rest is on the release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}` }) }))] }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: "The Decky panel closes for a few seconds while Decky installs it. Downloading can be stopped; once installing begins it cannot be cancelled, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), stranded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-handed-off", label: "CE Decky stopped answering", description: "The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), ((installingNow && restartOverdue) || stranded) && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && !stranded && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
+                                        : "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), !operation && (noteLines.length > 0 || notesTruncated) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SteamScrollPanel ? (
+                                /* Steam's own scroll panel, with the notes as one stop that
+                                   carries no ring: the D-pad scrolls the panel and leaves it
+                                   at either end. A stop per line scrolled a box the browser
+                                   moved while Steam's ring flew to where the line had been,
+                                   outside the window while a direction was held, and focus
+                                   was sometimes lost on the way. The same shape as maintained
+                                   plugins use; `docs/FIELD_NOTES.md` names them. */
+                                SP_JSX.jsxs("div", { className: NOTES_CLASS, "data-testid": "update-notes", style: NOTES_FRAME_PANEL, children: [SP_JSX.jsx("style", { children: notesCss(DFL.scrollPanelClasses?.ScrollPanel) }), SP_JSX.jsx(SteamScrollPanel, { ref: notesPanelRef, focusable: false, style: NOTES_PANEL, children: SP_JSX.jsx(SteamFocusable, { noFocusRing: true, focusable: notesScroll, children: SP_JSX.jsx(NoteLines, { lines: noteLines, truncated: notesTruncated, pageUrl: pageUrl }) }) })] })) : (
+                                /* Where Steam's scroll panel was not found: a box the browser
+                                   scrolls, each line a stop of its own, because Steam moves a
+                                   view only by moving focus and a `Focusable` is a stop only
+                                   where it can be activated, as `PanelRow` records. */
+                                SP_JSX.jsxs("div", { className: NOTES_CLASS, "data-testid": "update-notes", style: NOTES_FRAME_PLAIN, children: [SP_JSX.jsx("style", { children: notesCss(undefined) }), SP_JSX.jsx(NoteLines, { lines: noteLines, truncated: notesTruncated, pageUrl: pageUrl, stops: true })] })) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: "The Decky panel closes for a few seconds while Decky installs it. Downloading can be stopped; once installing begins it cannot be cancelled, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), stranded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-handed-off", label: "CE Decky stopped answering", description: "The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), ((installingNow && restartOverdue) || stranded) && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && !stranded && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
                                 if (inFlight) {
                                     void abandon();
                                     return;
