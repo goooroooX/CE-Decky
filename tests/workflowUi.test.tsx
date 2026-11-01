@@ -10427,6 +10427,9 @@ describe("Updating CE Decky only where no game is running", () => {
   // it is and says why; the backend refuses the same start on its own.
   function offering() {
     const snapshot: any = status(true);
+    // These cases exercise update consent, not Auto-load. Starting CE in the
+    // background could disable Advanced just as a case tried to open it.
+    snapshot.profiles[0].autoload_enabled = false;
     snapshot.update = {
       current_version: "0.5.0", auto_check: true, latest_version: "0.5.1", update_available: true,
       checked_at: 1, last_error: null, page_url: "", last_result: null, recovery: null,
@@ -10479,7 +10482,9 @@ describe("Updating CE Decky only where no game is running", () => {
     offering();
     running([]);
     renderContent();
-    fireEvent.click(await screen.findByRole("button", { name: "Advanced…" }));
+    const press = await screen.findByRole("button", { name: "Advanced…" });
+    await waitFor(() => expect((press as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(press);
     await waitFor(() => expect(modalState.nodes.some((node: any) => node.type === AdvancedModal)).toBe(true));
     const advanced = modalState.nodes.find((node: any) => node.type === AdvancedModal);
     const newer = { ...(await api.getStatus()).update, latest_version: "0.5.2", release_notes: "Newer notes." };
