@@ -432,6 +432,47 @@ def test_a_stage_is_not_run_again_while_nothing_it_reads_has_moved(monkeypatch, 
     assert qa._stage_fingerprint(stage) == changed
 
 
+def test_untracked_changes_invalidate_reuse_but_staging_and_ignored_files_do_not(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(qa, "ROOT", tmp_path)
+    monkeypatch.setattr(qa, "_development_python", lambda: Path(sys.executable))
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tmp_path / "tracked.py").write_text("first", encoding="utf-8")
+    subprocess.run(["git", "add", "--", ".gitignore", "tracked.py"], cwd=tmp_path, check=True)
+    stage = qa.Stage("fixture", (sys.executable, "-c", "pass"))
+
+    def fingerprint():
+        qa._tree_fingerprint.cache_clear()
+        return qa._stage_fingerprint(stage)
+
+    try:
+        original = fingerprint()
+        untracked = tmp_path / "new test.py"
+        untracked.write_text("first", encoding="utf-8")
+        created = fingerprint()
+        assert created != original
+        untracked.write_text("later", encoding="utf-8")
+        edited = fingerprint()
+        assert edited != created
+        untracked.rename(tmp_path / "another test.py")
+        renamed = fingerprint()
+        assert renamed != edited
+        (tmp_path / "another test.py").unlink()
+        assert fingerprint() == original
+        untracked.write_text("later", encoding="utf-8")
+        assert fingerprint() == edited
+        subprocess.run(["git", "add", "--", untracked.name], cwd=tmp_path, check=True)
+        assert fingerprint() == edited
+        ignored = tmp_path / "build" / "preview.html"
+        ignored.parent.mkdir()
+        ignored.write_text("ignored", encoding="utf-8")
+        assert fingerprint() == edited
+        ignored.write_text("changed", encoding="utf-8")
+        assert fingerprint() == edited
+    finally:
+        qa._tree_fingerprint.cache_clear()
+
+
 def test_a_focused_selection_does_not_throw_away_what_the_gate_established(monkeypatch, tmp_path: Path):
     # Naming a test file is an instruction to run it, so the record is not
     # consulted. Dropping the record instead of not reading it would let one

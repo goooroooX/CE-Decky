@@ -1152,7 +1152,7 @@ NEVER_REUSED = frozenset({
 
 @lru_cache(maxsize=1)
 def _tree_fingerprint() -> str:
-    """What every tracked file contains, cheaply enough to ask on every run.
+    """What tracked and nonignored untracked files contain on this run.
 
     Contents rather than size and modification time, which is not a refinement
     but the difference between working and not: the gate itself rewrites
@@ -1167,16 +1167,16 @@ def _tree_fingerprint() -> str:
     everything, which is the conservative direction.
     """
     digest = hashlib.sha256()
-    listing = _run_probe(["git", "ls-files", "-z"])
+    listing = _run_probe(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
     if listing is None or listing.returncode != 0:
         # An empty answer means this run neither reuses nor records: a tree it
         # cannot describe is one it cannot recognise later either, and writing
         # something unrepeatable would replace what a run that could describe
         # the tree had established about the same stages.
         return ""
-    for name in listing.stdout.split("\0"):
-        if not name:
-            continue
+    # Git lists untracked paths before the index. Sorting keeps a file's move
+    # into the index from changing the identity of otherwise identical bytes.
+    for name in sorted(set(listing.stdout.split("\0")) - {""}):
         digest.update(f"{name}:".encode("utf-8"))
         try:
             with (ROOT / name).open("rb") as handle:
