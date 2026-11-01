@@ -2889,11 +2889,12 @@ class PluginService:
         """The panel came into view, which arms the daily update check.
 
         Asynchronous so it runs on the loop beside the check that writes the
-        same record, rather than racing it from a worker thread. It answers at
-        once: the check it may start is not part of the answer.
+        same record, rather than racing it from a worker thread. It answers when
+        the check this opening started or joined has finished, with `checked`
+        saying whether there was one, so the panel reads its status again then
+        and only then; the panel never waits on this to draw anything.
         """
-        self.plugin_updates.note_panel_opened()
-        return {"ok": True}
+        return {"ok": True, "checked": await self.plugin_updates.panel_opened()}
 
     async def start_plugin_update(self, expected_version: object) -> dict[str, object]:
         """Download the release the user confirmed, verify it, and hand it to Decky.

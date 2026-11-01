@@ -823,11 +823,21 @@ function Content() {
   // the panel to play was never told about an update again. The backend paces
   // it; this says only that the panel is in view, including on a mount that is
   // already visible, and nothing the panel shows waits for it.
+  //
+  // The answer comes when the check it started or joined has finished, and
+  // that is when the status is read again: GitHub can answer after the
+  // panel's own catch-up read, which left an open panel saying nothing about
+  // the update it had just been offered. Only when there was a check, so a
+  // panel opened on a day already checked costs nothing more.
   useEffect(() => {
     if (!quickAccessVisible) return;
     void Promise.resolve().then(() => notePanelOpened())
+      .then((answer) => {
+        if (answer?.checked !== true) return;
+        void refreshStatus().catch((cause) => logUiFailure("update.panel_check_refresh_failed", cause));
+      })
       .catch((cause) => logUiFailure("update.panel_opened_unrecorded", cause));
-  }, [quickAccessVisible]);
+  }, [quickAccessVisible, refreshStatus]);
   // Whether the panel has a status snapshot at all yet. This is a dependency of
   // the reread below rather than a bare read of the ref, because a panel that
   // mounts already visible never sees a visibility transition: the loader

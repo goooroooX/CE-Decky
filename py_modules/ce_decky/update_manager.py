@@ -897,6 +897,32 @@ class PluginUpdateManager:
             log_failure(self.logger, "update.activity_not_recorded", exc, expected=True)
         self.note_user_activity(trigger="panel_opened")
 
+    async def panel_opened(self) -> bool:
+        """Note the panel opening, and wait out the check it started or joined.
+
+        The panel shows what the status call says, and the check the opening
+        starts answers after that call: on a device that reaches GitHub in more
+        than the panel's one catch-up read, the panel that was open kept saying
+        nothing about the update it had just been offered. So the opening is
+        answered when the check is: whether a check this opening started, or one
+        already running when it came, finished, which is what the panel reads
+        its status again on. Bounded like any caller joining a check, and it
+        asks GitHub nothing a check was not already asking.
+        """
+        self.note_panel_opened()
+        task = self._activity_task
+        waiter = self._check_finished
+        try:
+            if task is not None and not task.done():
+                await asyncio.wait_for(asyncio.shield(task), timeout=CHECK_JOIN_TIMEOUT_SECONDS)
+                return True
+            if self._checking and waiter is not None:
+                await asyncio.wait_for(waiter.wait(), timeout=CHECK_JOIN_TIMEOUT_SECONDS)
+                return True
+        except asyncio.TimeoutError as exc:
+            log_failure(self.logger, "update.panel_check_join_timed_out", exc, expected=True)
+        return False
+
     def note_user_activity(self, *, trigger: str = "search") -> None:
         """Somebody just used the plugin, so ask now rather than at the next tick.
 

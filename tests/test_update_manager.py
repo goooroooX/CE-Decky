@@ -604,6 +604,92 @@ def test_opening_the_panel_arms_the_check_with_no_search_at_all(tmp_path: Path, 
     assert reloaded.should_check() is False
 
 
+class _SlowNetwork(FakeNetwork):
+    """GitHub answering after the panel's own catch-up read, as a slow one does."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.release_gate = asyncio.Event()
+
+    async def get(self, url, **kwargs):
+        await self.release_gate.wait()
+        return await super().get(url, **kwargs)
+
+
+def test_the_opening_is_answered_when_its_check_has_finished(tmp_path: Path):
+    network = _SlowNetwork()
+    manager = _manager(tmp_path, network, searched_at=0.0)
+
+    async def scenario():
+        first = asyncio.create_task(manager.panel_opened())
+        second = asyncio.create_task(manager.panel_opened())
+        await asyncio.sleep(0.05)
+        # Neither opening is answered while GitHub has not.
+        assert not first.done() and not second.done()
+        network.release_gate.set()
+        answers = await asyncio.gather(first, second)
+        # A third on the same day starts nothing, and says so.
+        answers.append(await manager.panel_opened())
+        await manager.close()
+        return answers
+
+    assert asyncio.run(scenario()) == [True, True, False]
+    assert len(network.calls) == 1
+    assert manager.snapshot()["update_available"] is True
+
+
+def test_an_opening_joins_a_check_the_timer_started(tmp_path: Path):
+    network = _SlowNetwork()
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        timer = asyncio.create_task(manager.check(forced=False, trigger="timer"))
+        await asyncio.sleep(0.05)
+        opened = asyncio.create_task(manager.panel_opened())
+        await asyncio.sleep(0.05)
+        assert not opened.done()
+        network.release_gate.set()
+        await timer
+        answer = await opened
+        await manager.close()
+        return answer
+
+    assert asyncio.run(scenario()) is True
+    assert len(network.calls) == 1
+
+
+@pytest.mark.parametrize("auto_check", [False, True])
+def test_an_opening_with_nothing_to_check_answers_at_once(tmp_path: Path, auto_check):
+    network = FakeNetwork()
+    manager = _manager(tmp_path, network, auto_check=auto_check)
+    if auto_check:
+        asyncio.run(manager.check(forced=False))
+        network.calls.clear()
+
+    async def scenario():
+        answer = await manager.panel_opened()
+        await manager.close()
+        return answer
+
+    assert asyncio.run(scenario()) is False
+    assert network.calls == []
+
+
+def test_a_failed_check_still_answers_the_opening(tmp_path: Path):
+    # The panel reads its status again on it, which is what shows the failure.
+    network = FakeNetwork()
+    network.failure = OSError("offline")
+    manager = _manager(tmp_path, network)
+
+    async def scenario():
+        answer = await manager.panel_opened()
+        await manager.close()
+        return answer
+
+    assert asyncio.run(scenario()) is True
+    assert manager.snapshot()["last_error"]
+
+
 def test_the_check_asks_at_most_once_a_day_even_after_a_failure(tmp_path: Path, monkeypatch):
     network = FakeNetwork()
     clock = _Clock(time.time())

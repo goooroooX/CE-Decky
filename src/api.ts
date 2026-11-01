@@ -112,8 +112,11 @@ export const cancelManagedCEInstall = callable<[operationId: string], ManagedCEI
 export const setUpdateAutoCheck = callable<[enabled: boolean], PluginUpdateState>("set_update_auto_check");
 export const setMascotVisible = callable<[visible: boolean], PanelPreferences>("set_mascot_visible");
 export const checkForUpdate = callable<[], PluginUpdateState>("check_for_update");
-/** The panel came into view: arms the daily update check, and answers at once. */
-export const notePanelOpened = callable<[], { ok: boolean }>("note_panel_opened");
+/**
+ * The panel came into view: arms the daily update check, and answers once the
+ * check it started or joined has finished, with whether there was one.
+ */
+export const notePanelOpened = callable<[], { ok: boolean; checked?: boolean }>("note_panel_opened");
 export const startPluginUpdate = callable<[expectedVersion: string], PluginUpdateOperation>("start_plugin_update");
 export const pollPluginUpdate = callable<[operationId: string], PluginUpdateOperation>("poll_plugin_update");
 export const cancelPluginUpdate = callable<[operationId: string], PluginUpdateOperation>("cancel_plugin_update");

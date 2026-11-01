@@ -1238,6 +1238,34 @@ describe("Home panel and managed setup", () => {
     await waitFor(() => expect(api.notePanelOpened).toHaveBeenCalledTimes(2));
   });
 
+  it.each([true, false])("reads its status again when the check the opening started has finished (checked=%s)", async (checked) => {
+    // GitHub answering after the panel's own catch-up read: the open panel
+    // has to hear the outcome of that check, and only of a check that ran.
+    quickAccess.visible = true;
+    const plain = status(true);
+    const offered: any = status(true);
+    offered.update = {
+      current_version: "0.5.0", auto_check: true, latest_version: "0.5.1", update_available: true,
+      checked_at: 1, last_error: null, page_url: "", last_result: null, recovery: null,
+      install_supported: true, checking: false, operation: null,
+    };
+    let answer: (value: { ok: boolean; checked: boolean }) => void = () => undefined;
+    api.notePanelOpened.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    api.getStatus.mockResolvedValue(plain);
+    renderContent();
+    await screen.findByText("Game.CT");
+    await waitFor(() => expect(api.notePanelOpened).toHaveBeenCalledTimes(1));
+    api.getStatus.mockResolvedValue(offered);
+    const readsBefore = api.getStatus.mock.calls.length;
+    await act(async () => { answer({ ok: true, checked }); });
+    if (checked) {
+      expect(await screen.findByText("Update to v0.5.1")).toBeTruthy();
+    } else {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+      expect(api.getStatus.mock.calls.length).toBe(readsBefore);
+    }
+  });
+
   it("keeps the panel working when saying it is in view fails", async () => {
     quickAccess.visible = true;
     api.notePanelOpened.mockRejectedValueOnce(new Error("backend away"));
