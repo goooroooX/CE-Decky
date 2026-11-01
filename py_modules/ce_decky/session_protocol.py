@@ -1583,9 +1583,16 @@ def _startup_configured(profile: GameProfile) -> dict[int, str]:
     whatever it held last, while one of these is what the user typed for it, and
     only the second is written for a record startup leaves off.
     """
+    # An explicit startup value with no switch state was set to be written at
+    # startup by the legacy `set_startup_preference` call, which is as much the
+    # user's choice as a typed one, so it is held to the same rule.
+    typed = {
+        item.record_id: item.value for item in profile.startup
+        if item.active is None and item.value is not None
+    }
     if not profile.autoload_enabled:
-        return {}
-    return {item.record_id: item.value for item in profile.configured_values}
+        return typed
+    return typed | {item.record_id: item.value for item in profile.configured_values}
 
 
 def _enclosing_script_ids(control, controls: dict[int, object]) -> list[int]:
@@ -1945,20 +1952,22 @@ def _without_values_nothing_reads(
     """Keep a value write only for a record this startup switches on or runs a script for.
 
     A value is written at startup for two reasons and no others: the record is
-    switched on, so the value is what it holds; or every script it sits inside
-    is switched on by this same startup, so the value is that script's setting,
-    which the script reads whether or not the record itself is frozen. Anything
-    else wrote game memory for a cheat that stays off: a value typed for later,
-    or one left beside an off record, became a write on every launch, and under
-    a script this startup leaves off it was a write to a record that does not
-    exist, which failed the whole Auto-load. The value stays in the profile
-    either way; only the startup write is dropped.
+    switched on, so the value is what it holds; or the user typed it, and every
+    script the record sits inside is switched on by this same startup, so the
+    value is that script's setting, which the script reads whether or not the
+    record itself is frozen. Anything else wrote game memory for a cheat that
+    stays off: a value typed for later, or one left beside an off record, became
+    a write on every launch, and under a script this startup leaves off it was a
+    write to a record that does not exist, which failed the whole Auto-load. The
+    value stays in the profile either way; only the startup write is dropped.
 
-    A record remembered off under scripts this startup runs gets the value typed
-    for it in Configure cheats (`configured`), and nothing when none was typed.
-    The value remembered beside off is what Cheat Engine last read there, which
-    for a cheat switched off is what it held while it was on, and replaying that
-    because a sibling keeps the script running wrote memory nobody chose. A
+    A record startup leaves off under scripts it runs, whether remembered off or
+    with no switch state of its own, gets the value typed for it in Configure
+    cheats (`configured`), and nothing when none was typed. The value remembered
+    beside it is what Cheat Engine last read there: for a cheat switched off,
+    what it held while it was on, and for a player's stat, the number it had
+    last session, so replaying it because the script runs wrote memory nobody
+    chose and put the game back where it was. A
     switch takes no typed value, because its value is its toggle and its on key
     is the cheat on; what an off switch keeps is its off key: under scripts this
     startup runs, or on a switch no script creates or allocates, which is there
@@ -1978,6 +1987,8 @@ def _without_values_nothing_reads(
     setting is often remembered off, and dropping its typed value at Auto-load
     left the script running on its own default. The typed value is written once,
     unfrozen, only under scripts this startup runs; with none typed, nothing is.
+    The maintainer extended that on 2026-11-01 to a record with no switch state
+    of its own, whose read-back was still being replayed.
     """
     on = {item.record_id for item in preferences if item.active is True}
     kept: list[StartupPreference] = []
@@ -1994,17 +2005,17 @@ def _without_values_nothing_reads(
         enclosing = _enclosing_script_ids(control, controls)
         running = bool(enclosing) and all(script_id in on for script_id in enclosing)
         off_key = preference.value is not None and preference.value == _switch_off_key(control)
-        if preference.active is False and not off_key:
+        if preference.active is not True and not off_key:
             typed = configured.get(preference.record_id) if _switch_off_key(control) is None else None
             if running and typed is not None:
                 kept.append(replace(preference, value=typed))
-            elif preference.value is not None:
-                kept.append(replace(preference, value=None))
-            else:
+            elif preference.value is None:
                 kept.append(preference)
-            continue
-        if preference.value is None:
-            kept.append(preference)
+            elif preference.active is False:
+                kept.append(replace(preference, value=None))
+            # With no switch state of its own and nothing typed for it, what is
+            # left is a read-back, and it is not written: replaying it put back
+            # the number the game held last session over the one it holds now.
             continue
         if (preference.active is None or off_key) and running:
             kept.append(preference)

@@ -442,8 +442,8 @@ def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_gets_no_read_b
 
     A sibling keeping the script running made that value look like the script's
     setting, so every Auto-load wrote game memory for a cheat switched off. A
-    value with no switch state of its own is a setting and is still written, and
-    so is one typed in Configure cheats.
+    value with no switch state of its own is held to the same rule: what was
+    read back there is not written, and one typed in Configure cheats is.
     """
     service = _service(tmp_path, "m65")
     plan = _mixed_plan(service, tmp_path, 965,
@@ -452,10 +452,26 @@ def test_a_cheat_switched_off_beside_one_that_keeps_its_script_on_gets_no_read_b
     assert plan[(3, "value")] == "5" and plan[(3, "active")] == "1"
     assert plan[(1, "active")] == "1"
 
+    # A read-back with no switch state is the number the game held last
+    # session, and replaying it put the game back there (maintainer, 2026-11-01).
     plan = _mixed_plan(service, tmp_path, 966,
                        remembered=[StartupPreference(2, None, "100"), StartupPreference(3, True, None)])
-    assert plan[(2, "value")] == "100"
+    assert (2, "value") not in plan
     assert (2, "active") not in plan
+
+    plan = _mixed_plan(service, tmp_path, 968,
+                       remembered=[StartupPreference(2, None, "100"), StartupPreference(3, True, None)],
+                       configured_values=[ConfiguredValue(2, "250")])
+    assert plan[(2, "value")] == "250"
+    assert (2, "active") not in plan
+
+    # A value set for startup through the legacy call is a choice too, with
+    # Auto-load on or off, and a read-back remembered over it does not win.
+    for app_id, autoload in ((969, True), (970, False)):
+        plan = _mixed_plan(service, tmp_path, app_id, autoload_enabled=autoload,
+                           startup=[StartupPreference(2, None, "77"), StartupPreference(3, True, None)],
+                           remembered=[StartupPreference(2, None, "100")])
+        assert plan[(2, "value")] == "77"
 
     # Typed in Configure cheats beside an explicit off: the typed value, not
     # the one read back (maintainer, 2026-10-23).

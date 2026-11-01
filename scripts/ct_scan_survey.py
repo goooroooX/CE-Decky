@@ -18,6 +18,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --table-sha <first 8+ hex of its SHA-256> --scripts
     python3 scripts/ct_scan_survey.py --tables <dir> --flags
     python3 scripts/ct_scan_survey.py --tables <dir> --parameters --include-installed --json
+    python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --include-installed --json
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -471,7 +472,13 @@ def parameters_one(table: Path) -> dict[str, object]:
     return {"table": str(table), "sha256": found.sha256, "controls": len(found.controls), "candidates": candidates}
 
 
-def parameters_corpus(roots: list[Path]) -> dict[str, object]:
+def _corpus(roots: list[Path], one) -> dict[str, object]:
+    """Every distinct table under `roots` through `one`, with where it came from.
+
+    Deduplicated by SHA-256, so a table both in a corpus and installed on the
+    device is counted once, and stamped with what produced the answer: the
+    product version, the host, the corpus and the planner sources it ran.
+    """
     roots = list(dict.fromkeys(roots))
     seen = set()
     tables = []
@@ -487,7 +494,7 @@ def parameters_corpus(roots: list[Path]) -> dict[str, object]:
             if not path.is_file() or path.suffix.lower() != ".ct":
                 continue
             try:
-                answer = parameters_one(path)
+                answer = one(path)
             except (OSError, ValueError, ET.ParseError) as exc:
                 errors.append({"table": str(path), "error": str(exc)})
                 counts["unreadable"] += 1
@@ -502,13 +509,104 @@ def parameters_corpus(roots: list[Path]) -> dict[str, object]:
     return {"roots": [str(root) for root in roots], "by_root": by_root, "tables": len(tables),
             "duplicate_copies": copies, "unreadable": errors,
             "controls": sum(table["controls"] for table in tables),
-            "script_owned_numeric_candidates": sum(len(table["candidates"]) for table in tables),
-            "with_direct_reads": sum(bool(row["direct_reads"]) for table in tables for row in table["candidates"]),
             "method": "static_inspection_and_synthetic_startup_no_execution", "product_version": product_version,
             "host": platform.platform(), "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "corpus_sha256": sha256("\n".join(sorted(seen)).encode()).hexdigest(),
             "source_sha256": {name: sha256((ROOT / "py_modules" / "ce_decky" / name).read_bytes()).hexdigest()
                               for name in ("ct_inspector.py", "profiles.py", "session_protocol.py")}, "results": tables}
+
+
+def parameters_corpus(roots: list[Path]) -> dict[str, object]:
+    answer = _corpus(roots, parameters_one)
+    tables = answer["results"]
+    answer["script_owned_numeric_candidates"] = sum(len(table["candidates"]) for table in tables)
+    answer["with_direct_reads"] = sum(bool(row["direct_reads"]) for table in tables for row in table["candidates"])
+    return answer
+
+
+# The profiles `--startup-plans` asks the production planner about. Each is a
+# shape real profiles take, filled in for every record of the table at once,
+# so a change to the planner shows up as a difference in one of them and the
+# shapes it should not touch can be seen not to move.
+STARTUP_SHAPES = (
+    # Every cheat switched on, with a value where it takes one.
+    "all_on",
+    # Scripts on, every other record holding only what was read back there,
+    # with no switch state of its own: a value edited and never switched.
+    "read_back",
+    # Scripts on, every other record remembered off beside what it last held.
+    "remembered_off",
+    # The two above with a value typed in Configure cheats for each.
+    "read_back_typed",
+    "remembered_off_typed",
+)
+
+
+def startup_plans_one(table: Path) -> dict[str, object]:
+    """The production startup plan of one table for each of `STARTUP_SHAPES`.
+
+    Nothing is executed and nothing is stored: the table is read through the
+    production inspector, and each profile exists only for the planner's call.
+    A shape the planner refuses, such as one past the per-session action limit,
+    is reported with the refusal, which is an answer to compare like any other.
+    """
+    if table.stat().st_size > MAX_TABLE_BYTES:
+        raise ValueError("that table is larger than one this reads")
+    data = table.read_bytes()
+    found = inspect_table(table, sha256(data).hexdigest())
+    ambiguous = set(found.ambiguous_record_ids)
+    usable = [control for control in found.controls
+              if control.id is not None and control.id not in ambiguous
+              and control.kind != "group" and not control.group_header]
+    scripts = [control for control in usable if control.kind == "script"]
+    cheats = [control for control in usable if control.kind in {"value", "dropdown"}]
+
+    def on_value(control) -> str:
+        if control.switch_on_value is not None:
+            return control.switch_on_value
+        if control.kind == "dropdown" and control.dropdown_values:
+            return control.dropdown_values[0][0]
+        return "1"
+
+    plans: dict[str, object] = {}
+    for shape in STARTUP_SHAPES:
+        remembered = [StartupPreference(control.id, True, None) for control in scripts] if shape != "all_on" else []
+        configured = []
+        for control in cheats:
+            if shape == "all_on":
+                remembered.append(StartupPreference(control.id, True, on_value(control)))
+                continue
+            active = None if shape.startswith("read_back") else False
+            remembered.append(StartupPreference(control.id, active, on_value(control)))
+            # A typed value unlike the read-back beside it, so which of the two
+            # a plan writes can be read off the plan.
+            if shape.endswith("_typed") and control.switch_on_value is None:
+                typed = "2" if control.kind == "value" or not control.dropdown_values else control.dropdown_values[-1][0]
+                configured.append(ConfiguredValue(control.id, typed))
+        try:
+            profile = GameProfile(1, "Static corpus probe", False, table_sha256=found.sha256, autoload_enabled=True,
+                                  remembered=remembered, configured_values=configured)
+            actions = effective_startup_plan(profile, found)
+            plans[shape] = sorted([action.record_id, action.kind, action.value] for action in actions)
+        except ValueError as exc:
+            plans[shape] = {"error": str(exc)}
+    return {"table": str(table), "sha256": found.sha256, "controls": len(found.controls),
+            "scripts": len(scripts), "cheats": len(cheats), "plans": plans}
+
+
+def startup_plans_corpus(roots: list[Path]) -> dict[str, object]:
+    answer = _corpus(roots, startup_plans_one)
+    tables = answer["results"]
+    totals = {}
+    for shape in STARTUP_SHAPES:
+        plans = [table["plans"][shape] for table in tables]
+        totals[shape] = {
+            "refused": sum(isinstance(plan, dict) for plan in plans),
+            "actions": sum(len(plan) for plan in plans if isinstance(plan, list)),
+            "value_actions": sum(1 for plan in plans if isinstance(plan, list) for action in plan if action[1] == "value"),
+        }
+    answer["shapes"] = totals
+    return answer
 
 
 # How many examples of each shape `--scripts` names. They are there to be
@@ -701,8 +799,12 @@ def main() -> int:
         help="script-owned numeric candidates, direct reads and synthetic startup plans; no inference or execution",
     )
     parser.add_argument(
+        "--startup-plans", action="store_true",
+        help="the production startup plan of every table for each synthetic profile shape; no execution",
+    )
+    parser.add_argument(
         "--include-installed", action="store_true",
-        help="with --parameters: also read tables under user_home from the install authority, deduplicated by SHA",
+        help="with --parameters or --startup-plans: also read tables under user_home from the install authority, deduplicated by SHA",
     )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
@@ -715,15 +817,17 @@ def main() -> int:
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"ct scan survey: {exc}", file=sys.stderr)
             return 1
-    if args.include_installed and not args.parameters:
-        parser.error("--include-installed needs --parameters")
-    if args.parameters and (args.scripts or args.flags or args.repair or args.repair_coverage or args.executable):
-        parser.error("--parameters is a separate read-only survey mode")
+    if args.include_installed and not (args.parameters or args.startup_plans):
+        parser.error("--include-installed needs --parameters or --startup-plans")
+    if (args.parameters or args.startup_plans) and (args.scripts or args.flags or args.repair or args.repair_coverage or args.executable):
+        parser.error("--parameters and --startup-plans are separate read-only survey modes")
+    if args.parameters and args.startup_plans:
+        parser.error("name one of --parameters and --startup-plans")
     if args.tables is None and args.table is None and not args.include_installed:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if args.parameters and (args.tables is not None or args.include_installed):
+        if (args.parameters or args.startup_plans) and (args.tables is not None or args.include_installed):
             roots = [args.tables] if args.tables is not None else []
             if args.include_installed:
                 from target_plugin_install import resolve_install_authority
@@ -732,7 +836,10 @@ def main() -> int:
                 if not home:
                     raise ValueError("the install authority reports no user_home")
                 roots.append(Path(str(home)) / ".cheat-engine-decky" / "tables" / "sha256")
-            answer["parameters_corpus"] = parameters_corpus(roots)
+            if args.startup_plans:
+                answer["startup_plans_corpus"] = startup_plans_corpus(roots)
+            else:
+                answer["parameters_corpus"] = parameters_corpus(roots)
         elif args.tables is not None and args.scripts:
             answer["scripts_corpus"] = scripts_corpus(args.tables)
         elif args.tables is not None and args.flags:
@@ -745,11 +852,13 @@ def main() -> int:
             answer["scripts"] = scripts_one(args.table)
         if args.table is not None and args.parameters:
             answer["parameters"] = parameters_one(args.table)
+        if args.table is not None and args.startup_plans:
+            answer["startup_plans"] = startup_plans_one(args.table)
         if args.table is not None and args.flags:
             answer["flags"] = flags_one(args.table)
         if args.table is not None and args.repair:
             answer["repair"] = repair_one(args.table, list(args.repair))
-        if args.table is not None and not args.repair and not args.flags and not args.scripts and not args.parameters:
+        if args.table is not None and not args.repair and not args.flags and not args.scripts and not args.parameters and not args.startup_plans:
             if args.executable is None:
                 parser.error("--table needs --executable, which is the program to look in")
             answer["check"] = check_one(args.table, args.executable, args.repeat)
@@ -760,7 +869,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(answer, indent=2, sort_keys=True))
         return 0
-    parameters = answer.get("parameters_corpus") or answer.get("parameters")
+    parameters = answer.get("parameters_corpus") or answer.get("parameters") or answer.get("startup_plans_corpus")
     if isinstance(parameters, dict):
         print(json.dumps({key: value for key, value in parameters.items() if key not in {"results", "unlinked"}}, indent=2, sort_keys=True))
     coverage = answer.get("repair_coverage")

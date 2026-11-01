@@ -187,3 +187,16 @@ def test_parameter_cli_uses_the_install_authoritys_home(tmp_path: Path, monkeypa
     assert survey.main() == 0
     report = json.loads(capsys.readouterr().out)["parameters_corpus"]
     assert report["roots"] == [str(blobs)] and report["tables"] == 1
+
+
+def test_startup_plan_survey_asks_the_planner_about_every_shape(tmp_path: Path):
+    path = _parameters(tmp_path)
+    plans = survey.startup_plans_one(path)["plans"]
+    assert set(plans) == set(survey.STARTUP_SHAPES)
+    # A read-back with no switch state is not replayed; the typed value is.
+    assert [61, "value", "1"] not in plans["read_back"]
+    assert [61, "value", "2"] in plans["read_back_typed"]
+    assert [61, "value", "1"] not in plans["read_back_typed"]
+    assert [61, "active", "1"] in plans["all_on"]
+    corpus = survey.startup_plans_corpus([tmp_path])
+    assert corpus["tables"] == 1 and set(corpus["shapes"]) == set(survey.STARTUP_SHAPES)

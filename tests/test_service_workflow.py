@@ -1272,9 +1272,9 @@ def test_large_startup_earliest_success_uses_summary_instead_of_evicted_results(
     service = _service(tmp_path)
     _import_fake_ce(service)
     source = tmp_path / "large.CT"
-    # One script switched on, with 150 settings under it: values are written
-    # at startup only for a record switched on or a setting of a script that
-    # is, so this is what a 151-action plan of mostly values looks like.
+    # One script switched on, with 150 settings typed under it: values are
+    # written at startup only for a record switched on or a typed setting of a
+    # script that is, so this is what a 151-action plan of mostly values looks like.
     source.write_text(
         '<CheatTable><CheatEntries><CheatEntry><ID>1</ID><Description>Control 0001</Description>'
         '<VariableType>Auto Assembler Script</VariableType><AssemblerScript>[ENABLE]</AssemblerScript><CheatEntries>'
@@ -1284,7 +1284,8 @@ def test_large_startup_earliest_success_uses_summary_instead_of_evicted_results(
     digest = service.import_table(str(source))["sha256"]
     service.save_profile(10, "Game", False, digest, "game.exe")
     service.set_execution_consent(10, digest, True)
-    service.set_remembered_cheats(10, digest, [{"record_id": i, "active": True if i == 1 else None, "value": None if i == 1 else "2"} for i in range(1, 152)])
+    service.set_remembered_cheats(10, digest, [{"record_id": 1, "active": True, "value": None}])
+    service.set_configured_values(10, digest, [{"record_id": i, "value": "2"} for i in range(2, 152)])
     service.set_autoload(10, digest, True)
     prepared = service.prepare_session(10)
     from ce_decky.session_protocol import RuntimeResult
