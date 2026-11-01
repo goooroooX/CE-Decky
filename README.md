@@ -1,5 +1,7 @@
 # CE Decky
 
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fgooorooox.github.io%2FCE-Decky%2Fdownloads.json&style=flat-square&cacheSeconds=3600)](https://github.com/goooroooX/CE-Decky/releases) [![Release](https://img.shields.io/github/v/release/goooroooX/CE-Decky?style=flat-square&label=Release)](https://github.com/goooroooX/CE-Decky/releases/latest) [![License](https://img.shields.io/github/license/goooroooX/CE-Decky?style=flat-square&label=License)](LICENSE)
+
 Use Cheat Engine tables on SteamOS, from the controller, without leaving Game Mode.
 
 <img src="docs/assets/hexpaw.png" alt="HexPaw, the CE Decky mascot" align="right" width="300">
