@@ -99,7 +99,8 @@ interface Props {
    * a confirmation for a version this screen had already replaced, or open
    * nothing at all when the parent had never found one.
    */
-  onStartUpdate?: (targetVersion: string) => void;
+  /** Takes this screen's own update view, which may be newer than the panel's, for the notes it found. */
+  onStartUpdate?: (targetVersion: string, view?: PluginUpdateState | null) => void;
   onSetMascotVisible?: (visible: boolean) => Promise<PanelPreferences>;
   onRefreshAll: () => Promise<AdvancedContextSnapshot>;
   onClose: () => void;
@@ -1448,7 +1449,7 @@ export function AdvancedModal(props: Props) {
                   disabled={blocked}
                   onClick={traceUiAction(
                     "advanced_modal.update",
-                    () => onStartUpdate(String(updateView?.latest_version)),
+                    () => onStartUpdate(String(updateView?.latest_version), updateView),
                     { to_version: updateView?.latest_version },
                   )}
                 >

@@ -79,7 +79,8 @@ describe("Advanced, Plugin updates", () => {
     expect(view.onStartUpdate).toHaveBeenCalledTimes(1);
     // With the version this screen is showing, because this screen keeps its
     // own snapshot and the panel behind it is never re-rendered from it.
-    expect(view.onStartUpdate).toHaveBeenCalledWith("0.9.28");
+    // With the view it was pressed from, whose notes the confirmation shows.
+    expect(view.onStartUpdate).toHaveBeenCalledWith("0.9.28", expect.objectContaining({ latest_version: "0.9.28" }));
 
     fireEvent.click(screen.getByText("Check now"));
     await waitFor(() => expect(view.onCheckForUpdate).toHaveBeenCalledTimes(1));
@@ -184,7 +185,8 @@ describe("Advanced, a check run from this screen", () => {
     fireEvent.click(screen.getByText("Check now"));
     await waitFor(() => expect(screen.getByText("Update to v0.9.29")).toBeTruthy());
     fireEvent.click(screen.getByText("Update to v0.9.29"));
-    expect(view.onStartUpdate).toHaveBeenCalledWith("0.9.29");
+    // With the view it was pressed from, whose notes the confirmation shows.
+    expect(view.onStartUpdate).toHaveBeenCalledWith("0.9.29", expect.objectContaining({ latest_version: "0.9.29" }));
   });
 
   it("can still be pressed while a check the plugin started is running", async () => {

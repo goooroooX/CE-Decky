@@ -141,12 +141,47 @@ describe("the update confirmation", () => {
     render(<UpdateModal {...modal()} />);
     expect(screen.getByText("v0.9.27 to v0.9.28")).toBeTruthy();
     expect(screen.getByText("Steam's interface restarts")).toBeTruthy();
-    expect(screen.getByText(/cannot be cancelled once it starts installing/)).toBeTruthy();
+    expect(screen.getByText(/once installing begins it cannot be cancelled/)).toBeTruthy();
+    // With no notes, the line under the versions says what the press does.
+    expect(screen.getByText(/checked against the checksum the release itself publishes/)).toBeTruthy();
+  });
+
+  const NOTES = "Lets more games start Cheat Engine.\n\n## Fixes\n\n- A cheat no longer switches itself on.\n- **Load table & start CE** works with `proton-cachyos`.";
+
+  it("shows what the release changes before the press, the reason first", () => {
+    render(<UpdateModal {...modal({ notes: NOTES })} />);
+    // The release's own reason to update stands under the two versions.
+    expect(screen.getByTestId("update-versions").textContent).toContain("Lets more games start Cheat Engine.");
+    expect(screen.getByTestId("update-note-0").textContent).toBe("Fixes");
+    expect(screen.getByTestId("update-note-1").textContent).toBe("\u2022 A cheat no longer switches itself on.");
+    const styled = screen.getByTestId("update-note-2");
+    expect(styled.querySelector("b")?.textContent).toBe("Load table & start CE");
+    expect(styled.querySelector("code")?.textContent).toBe("proton-cachyos");
+    expect(screen.queryByTestId("update-notes-cut")).toBeNull();
+  });
+
+  it("draws whatever a release body carries as text and never as markup", () => {
+    const view = render(<UpdateModal {...modal({ notes: "- <img src=x onerror=alert(1)> and [a link](https://example.invalid)" })} />);
+    expect(view.container.querySelector("img")).toBeNull();
+    expect(view.container.querySelector("a")).toBeNull();
+    expect(screen.getByTestId("update-note-0").textContent).toBe("\u2022 <img src=x onerror=alert(1)> and a link");
+  });
+
+  it("says where the rest is when the notes were cut", () => {
+    render(<UpdateModal {...modal({ notes: NOTES, notesTruncated: true, pageUrl: "https://github.com/goooroooX/CE-Decky/releases/tag/v0.9.28" })} />);
+    expect(screen.getByTestId("update-notes-cut").textContent).toContain("releases/tag/v0.9.28");
+  });
+
+  it("puts the notes away once the update is under way", async () => {
+    render(<UpdateModal {...modal({ notes: NOTES })} />);
+    await act(async () => { fireEvent.click(screen.getByText("Update")); });
+    expect(screen.queryByTestId("update-note-0")).toBeNull();
+    expect(screen.getByTestId("update-versions").textContent).not.toContain("Lets more games");
   });
 
   it("says the interface restarts, and nothing about a running game it is never opened over", () => {
     render(<UpdateModal {...modal()} />);
-    expect(screen.getByText("Steam's interface restarts during installation and the Decky panel closes for a few seconds.")).toBeTruthy();
+    expect(screen.getByText(/The Decky panel closes for a few seconds while Decky installs it\./)).toBeTruthy();
     expect(screen.queryByText(/interrupt the game/)).toBeNull();
   });
 

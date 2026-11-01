@@ -113,6 +113,7 @@ import type {
   ManagedCEInstallStatus,
   PluginStatus,
   PluginUpdateOperation,
+  PluginUpdateState,
   UpdateBlocker,
   RuntimeEnvelope,
   RuntimeResult,
@@ -4310,7 +4311,7 @@ function Content() {
           await refreshStatus().catch(() => undefined);
           return next;
         })}
-        onStartUpdate={(target) => { void requestPluginUpdate(target, null, close); }}
+        onStartUpdate={(target, view) => { void requestPluginUpdate(target, null, close, view); }}
         onSetMascotVisible={(visible) => runAction(async () => {
           const next = await setMascotVisible(visible);
           await refreshStatus().catch(() => undefined);
@@ -4357,7 +4358,7 @@ function Content() {
     if (status?.preferences) rememberMascotVisible(status.preferences.mascot_visible);
   }, [status?.preferences?.mascot_visible]);
 
-  const openUpdateModal = (requested?: string, adopt?: PluginUpdateOperation | null) => {
+  const openUpdateModal = (requested?: string, adopt?: PluginUpdateOperation | null, view?: PluginUpdateState | null) => {
     // What the control that was pressed was showing, and only then what this
     // panel last read. Advanced keeps its own snapshot and is not re-rendered
     // from here, so a check run there can find a version this closure has
@@ -4365,10 +4366,22 @@ function Content() {
     // version, or opened nothing at all.
     const target = requested ?? adopt?.version ?? offeredUpdateVersion;
     if (!status || !target) return;
+    // The notes of exactly the version this window names, from whichever view
+    // found it: Advanced can have checked since the panel last read its status.
+    const described = [view, status.update].find((candidate) => candidate?.latest_version === target) ?? null;
+    // Whether the confirmation had anything to say about the release, which is
+    // what a report that an update showed no notes is answered from.
+    logUi("update.confirmation_opened", {
+      to_version: target, adopted: Boolean(adopt),
+      notes: Boolean(described?.release_notes), notes_cut: described?.release_notes_truncated === true,
+    });
     showContextModal((close) => (
       <UpdateModal
         currentVersion={status.version}
         targetVersion={target}
+        notes={described?.release_notes ?? null}
+        notesTruncated={described?.release_notes_truncated === true}
+        pageUrl={described?.page_url}
         adopted={adopt ?? null}
         onStart={(targetVersion) => startPluginUpdate(targetVersion)}
         onPoll={(operationId) => pollPluginUpdate(operationId)}
@@ -4396,20 +4409,20 @@ function Content() {
    */
   const updatePressRef = useRef(false);
   const requestPluginUpdate = async (
-    requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void,
+    requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void, view?: PluginUpdateState | null,
   ) => {
     // The window used to open in the press itself; asking first leaves a moment
     // in which a second press would open a second confirmation.
     if (updatePressRef.current) return;
     updatePressRef.current = true;
     try {
-      await guardedPluginUpdate(requested, adopt, beforeOpen);
+      await guardedPluginUpdate(requested, adopt, beforeOpen, view);
     } finally {
       updatePressRef.current = false;
     }
   };
   const guardedPluginUpdate = async (
-    requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void,
+    requested?: string, adopt?: PluginUpdateOperation | null, beforeOpen?: () => void, view?: PluginUpdateState | null,
   ) => {
     if (!adopt) {
       // The backend's own start check, so the press and the start cannot
@@ -4431,7 +4444,7 @@ function Content() {
       }
     }
     beforeOpen?.();
-    openUpdateModal(requested, adopt);
+    openUpdateModal(requested, adopt, view);
   };
 
   const openGamePicker = (gameOptions: GameSummary[]) => {

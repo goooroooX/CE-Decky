@@ -631,6 +631,12 @@ export interface PluginUpdateState {
   checked_at: number | null;
   last_error: string | null;
   page_url: string;
+  /**
+   * What the offered release says it changes, as its reviewed notes wrote it,
+   * and whether the record had to cut them. Only beside an offer.
+   */
+  release_notes?: string | null;
+  release_notes_truncated?: boolean;
   last_result: PluginUpdateResult | null;
   recovery: PluginUpdateRecovery | null;
   /** Whether this device has an interpreter the detached installer can run. */

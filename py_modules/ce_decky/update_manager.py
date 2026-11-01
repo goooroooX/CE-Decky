@@ -7,9 +7,10 @@ there, and the privileged half is still Decky's own loader.
 
 Checking is armed by the user rather than by a clock. A plugin is loaded for as
 long as Steam is running, so a timer alone would ask GitHub about a device
-nobody is using, for ever. The arming is the same one the provider index uses:
-somebody searched for a table recently. `Check now` is the exception, because a
-press is a user saying they want an answer now.
+nobody is using, for ever. It is armed by somebody having opened this plugin's
+panel, or searched for a table, within the last day, and asks at most once a
+day. `Check now` is the exception, because a press is a user saying they want
+an answer now.
 
 The install is one transaction with a hard boundary in the middle. Everything
 before the boundary is ours and is cancellable: read the release, download the
@@ -264,6 +265,11 @@ class PluginUpdateManager:
             "checked_at": record.get("checked_at"),
             "last_error": record.get("last_error"),
             "page_url": record.get("page_url") or RELEASES_PAGE_URL,
+            # What the offered release says it changes, for the confirmation.
+            # Only beside an offer: notes for a version this device already has
+            # or has passed describe nothing it is being asked about.
+            "release_notes": record.get("release_notes") if available and isinstance(record.get("release_notes"), str) else None,
+            "release_notes_truncated": bool(available and record.get("release_notes_truncated")),
             "last_result": record.get("last_result"),
             # Its own field, with its own life: an attempt that fails before it
             # has downloaded anything replaces what the last update did and

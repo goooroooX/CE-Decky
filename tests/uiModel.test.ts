@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  releaseNoteBlocks,
   enclosingScripts,
   readByRunningScripts,
   settingsForStartedScripts,
@@ -2298,5 +2299,19 @@ describe("a value its running scripts read", () => {
     expect(settingsForStartedScripts([controls[1]], controls, after, configured, new Set([3]))).toEqual([]);
     expect(settingsForStartedScripts([controls[1]], controls, new Map([[1, true], [2, true], [3, true]]), configured, new Set())).toEqual([]);
     expect(settingsForStartedScripts([], controls, after, configured, new Set())).toEqual([]);
+  });
+});
+
+describe("a release's notes in the update window", () => {
+  it("reads headings, items, paragraphs, bold and code, and nothing else", () => {
+    expect(releaseNoteBlocks("Why to update,\nin two lines.\n\n## Fixes\n- One `thing`\n* **Two**\n\n")).toEqual([
+      { kind: "paragraph", spans: [{ text: "Why to update, in two lines." }] },
+      { kind: "heading", spans: [{ text: "Fixes" }] },
+      { kind: "item", spans: [{ text: "One " }, { text: "thing", code: true }] },
+      { kind: "item", spans: [{ text: "Two", strong: true }] },
+    ]);
+    expect(releaseNoteBlocks(null)).toEqual([]);
+    expect(releaseNoteBlocks("- see [the page](https://example.invalid)")[0].spans).toEqual([{ text: "see the page" }]);
+    expect(releaseNoteBlocks(Array.from({ length: 100 }, (_, index) => `- ${index}`).join("\n"))).toHaveLength(40);
   });
 });

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+import json
 import re
+import unicodedata
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -52,6 +54,16 @@ MAX_SUMS_BYTES = 64 * 1024
 # unbounded body rather than a prediction of how the package grows.
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_UPDATE_STATE_BYTES = 16 * 1024
+# What of a release's notes the update record keeps for the confirmation. The
+# reviewed notes are a screen long; the bound keeps the record inside its own,
+# whatever a release body carries.
+MAX_NOTES_BYTES = 4 * 1024
+# Where the reviewed notes end in a release body. The release workflow writes
+# it between `docs/release-notes/v<version>.md` and the commit list GitHub
+# generates under it, which is not written for a user deciding to update.
+NOTES_END_MARKER = "<!-- ce-decky:notes-end -->"
+# Where a body published without the marker has its generated list begin.
+_GENERATED_STARTS = ("## What's Changed", "**Full Changelog**")
 
 # How long after the user last opened this plugin's panel, or searched for a
 # table, the plugin still considers them active enough to owe an update check.
@@ -159,6 +171,53 @@ class ReleaseOffer:
     archive_url: str
     sums_url: str
     page_url: str
+    # What the release says it changes, for the confirmation to show. Display
+    # text and nothing else: it authorizes nothing, and its absence costs the
+    # confirmation one block and nothing else.
+    notes: str | None = None
+    notes_truncated: bool = False
+
+
+def release_notes(body: Any) -> tuple[str | None, bool]:
+    """The part of a release body written for a user, and whether it was cut.
+
+    The reviewed notes up to the marker the release workflow writes, or up to
+    the list GitHub generates where a body has no marker. The title is dropped,
+    because the confirmation names both versions already, and so is `## Install`
+    with everything after it: it is the manual route, and the confirmation is
+    the install. Control and formatting characters go, as on every other text
+    this plugin shows from outside, so that bidirectional overrides cannot
+    reorder what is read. Bounded to `MAX_NOTES_BYTES` on a line.
+    """
+    if not isinstance(body, str):
+        return None, False
+    text = body.replace("\r\n", "\n").replace("\r", "\n")
+    if NOTES_END_MARKER in text:
+        text = text.split(NOTES_END_MARKER, 1)[0]
+    lines: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith(_GENERATED_STARTS) or stripped.casefold() == "## install":
+            break
+        if not any(kept_line.strip() for kept_line in lines) and stripped.startswith("# "):
+            continue
+        cleaned = "".join(" " if char == "\t" else char for char in line
+                          if char == "\t" or unicodedata.category(char) not in {"Cc", "Cf", "Co", "Cs"})
+        lines.append(cleaned.rstrip())
+    kept: list[str] = []
+    size = 0
+    truncated = False
+    for line in "\n".join(lines).strip().split("\n"):
+        # What the line costs in the record as it is written, escapes and the
+        # newline after it included, because that record has its own bound.
+        cost = len(json.dumps(line, ensure_ascii=False).encode("utf-8"))
+        if size + cost > MAX_NOTES_BYTES:
+            truncated = True
+            break
+        kept.append(line)
+        size += cost
+    notes = "\n".join(kept).strip()
+    return (notes or None), truncated
 
 
 def _asset_url(asset: Any, expected_name: str) -> str | None:
@@ -219,9 +278,12 @@ def parse_release(payload: Any, *, current_version: str) -> ReleaseOffer | None:
         raise UpdateError(f"release {offered} carries no {archive_name}")
     if sums_url is None:
         raise UpdateError(f"release {offered} carries no {SUMS_ASSET_NAME}")
+    notes, notes_truncated = release_notes(payload.get("body"))
     return ReleaseOffer(
         version=str(offered),
         tag=str(tag),
+        notes=notes,
+        notes_truncated=notes_truncated,
         archive_name=archive_name,
         archive_url=archive_url,
         sums_url=sums_url,
@@ -307,5 +369,7 @@ def checked_now(offer: ReleaseOffer | None, latest: str, *, current_version: str
         "latest_version": latest,
         "archive_name": offer.archive_name if offer is not None else None,
         "page_url": offer.page_url if offer is not None else RELEASES_PAGE_URL,
+        "release_notes": offer.notes if offer is not None else None,
+        "release_notes_truncated": offer.notes_truncated if offer is not None else False,
         "last_error": None,
     }

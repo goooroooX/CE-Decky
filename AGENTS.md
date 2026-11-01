@@ -289,6 +289,7 @@ The private repository that preceded this one is a frozen archive. It is not a r
 ## Release discipline
 
 - The release tag is exactly `v<version>`; preparation and GitHub workflow are defined in `docs/DEVELOPMENT.md`.
+- Every released version has `docs/release-notes/v<version>.md`, written by the rules in `docs/release-notes/README.md` and never copied from `CHANGELOG.md`. It is the release page and also what the plugin's update window shows a user before they press **Update**: its opening sentence stands alone there as the reason to update, `## Install` is not shown, and only the markup that file names is drawn. Read those rules before writing one, and show the maintainer the file before the tag is made.
 - A Decky Store submission is validated on both artifacts, because they are different build paths: `python scripts/qa.py --profile release` for this project's own ZIP and `python scripts/qa.py --profile store` for the one the Decky CLI builds. The database pins the CLI version, so the second is the one a submission is judged by. The submodule directory there is `CE-Decky`, because its name becomes the archive's root folder.
 - A workaround for target behavior names, in `docs/FIELD_NOTES.md`, the exact upstream or environment behavior it exists for and why the obvious approach does not work. A workaround whose reason is not written down is indistinguishable from a mistake by the next person to read it.
 - Never delete known-good user CE/table artifacts as update logic.

@@ -6250,15 +6250,61 @@ function updateCheckedOn(seconds) {
     const when = new Date(seconds * 1000);
     return Number.isNaN(when.getTime()) ? null : when.toISOString().slice(0, 10);
 }
+/** How many lines of notes the update window gives a release. */
+const MAX_RELEASE_NOTE_BLOCKS = 40;
 /**
- * The version the home panel offers, which is not the same as the one it knows.
+ * The lines of a release's notes, in the shape the update window draws them.
  *
- * Three things have to hold before a press belongs on a 300 pixel panel: there
- * is a newer release, the user has not switched automatic checking off, and
- * this device can actually carry the install out. Advanced shows the finding
- * whatever the last two say, because that is the screen the switch is on and
- * the screen that explains an install this device cannot do.
+ * Only what `docs/release-notes/README.md` has the notes written in: headings,
+ * one-line items, paragraphs, bold and code. A link keeps its words and loses
+ * its target, and nothing else is markup: the text is drawn as text, never as
+ * HTML, so whatever a release body carries can only ever be read.
  */
+function releaseNoteBlocks(notes) {
+    if (!notes)
+        return [];
+    const blocks = [];
+    let paragraph = [];
+    const flush = () => {
+        if (paragraph.length > 0)
+            blocks.push({ kind: "paragraph", spans: releaseNoteSpans(paragraph.join(" ")) });
+        paragraph = [];
+    };
+    for (const raw of notes.split("\n")) {
+        const line = raw.trim();
+        const heading = /^#{1,6}\s+(.*)$/.exec(line);
+        const item = /^[-*+]\s+(.*)$/.exec(line);
+        if (!line) {
+            flush();
+        }
+        else if (heading) {
+            flush();
+            blocks.push({ kind: "heading", spans: releaseNoteSpans(heading[1]) });
+        }
+        else if (item) {
+            flush();
+            blocks.push({ kind: "item", spans: releaseNoteSpans(item[1]) });
+        }
+        else {
+            paragraph.push(line);
+        }
+    }
+    flush();
+    return blocks.filter((block) => block.spans.some((span) => span.text.trim())).slice(0, MAX_RELEASE_NOTE_BLOCKS);
+}
+/** Bold and code within one line of notes, and the words of any link. */
+function releaseNoteSpans(text) {
+    const plain = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+    return plain.split(/(\*\*[^*]+\*\*|`[^`]+`)/).flatMap((part) => {
+        if (!part)
+            return [];
+        if (part.length > 4 && part.startsWith("**") && part.endsWith("**"))
+            return [{ text: part.slice(2, -2), strong: true }];
+        if (part.length > 2 && part.startsWith("`") && part.endsWith("`"))
+            return [{ text: part.slice(1, -1), code: true }];
+        return [{ text: part }];
+    });
+}
 function panelUpdateOffer(update) {
     if (!update || !update.update_available || !update.latest_version)
         return null;
@@ -11203,7 +11249,7 @@ function AdvancedModal(props) {
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.close", close), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsxs(DensePanel, { children: [SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Plugin updates" }), SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-state", label: updateSummaryView.label, description: updateError ?? updateSummaryView.description, help: "CE Decky checks its own GitHub releases and installs one on an explicit press. A check happens at most once a day, and only on a day you have opened this panel or searched for a table, so a device nobody is using asks for nothing; it is one anonymous request that names no game, no table and no account of yours. Installing downloads the release, checks it against the checksum the release itself publishes, and hands it to Decky, which restarts Steam's interface to load the new version.", actions: onCheckForUpdate ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.check_for_update", () => {
                                             setUpdateError(null);
                                             void invoke(onCheckForUpdate, setUpdateView, (cause) => setUpdateError(describeError(cause)));
-                                        }), children: "Check now" })) : undefined }), updateView?.last_error && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-check-failed", label: "The last check did not finish", description: sentence(updateView.last_error) })), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx("div", { className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { grow: true, disabled: blocked, onClick: traceUiAction("advanced_modal.update", () => onStartUpdate(String(updateView?.latest_version)), { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(SwitchBox, { name: "auto-check", testId: "update-auto-check", checked: Boolean(updateView?.auto_check), style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "Once a day at most, on a day you open this panel or search for a table. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
+                                        }), children: "Check now" })) : undefined }), updateView?.last_error && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-check-failed", label: "The last check did not finish", description: sentence(updateView.last_error) })), updateAvailable && updateView?.install_supported && onStartUpdate && (SP_JSX.jsx(ActionRow, { testId: "update-install", children: SP_JSX.jsx("div", { className: UPDATE_ACTION_CLASS, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { grow: true, disabled: blocked, onClick: traceUiAction("advanced_modal.update", () => onStartUpdate(String(updateView?.latest_version), updateView), { to_version: updateView?.latest_version }), children: `Update to v${updateView?.latest_version}` }) }) })), onSetUpdateAutoCheck && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(SwitchBox, { name: "auto-check", testId: "update-auto-check", checked: Boolean(updateView?.auto_check), style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ToggleField, { label: "Check for updates automatically", description: "Once a day at most, on a day you open this panel or search for a table. Switched off, nothing is checked and nothing is offered; Check now still asks when pressed.", checked: Boolean(updateView?.auto_check), disabled: blocked, onChange: traceUiAction("advanced_modal.update_auto_check", (enabled) => {
                                                 setUpdateError(null);
                                                 void invoke(() => onSetUpdateAutoCheck(enabled), setUpdateView, (cause) => setUpdateError(describeError(cause)));
                                             }, (enabled) => ({ enabled })), bottomSeparator: "none" }) }) })), updateView?.last_result && !updateView.last_result.ok && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-manual-route", label: "The last update did not install", description: sentence(updateView.last_result.error ?? "Decky did not complete the install."), help: "Try again when the release page and this device can both be reached. If a verified release was kept on this device, the row below names it and how to install it by hand.", actions: updateView.page_url ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.open_release_page", () => openSourcePage(updateView.page_url)), children: "Release page" })) : undefined })), updateView?.recovery && (SP_JSX.jsx(PanelRow, { truncate: true, scroll: true, testId: "update-recovery", label: `v${updateView.recovery.version ?? "?"} is saved for a manual install`, description: updateView.recovery.path, help: "That file is the release itself, already checked against the checksum GitHub publishes for it. To install it by hand: open Decky's settings, switch Developer mode on, and use Install Plugin from the developer section, pointing it at that file. It is removed once an update succeeds, or if you delete all of this plugin's data." })), updateView?.last_result?.ok && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-last-result", label: `Updated to v${updateView.last_result.version}`, description: "The last update installed and this is the version that came back." })), updateView && !updateView.install_supported && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-unsupported", label: "Automatic installation is unavailable here", description: "This device has no python3 for the updater to run in, so an update has to be installed from Decky by hand." }))] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Panel appearance" }), onSetMascotVisible && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(SwitchBox, { name: "mascot", testId: "panel-mascot", checked: mascotVisible, style: CONTENTS_ONLY, children: SP_JSX.jsx(DFL.ToggleField, { label: "Show the mascot", description: "HexPaw, above the first section of the CE Decky panel. Switching it off gives that height back to the cheats.", checked: mascotVisible, disabled: blocked, onChange: traceUiAction("advanced_modal.mascot_visible", (visible) => {
@@ -11307,6 +11353,13 @@ const POLL_ATTEMPTS = 180;
  * way out comes back, and it says what it is and is not doing.
  */
 const RESTART_GRACE_MS = 45000;
+const NOTE_CODE = { fontFamily: "monospace", fontSize: "0.92em" };
+/** One line of notes as text, bold and code set, and nothing interpreted. */
+function NoteText({ spans }) {
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: spans.map((span, index) => span.strong
+            ? SP_JSX.jsx("b", { children: span.text }, index)
+            : span.code ? SP_JSX.jsx("code", { style: NOTE_CODE, children: span.text }, index) : SP_JSX.jsx("span", { children: span.text }, index)) }));
+}
 /**
  * The one confirmation an update gets, and then the only view of it there is.
  *
@@ -11321,8 +11374,18 @@ const RESTART_GRACE_MS = 45000;
  * Decky is replacing this plugin, so the backend that would answer the next
  * question is being stopped and this panel is about to be replaced with it.
  */
-function UpdateModal({ currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose }) {
+function UpdateModal({ currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose, notes = null, notesTruncated = false, pageUrl }) {
     useUiSurface("UpdateModal");
+    // The notes are what the press is being asked about, so they are shown until
+    // it is made; afterwards the window reports the update, and on a handheld
+    // they would push that report off the bottom of the screen. The opening
+    // paragraph is the release's own reason to update and goes under the two
+    // versions. Every other line is a row of its own, because a controller
+    // cannot scroll a block of text: Steam moves the window by moving focus, so
+    // each line has to be somewhere focus can go.
+    const noteBlocks = releaseNoteBlocks(notes);
+    const lead = noteBlocks[0]?.kind === "paragraph" ? noteBlocks[0] : null;
+    const noteLines = lead ? noteBlocks.slice(1) : noteBlocks;
     // An operation that has already ended is not something to adopt. The panel
     // does not pass one, and this window does not act on one either: it opens as
     // the ordinary confirmation, which is what a user pressing Update after a
@@ -11453,7 +11516,11 @@ function UpdateModal({ currentVersion, targetVersion, adopted = null, onStart, o
     // waiting for an answer that has no one left to give it.
     const stranded = unreachable && !settled && !installingNow;
     return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("update_modal.cancel_back", () => { if (stranded || (!busyRef.current && !installing))
-            onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: "Steam's interface restarts during installation and the Decky panel closes for a few seconds." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-no-cancel", label: "It cannot be cancelled once it starts installing", description: "Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), stranded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-handed-off", label: "CE Decky stopped answering", description: "The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), ((installingNow && restartOverdue) || stranded) && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && !stranded && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
+            onClose(); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 420, maxWidth: 600 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Update CE Decky" }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { tone: "header", testId: "update-versions", label: `v${currentVersion} to v${targetVersion}`, description: lead && !operation
+                                        ? SP_JSX.jsx(NoteText, { spans: lead.spans })
+                                        : "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky." }) }), !operation && noteLines.map((block, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `update-note-${index}`, label: block.kind === "item"
+                                        ? SP_JSX.jsxs(SP_JSX.Fragment, { children: ["\u2022 ", SP_JSX.jsx(NoteText, { spans: block.spans })] })
+                                        : block.kind === "heading" ? SP_JSX.jsx("b", { children: SP_JSX.jsx(NoteText, { spans: block.spans }) }) : SP_JSX.jsx(NoteText, { spans: block.spans }) }) }, index))), !operation && notesTruncated && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-notes-cut", label: "The rest of this release's notes", description: `On its release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}` }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-warning", label: "Steam's interface restarts", description: "The Decky panel closes for a few seconds while Decky installs it. Downloading can be stopped; once installing begins it cannot be cancelled, because this panel is part of what is being replaced." }) }), operation && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { truncate: true, testId: "update-progress", label: installing ? "Installing" : operation.state.replace(/_/g, " "), description: operation.error ?? operation.message, trailing: inFlight || installing ? SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14 } }) : undefined }) })), installing && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-installing-note", label: "Steam's interface is restarting", description: "This window closes with it. CE Decky reports what happened once the panel comes back." }) })), stranded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-handed-off", label: "CE Decky stopped answering", description: "The update was accepted and this panel can no longer be told how it ended, which is what an install that is replacing the plugin looks like from here. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), installingNow && restartOverdue && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { status: true, testId: "update-restart-overdue", label: "Steam's interface has not restarted", description: "The update was handed to Decky and is finishing on its own. Closing this window does not stop it; CE Decky reports what happened in Advanced, under Plugin updates." }) })), error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "update-modal-error", label: "The update could not be started", description: error }) }))] }) }), ((installingNow && restartOverdue) || stranded) && (SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("update_modal.close_overdue", () => onClose()), children: "Close" }) })), !installingNow && !stranded && (SP_JSX.jsxs(ModalActions, { children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: cancelling, onClick: traceUiAction("update_modal.not_now", () => {
                                 if (inFlight) {
                                     void abandon();
                                     return;
@@ -18185,7 +18252,7 @@ function Content() {
                 const next = await checkForUpdate();
                 await refreshStatus().catch(() => undefined);
                 return next;
-            }), onStartUpdate: (target) => { void requestPluginUpdate(target, null, close); }, onSetMascotVisible: (visible) => runAction(async () => {
+            }), onStartUpdate: (target, view) => { void requestPluginUpdate(target, null, close, view); }, onSetMascotVisible: (visible) => runAction(async () => {
                 const next = await setMascotVisible(visible);
                 await refreshStatus().catch(() => undefined);
                 return next;
@@ -18226,7 +18293,7 @@ function Content() {
         if (status?.preferences)
             rememberMascotVisible(status.preferences.mascot_visible);
     }, [status?.preferences?.mascot_visible]);
-    const openUpdateModal = (requested, adopt) => {
+    const openUpdateModal = (requested, adopt, view) => {
         // What the control that was pressed was showing, and only then what this
         // panel last read. Advanced keeps its own snapshot and is not re-rendered
         // from here, so a check run there can find a version this closure has
@@ -18235,7 +18302,16 @@ function Content() {
         const target = requested ?? adopt?.version ?? offeredUpdateVersion;
         if (!status || !target)
             return;
-        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, adopted: adopt ?? null, onStart: (targetVersion) => startPluginUpdate(targetVersion), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
+        // The notes of exactly the version this window names, from whichever view
+        // found it: Advanced can have checked since the panel last read its status.
+        const described = [view, status.update].find((candidate) => candidate?.latest_version === target) ?? null;
+        // Whether the confirmation had anything to say about the release, which is
+        // what a report that an update showed no notes is answered from.
+        logUi("update.confirmation_opened", {
+            to_version: target, adopted: Boolean(adopt),
+            notes: Boolean(described?.release_notes), notes_cut: described?.release_notes_truncated === true,
+        });
+        showContextModal((close) => (SP_JSX.jsx(UpdateModal, { currentVersion: status.version, targetVersion: target, notes: described?.release_notes ?? null, notesTruncated: described?.release_notes_truncated === true, pageUrl: described?.page_url, adopted: adopt ?? null, onStart: (targetVersion) => startPluginUpdate(targetVersion), onPoll: (operationId) => pollPluginUpdate(operationId), onCancelUpdate: (operationId) => cancelPluginUpdate(operationId), onClose: () => {
                 close();
                 // What the press changed about this device is in the status the panel
                 // reads: a cancelled update, a failed one, and the record of what the
@@ -18254,20 +18330,20 @@ function Content() {
      * An update already running is only being looked at again, so it opens.
      */
     const updatePressRef = SP_REACT.useRef(false);
-    const requestPluginUpdate = async (requested, adopt, beforeOpen) => {
+    const requestPluginUpdate = async (requested, adopt, beforeOpen, view) => {
         // The window used to open in the press itself; asking first leaves a moment
         // in which a second press would open a second confirmation.
         if (updatePressRef.current)
             return;
         updatePressRef.current = true;
         try {
-            await guardedPluginUpdate(requested, adopt, beforeOpen);
+            await guardedPluginUpdate(requested, adopt, beforeOpen, view);
         }
         finally {
             updatePressRef.current = false;
         }
     };
-    const guardedPluginUpdate = async (requested, adopt, beforeOpen) => {
+    const guardedPluginUpdate = async (requested, adopt, beforeOpen, view) => {
         if (!adopt) {
             // The backend's own start check, so the press and the start cannot
             // disagree: it sees a shortcut running with only its Steam game id,
@@ -18289,7 +18365,7 @@ function Content() {
             }
         }
         beforeOpen?.();
-        openUpdateModal(requested, adopt);
+        openUpdateModal(requested, adopt, view);
     };
     const openGamePicker = (gameOptions) => {
         // Only the ambiguity this cannot resolve by itself is marked. One running

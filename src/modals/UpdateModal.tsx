@@ -7,6 +7,8 @@ import { ModalActions, modalActionStyle } from "../components/ModalActions";
 import { describeError } from "../errors";
 import { logUiFailure } from "../supportLog";
 import type { PluginUpdateOperation } from "../types";
+import { releaseNoteBlocks, type ReleaseNoteSpan } from "../uiModel";
+import type { CSSProperties } from "react";
 
 /** How often this asks the backend what the update it started is doing. */
 const POLL_INTERVAL_MS = 1000;
@@ -48,6 +50,29 @@ interface Props {
   onPoll: (operationId: string) => Promise<PluginUpdateOperation>;
   onCancelUpdate: (operationId: string) => Promise<PluginUpdateOperation>;
   onClose: () => void;
+  /**
+   * What the release being offered says it changes, from the check that found
+   * it, for `targetVersion` only. Display text: it decides nothing, and the
+   * press still reads the release again and checks its digest.
+   */
+  notes?: string | null;
+  /** Whether the record cut them, so the window can say where the rest is. */
+  notesTruncated?: boolean;
+  /** The releases page, named where the notes were cut. */
+  pageUrl?: string;
+}
+
+const NOTE_CODE: CSSProperties = { fontFamily: "monospace", fontSize: "0.92em" };
+
+/** One line of notes as text, bold and code set, and nothing interpreted. */
+function NoteText({ spans }: { spans: ReleaseNoteSpan[] }) {
+  return (
+    <>
+      {spans.map((span, index) => span.strong
+        ? <b key={index}>{span.text}</b>
+        : span.code ? <code key={index} style={NOTE_CODE}>{span.text}</code> : <span key={index}>{span.text}</span>)}
+    </>
+  );
 }
 
 /**
@@ -65,9 +90,19 @@ interface Props {
  * question is being stopped and this panel is about to be replaced with it.
  */
 export function UpdateModal(
-  { currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose }: Props,
+  { currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose, notes = null, notesTruncated = false, pageUrl }: Props,
 ) {
   useUiSurface("UpdateModal");
+  // The notes are what the press is being asked about, so they are shown until
+  // it is made; afterwards the window reports the update, and on a handheld
+  // they would push that report off the bottom of the screen. The opening
+  // paragraph is the release's own reason to update and goes under the two
+  // versions. Every other line is a row of its own, because a controller
+  // cannot scroll a block of text: Steam moves the window by moving focus, so
+  // each line has to be somewhere focus can go.
+  const noteBlocks = releaseNoteBlocks(notes);
+  const lead = noteBlocks[0]?.kind === "paragraph" ? noteBlocks[0] : null;
+  const noteLines = lead ? noteBlocks.slice(1) : noteBlocks;
   // An operation that has already ended is not something to adopt. The panel
   // does not pass one, and this window does not act on one either: it opens as
   // the ordinary confirmation, which is what a user pressing Update after a
@@ -203,23 +238,38 @@ export function UpdateModal(
                 tone="header"
                 testId="update-versions"
                 label={`v${currentVersion} to v${targetVersion}`}
-                description="The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky."
+                description={lead && !operation
+                  ? <NoteText spans={lead.spans} />
+                  : "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky."}
               />
             </PanelSectionRow>
+            {!operation && noteLines.map((block, index) => (
+              <PanelSectionRow key={index}>
+                <PanelRow
+                  testId={`update-note-${index}`}
+                  label={block.kind === "item"
+                    ? <>{"\u2022 "}<NoteText spans={block.spans} /></>
+                    : block.kind === "heading" ? <b><NoteText spans={block.spans} /></b> : <NoteText spans={block.spans} />}
+                />
+              </PanelSectionRow>
+            ))}
+            {!operation && notesTruncated && (
+              <PanelSectionRow>
+                <PanelRow
+                  testId="update-notes-cut"
+                  label="The rest of this release's notes"
+                  description={`On its release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}`}
+                />
+              </PanelSectionRow>
+            )}
+            {/* Both things there is no discovering afterwards, in one row so
+                the notes and the press still fit a handheld's screen. */}
             <PanelSectionRow>
               <PanelRow
                 status
                 testId="update-restart-warning"
                 label="Steam's interface restarts"
-                description="Steam's interface restarts during installation and the Decky panel closes for a few seconds."
-              />
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <PanelRow
-                status
-                testId="update-no-cancel"
-                label="It cannot be cancelled once it starts installing"
-                description="Downloading can be stopped. From the moment Decky begins replacing the plugin there is nothing left here to stop it, because this panel is part of what is being replaced."
+                description="The Decky panel closes for a few seconds while Decky installs it. Downloading can be stopped; once installing begins it cannot be cancelled, because this panel is part of what is being replaced."
               />
             </PanelSectionRow>
             {operation && (

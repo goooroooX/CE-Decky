@@ -3449,6 +3449,69 @@ export function updateCheckedOn(seconds: number | null): string | null {
  * whatever the last two say, because that is the screen the switch is on and
  * the screen that explains an install this device cannot do.
  */
+/** One run of a release note's text, and how it is set. */
+export interface ReleaseNoteSpan {
+  text: string;
+  strong?: boolean;
+  code?: boolean;
+}
+
+/** One line the update window shows from a release's notes. */
+export interface ReleaseNoteBlock {
+  kind: "heading" | "item" | "paragraph";
+  spans: ReleaseNoteSpan[];
+}
+
+/** How many lines of notes the update window gives a release. */
+const MAX_RELEASE_NOTE_BLOCKS = 40;
+
+/**
+ * The lines of a release's notes, in the shape the update window draws them.
+ *
+ * Only what `docs/release-notes/README.md` has the notes written in: headings,
+ * one-line items, paragraphs, bold and code. A link keeps its words and loses
+ * its target, and nothing else is markup: the text is drawn as text, never as
+ * HTML, so whatever a release body carries can only ever be read.
+ */
+export function releaseNoteBlocks(notes: string | null | undefined): ReleaseNoteBlock[] {
+  if (!notes) return [];
+  const blocks: ReleaseNoteBlock[] = [];
+  let paragraph: string[] = [];
+  const flush = () => {
+    if (paragraph.length > 0) blocks.push({ kind: "paragraph", spans: releaseNoteSpans(paragraph.join(" ")) });
+    paragraph = [];
+  };
+  for (const raw of notes.split("\n")) {
+    const line = raw.trim();
+    const heading = /^#{1,6}\s+(.*)$/.exec(line);
+    const item = /^[-*+]\s+(.*)$/.exec(line);
+    if (!line) {
+      flush();
+    } else if (heading) {
+      flush();
+      blocks.push({ kind: "heading", spans: releaseNoteSpans(heading[1]) });
+    } else if (item) {
+      flush();
+      blocks.push({ kind: "item", spans: releaseNoteSpans(item[1]) });
+    } else {
+      paragraph.push(line);
+    }
+  }
+  flush();
+  return blocks.filter((block) => block.spans.some((span) => span.text.trim())).slice(0, MAX_RELEASE_NOTE_BLOCKS);
+}
+
+/** Bold and code within one line of notes, and the words of any link. */
+export function releaseNoteSpans(text: string): ReleaseNoteSpan[] {
+  const plain = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  return plain.split(/(\*\*[^*]+\*\*|`[^`]+`)/).flatMap((part): ReleaseNoteSpan[] => {
+    if (!part) return [];
+    if (part.length > 4 && part.startsWith("**") && part.endsWith("**")) return [{ text: part.slice(2, -2), strong: true }];
+    if (part.length > 2 && part.startsWith("`") && part.endsWith("`")) return [{ text: part.slice(1, -1), code: true }];
+    return [{ text: part }];
+  });
+}
+
 export function panelUpdateOffer(update: PluginUpdateState | null): string | null {
   if (!update || !update.update_available || !update.latest_version) return null;
   if (!update.auto_check || !update.install_supported) return null;

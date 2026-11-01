@@ -165,6 +165,19 @@ def test_checking_is_armed_by_search_activity_and_paced_by_the_interval(tmp_path
     assert armed.should_check() is False
 
 
+def test_a_check_keeps_the_notes_of_the_release_it_offers(tmp_path: Path):
+    network = FakeNetwork()
+    network.release["body"] = "# CE Decky 0.9.28\n\nFixes a crash.\n<!-- ce-decky:notes-end -->\n## What's Changed\n* x"
+    manager = _manager(tmp_path, network)
+    snapshot = asyncio.run(manager.check(forced=True))
+    assert snapshot["release_notes"] == "Fixes a crash."
+    assert snapshot["release_notes_truncated"] is False
+    # Read back after a reload, so the confirmation has them with no request.
+    assert _manager(tmp_path, network).snapshot()["release_notes"] == "Fixes a crash."
+    # Beside no offer they describe nothing this device is being asked about.
+    assert _manager(tmp_path, network, version="0.9.28").snapshot()["release_notes"] is None
+
+
 def test_check_now_ignores_the_arming_but_keeps_its_floor(tmp_path: Path):
     network = FakeNetwork()
     manager = _manager(tmp_path, network, searched_at=0.0)

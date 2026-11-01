@@ -10404,6 +10404,35 @@ describe("Updating CE Decky only where no game is running", () => {
     expect(screen.getByText("Update to v0.5.1")).toBeTruthy();
   });
 
+  it("opens the confirmation with the notes of the release it names", async () => {
+    offering();
+    const snapshot = await api.getStatus();
+    snapshot.update.release_notes = "Fixes a crash.";
+    snapshot.update.release_notes_truncated = true;
+    snapshot.update.page_url = "https://github.com/goooroooX/CE-Decky/releases/tag/v0.5.1";
+    running([]);
+    renderContent();
+    fireEvent.click(await screen.findByText("Update to v0.5.1"));
+    await waitFor(() => expect(updateModals()).toHaveLength(1));
+    expect(updateModals()[0].props).toEqual(expect.objectContaining({
+      targetVersion: "0.5.1", notes: "Fixes a crash.", notesTruncated: true,
+      pageUrl: "https://github.com/goooroooX/CE-Decky/releases/tag/v0.5.1",
+    }));
+  });
+
+  it("takes the notes from Advanced where it found a newer release than the panel", async () => {
+    offering();
+    running([]);
+    renderContent();
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced…" }));
+    await waitFor(() => expect(modalState.nodes.some((node: any) => node.type === AdvancedModal)).toBe(true));
+    const advanced = modalState.nodes.find((node: any) => node.type === AdvancedModal);
+    const newer = { ...(await api.getStatus()).update, latest_version: "0.5.2", release_notes: "Newer notes." };
+    await act(async () => { advanced.props.onStartUpdate("0.5.2", newer); });
+    await waitFor(() => expect(updateModals()).toHaveLength(1));
+    expect(updateModals()[0].props).toEqual(expect.objectContaining({ targetVersion: "0.5.2", notes: "Newer notes." }));
+  });
+
   it("refuses where the backend cannot be asked at all", async () => {
     offering();
     api.getUpdateBlocker.mockRejectedValue(new Error("the backend did not answer"));

@@ -685,7 +685,7 @@ To prepare a release without publishing it:
 
 1. Confirm the synchronized development version and date in `package.json`, `AGENTS.md`, and `CHANGELOG.md`.
 2. Confirm the newest changelog heading is `## x.y.z — YYYY-MM-DD` and contains only concise labeled outcomes.
-3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is short and for a user deciding whether to update: one sentence on why, one line per change they would notice, in the names on their screen and never how it was done, then how to install it. `docs/release-notes/README.md` states the rules, with examples, and `scripts/check_release.py` refuses a tag whose file is missing or empty. Only a version that is released needs one: a version that is skipped keeps its changelog entries and gets no file and no tag.
+3. Write `docs/release-notes/v<version>.md`, which is published as the release description. It is short and for a user deciding whether to update: one sentence on why, one line per change they would notice, in the names on their screen and never how it was done, then how to install it. `docs/release-notes/README.md` states the rules, with examples, and `scripts/check_release.py` refuses a tag whose file is missing or empty. The same text is what the plugin's update window shows before **Update** is pressed, opening sentence first and alone, without the title or `## Install`, so write it for that screen as well as for the release page. Only a version that is released needs one: a version that is skipped keeps its changelog entries and gets no file and no tag.
 4. Run `python scripts/qa.py --profile release --bootstrap`; omit `--bootstrap` when lock fingerprints are already current.
 5. Review the package contents and checksums.
 6. Run `python scripts/check_release.py --tag v<version>`. It is the check the release workflow runs first, so missing or empty release notes, a row left under **Still worth checking** in `docs/FIELD_NOTES.md`, or a pre-release notice left in `README.md` is found here rather than after the tag is pushed.
@@ -697,7 +697,7 @@ Only after explicit user approval, create and push the exact tag `v<version>`. `
 - runs the full gate and its deterministic packaging;
 - creates the plugin ZIP and `SHA256SUMS`; the reviewed repository tag is the source authority;
 - creates a GitHub build-provenance attestation for the plugin archive;
-- publishes a GitHub Release from the already-pushed tag, marking SemVer prerelease versions as prereleases. Its description is `docs/release-notes/v<version>.md` with GitHub's own generated commit list appended under it.
+- publishes a GitHub Release from the already-pushed tag, marking SemVer prerelease versions as prereleases. Its description is `docs/release-notes/v<version>.md`, then the marker `<!-- ce-decky:notes-end -->`, then GitHub's own generated commit list. The update window reads the notes up to that marker (`NOTES_END_MARKER` in `plugin_update.py`), and a regression holds the workflow and the constant to the same string.
 
 Do not create or move tags to repair a failed release. Fix the cause in a new commit, choose the appropriate new version/tag, and preserve the failed workflow as evidence.
 

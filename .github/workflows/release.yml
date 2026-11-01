@@ -95,10 +95,12 @@ jobs:
           # The description is the reviewed file this tag points at, with
           # GitHub's own commit list under it. Built here rather than passed as
           # two flags so the body that is published is one file this step can be
-          # read against.
+          # read against. The marker between them is where the update window in
+          # the plugin stops reading: what is above it is written for a user,
+          # and the commit list is not (`NOTES_END_MARKER` in plugin_update.py).
           notes="docs/release-notes/${GITHUB_REF_NAME}.md"
           cp "$notes" release-body.md
-          printf '\n' >> release-body.md
+          printf '\n<!-- ce-decky:notes-end -->\n\n' >> release-body.md
           gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f tag_name="$GITHUB_REF_NAME" -q .body >> release-body.md
           # The title is the tag, set here: a release published without one is

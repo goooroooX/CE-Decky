@@ -5,11 +5,14 @@ import pytest
 
 from ce_decky.plugin_update import (
     ARCHIVE_PREFIX,
+    MAX_NOTES_BYTES,
+    NOTES_END_MARKER,
     UpdateError,
     UpdateStateStore,
     digest_from_sums,
     parse_release,
     parse_version,
+    release_notes,
     version_from_tag,
 )
 
@@ -126,3 +129,69 @@ def test_update_state_reads_an_unreadable_record_as_never_checked(tmp_path: Path
     assert store.load() == {}
     path.write_text(json.dumps({"schema": 99, "latest_version": "9.9.9"}))
     assert store.load() == {}
+
+
+_BODY = """# CE Decky 0.9.28
+
+Lets more games start Cheat Engine.
+
+## Fixes
+
+- A cheat no longer switches itself on.‮
+- **Load table & start CE** works with `proton-cachyos`.
+
+## Install
+
+Close any running game, then update from the CE Decky panel.
+
+Requires Decky Loader 3.2.8+.
+<!-- ce-decky:notes-end -->
+
+## What's Changed
+* Fix things by @someone in #12
+"""
+
+
+def test_the_notes_are_the_part_written_for_a_user():
+    notes, truncated = release_notes(_BODY)
+    assert truncated is False
+    # The title and the manual route go, and so does the commit list.
+    assert notes == (
+        "Lets more games start Cheat Engine.\n\n## Fixes\n\n"
+        "- A cheat no longer switches itself on.\n"
+        "- **Load table & start CE** works with `proton-cachyos`."
+    )
+    # A bidirectional override is not carried into what is shown.
+    assert "‮" not in notes
+
+
+def test_a_body_without_the_marker_stops_at_the_list_github_generates():
+    body = "Fixes a crash.\r\n\r\n## What's Changed\r\n* a commit\r\n**Full Changelog**: x"
+    assert release_notes(body) == ("Fixes a crash.", False)
+    assert release_notes("Fixes a crash.\n**Full Changelog**: x") == ("Fixes a crash.", False)
+
+
+def test_notes_are_bounded_on_a_line_and_absent_ones_are_nothing():
+    notes, truncated = release_notes("\n".join(f"- line {index:04}" for index in range(2000)))
+    assert truncated is True
+    assert len(notes.encode("utf-8")) <= MAX_NOTES_BYTES
+    assert notes.splitlines()[-1].startswith("- line ")
+    assert release_notes(None) == (None, False)
+    assert release_notes(["not", "text"]) == (None, False)
+    assert release_notes("# CE Decky 0.9.28\n\n## Install\n\nBy hand.") == (None, False)
+    # The title goes after leading blank lines too.
+    assert release_notes("\n\n# CE Decky 0.9.28\nFixes.") == ("Fixes.", False)
+    # The bound is what the record is written with, so escapes count.
+    quoted, cut = release_notes("\n".join('"' * 60 for _ in range(200)))
+    assert cut is True and len(json.dumps(quoted, ensure_ascii=False).encode("utf-8")) <= MAX_NOTES_BYTES + 2
+
+
+def test_an_offer_carries_its_notes():
+    offer = parse_release(_release(body=_BODY), current_version="0.9.27")
+    assert offer.notes.startswith("Lets more games start Cheat Engine.")
+    assert parse_release(_release(), current_version="0.9.27").notes is None
+
+
+def test_the_release_workflow_writes_the_marker_the_notes_are_read_to():
+    workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml").read_text()
+    assert NOTES_END_MARKER in workflow

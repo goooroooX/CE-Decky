@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.33 — 2026-11-01
 
+- [New] The update window shows what the new version changes before you press **Update**: the release's own reason to update under the two versions, then its fixes and changes, readable with the controller on a handheld screen.
 - [Fixed] CE Decky checks for its own update once a day when you open its panel, not only after a table search, so an update is offered to everybody who uses the plugin rather than only to those who searched for a table that day. It still asks at most once a day, and nothing at all on a device where the panel is not opened.
 - [Fixed] Auto-load no longer writes back a number Cheat Engine read from the game last session into a record nobody switched on, such as a player's level or experience under a script that runs at startup; it writes only a value you typed or set for startup. A cheat it switches on keeps the value you gave it.
 - [Fixed] Emptying a cheat's value and applying forgets it: nothing is written to the game, Auto-load no longer writes it, and the row in Configure cheats and on the panel shows what the game holds again, as for a cheat that never had a value. Where Cheat Engine cannot read the record yet, the box stays empty rather than bringing the cleared number back. A cheat that is on stays on.
