@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.33 — 2026-11-01
 
+- [Fixed] Emptying a cheat's value and applying forgets it: nothing is written to the game, Auto-load no longer writes it, and the row in Configure cheats and on the panel shows what the game holds again, as for a cheat that never had a value. Where Cheat Engine cannot read the record yet, the box stays empty rather than bringing the cleared number back. A cheat that is on stays on.
 - [Fixed] An off record keeps its configured value visible instead of reverting to the current memory value, which is shown beside it as `Current` where the two differ. A value saved for a script's setting is written once, without freezing it, while that script runs and whenever it is switched on, from Configure cheats, a pinned switch and Auto-load alike; a value for any other cheat waits until that cheat is switched on, which applies it. Editing a value never switches a cheat or a script on and leaves Auto-load as it was.
 
 ## 0.9.32 — 2026-10-25

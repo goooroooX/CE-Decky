@@ -9141,7 +9141,38 @@ describe("Selection and staged-change persistence", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
     expect(onSaveConfiguredValues).toHaveBeenCalledWith([]);
-    expect(onApplied.mock.calls[0][0].find((item: any) => item.record_id === 7)?.value).toBe("2");
+    // Neither the cleared value nor the read-back beside it is kept to be replayed.
+    expect(onApplied.mock.calls[0][0].find((item: any) => item.record_id === 7)).toBeUndefined();
+    // What the game holds is shown again at once, as for a record nobody gave a value.
+    await waitFor(() => expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("2"));
+    expect(screen.getByTestId("cheat-row-7").textContent).not.toContain("Current:");
+  });
+
+  it("clearing a value Cheat Engine cannot read leaves the field empty rather than the cleared value", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    renderConfigured({ configuredValues: [{ record_id: 7, value: "8" }],
+      rememberedPreferences: [{ record_id: 7, active: null, value: "8" }], onApplied },
+      [{ generation: 1, record_id: 7, ok: true, active: false, value: "??", error: null }]);
+    await screen.findByTestId("cheat-row-7");
+    await revealDetails();
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("8");
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("");
+    expect(onApplied.mock.calls[0][0].find((item: any) => item.record_id === 7)).toBeUndefined();
+  });
+
+  it("clearing the value of a cheat that is on keeps it on and drops only the value", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    renderConfigured({ live: false, configuredValues: [{ record_id: 7, value: "8" }],
+      rememberedPreferences: [{ record_id: 7, active: true, value: "8" }], onApplied }, []);
+    await screen.findByTestId("cheat-row-7");
+    await revealDetails();
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(onApplied.mock.calls[0][0]).toContainEqual({ record_id: 7, active: true, value: null });
   });
 
   it("a failed settings-only save shows the latest observed Current value", async () => {

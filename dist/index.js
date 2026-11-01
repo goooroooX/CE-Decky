@@ -12102,7 +12102,18 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                     ? [{ record_id: control.id, active: state.active, value: state.value, switch_values: switchValuesFor(control) }]
                     : [];
             });
-            const prospectiveRemembered = offWithoutSwitchKeys(rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript, safeControls);
+            // A field emptied here drops the value remembered beside it as well.
+            // `rememberedSelection` keeps the previous one where it observes none,
+            // because for a record Cheat Engine cannot read that is the value chosen
+            // before, and for a field the user emptied it is the very value they
+            // cleared: shown on the panel wherever the game could not be read, and
+            // written again by the next Auto-load.
+            const withoutClearedValues = (preferences) => preferences.flatMap((preference) => {
+                if (!touchedValues.has(preference.record_id) || displayableControlValue(effective[preference.record_id]?.value) !== null)
+                    return [preference];
+                return preference.active === null ? [] : [{ ...preference, value: null }];
+            });
+            const prospectiveRemembered = withoutClearedValues(offWithoutSwitchKeys(rememberedSelection(safeControls, stagedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript, safeControls));
             const budgetError = rememberedSelectionBudgetError(startupPreferences, prospectiveRemembered);
             if (budgetError)
                 throw new Error(budgetError);
@@ -12316,21 +12327,28 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 const typed = staged[result.record_id]?.value ?? null;
                 return displayableControlValue(result.value) === null && typed !== null ? { ...result, value: typed } : result;
             });
-            const remembered = offWithoutSwitchKeys(rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript, safeControls);
+            const remembered = withoutClearedValues(offWithoutSwitchKeys(rememberedSelection(safeControls, rememberedStates, rememberedPreferences, effectiveTouchedActive, touchedValues, pluginManaged), wentOffWithScript, safeControls));
             const finalBudgetError = rememberedSelectionBudgetError(startupPreferences, remembered);
             if (finalBudgetError) {
                 throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
             }
             onSnapshot?.([...finalState.results, ...finalState.unavailable], finalState.envelope);
-            // Readback never replaces a configured choice in the editor.
+            // Readback never replaces a configured choice in the editor. A field
+            // emptied here is a choice dropped, so the record shows what the game
+            // holds again, as it does for one nobody gave a value; where Cheat Engine
+            // reads nothing it stays empty, and the remembered copy, which may be
+            // the value just cleared, is not brought back in its place.
             const confirmedState = {};
             for (const result of finalState.results) {
                 if (result.record_id === null)
                     continue;
-                const typed = touchedValues.has(result.record_id) ? staged[result.record_id]?.value ?? null : null;
+                const touched = touchedValues.has(result.record_id);
+                const typed = touched ? displayableControlValue(staged[result.record_id]?.value) : null;
                 confirmedState[result.record_id] = {
                     active: result.active,
-                    value: typed ?? resolvedValue(result.record_id, result.value),
+                    value: typed !== null ? staged[result.record_id].value
+                        : touched ? (displayableControlValue(result.value) === null ? null : result.value)
+                            : resolvedValue(result.record_id, result.value),
                 };
             }
             withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
