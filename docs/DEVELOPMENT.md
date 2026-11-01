@@ -550,6 +550,29 @@ repository cannot install there fails the Store build and nothing else.
 directory. In `decky-plugin-database` that is the submodule directory, which is
 why it has to be added there as `CE-Decky`.
 
+### README preview before a push
+
+Use `python3 scripts/readme_preview.py` to render the current checkout's README
+without running the plugin. It sends Markdown to GitHub's API through authenticated
+`gh`, downloads the real Shields SVGs, resolves repository images locally, and
+uses `browser_harness.py`'s verified Chrome pin on Linux x86_64. The default output
+is `build/readme-preview/readme.png`, a 1100 by 650 first-screen preview, plus
+`readme.html`, downloaded SVGs and a Chrome log. `--output-dir <directory>` changes
+the destination. The layout uses local GitHub-like styling; it checks the content
+and badge placement with approximate page styling. The helper uses the existing
+DevTools transport to wait for the document, fonts and every image before capture.
+Failure to fetch Markdown or Shields SVGs, or to render the PNG, returns a failure
+and removes an old PNG.
+
+For a Downloads endpoint that is not published yet, pass
+`--downloads-json <path>` with its Shields v1 payload. That explicit preview uses
+Shields' static rendering of the supplied label, message and color; the command
+reports the override and keeps the other badges live. Without it, Downloads comes
+from the README's actual endpoint URL and has the same Shields cache delay.
+Authenticate `gh` first with `gh auth login`; the helper also finds an installation
+in `~/.local/bin`. It writes no tracked file and uses an isolated temporary browser
+profile, stopped and removed after a bounded render.
+
 ### Where a helper has to be registered
 
 A helper is registered in two places, and `scripts/verify_repo.py` refuses a
