@@ -68,6 +68,8 @@ export interface RuntimeDesiredState {
    * address until it has, so neither its depth nor its place orders it.
    */
   after?: readonly number[];
+  /** A value-only edit must not write if the record has since gone off. */
+  require_active?: boolean;
 }
 
 export class RuntimeOperationError extends Error {
@@ -701,6 +703,14 @@ export async function applyRuntimeSelection(
 
   const before = await queryRuntimeControlsPartial(appId, ids);
   const current = new Map(before.results.map((result) => [result.record_id, result]));
+  for (const desired of ordered) {
+    if (desired.require_active && current.get(desired.record_id)?.active !== true) {
+      throw new RuntimeOperationError(
+        `${desired.label ?? `MemoryRecord ${desired.record_id}`} is no longer enabled. Its saved value was not written.`,
+        before.envelope,
+      );
+    }
+  }
   const missing = new Set(before.unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]));
   const alreadyAbsentOff = new Set<number>();
   const deferred: RuntimeDesiredState[] = [];

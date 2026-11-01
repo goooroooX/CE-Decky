@@ -2549,12 +2549,9 @@ export function presentableControlValue(value: string | null | undefined): strin
  * the press sent nothing and activated on whatever the game held, or show `40`
  * while the press wrote `100`. A switch has to mean what the row above it says.
  *
- * What is running comes first, then the one Configure stored, then the one last
- * read back: a value Cheat Engine can read is the truth about this record, and
- * where it cannot read one, as for a cheat its script has not created yet, the
- * value the user last typed is newer than any read-back. Reading the remembered
- * one first wrote `100` from a pinned switch after `200` was typed, while
- * Configure cheats showed `200`. Configure cheats resolves its rows the same way.
+ * The configured choice comes first, then current memory, then the remembered
+ * readback. Reading current memory first made an off record's saved `8` appear
+ * to revert to `2`. Current is shown separately where it differs.
  *
  * Displayability chooses which of the three answers; the answer itself comes
  * back exactly as it was stored. The two are not the same string: a record's
@@ -2568,7 +2565,7 @@ export function pinnedControlValue(
   remembered: string | null | undefined,
   configured: string | null | undefined,
 ): string | null {
-  for (const source of [live, configured, remembered]) {
+  for (const source of [configured, live, remembered]) {
     if (source != null && displayableControlValue(source) !== null) return source;
   }
   return null;
@@ -2642,6 +2639,7 @@ export function pinnedCheatRows(
       rememberedById.get(control.id)?.value,
       configuredById.get(control.id)?.value,
     ));
+    const currentValue = isWaiting ? null : presentableControlValue(latest.value);
     // Said here too, because this row writes the flag's off key the moment it
     // is pressed and the picker's own warning is two screens away. A cheat its
     // table switches on by itself, whose code could not be proven to survive
@@ -2657,6 +2655,7 @@ export function pinnedCheatRows(
         context,
         isWaiting ? "its script has not run yet" : null,
         value ? `= ${value}` : null,
+        currentValue !== null && currentValue !== value && !controlIsSwitch(control) ? `Current: ${currentValue}` : null,
         unsafeToSwitchOff ? "not safe to switch off" : null,
       ].filter(Boolean).join(" · "),
       active: isWaiting ? false : latest.active,

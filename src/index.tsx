@@ -3129,7 +3129,7 @@ function Content() {
         onCompatibilityConfirmed={async () => {
           await refreshStatus().catch((cause) => logUiFailure("picker.compatibility_refresh_failed", cause, { app_id: game.appId }));
         }}
-        onApplied={async (remembered: StartupPreference[], envelope: RuntimeEnvelope | null, leftOn?: readonly TableControl[]) => {
+        onApplied={async (remembered: StartupPreference[], envelope: RuntimeEnvelope | null, leftOn?: readonly TableControl[], configurationOnly = false) => {
           // A selection made with nothing running is only ever going to reach
           // Cheat Engine through auto-load, so switching cheats on there means
           // asking for them - turning auto-load on is what the user just asked
@@ -3151,11 +3151,11 @@ function Content() {
           // to count any record merely mentioned, so a disarm here would have
           // been undone by the very next Apply.
           const autoloadHasWork = remembered.some((preference) => preference.active === true);
-          const armAutoload = !envelope && !current.autoload_enabled && autoloadHasWork;
+          const armAutoload = !envelope && !configurationOnly && !current.autoload_enabled && autoloadHasWork;
           // The last cheat going off with nothing running leaves auto-load with
           // nothing to do, and armed it would still start Cheat Engine on the
           // next launch of this game for no cheat at all.
-          const disarmAutoload = !envelope && current.autoload_enabled && !autoloadHasWork;
+          const disarmAutoload = !envelope && !configurationOnly && current.autoload_enabled && !autoloadHasWork;
           await runAction(async () => {
             const autoloadTarget = armAutoload || disarmAutoload ? armAutoload : null;
             // Two independent durable mutations, reconciled one at a time. Both
@@ -3188,7 +3188,8 @@ function Content() {
           close();
           toaster.toast({
             title: "CE Decky",
-            body: envelope
+            body: configurationOnly ? "Settings saved; this record uses them when switched on."
+              : envelope
               ? "Cheats applied and the confirmed state was saved for this exact table."
               : armAutoload
                 ? "Cheats saved and auto-load switched on, so they run when this game starts."

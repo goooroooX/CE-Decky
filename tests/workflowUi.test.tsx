@@ -1566,6 +1566,25 @@ describe("Home panel and managed setup", () => {
     expect(api.setAutoload).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("leaves auto-load unchanged after a configuration-only Apply (armed=%s)", async (armed) => {
+    api.getRuntimeStatus.mockResolvedValue(liveRuntime());
+    const snapshot = status();
+    snapshot.profiles[0].autoload_enabled = armed;
+    // Exercise both temptations: arm for an old active choice, or disarm when
+    // the already armed profile has no active choices. A value edit does neither.
+    const remembered = armed ? [] : [{ record_id: 7, active: true, value: "2" }];
+    snapshot.profiles[0].remembered = remembered;
+    api.getStatus.mockResolvedValue(snapshot);
+    renderContent();
+    await screen.findByText("Game.CT");
+    await waitFor(() => expect((screen.getByRole("button", { name: "Configure cheats" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Configure cheats" }));
+    await waitFor(() => expect(modalState.nodes.some((node: any) => node.type === CheatSelectionModal)).toBe(true));
+    const picker = modalState.nodes.find((node: any) => node.type === CheatSelectionModal);
+    await picker.props.onApplied(remembered, null, undefined, true);
+    expect(api.setAutoload).not.toHaveBeenCalled();
+  });
+
   it("says Apply will start Cheat Engine with the game before the user presses it", async () => {
     // The behaviour is intended; the defect was that the first time the user
     // heard about it was the toast after the durable commit.
@@ -6778,11 +6797,11 @@ describe("Pinned live controls", () => {
     renderContent();
 
     const row = await screen.findByTestId("pinned-cheat-7");
-    expect(row.textContent).toContain("= 40");
+    expect(row.textContent).toContain("= 100");
     fireEvent.click(within(row).getByTestId("toggle"));
 
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalledWith(10, [
-      { record_id: 7, active: true, value: "40", structure: ["Health"], label: "Health" },
+      { record_id: 7, active: true, value: "100", structure: ["Health"], label: "Health" },
     ]));
   });
 
@@ -7465,11 +7484,11 @@ describe("Pinned live controls", () => {
     // and then change Cheat Engine before a later step fails. Describing only
     // the live half left a configured value that survives into the next
     // Auto-load with no disclosure at all.
-    const before = { generation: 1, record_id: 7, ok: true, active: false, value: "100", error: null };
+    const before = { generation: 1, record_id: 7, ok: true, active: true, value: "100", error: null };
     const after = { generation: 2, record_id: 7, ok: true, active: true, value: "250", error: null };
     runtimeClient.queryRuntimeControlsPartial
       .mockResolvedValueOnce({ envelope: liveRuntime(), results: [before], unavailable: [] })
-      .mockResolvedValueOnce({ envelope: liveRuntime(), results: [after], unavailable: [] });
+      .mockResolvedValue({ envelope: liveRuntime(), results: [after], unavailable: [] });
     runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: [after] });
     const onSaveConfiguredValues = vi.fn().mockResolvedValue(undefined);
     // The durable half of the transaction is what fails, after the game has
@@ -8983,6 +9002,143 @@ describe("Selection and staged-change persistence", () => {
     />);
   }
 
+  it.each([
+    { active: false, read: "2", toggle: false, writes: false },
+    { active: false, read: "??", toggle: false, writes: false },
+    { active: false, read: null, toggle: false, writes: false },
+    { active: true, read: "2", toggle: false, writes: true },
+    { active: false, read: "2", toggle: true, writes: true },
+    { active: true, read: "2", toggle: true, writes: false },
+  ])("saves a numeric choice and writes only while its own record is on ($active, $read, $toggle)", async ({ active, read, toggle, writes }) => {
+    const results = [{ generation: 1, record_id: 7, ok: true, active, value: read, error: null }];
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    const onSaveConfiguredValues = vi.fn().mockResolvedValue(undefined);
+    const view = renderConfigured({ configuredValues: [{ record_id: 7, value: "7" }], onApplied, onSaveConfiguredValues }, results);
+    runtimeClient.applyRuntimeSelection.mockImplementation(async (_id, desired: any[]) => {
+      for (const item of desired) {
+        if (item.value !== null) results[0].value = item.value;
+        if (item.active !== null) results[0].active = item.active;
+      }
+      return { envelope: liveRuntime(), results };
+    });
+    const row = await screen.findByTestId("cheat-row-7");
+    await revealDetails(within(row));
+    expect((within(row).getByLabelText("Value") as HTMLInputElement).value).toBe("7");
+    fireEvent.change(within(row).getByLabelText("Value"), { target: { value: "8" } });
+    if (toggle) fireEvent.click(within(row).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(onSaveConfiguredValues).toHaveBeenCalledWith([{ record_id: 7, value: "8" }]);
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
+    expect(desired.some((item: any) => item.value === "8")).toBe(writes);
+    if (writes && !toggle) expect(desired[0].require_active).toBe(true);
+    expect(results[0].value).toBe(writes ? "8" : read);
+    expect((within(row).getByLabelText("Value") as HTMLInputElement).value).toBe("8");
+    if (!writes && !toggle) expect(onApplied.mock.calls[0][3]).toBe(true);
+    view.unmount();
+    renderConfigured({ configuredValues: [{ record_id: 7, value: "8" }] }, results);
+    await screen.findByTestId("cheat-row-7");
+    await revealDetails();
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("8");
+  });
+
+  it("writes the configured choice when explicitly enabling a readable record", async () => {
+    const results = [{ generation: 1, record_id: 7, ok: true, active: false, value: "2", error: null }];
+    renderConfigured({ configuredValues: [{ record_id: 7, value: "8" }] }, results);
+    const row = await screen.findByTestId("cheat-row-7");
+    fireEvent.click(within(row).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toContainEqual(expect.objectContaining({ record_id: 7, active: true, value: "8" }));
+  });
+
+  it("keeps ordinary activation without a configured value from replaying a stale readback", async () => {
+    const results = [{ generation: 1, record_id: 7, ok: true, active: false, value: "2", error: null }];
+    renderConfigured({}, results);
+    fireEvent.click(within(await screen.findByTestId("cheat-row-7")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toContainEqual(expect.objectContaining({ record_id: 7, active: true, value: null }));
+  });
+
+  it.each([[true, false], [false, true]])("does not enable a parent or write an off child when editing its value (parent=%s, child=%s)", async (parent, child) => {
+    const results = [
+      { generation: 1, record_id: 20, ok: true, active: parent, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: child, value: "2", error: null },
+    ];
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    renderConfigured({ inspection: nestedInspection, configuredValues: [{ record_id: 21, value: "7" }], onApplied }, results);
+    const row = await screen.findByTestId("cheat-row-21");
+    await revealDetails(within(row));
+    fireEvent.change(within(row).getByLabelText("Value"), { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toEqual([]);
+  });
+
+  it("does not apply a saved child value when only its parent script is enabled", async () => {
+    const results = [
+      { generation: 1, record_id: 20, ok: true, active: false, value: null, error: null },
+      { generation: 1, record_id: 21, ok: true, active: false, value: "2", error: null },
+    ];
+    renderConfigured({ inspection: nestedInspection, configuredValues: [{ record_id: 21, value: "8" }] }, results);
+    fireEvent.click(within(await screen.findByTestId("cheat-row-20")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    const desired = runtimeClient.applyRuntimeSelection.mock.calls[0][1];
+    expect(desired).toContainEqual(expect.objectContaining({ record_id: 20, active: true }));
+    expect(desired.some((item: any) => item.record_id === 21)).toBe(false);
+  });
+
+  it("keeps settings-only offline edits separate from auto-load selection", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    renderConfigured({ live: false, rememberedPreferences: [{ record_id: 7, active: true, value: "2" }], onApplied }, []);
+    await screen.findByTestId("cheat-row-7");
+    await revealDetails();
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(onApplied.mock.calls[0][3]).toBe(true);
+    expect(runtimeClient.queryRuntimeControlsPartial).not.toHaveBeenCalled();
+  });
+
+  it("clearing a readable configured value does not resurrect the previous setting", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    const onSaveConfiguredValues = vi.fn().mockResolvedValue(undefined);
+    renderConfigured({ configuredValues: [{ record_id: 7, value: "8" }],
+      rememberedPreferences: [{ record_id: 7, active: null, value: "8" }], onApplied, onSaveConfiguredValues },
+      [{ generation: 1, record_id: 7, ok: true, active: false, value: "2", error: null }]);
+    await screen.findByTestId("cheat-row-7");
+    await revealDetails();
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(onSaveConfiguredValues).toHaveBeenCalledWith([]);
+    expect(onApplied.mock.calls[0][0].find((item: any) => item.record_id === 7)?.value).toBe("2");
+  });
+
+  it("a failed settings-only save shows the latest observed Current value", async () => {
+    const before = [{ generation: 1, record_id: 7, ok: true, active: false, value: "2", error: null }];
+    const after = [{ ...before[0], generation: 2, value: "3" }];
+    const onApplied = vi.fn().mockRejectedValue(new Error("Remembered state could not be saved"));
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: before });
+    runtimeClient.queryRuntimeControlsPartial.mockReset()
+      .mockResolvedValueOnce({ envelope: liveRuntime(), results: before, unavailable: [] })
+      .mockResolvedValue({ envelope: liveRuntime(), results: after, unavailable: [] });
+    render(<CheatSelectionModal appId={10} inspection={inspect as any} live pinned={[]}
+      startupPreferences={[]} rememberedPreferences={[]} configuredValues={[{ record_id: 7, value: "7" }]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      onTogglePin={vi.fn().mockResolvedValue([])} onApplied={onApplied} onCancel={vi.fn()} />);
+    await screen.findByTestId("cheat-row-7");
+    await revealDetails();
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await screen.findByText("Remembered state could not be saved");
+    expect(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1]).toEqual([]);
+    expect(screen.getByTestId("cheat-row-7").textContent).toContain("Current: 3");
+  });
+
   it("offers an empty field rather than Cheat Engine's own unreadable placeholder", async () => {
     renderConfigured({}, [{ generation: 1, record_id: 7, ok: true, active: true, value: "??", error: null }]);
 
@@ -9013,7 +9169,7 @@ describe("Selection and staged-change persistence", () => {
       .toBeLessThan(runtimeClient.applyRuntimeSelection.mock.invocationCallOrder[0]);
   });
 
-  it("prefers the stored value only where Cheat Engine has no readable answer", async () => {
+  it("keeps the configured choice visible beside the current memory value", async () => {
     const configuredValues = [{ record_id: 7, value: "9999" }];
     const unreadable = renderConfigured(
       { configuredValues },
@@ -9024,15 +9180,15 @@ describe("Selection and staged-change persistence", () => {
     expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("9999");
     unreadable.unmount();
 
-    // A live session that can read the address is the truth for it: the stored
-    // configuration must not paint a stale number over what the game holds.
+    // The editor keeps the configured choice; Current reports actual memory.
     renderConfigured(
       { configuredValues },
       [{ generation: 1, record_id: 7, ok: true, active: true, value: "42", error: null }],
     );
     await screen.findAllByTestId(/^cheat-row-/);
     await revealDetails();
-    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("42");
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("9999");
+    expect(screen.getByTestId("cheat-row-7").textContent).toContain("Current: 42");
   });
 
   it("drops the stored value when the field is emptied instead of writing a blank", async () => {

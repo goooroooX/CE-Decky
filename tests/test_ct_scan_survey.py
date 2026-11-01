@@ -91,3 +91,99 @@ def test_a_prefix_that_names_no_table_or_several_is_refused(tmp_path: Path):
     # Bytes that are not the digest they are filed under are refused, not read.
     with pytest.raises(ValueError, match="SHA-256 verification"):
         survey.table_by_sha("ab" * 32, store)
+
+
+_PARAMETER_TABLE = """<CheatTable CheatEngineTableVersion="45"><CheatEntries>
+  <CheatEntry><ID>22</ID><Description>Activate</Description><VariableType>Auto Assembler Script</VariableType>
+    <AssemblerScript>[ENABLE]
+label(bJump)
+label(fJump)
+bJump:
+db 0
+fJump:
+dd (float)2.0
+hook:
+cmp byte ptr [bJump],1
+jne @f
+mulss xmm0,[fJump]
+@@:
+jmp return
+[DISABLE]
+</AssemblerScript>
+    <CheatEntries>
+      <CheatEntry><ID>60</ID><Description>Jump Height Multiplier</Description><VariableType>Auto Assembler Script</VariableType>
+        <AssemblerScript>[ENABLE]
+bJump:
+db 1
+[DISABLE]
+bJump:
+db 0
+</AssemblerScript>
+        <CheatEntries><CheatEntry><ID>61</ID><Description>Multiplier</Description><VariableType>Float</VariableType><Address>fJump</Address></CheatEntry></CheatEntries>
+      </CheatEntry>
+      <CheatEntry><ID>62</ID><Description>Independent value</Description><VariableType>4 Bytes</VariableType><Address>game.exe+100</Address></CheatEntry>
+    </CheatEntries>
+  </CheatEntry>
+</CheatEntries></CheatTable>
+"""
+
+
+def _parameters(tmp_path: Path) -> Path:
+    path = tmp_path / "parameters.CT"
+    path.write_text(_PARAMETER_TABLE)
+    return path
+
+
+def test_parameter_survey_reports_legacy_startup_without_classifying_controls(tmp_path: Path):
+    answer = survey.parameters_one(_parameters(tmp_path))
+    row, = answer["candidates"]
+    assert row["direct_reads"] == ["mulss xmm0,[fjump]"]
+    assert row["startup"]["record_off"]["configured_value_applied"] is True
+    assert [61, "active", "1"] not in row["startup"]["record_off"]["actions"]
+    assert [61, "active", "1"] in row["startup"]["record_on"]["actions"]
+
+
+def test_parameter_survey_does_not_treat_a_pointer_base_as_the_scalar(tmp_path: Path):
+    path = _parameters(tmp_path)
+    path.write_text(path.read_text().replace("<Address>fJump</Address>", "<Address>fJump</Address><Offsets><Offset>4</Offset></Offsets>"))
+    row, = survey.parameters_one(path)["candidates"]
+    assert row["pointer_offsets"] is True
+    assert row["direct_reads"] == [] and "startup" not in row
+
+
+def test_parameter_corpus_uses_the_first_repeated_field_like_the_inspector(tmp_path: Path):
+    path = _parameters(tmp_path)
+    path.write_text(path.read_text().replace("<ID>61</ID>", "<ID>61</ID><ID>999</ID>")
+                    .replace("<Address>fJump</Address>", "<Address>fJump</Address><Address>other</Address>"))
+    answer = survey.parameters_corpus([tmp_path])
+    assert answer["tables"] == 1 and answer["unreadable"] == []
+    row, = answer["results"][0]["candidates"]
+    assert row["record_id"] == 61 and row["address"] == "fjump"
+    assert row["direct_reads"] == ["mulss xmm0,[fjump]"]
+    assert row["startup"]["record_off"]["configured_value_applied"] is True
+
+
+def test_parameter_corpus_deduplicates_bytes_and_reports_parse_failures(tmp_path: Path):
+    path = _parameters(tmp_path)
+    (tmp_path / "copy.ct").write_bytes(path.read_bytes())
+    (tmp_path / "broken.CT").write_text("<CheatTable>")
+    answer = survey.parameters_corpus([tmp_path])
+    assert answer["tables"] == 1 and answer["duplicate_copies"] == 1
+    assert len(answer["unreadable"]) == 1
+    assert answer["script_owned_numeric_candidates"] == answer["with_direct_reads"] == 1
+
+
+def test_parameter_cli_uses_the_install_authoritys_home(tmp_path: Path, monkeypatch, capsys):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    home = tmp_path / "steam-user"
+    blobs = home / ".cheat-engine-decky" / "tables" / "sha256"
+    blobs.mkdir(parents=True)
+    _parameters(blobs)
+    monkeypatch.setitem(sys.modules, "target_plugin_install", SimpleNamespace(resolve_install_authority=lambda: {"user_home": str(home)}))
+    monkeypatch.setattr(sys, "argv", ["ct_scan_survey.py", "--parameters", "--include-installed", "--json"])
+    assert survey.main() == 0
+    report = json.loads(capsys.readouterr().out)["parameters_corpus"]
+    assert report["roots"] == [str(blobs)] and report["tables"] == 1

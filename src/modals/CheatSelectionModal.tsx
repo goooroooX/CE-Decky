@@ -131,6 +131,7 @@ interface Props {
     remembered: StartupPreference[],
     envelope: RuntimeEnvelope | null,
     leftOn?: readonly TableControl[],
+    configurationOnly?: boolean,
   ) => Promise<void> | void;
   /** Whether this game already starts Cheat Engine by itself for this table, which decides what Apply has to disclose. */
   autoloadEnabled: boolean;
@@ -262,18 +263,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   const [error, setError] = useState<string | null>(null);
   const [errorTitle, setErrorTitle] = useState("Cannot apply");
 
-  // The value a row shows where Cheat Engine has none to read, resolved exactly
-  // as the panel's pinned switch resolves it (`pinnedControlValue`): what is
-  // running, then what was typed here, then what was last read back. The two
-  // screens disagreed for a cheat its script had not created yet, and the
-  // switch on the panel wrote the older value.
-  // Records whose shown value came from that fallback rather than from a read,
-  // so a press switching one on writes what is shown rather than freezing
-  // whatever the game holds there.
-  const unreadValuesRef = useRef(new Set<number>());
-  const noteUnreadValues = (results: readonly RuntimeResult[]) => {
-    unreadValuesRef.current = new Set(results.flatMap((result) =>
-      result.record_id !== null && displayableControlValue(result.value) === null ? [result.record_id] : []));
+  // Configuration supplies the editor. Keep actual memory separately for
+  // Current and failure reconciliation, so a saved choice cannot hide a write.
+  const currentValuesRef = useRef(new Map<number, string | null>());
+  const noteCurrentValues = (results: readonly RuntimeResult[]) => {
+    currentValuesRef.current = new Map(results.flatMap((result) =>
+      result.record_id === null ? [] : [[result.record_id, result.value] as const]));
   };
   const resolvedValue = (recordId: number, live: string | null | undefined): string | null => pinnedControlValue(
     live,
@@ -356,23 +351,15 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         const next: Record<number, StagedState> = {};
         for (const result of results) {
           if (result.record_id === null) continue;
-          // A live session is the truth for a value Cheat Engine can actually
-          // read. It answers `??` for an address that does not exist yet, and
-          // adopting that placeholder is exactly what used to lose the value
-          // the user configured, so the stored choice stands in for it.
-          //
-          // Where there is no stored choice either, this record has no value
-          // rather than a value of `??`. Keeping the placeholder put it in the
-          // editor itself, which is a field the user then has to clear before
-          // they can type into it, and a dropdown whose selection matches none
-          // of the options it is offering.
+          // Keep the configured choice in the editor, with current memory
+          // shown separately. An unreadable placeholder is never editable.
           next[result.record_id] = {
             active: result.active,
             value: resolvedValue(result.record_id, result.value),
           };
         }
         withWaitingRecords(next, results, unavailable);
-        noteUnreadValues(results);
+        noteCurrentValues(results);
         setStaged(next);
         setLastConfirmed(next);
         setUnavailableRecords(new Set(
@@ -591,6 +578,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
    * and labels the outcome partial.
    */
   const reconcileLiveState = async (): Promise<boolean> => {
+    const previousValues = currentValuesRef.current;
     let observed;
     try {
       observed = await queryRuntimeControlsPartial(
@@ -619,11 +607,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       };
     }
     withWaitingRecords(reconciled, observed.results, observed.unavailable);
-    noteUnreadValues(observed.results);
     const changed = Object.entries(reconciled).some(([recordId, state]) => {
       const previous = lastConfirmed[Number(recordId)];
-      return !previous || previous.active !== state.active || previous.value !== state.value;
-    });
+      return !previous || previous.active !== state.active;
+    }) || observed.results.some((result) => result.record_id !== null && previousValues.get(result.record_id) !== result.value);
+    noteCurrentValues(observed.results);
     onSnapshot?.([...observed.results, ...observed.unavailable], observed.envelope);
     setLastConfirmed(reconciled);
     if (!changed) return false;
@@ -671,7 +659,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       const activeBefore = new Map<number, boolean | null>(
         safeControls.flatMap((control) => control.id === null ? [] : [[control.id, lastConfirmed[control.id]?.active ?? null] as const]),
       );
-      for (const recordId of [...touchedActive, ...touchedValues]) {
+      for (const recordId of touchedActive) {
         if (effective[recordId]?.active !== true) continue;
         const control = controlById.get(recordId);
         if (!control) continue;
@@ -767,7 +755,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
 
       // A value whose enclosing script is still off has no address yet, so it
       // cannot be written now. That is a pre-game setting, not an error: keep it
-      // in this table's own config and write it when the script is switched on.
+      // in this table's own config until the record itself is switched on.
       const deferredValues = new Set<number>();
       for (const recordId of touchedValues) {
         const control = controlById.get(recordId);
@@ -834,7 +822,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         // returned made a failed write look saved: Back then closed without the
         // unsaved-change confirmation and the choices were lost.
         setStaged(effective);
-        await onApplied(prospectiveRemembered, null);
+        await onApplied(prospectiveRemembered, null, undefined, effectiveTouchedActive.size === 0);
         setLastConfirmed(effective);
         setTouchedActive(new Set<number>());
         setTouchedValues(new Set<number>());
@@ -851,22 +839,15 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         // Emptying the field asks for the stored configuration to be dropped,
         // not for a blank to be written into the game's memory.
         //
-        // Review note (static review 2026-10-21, F5): a value edited on a cheat
-        // that stays off is still written here, once and unfrozen, by the
-        // maintainer's decision. That is Cheat Engine's own meaning of editing
-        // a value that is not frozen, such as setting an amount once, and the
-        // row goes on saying off because nothing holds it. Startup is where the
-        // review was followed: `_without_values_nothing_reads` in
-        // `session_protocol.py` writes no value for a cheat that stays off.
-        //
-        // A cheat this press switches on whose row shows a stored value rather
-        // than one read, because its script has not created it yet or Cheat
-        // Engine read nothing there, gets that value, as the panel's pinned
-        // switch does. Untouched, it was sent with none, and Cheat Engine froze
-        // whatever was in the game while the row said otherwise.
-        const shownNotRead = active === true && controlNeedsValueInput(control)
-          && (unavailableRecords.has(control.id) || unreadValuesRef.current.has(control.id));
-        const value = (touchedValues.has(control.id) || shownNotRead) && !deferredValues.has(control.id)
+        // Review note (2026-11-01, maintainer): the former unfrozen-write
+        // exception from F5 is withdrawn. Off edits save only; enabling this
+        // record applies its saved choice. Parent scripts add no write authority.
+        // Readable records with no choice keep ordinary freeze behavior; an
+        // unreadable one needs its remembered fallback sent explicitly.
+        const valueOnEnable = active === true && controlNeedsValueInput(control)
+          && (configuredByIdRef.current.has(control.id) || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
+        const value = state.active === true && (touchedValues.has(control.id) || valueOnEnable)
+          && !deferredValues.has(control.id)
           ? displayableControlValue(state.value)
           : null;
         if (active === null && value === null) return [];
@@ -877,6 +858,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           switch_values: releasedWithOnKey.has(control.id) ? undefined : switchValuesFor(control),
           structure: control.structure,
           label: controlRowLabel(control),
+          ...(active === null && value !== null ? { require_active: true } : {}),
         }];
       });
       // A script carries the table author's own defaults with it, so every
@@ -973,9 +955,8 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
           });
         }
       }
-      // Cheat Engine answers `??` for an address it cannot read yet, including
-      // every value deliberately deferred above. The typed choice is what this
-      // table has to remember, so it stands in wherever the read-back is blank.
+      // Configured choices are stored separately. Remember actual readback,
+      // falling back to the typed choice only where CE could not read a value.
       const rememberedStates = finalState.results.map((result) => {
         if (result.record_id === null || !touchedValues.has(result.record_id)) return result;
         const typed = staged[result.record_id]?.value ?? null;
@@ -989,27 +970,28 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         throw new Error(leadWithCause(finalBudgetError, "The runtime changes were confirmed, but the remembered-state safety budget changed before they could be saved."));
       }
       onSnapshot?.([...finalState.results, ...finalState.unavailable], finalState.envelope);
-      // Cheat Engine answers `??` for a record it cannot read yet, so adopting
-      // the re-read blindly would wipe the value the user just chose. Keep the
-      // typed value on screen until Cheat Engine reports a real one.
+      // Readback never replaces a configured choice in the editor.
       const confirmedState: Record<number, StagedState> = {};
       for (const result of finalState.results) {
         if (result.record_id === null) continue;
         const typed = touchedValues.has(result.record_id) ? staged[result.record_id]?.value ?? null : null;
         confirmedState[result.record_id] = {
           active: result.active,
-          value: displayableControlValue(result.value) === null ? typed ?? resolvedValue(result.record_id, null) : result.value,
+          value: typed ?? resolvedValue(result.record_id, result.value),
         };
       }
       withWaitingRecords(confirmedState, finalState.results, finalState.unavailable);
-      noteUnreadValues(finalState.results);
       setStaged(confirmedState);
       // Cheat Engine has been mutated and verified, but the remembered state
       // and auto-load are written by the parent. Adopting the confirmed state
       // before that returned meant a failed persistence left CE changed while
       // the modal no longer knew it owed a write, so the next session restored
       // the old selection. Stay dirty until the durable half commits.
-      await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current);
+      // With no runtime writes there is no mutation baseline to preserve for
+      // reconciliation, and a save failure must still show the latest readback.
+      if (!mutatedRuntime) noteCurrentValues(finalState.results);
+      await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current, desired.length === 0);
+      noteCurrentValues(finalState.results);
       setLastConfirmed(confirmedState);
       setTouchedActive(new Set<number>());
       setTouchedValues(new Set<number>());
@@ -1230,6 +1212,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 // A switch carries its own answer in the toggle beside it, so
                 // `= 1` on the summary line is the same fact twice.
                 const value = controlIsSwitch(control) ? null : presentableControlValue(state?.value);
+                const currentValue = presentableControlValue(currentValuesRef.current.get(recordId));
                 // Every row opens collapsed and opens only on More, or on the
                 // press that switches a cheat on with no value (`touchActive`).
                 // Holding every active value cheat open filled the dialog with
@@ -1282,6 +1265,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   blockedByParent ? "its script has not run yet" : null,
                   notInTable ? "not in the running table" : null,
                   value ? `= ${value}` : null,
+                  currentValue !== null && currentValue !== value && !controlIsSwitch(control) ? `Current: ${currentValue}` : null,
                   isPinned ? "pinned" : null,
                   // Said on the row, before anything is pressed: a cheat this
                   // table switches on by itself and that CE Decky may not
@@ -1365,11 +1349,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                           {/* A switch has no value of its own to save, so only
                               the first half of this is ever true of one: it is
                               about to switch its enclosing script on with it. */}
-                          {blockedBy(control) && (controlAcceptsTypedValue(control) || (controlIsSwitch(control) && state?.active === true)) && (
+                          {(blockedBy(control) && state?.active === true || controlAcceptsTypedValue(control)
+                            && (storedOnly || state?.active !== true)) && (
                             <PanelNote>
-                              {state?.active === true
+                              {blockedBy(control) && state?.active === true && touchedActive.has(recordId)
                                 ? `Also switches on \u201c${controlRowLabel(blockedBy(control)!)}\u201d.`
-                                : `Value saved; written when \u201c${controlRowLabel(blockedBy(control)!)}\u201d is switched on.`}
+                                : "Value saved; written when this record is switched on."}
                             </PanelNote>
                           )}
                           {/* One press for the field the ordinary path does not

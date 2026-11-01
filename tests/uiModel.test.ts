@@ -1514,18 +1514,18 @@ describe("value input a cheat cannot work without", () => {
       .toBe("= 100");
     expect(pinnedCheatRows([base], [7], unread, [], [{ record_id: 7, value: "250" }])[0].summary)
       .toBe("= 250");
-    // And what is running outranks both, because it is what this record holds.
+    // Keep configuration visible and label the different current memory value separately.
     const live = [{ generation: 1, record_id: 7, ok: true, active: false, value: "40", error: null }];
     expect(pinnedCheatRows([base], [7], live, [{ record_id: 7, active: true, value: "100" }], [{ record_id: 7, value: "250" }])[0].summary)
-      .toBe("= 40");
+      .toBe("= 250 · Current: 40");
   });
 
   it("resolves one value for the row, the refusal and the write", () => {
     // Arguments are live, remembered, configured; the order they are read in
-    // is live, configured, remembered. What was typed last is newer than what
+    // is configured, live, remembered. What was typed last is newer than what
     // was last read back, which is what a cheat its script has not created yet
     // had shown on its pinned row and written from it.
-    expect(pinnedControlValue("40", "100", "250")).toBe("40");
+    expect(pinnedControlValue("40", "100", "250")).toBe("250");
     expect(pinnedControlValue("??", "100", "250")).toBe("250");
     expect(pinnedControlValue(null, "100", "200")).toBe("200");
     expect(pinnedControlValue(null, "100", null)).toBe("100");
@@ -1537,9 +1537,9 @@ describe("value input a cheat cannot work without", () => {
     // and is preserved byte for byte; the trimming belongs to the row that
     // displays it, and doing both here turned a switch that re-applies what is
     // already there into one that rewrites it.
-    expect(pinnedControlValue(" 40 ", "100", "250")).toBe(" 40 ");
+    expect(pinnedControlValue(" 40 ", "100", " 250 ")).toBe(" 250 ");
     expect(pinnedControlValue("??", " 100 ", null)).toBe(" 100 ");
-    expect(presentableControlValue(pinnedControlValue(" 40 ", "100", "250"))).toBe("40");
+    expect(presentableControlValue(pinnedControlValue(" 40 ", "100", " 250 "))).toBe("250");
   });
 });
 

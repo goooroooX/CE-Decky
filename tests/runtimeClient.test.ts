@@ -1283,6 +1283,17 @@ describe("live control budget and cancellation", () => {
 });
 
 describe("a flag that waits for the script that allocates it", () => {
+  it.each([false, true])("refuses a live value edit after the record went off or missing (missing=%s)", async (missing) => {
+    const results = [{ generation: 1, record_id: 7, ok: !missing,
+      active: missing ? null : false, value: missing ? null : "2",
+      error: missing ? "MemoryRecord missing" : null, error_code: missing ? "record_missing" : null }];
+    api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValue(envelope(2, results));
+    api.writeRuntimeCommands.mockResolvedValue({ ok: true, count: 1, next_generation: 2 });
+    await expect(applyRuntimeSelection(10, [{ record_id: 7, active: null, value: "8", require_active: true }]))
+      .rejects.toThrow(/no longer enabled/);
+    expect(api.writeRuntimeCommands.mock.calls.flatMap((call) => call[1]).every((command: any) => command.kind === "query")).toBe(true);
+  });
+
   // A table can file a script's flag beside it rather than inside it. The
   // flag's record exists before the script runs and its address does not, so
   // a write sent before the script's activation is a write to nothing.

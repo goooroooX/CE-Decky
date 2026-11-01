@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.33 — 2026-11-01
+
+- [Fixed] An off record keeps its configured value visible instead of reverting to the current memory value. Editing it saves without writing memory or changing Auto-load; explicitly switching the numeric record on applies the saved choice. Existing startup behavior is preserved.
+
 ## 0.9.32 — 2026-10-25
 
 - [Fixed] Cheat Engine attached to a game whose target program it never saw running now stops shortly after the game exits. It waited for nothing to report the game any more, and Cheat Engine itself keeps the game's Proton session reporting it, so it stayed attached, and the game showed as running and could not be changed, until Stop was pressed. A launcher that starts its game before it exits is not taken for the game exiting.

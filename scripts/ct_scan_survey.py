@@ -17,6 +17,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --table <file.CT> --flags
     python3 scripts/ct_scan_survey.py --table-sha <first 8+ hex of its SHA-256> --scripts
     python3 scripts/ct_scan_survey.py --tables <dir> --flags
+    python3 scripts/ct_scan_survey.py --tables <dir> --parameters --include-installed --json
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -32,6 +33,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import platform
+import re
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -40,6 +42,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "py_modules"))
 
 from ce_decky.ct_inspector import inspect_table  # noqa: E402
+from ce_decky import __version__ as product_version  # noqa: E402
+from ce_decky.profiles import ConfiguredValue, GameProfile, StartupPreference  # noqa: E402
+from ce_decky.session_protocol import effective_startup_plan  # noqa: E402
 from ce_decky.ct_scans import (  # noqa: E402
     ScanParseError,
     assert_only_scans_dropped,
@@ -388,6 +393,124 @@ def flags_corpus(root: Path) -> dict[str, object]:
     }
 
 
+def _assembly_lines(source: str) -> list[str]:
+    source = re.sub(r"\{[^{}]*\}", "", source)
+    return [line for raw in source.splitlines() if (line := raw.split("//", 1)[0].strip().casefold())]
+
+
+_PARAMETER_READ_RE = re.compile(
+    r"^(?:mov|movsx|movsxd|movzx|imul|add|sub|and|or|xor|cmp|test|"
+    r"v?mov(?:ss|sd|aps|ups|apd|upd)|v?(?:mul|add|sub|div|min|max|sqrt)(?:ss|sd|ps|pd))"
+    r"\s+[a-z][a-z0-9]*,.*\[\s*([A-Za-z_]\w*)\s*\]", re.I)
+
+
+def parameters_one(table: Path) -> dict[str, object]:
+    """Report numeric candidates and actual startup plans, with no inference.
+
+    A direct assembly read is evidence for review, not permission for a write.
+    Synthetic plans exercise a candidate off/on with its enclosing scripts and
+    declared numeric switches on. No table code or runtime command is executed.
+    """
+    if table.stat().st_size > MAX_TABLE_BYTES:
+        raise ValueError("that table is larger than one this reads")
+    data = table.read_bytes()
+    found = inspect_table(table, sha256(data).hexdigest())
+    root = ET.fromstring(data)  # The inspector already refused DTDs/entities.
+    entries = {}
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "CheatEntry":
+            continue
+        # Match the production inspector's first-child semantics for repeated fields.
+        fields = {}
+        for child in element:
+            fields.setdefault(child.tag.rsplit("}", 1)[-1], child.text or "")
+        try:
+            entries[int(fields.get("ID", ""))] = (fields, element)
+        except ValueError:
+            continue
+    candidates = []
+    for control in found.controls:
+        if (control.id is None or control.id in found.ambiguous_record_ids
+                or control.kind not in {"value", "dropdown"} or control.switch_on_value is not None
+                or (control.variable_type or "").casefold() not in {"byte", "2 bytes", "4 bytes", "8 bytes", "float", "double"}
+                or control.owner_script_id is None):
+            continue
+        fields, element = entries[control.id]
+        address = fields.get("Address", "").strip().casefold()
+        owner_fields = entries.get(control.owner_script_id, ({}, None))[0]
+        lines = _assembly_lines(owner_fields.get("AssemblerScript", ""))
+        pointer = any(child.tag.rsplit("}", 1)[-1] == "Offsets" and len(child) for child in element)
+        read_at = [] if pointer else [index for index, line in enumerate(lines)
+                                     if (match := _PARAMETER_READ_RE.fullmatch(line)) and match[1] == address]
+        row = {"record_id": control.id, "name": " > ".join(control.path), "address": address,
+               "owner_script_id": control.owner_script_id, "pointer_offsets": pointer,
+               "direct_reads": [lines[index] for index in read_at[:3]],
+               "read_contexts": [lines[max(0, index - 6):index + 5] for index in read_at[:3]]}
+        if read_at:
+            parents = [candidate for candidate in found.controls if candidate.id is not None
+                       and (candidate.kind == "script" or candidate.switch_on_value is not None)
+                       and len(candidate.structure) < len(control.structure)
+                       and control.structure[:len(candidate.structure)] == candidate.structure]
+            row["startup"] = {}
+            for active in (False, True):
+                preferences = {candidate.id: StartupPreference(candidate.id, True, candidate.switch_on_value) for candidate in parents}
+                preferences.setdefault(control.owner_script_id, StartupPreference(control.owner_script_id, True, None))
+                preferences[control.id] = StartupPreference(control.id, active, None)
+                sample = control.dropdown_values[0][0] if control.dropdown_read_only and control.dropdown_values else "8"
+                profile = GameProfile(1, "Static corpus probe", False, table_sha256=found.sha256, autoload_enabled=True,
+                                      remembered=list(preferences.values()), configured_values=[ConfiguredValue(control.id, sample)])
+                try:
+                    actions = effective_startup_plan(profile, found)
+                    row["startup"]["record_on" if active else "record_off"] = {
+                        "configured_value_applied": any(action.record_id == control.id and action.kind == "value" for action in actions),
+                        "actions": [[action.record_id, action.kind, action.value] for action in actions if action.record_id in preferences],
+                    }
+                except ValueError as exc:
+                    row["startup"]["record_on" if active else "record_off"] = {"error": str(exc)}
+        candidates.append(row)
+    return {"table": str(table), "sha256": found.sha256, "controls": len(found.controls), "candidates": candidates}
+
+
+def parameters_corpus(roots: list[Path]) -> dict[str, object]:
+    roots = list(dict.fromkeys(roots))
+    seen = set()
+    tables = []
+    errors = []
+    copies = 0
+    by_root = {}
+    for root in roots:
+        if not root.is_dir():
+            raise ValueError(f"table directory does not exist: {root}")
+        counts = {"tables": 0, "duplicate_copies": 0, "unreadable": 0}
+        by_root[str(root)] = counts
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() != ".ct":
+                continue
+            try:
+                answer = parameters_one(path)
+            except (OSError, ValueError, ET.ParseError) as exc:
+                errors.append({"table": str(path), "error": str(exc)})
+                counts["unreadable"] += 1
+                continue
+            if answer["sha256"] in seen:
+                copies += 1
+                counts["duplicate_copies"] += 1
+                continue
+            seen.add(answer["sha256"])
+            tables.append(answer)
+            counts["tables"] += 1
+    return {"roots": [str(root) for root in roots], "by_root": by_root, "tables": len(tables),
+            "duplicate_copies": copies, "unreadable": errors,
+            "controls": sum(table["controls"] for table in tables),
+            "script_owned_numeric_candidates": sum(len(table["candidates"]) for table in tables),
+            "with_direct_reads": sum(bool(row["direct_reads"]) for table in tables for row in table["candidates"]),
+            "method": "static_inspection_and_synthetic_startup_no_execution", "product_version": product_version,
+            "host": platform.platform(), "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "corpus_sha256": sha256("\n".join(sorted(seen)).encode()).hexdigest(),
+            "source_sha256": {name: sha256((ROOT / "py_modules" / "ce_decky" / name).read_bytes()).hexdigest()
+                              for name in ("ct_inspector.py", "profiles.py", "session_protocol.py")}, "results": tables}
+
+
 # How many examples of each shape `--scripts` names. They are there to be
 # recognised, so a handful per shape is the answer and a page of them is not.
 MAX_SHAPE_EXAMPLES = 6
@@ -573,6 +696,14 @@ def main() -> int:
         "--scripts", action="store_true",
         help="the records Configure cheats lists as scripts, by where they sit and what they hold",
     )
+    parser.add_argument(
+        "--parameters", action="store_true",
+        help="script-owned numeric candidates, direct reads and synthetic startup plans; no inference or execution",
+    )
+    parser.add_argument(
+        "--include-installed", action="store_true",
+        help="with --parameters: also read tables under user_home from the install authority, deduplicated by SHA",
+    )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
 
@@ -584,11 +715,25 @@ def main() -> int:
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"ct scan survey: {exc}", file=sys.stderr)
             return 1
-    if args.tables is None and args.table is None:
+    if args.include_installed and not args.parameters:
+        parser.error("--include-installed needs --parameters")
+    if args.parameters and (args.scripts or args.flags or args.repair or args.repair_coverage or args.executable):
+        parser.error("--parameters is a separate read-only survey mode")
+    if args.tables is None and args.table is None and not args.include_installed:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if args.tables is not None and args.scripts:
+        if args.parameters and (args.tables is not None or args.include_installed):
+            roots = [args.tables] if args.tables is not None else []
+            if args.include_installed:
+                from target_plugin_install import resolve_install_authority
+                authority = resolve_install_authority()
+                home = authority.get("user_home")
+                if not home:
+                    raise ValueError("the install authority reports no user_home")
+                roots.append(Path(str(home)) / ".cheat-engine-decky" / "tables" / "sha256")
+            answer["parameters_corpus"] = parameters_corpus(roots)
+        elif args.tables is not None and args.scripts:
             answer["scripts_corpus"] = scripts_corpus(args.tables)
         elif args.tables is not None and args.flags:
             answer["flags_corpus"] = flags_corpus(args.tables)
@@ -598,21 +743,26 @@ def main() -> int:
             answer["survey"] = survey_tables(args.tables)
         if args.table is not None and args.scripts:
             answer["scripts"] = scripts_one(args.table)
+        if args.table is not None and args.parameters:
+            answer["parameters"] = parameters_one(args.table)
         if args.table is not None and args.flags:
             answer["flags"] = flags_one(args.table)
         if args.table is not None and args.repair:
             answer["repair"] = repair_one(args.table, list(args.repair))
-        if args.table is not None and not args.repair and not args.flags and not args.scripts:
+        if args.table is not None and not args.repair and not args.flags and not args.scripts and not args.parameters:
             if args.executable is None:
                 parser.error("--table needs --executable, which is the program to look in")
             answer["check"] = check_one(args.table, args.executable, args.repeat)
-    except (OSError, ValueError, ET.ParseError) as exc:
+    except (OSError, RuntimeError, ValueError, ET.ParseError) as exc:
         print(f"ct scan survey: {exc}", file=sys.stderr)
         return 1
 
     if args.json:
         print(json.dumps(answer, indent=2, sort_keys=True))
         return 0
+    parameters = answer.get("parameters_corpus") or answer.get("parameters")
+    if isinstance(parameters, dict):
+        print(json.dumps({key: value for key, value in parameters.items() if key not in {"results", "unlinked"}}, indent=2, sort_keys=True))
     coverage = answer.get("repair_coverage")
     if isinstance(coverage, dict):
         print(f"tables {coverage['tables']} ({coverage['unreadable']} unreadable), scans {coverage['scans']}")

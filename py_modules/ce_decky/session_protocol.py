@@ -1964,11 +1964,9 @@ def _without_values_nothing_reads(
     startup runs, or on a switch no script creates or allocates, which is there
     to be written whatever else startup does.
 
-    Review note (static review 2026-10-21, F5): the review asked for a value
-    typed while a cheat is off never to reach game memory. Live Apply still
-    writes it once, unfrozen, by the maintainer's decision: that is Cheat
-    Engine's own meaning of editing a value that is not frozen, such as setting
-    an amount once.
+    Review note (static review 2026-10-21, F5): the maintainer withdrew the live
+    unfrozen-write exception on 2026-11-01. Live off edits now save only; this
+    startup policy remains unchanged, including the separate N2 decision below.
 
     Review note (static review 2026-10-22, N2): the review asked that a value
     cheat switched off receive no startup write while a sibling keeps its script
