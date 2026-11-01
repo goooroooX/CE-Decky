@@ -161,6 +161,17 @@ describe("the update confirmation", () => {
     // rather than standing beside it as a column of its own.
     expect(styled.querySelector("b")?.parentElement?.textContent).toBe("\u2022 Load table & start CE works with proton-cachyos.");
     expect(screen.queryByTestId("update-notes-cut")).toBeNull();
+    // The release's lines sit in their own box, which scrolls; the window's
+    // own warning does not, so the two never read as one list.
+    const box = screen.getByTestId("update-notes");
+    expect(box.contains(screen.getByTestId("update-note-2"))).toBe(true);
+    expect(box.contains(screen.getByTestId("update-restart-warning"))).toBe(false);
+    expect(box.style.overflowY).toBe("auto");
+    // The blue rule marks the notes alone; the row naming the versions has a
+    // ground and no accent edge, or it reads as their first line.
+    expect(box.style.borderLeft).toContain("solid");
+    expect(screen.getByTestId("update-versions").closest(".ce-decky-rowhead")).toBeNull();
+    expect(screen.getByTestId("update-versions").closest(".ce-decky-rowaside")).not.toBeNull();
   });
 
   it("draws whatever a release body carries as text and never as markup", () => {

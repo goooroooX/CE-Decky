@@ -68,6 +68,22 @@ const NOTE_CODE: CSSProperties = { fontFamily: "monospace", fontSize: "0.92em" }
 // device a bold name stood beside the sentence it was in, broken a few letters
 // to a line.
 const NOTE_LINE: CSSProperties = { display: "block" };
+// The notes are the release talking, and the rows around them are this window
+// talking, so they are set apart: a quiet blue tint and a rule down the left,
+// in the panel's own palette rather than a colour of their own. Bounded in
+// height and scrolled inside, so the warning and the two presses stay on a
+// handheld's screen however long a release's notes run.
+const NOTES_BOX: CSSProperties = {
+  maxHeight: "min(40vh, 340px)",
+  overflowY: "auto",
+  margin: "2px 0 6px",
+  padding: "4px 0",
+  borderRadius: 4,
+  background: "hsla(210, 45%, 45%, 0.14)",
+  borderLeft: "3px solid hsla(210, 70%, 68%, 0.55)",
+};
+const NOTE_ROW: CSSProperties = { padding: "3px 12px", fontSize: 14, lineHeight: 1.35 };
+const NOTE_HEADING: CSSProperties = { ...NOTE_ROW, paddingTop: 6, fontSize: 13, fontWeight: 700, color: "hsla(210, 70%, 82%, 0.95)" };
 
 /** One line of notes as text, bold and code set, and nothing interpreted. */
 function NoteText({ spans, prefix }: { spans: ReleaseNoteSpan[]; prefix?: string }) {
@@ -240,8 +256,11 @@ export function UpdateModal(
           <PanelSection>
             <SectionHeading>Update CE Decky</SectionHeading>
             <PanelSectionRow>
+              {/* A ground and no accent edge: the blue rule down the left is
+                  what marks the release's own notes, and the row naming the two
+                  versions wearing it as well read as the first line of them. */}
               <PanelRow
-                tone="header"
+                tone="aside"
                 testId="update-versions"
                 label={`v${currentVersion} to v${targetVersion}`}
                 description={lead && !operation
@@ -249,23 +268,28 @@ export function UpdateModal(
                   : "The release is downloaded, checked against the checksum the release itself publishes, and installed by Decky."}
               />
             </PanelSectionRow>
-            {!operation && noteLines.map((block, index) => (
-              <PanelSectionRow key={index}>
-                <PanelRow
-                  testId={`update-note-${index}`}
-                  label={block.kind === "heading"
-                    ? <b><NoteText spans={block.spans} /></b>
-                    : <NoteText spans={block.spans} prefix={block.kind === "item" ? "\u2022 " : undefined} />}
-                />
-              </PanelSectionRow>
-            ))}
-            {!operation && notesTruncated && (
+            {!operation && (noteLines.length > 0 || notesTruncated) && (
               <PanelSectionRow>
-                <PanelRow
-                  testId="update-notes-cut"
-                  label="The rest of this release's notes"
-                  description={`On its release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}`}
-                />
+                <div data-testid="update-notes" style={NOTES_BOX}>
+                  {/* Each line a focus stop of its own, which is what scrolls
+                      the box on a controller: Steam moves a view by moving
+                      focus, and a `Focusable` is a stop only where it can be
+                      activated, as `PanelRow` records. */}
+                  {noteLines.map((block, index) => (
+                    <Focusable key={index} onActivate={() => undefined}>
+                      <div data-testid={`update-note-${index}`} style={block.kind === "heading" ? NOTE_HEADING : NOTE_ROW}>
+                        <NoteText spans={block.spans} prefix={block.kind === "item" ? "\u2022 " : undefined} />
+                      </div>
+                    </Focusable>
+                  ))}
+                  {notesTruncated && (
+                    <Focusable onActivate={() => undefined}>
+                      <div data-testid="update-notes-cut" style={NOTE_ROW}>
+                        {`The rest is on the release page: ${pageUrl ?? "github.com/goooroooX/CE-Decky/releases"}`}
+                      </div>
+                    </Focusable>
+                  )}
+                </div>
               </PanelSectionRow>
             )}
             {/* Both things there is no discovering afterwards, in one row so
