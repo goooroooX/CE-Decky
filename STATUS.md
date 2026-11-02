@@ -8,12 +8,13 @@ These are backend and package checks on Linux x86-64; the Quick Access Menu, con
 
 | CE Decky | Decky | Result | Checked | Detail | Key |
 |---|---|---|---|---|---|
-| 0.9.32 | [v3.3.1](https://github.com/SteamDeckHomebrew/decky-loader/releases/tag/v3.3.1) (stable) | COMPATIBLE | [2026-10-27 13:23 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/40511521297/attempts/1) | CE Decky 0.9.32 passed in Decky v3.3.1. | `github/0.9.32/146dcda009e695b0+v3.3.1/7bb73b0502c49e71` |
+| 0.9.33 | [v3.3.1](https://github.com/SteamDeckHomebrew/decky-loader/releases/tag/v3.3.1) (stable) | PENDING | waiting since 2026-11-02 17:15 UTC | Not tested yet. | `github/0.9.33/5fbe6a5fc0e703d7+v3.3.1/7bb73b0502c49e71` |
 
 ## Earlier pairs
 
 | CE Decky | Decky | Result | Checked |
 |---|---|---|---|
+| 0.9.32 | v3.3.1 | COMPATIBLE | [2026-10-27 13:23 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/40511521297/attempts/1) |
 | 0.9.32 | v3.3.0 | COMPATIBLE | [2026-10-26 14:24 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/40339302398/attempts/1) |
 | 0.9.31 | v3.3.0 | COMPATIBLE | [2026-10-24 12:06 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/40092499016/attempts/1) |
 | 0.9.30 | v3.3.0 | COMPATIBLE | [2026-10-19 12:47 UTC](https://github.com/goooroooX/CE-Decky/actions/runs/39254729647/attempts/1) |
