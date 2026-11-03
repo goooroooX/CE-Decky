@@ -382,6 +382,23 @@ MAX_REPORTED_ACTIONS = 512
 MAX_ACTION_LABEL = 96
 
 
+def _selected_table(profile: GameProfile | None, tables_root: Path) -> dict[str, object]:
+    """Where the selected table's file is, through the store's own verified read.
+
+    The store is content-addressed, so the path is derivable, but deriving it
+    by hand meant walking the managed tree to find the layout first. Given only
+    once the bytes match their digest, which is the read every execution path
+    makes, so a path printed here is the file Cheat Engine would load.
+    """
+    if profile is None or not profile.table_sha256:
+        return {"table_sha256": None, "path": None, "error": "no table is selected for this AppID"}
+    digest = profile.table_sha256
+    try:
+        return {"table_sha256": digest, "path": str(TableStore(tables_root).verified_blob(digest)), "error": None}
+    except (OSError, ValueError) as exc:
+        return {"table_sha256": digest, "path": None, "error": str(exc)[:512]}
+
+
 def _startup_plan(profile: GameProfile | None, tables_root: Path) -> dict[str, object]:
     """The exact actions Auto-load would carry for this game, record by record.
 
@@ -726,6 +743,7 @@ def probe(
         report["profile"] = _profile_detail(profile)
         _with_device_presence(report["profile"], library, home)
         _with_tables(report["profile"], profile, table_evidence, detail=True)
+        report["selected_table"] = _selected_table(profile, managed_root / "tables")
         if startup_plan:
             report["startup_plan"] = _startup_plan(profile, managed_root / "tables")
         launch = CELaunchSupervisor(home, ce_root, state_root, logging.getLogger("target-state-probe"))

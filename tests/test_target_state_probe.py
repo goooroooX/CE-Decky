@@ -407,6 +407,30 @@ def test_the_startup_plan_is_the_planners_own_record_by_record(tmp_path: Path):
     assert "startup_plan" not in target_state_probe.probe(home, settings, 78, proc)
 
 
+def test_the_appid_report_names_the_selected_tables_verified_file(tmp_path: Path):
+    from ce_decky.table_store import TableStore
+
+    home, settings, proc = tmp_path / "home", tmp_path / "settings", tmp_path / "proc"
+    for path in (home, settings, proc):
+        path.mkdir()
+    managed = home / ".cheat-engine-decky"
+    (managed / "state").mkdir(parents=True)
+    source = tmp_path / "plan.CT"
+    source.write_text(PLAN_TABLE, encoding="utf-8")
+    sha = TableStore(managed / "tables").import_ct(str(source)).sha256
+    store = ProfileStore(managed / "state" / "profiles.json")
+    store.upsert(app_id=78, name="Safe Game", is_shortcut=False, table_sha256=sha, target_process=None)
+    store.upsert(app_id=79, name="Safe Game", is_shortcut=False, table_sha256="b" * 64, target_process=None)
+
+    selected = target_state_probe.probe(home, settings, 78, proc)["selected_table"]
+    assert selected["error"] is None
+    assert Path(selected["path"]).read_text(encoding="utf-8") == PLAN_TABLE
+
+    missing = target_state_probe.probe(home, settings, 79, proc)["selected_table"]
+    assert missing["path"] is None and missing["error"]
+    assert target_state_probe.probe(home, settings, 80, proc)["selected_table"]["path"] is None
+
+
 def test_a_startup_plan_for_a_table_the_store_does_not_hold_says_so(tmp_path: Path):
     home, settings, proc = tmp_path / "home", tmp_path / "settings", tmp_path / "proc"
     for path in (home, settings, proc):
