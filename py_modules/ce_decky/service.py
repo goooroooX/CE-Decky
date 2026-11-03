@@ -2758,6 +2758,9 @@ class PluginService:
                 "last_http_status": state.get("last_http_status"),
                 "last_latency_ms": state.get("last_latency_ms"),
                 "last_throttle_wait_s": state.get("last_throttle_wait_s"),
+                # Newest first, and kept through a success, which clears
+                # `last_error`: they are what the error count is made of.
+                "recent_errors": state.get("recent_errors") if isinstance(state.get("recent_errors"), list) else [],
                 "cooldown_seconds": cooldown,
             })
         return {

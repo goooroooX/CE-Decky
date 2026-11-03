@@ -1,6 +1,6 @@
 import { isArchiveFilename } from "./tableImport";
 import type { GameSummary } from "./steam/client";
-import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameRunHolds, GameExecutableListing, LocalLibrary, PluginUpdateState, ProviderSearchSummary, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableDerivation, TableInspection, TableScanCheck, TableStatus } from "./types";
+import type { BlockedTable, BlockedTableCause, CELaunchCapability, ConfiguredValue, GameContainerObservation, GameExecutable, GameRunHolds, GameExecutableListing, LocalLibrary, PluginUpdateState, ProviderSearchSummary, ProviderSourceStatus, RuntimeEnvelope, RuntimeResult, SelfTestCheck, SelfTestResult, StartupPreference, TableControl, TableDerivation, TableInspection, TableScanCheck, TableStatus } from "./types";
 
 // One 1280x800 Game Mode viewport fits roughly six compact record rows beside
 // the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
@@ -3080,6 +3080,48 @@ export function providerDisplayName(provider: string): string {
 
 /** The provider whose results come out of a listing this device indexes itself. */
 const INDEXED_PROVIDER = "fearless";
+
+/** What a source was doing when it failed, as the clause a reason follows. */
+const SOURCE_ERROR_KINDS: Record<string, string> = {
+  search: "a search",
+  download: "a download",
+  background: "keeping its listing current",
+  linked: "a page another source linked",
+};
+
+/** How many failures `recent_errors` keeps per source; the backend's `_MAX_RECENT_ERRORS`. */
+const MAX_KEPT_SOURCE_ERRORS = 5;
+
+/**
+ * What a source's error count is made of, for its `?`.
+ *
+ * The count is kept for as long as the source is, and its state word is the
+ * last attempt alone, so "Working" beside "3 errors" is two true answers to two
+ * questions and says nothing about either error. This says when each one was,
+ * what was being done and why it failed, for the few whose reason is kept, and
+ * how many of the count have none.
+ */
+export function sourceErrorsHelp(source: ProviderSourceStatus, nowMs: number): string | null {
+  const total = source.counters?.errors ?? 0;
+  const recent = source.recent_errors ?? [];
+  if (!total && !recent.length) return null;
+  const counted = `${total} error${total === 1 ? "" : "s"} counted`;
+  // Only where the row says Working, which an Off or Waiting source does not
+  // whatever its state, and only what that word rests on: a page another
+  // source linked can fail after the search that set it, and leaves it alone.
+  const working = source.enabled && source.cooldown_seconds <= 0 && source.state === "ready";
+  const parts = [working ? `${counted}; Working means its last search or download succeeded.` : `${counted}.`];
+  for (const entry of recent) {
+    const status = entry.http_status ? `, HTTP ${entry.http_status}` : "";
+    const age = coarseAge(nowMs - entry.at * 1000);
+    parts.push(`${age[0].toUpperCase()}${age.slice(1)}, ${SOURCE_ERROR_KINDS[entry.kind] ?? "an attempt"}${status}: ${sentence(entry.error)}`);
+  }
+  const unexplained = total - recent.length;
+  if (unexplained > 0) {
+    parts.push(`Reasons are kept for the last ${MAX_KEPT_SOURCE_ERRORS} only, and not for errors counted before this version, so ${unexplained === 1 ? "1 has" : `${unexplained} have`} none.`);
+  }
+  return parts.join(" ");
+}
 
 /**
  * How long ago something happened, in the coarsest unit that still reads as one.

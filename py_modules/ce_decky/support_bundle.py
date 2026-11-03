@@ -494,6 +494,17 @@ def _summary(payload: dict[str, object]) -> bytes:
             )
             if row.get("last_error"):
                 lines.append(f"      last error: {str(row.get('last_error'))[:200]}")
+            recent = row.get("recent_errors") if isinstance(row.get("recent_errors"), list) else []
+            for entry in recent:
+                if not isinstance(entry, dict):
+                    continue
+                at = entry.get("at")
+                when = (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
+                    if isinstance(at, (int, float)) and not isinstance(at, bool) else "?"
+                )
+                status = f" HTTP {entry.get('http_status')}" if entry.get("http_status") else ""
+                lines.append(f"      error {when} {entry.get('kind')}{status}: {str(entry.get('error'))[:200]}")
     for label, key in (
         ("source selection", "selection_reason"),
         ("provider diagnostics", "diagnostics_reason"),

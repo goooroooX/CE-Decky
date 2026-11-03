@@ -5909,6 +5909,46 @@ function providerDisplayName(provider) {
 }
 /** The provider whose results come out of a listing this device indexes itself. */
 const INDEXED_PROVIDER = "fearless";
+/** What a source was doing when it failed, as the clause a reason follows. */
+const SOURCE_ERROR_KINDS = {
+    search: "a search",
+    download: "a download",
+    background: "keeping its listing current",
+    linked: "a page another source linked",
+};
+/** How many failures `recent_errors` keeps per source; the backend's `_MAX_RECENT_ERRORS`. */
+const MAX_KEPT_SOURCE_ERRORS = 5;
+/**
+ * What a source's error count is made of, for its `?`.
+ *
+ * The count is kept for as long as the source is, and its state word is the
+ * last attempt alone, so "Working" beside "3 errors" is two true answers to two
+ * questions and says nothing about either error. This says when each one was,
+ * what was being done and why it failed, for the few whose reason is kept, and
+ * how many of the count have none.
+ */
+function sourceErrorsHelp(source, nowMs) {
+    const total = source.counters?.errors ?? 0;
+    const recent = source.recent_errors ?? [];
+    if (!total && !recent.length)
+        return null;
+    const counted = `${total} error${total === 1 ? "" : "s"} counted`;
+    // Only where the row says Working, which an Off or Waiting source does not
+    // whatever its state, and only what that word rests on: a page another
+    // source linked can fail after the search that set it, and leaves it alone.
+    const working = source.enabled && source.cooldown_seconds <= 0 && source.state === "ready";
+    const parts = [working ? `${counted}; Working means its last search or download succeeded.` : `${counted}.`];
+    for (const entry of recent) {
+        const status = entry.http_status ? `, HTTP ${entry.http_status}` : "";
+        const age = coarseAge(nowMs - entry.at * 1000);
+        parts.push(`${age[0].toUpperCase()}${age.slice(1)}, ${SOURCE_ERROR_KINDS[entry.kind] ?? "an attempt"}${status}: ${sentence(entry.error)}`);
+    }
+    const unexplained = total - recent.length;
+    if (unexplained > 0) {
+        parts.push(`Reasons are kept for the last ${MAX_KEPT_SOURCE_ERRORS} only, and not for errors counted before this version, so ${unexplained === 1 ? "1 has" : `${unexplained} have`} none.`);
+    }
+    return parts.join(" ");
+}
 /**
  * How long ago something happened, in the coarsest unit that still reads as one.
  *
@@ -11200,7 +11240,12 @@ function AdvancedModal(props) {
                                         source.enabled && source.cooldown_seconds > 0
                                             ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
                                             : null,
-                                        source.last_error ? `Last error: ${source.last_error}` : null,
+                                        // A backend that keeps reasons says what the count is made
+                                        // of; an older one has only the last error, which the next
+                                        // success clears.
+                                        source.recent_errors
+                                            ? sourceErrorsHelp(source, Date.now())
+                                            : source.last_error ? `Last error: ${source.last_error}` : null,
                                         source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null,
                                     ].filter(Boolean).join(" "), actions: onSetProviderEnabled ? (SP_JSX.jsx(SmallButton, { disabled: blocked || switchesBlocked, onClick: traceUiAction("advanced_modal.source.toggle", () => {
                                             void invoke(() => onSetProviderEnabled(source.provider, !source.enabled), (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause)));
@@ -12570,6 +12615,23 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const unsavedCount = unsavedChangeCount(staged, lastConfirmed, [...touchedActive, ...touchedValues]);
     const stagedActiveById = new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, staged[control.id]?.active ?? null]]));
     const blockedBy = (control) => inactiveAncestorControl(control, safeControls, stagedActiveById);
+    // A value whose address a script allocates reads `??` until that script runs,
+    // and such a row simply has no Current. Said once under the list rather than
+    // on every row: what is off is the game's state, not this dialog's edits.
+    // Every read that replaces the current values also sets `staged` or
+    // `lastConfirmed`, so those are what it is recomputed on, and typing into the
+    // filter, which an ancestor walk over a large table would slow, is not.
+    const currentUnreadable = SP_REACT.useMemo(() => {
+        if (storedOnly || loading)
+            return false;
+        const confirmedActiveById = new Map(safeControls.flatMap((control) => control.id === null ? [] : [[control.id, lastConfirmed[control.id]?.active ?? null]]));
+        return safeControls.some((control) => control.id !== null
+            && (control.kind === "value" || control.kind === "dropdown")
+            && !controlIsSwitch(control)
+            && (unavailableRecords.has(control.id)
+                || (currentValuesRef.current.has(control.id) && presentableControlValue(currentValuesRef.current.get(control.id)) === null))
+            && inactiveAncestorControl(control, safeControls, confirmedActiveById) !== null);
+    }, [storedOnly, loading, safeControls, lastConfirmed, staged, unavailableRecords]);
     const requestClose = () => {
         if (applyingRef.current || pinningRef.current)
             return;
@@ -12685,7 +12747,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                 ? "Discard only drops the edits still on screen; what was already written to Cheat Engine or saved for this table stays as it is."
                                 : "Apply them to the running Cheat Engine, or discard them and close.", bottomSeparator: "none" }), SP_JSX.jsxs(ActionGroup, { style: { gap: 8, padding: "4px 0 0" }, children: [SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.apply", () => { if (applyingRef.current || pinningRef.current)
                                         return; setConfirmingClose(false); void apply(); }), children: "Apply" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.discard", () => { if (applyingRef.current || pinningRef.current)
-                                        return; setConfirmingClose(false); setStaged(lastConfirmed); setTouchedActive(new Set()); setTouchedValues(new Set()); onCancel(); }), children: "Discard" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: true, disabled: applying, onClick: traceUiAction("cheat_selection_modal.keep_editing", () => setConfirmingClose(false)), children: "Keep editing" })] })] })), SP_JSX.jsxs("div", { ref: setFooterNode, children: [SP_JSX.jsx(PagerFooter, { testId: "cheat-footer", style: cheatFooterStyle, page: safePage, pages: pages, disabled: applying, preferNext: true, fallbackRef: cancelRef, onPage: (next) => { clearError(); setExpanded(null); setPage(next); }, trailing: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: loading || applying || pinning, onClick: traceUiAction("cheat_selection_modal.apply_2", () => void apply()), children: "Apply" }), SP_JSX.jsx("div", { ref: cancelRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.cancel", requestClose), children: "Cancel" }) })] })) }), !isShortScreen(windowNode) && (SP_JSX.jsxs("div", { style: modalNoteStyle, children: ["Tip: a cheat's ", SP_JSX.jsx("b", { children: "More" }), " can pin it onto the CE Decky panel. Scripts load automatically when a cheat needs them."] }))] })] }) }));
+                                        return; setConfirmingClose(false); setStaged(lastConfirmed); setTouchedActive(new Set()); setTouchedValues(new Set()); onCancel(); }), children: "Discard" }), SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, preferredFocus: true, disabled: applying, onClick: traceUiAction("cheat_selection_modal.keep_editing", () => setConfirmingClose(false)), children: "Keep editing" })] })] })), SP_JSX.jsxs("div", { ref: setFooterNode, children: [SP_JSX.jsx(PagerFooter, { testId: "cheat-footer", style: cheatFooterStyle, page: safePage, pages: pages, disabled: applying, preferNext: true, fallbackRef: cancelRef, onPage: (next) => { clearError(); setExpanded(null); setPage(next); }, trailing: (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(SmallButton, { disabled: loading || applying || pinning, onClick: traceUiAction("cheat_selection_modal.apply_2", () => void apply()), children: "Apply" }), SP_JSX.jsx("div", { ref: cancelRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.cancel", requestClose), children: "Cancel" }) })] })) }), !isShortScreen(windowNode) && (SP_JSX.jsxs("div", { style: modalNoteStyle, children: ["Tip: a cheat's ", SP_JSX.jsx("b", { children: "More" }), " can pin it onto the CE Decky panel. Scripts load automatically when a cheat needs them.", currentUnreadable && (SP_JSX.jsxs("div", { "data-testid": "cheats-current-unreadable", children: [SP_JSX.jsx("b", { children: "Current" }), " values cannot be read for some cheats while the scripts they need are off."] }))] }))] })] }) }));
 }
 const modalNoteStyle = {
     padding: "0 16px 10px",

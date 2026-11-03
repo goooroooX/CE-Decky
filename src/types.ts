@@ -1068,8 +1068,22 @@ export interface ProviderSourceStatus {
   last_http_status: number | null;
   last_latency_ms: number | null;
   last_throttle_wait_s?: number | null;
+  /**
+   * The last few failures counted in `counters.errors`, newest first, with
+   * their reasons. A success clears `last_error` and never these. Absent from a
+   * backend that predates them.
+   */
+  recent_errors?: ProviderRecentError[];
   /** Whole seconds the provider itself asked to be left alone for, or 0. */
   cooldown_seconds: number;
+}
+
+export interface ProviderRecentError {
+  /** Epoch seconds. */
+  at: number;
+  kind: "search" | "download" | "background" | "linked";
+  http_status: number | null;
+  error: string;
 }
 
 export interface ProviderSourcesSnapshot {

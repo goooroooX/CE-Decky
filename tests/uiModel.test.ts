@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   releaseNoteBlocks,
+  sourceErrorsHelp,
   enclosingScripts,
   readByRunningScripts,
   settingsForStartedScripts,
@@ -2313,5 +2314,30 @@ describe("a release's notes in the update window", () => {
     expect(releaseNoteBlocks(null)).toEqual([]);
     expect(releaseNoteBlocks("- see [the page](https://example.invalid)")[0].spans).toEqual([{ text: "see the page" }]);
     expect(releaseNoteBlocks(Array.from({ length: 100 }, (_, index) => `- ${index}`).join("\n"))).toHaveLength(40);
+  });
+});
+
+describe("sourceErrorsHelp", () => {
+  const source = (overrides: Record<string, unknown>) => ({
+    provider: "vgtimes", provider_display_name: "VGTimes", priority: 70, discovery: "search", linked_target: false,
+    enabled: true, state: "ready", last_error: null, last_http_status: 200, last_latency_ms: 40, cooldown_seconds: 0,
+    counters: {
+      searches: 20, results: 19, downloads_succeeded: 0, downloads_failed: 0, bytes_downloaded: 0,
+      downloads_throttled: 0, errors: 2, linked_reads: 0, parse_degraded: 0, parse_failed: 0,
+    },
+    recent_errors: [],
+    ...overrides,
+  }) as any;
+
+  it("speaks of Working only where the row says it", () => {
+    expect(sourceErrorsHelp(source({}), 0)).toMatch(/^2 errors counted; Working means/);
+    // Off and Waiting are what those rows say, whatever the last attempt was.
+    expect(sourceErrorsHelp(source({ enabled: false }), 0)).toMatch(/^2 errors counted\. Reasons/);
+    expect(sourceErrorsHelp(source({ cooldown_seconds: 30 }), 0)).toMatch(/^2 errors counted\. Reasons/);
+    expect(sourceErrorsHelp(source({ state: "error" }), 0)).toMatch(/^2 errors counted\. Reasons/);
+  });
+
+  it("says nothing for a source with no errors", () => {
+    expect(sourceErrorsHelp(source({ counters: { ...source({}).counters, errors: 0 } }), 0)).toBeNull();
   });
 });

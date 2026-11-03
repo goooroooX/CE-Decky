@@ -66,6 +66,13 @@ _MAX_RESULTS_PER_PROVIDER = 500
 _MAX_PROVIDERS = 32
 _MAX_DIAGNOSTIC_PROVIDERS = 64
 _MAX_ERROR_BYTES = 2048
+# What `recent_errors` keeps per provider, and how much of each reason. The
+# counter says how many failures there were and `last_error` is cleared by the
+# next success, so without these a source reading "Working · 3 errors" has
+# nothing to say about any of them.
+_MAX_RECENT_ERRORS = 5
+_MAX_RECENT_ERROR_CHARS = 400
+_RECENT_ERROR_KINDS = frozenset({"search", "download", "background", "linked"})
 _MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
 _MAX_COUNTER = 0x7FFFFFFFFFFFFFFF
 _MAX_SIZE = 0x7FFFFFFFFFFFFFFF
@@ -676,6 +683,10 @@ class ProviderDiagnosticsStore:
         if retry_seconds is None and http_status in {429, 503}:
             retry_seconds = 60
         base = _epoch(time.time() if now is None else now, "provider current time")
+        _note_recent_error(
+            state, at=base, error=error, http_status=state["last_http_status"],
+            kind="download" if download else "background" if background else "search",
+        )
         if background:
             # When this happened, which is the whole of what a refusal carrying
             # no deadline has. A search that succeeds afterwards is not evidence
@@ -713,6 +724,7 @@ class ProviderDiagnosticsStore:
         state["counters"]["errors"] = _checked_add(state["counters"]["errors"], 1)
         state["last_error"] = error
         state["last_http_status"] = _http_status(http_status)
+        _note_recent_error(state, at=time.time(), error=error, http_status=state["last_http_status"], kind="linked")
         self._save(root)
 
     def _record_linked_success_unlocked(self, provider_id: str, *, results: int) -> None:
@@ -936,7 +948,40 @@ def _empty_provider_state() -> dict[str, Any]:
         "cooldown_until_epoch_s": 0.0,
         "last_throttle_wait_s": None,
         "background_refusal_at": None,
+        "recent_errors": [],
     }
+
+
+def _note_recent_error(state: dict[str, Any], *, at: float, error: str, http_status: int | None, kind: str) -> None:
+    """Keep this failure's reason beside the counter it was added to, newest first.
+
+    A success never removes one: the counter it explains is not reset by a
+    success either, and a reason that disappears while its count stays is the
+    state this field exists to end.
+    """
+    # Stripped before it is cut, so a reason that is all leading space cannot
+    # be cut down to a blank one this store then refuses to read back.
+    entry = {"at": float(at), "kind": kind, "http_status": http_status, "error": error.strip()[:_MAX_RECENT_ERROR_CHARS]}
+    state["recent_errors"] = [entry, *state.get("recent_errors", [])][:_MAX_RECENT_ERRORS]
+
+
+def _validate_recent_errors(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > _MAX_RECENT_ERRORS:
+        raise ValueError("provider recent errors are invalid")
+    checked = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"at", "kind", "http_status", "error"} or entry["kind"] not in _RECENT_ERROR_KINDS:
+            raise ValueError("provider recent error is malformed")
+        error = _bounded_text(entry["error"], "provider recent error", required=True, max_bytes=_MAX_ERROR_BYTES)
+        if len(error) > _MAX_RECENT_ERROR_CHARS:
+            raise ValueError("provider recent error is too long")
+        checked.append({
+            "at": _epoch(entry["at"], "provider recent error time"),
+            "kind": entry["kind"],
+            "http_status": _http_status(entry["http_status"]),
+            "error": error,
+        })
+    return checked
 
 
 _REQUIRED_STATE_KEYS = frozenset({"state", "counters", "last_http_status", "last_latency_ms", "last_error", "cooldown_until_epoch_s"})
@@ -944,7 +989,7 @@ _REQUIRED_STATE_KEYS = frozenset({"state", "counters", "last_http_status", "last
 # for the same reason a counter is, and refusing the whole file for that would
 # throw away every provider's history on upgrade. An unknown key is still a
 # corrupt file.
-_OPTIONAL_STATE_KEYS = frozenset({"last_throttle_wait_s", "background_refusal_at"})
+_OPTIONAL_STATE_KEYS = frozenset({"last_throttle_wait_s", "background_refusal_at", "recent_errors"})
 
 
 def _validate_provider_state(state: Any) -> dict[str, Any]:
@@ -993,6 +1038,7 @@ def _validate_provider_state(state: Any) -> dict[str, Any]:
         "cooldown_until_epoch_s": float(cooldown),
         "last_throttle_wait_s": throttle_wait,
         "background_refusal_at": None if refusal_at is None else float(refusal_at),
+        "recent_errors": _validate_recent_errors(state.get("recent_errors", [])),
     }
 
 

@@ -1105,6 +1105,25 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     safeControls.flatMap((control) => control.id === null ? [] : [[control.id, staged[control.id]?.active ?? null] as const]),
   );
   const blockedBy = (control: TableControl) => inactiveAncestorControl(control, safeControls, stagedActiveById);
+  // A value whose address a script allocates reads `??` until that script runs,
+  // and such a row simply has no Current. Said once under the list rather than
+  // on every row: what is off is the game's state, not this dialog's edits.
+  // Every read that replaces the current values also sets `staged` or
+  // `lastConfirmed`, so those are what it is recomputed on, and typing into the
+  // filter, which an ancestor walk over a large table would slow, is not.
+  const currentUnreadable = useMemo(() => {
+    if (storedOnly || loading) return false;
+    const confirmedActiveById = new Map<number, boolean | null>(
+      safeControls.flatMap((control) => control.id === null ? [] : [[control.id, lastConfirmed[control.id]?.active ?? null] as const]),
+    );
+    return safeControls.some((control) =>
+      control.id !== null
+      && (control.kind === "value" || control.kind === "dropdown")
+      && !controlIsSwitch(control)
+      && (unavailableRecords.has(control.id)
+        || (currentValuesRef.current.has(control.id) && presentableControlValue(currentValuesRef.current.get(control.id)) === null))
+      && inactiveAncestorControl(control, safeControls, confirmedActiveById) !== null);
+  }, [storedOnly, loading, safeControls, lastConfirmed, staged, unavailableRecords]);
 
   const requestClose = () => {
     if (applyingRef.current || pinningRef.current) return;
@@ -1561,6 +1580,11 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         {!isShortScreen(windowNode) && (
           <div style={modalNoteStyle}>
             Tip: a cheat's <b>More</b> can pin it onto the CE Decky panel. Scripts load automatically when a cheat needs them.
+            {currentUnreadable && (
+              <div data-testid="cheats-current-unreadable">
+                <b>Current</b> values cannot be read for some cheats while the scripts they need are off.
+              </div>
+            )}
           </div>
         )}
         </div>

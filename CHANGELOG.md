@@ -2,6 +2,11 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.34 — 2026-11-03
+
+- [Fixed] A table source's **?** in Advanced, Table sources, says what its error count is made of: when each of its last five failures happened, what was being done and why it failed, and that **Working** means its last search or download succeeded. A later success no longer clears the only reason kept, and the support bundle carries the same list. Errors counted before this version have no reason kept, and the **?** says how many.
+- [Fixed] Configure cheats says in the tip under its list, on a screen tall enough for that tip and while Cheat Engine is running, when a cheat's **Current** value cannot be read because a script it needs is off, rather than leaving the row without one and no reason. Such a value lives in memory its script allocates, so there is nothing to read until that script runs.
+
 ## 0.9.33 — 2026-11-01
 
 - [New] The update window shows what the new version changes before you press **Update**: the release's own reason to update under the two versions, then its fixes and changes, readable with the controller on a handheld screen.

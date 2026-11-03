@@ -293,6 +293,73 @@ def test_diagnostics_keep_provider_history_written_before_the_throttle_field(tmp
         ProviderDiagnosticsStore(path).snapshot()
 
 
+def test_diagnostics_keep_each_errors_reason_through_a_later_success(tmp_path):
+    """The error count outlives `last_error`, so the reasons are kept beside it.
+
+    A source read "Working" beside "3 errors" with nothing anywhere saying what
+    any of the three had been: the next success cleared the only reason kept.
+    """
+    path = tmp_path / "providers.json"
+    store = ProviderDiagnosticsStore(path)
+    store.record_failure("vgtimes", error="HTTP 503 from the listing", http_status=503, now=1000.0)
+    store.record_failure("vgtimes", error="the download stopped", download=True, now=1010.0)
+    store.record_failure("vgtimes", error="index page refused", background=True, now=1020.0)
+    store.record_linked_failure("vgtimes", error="linked page missing", http_status=404)
+    store.record_search_success("vgtimes", results=2, latency_ms=5.0, http_status=200)
+
+    snap = ProviderDiagnosticsStore(path).snapshot()["providers"]["vgtimes"]
+    assert snap["state"] == "ready"
+    assert snap["last_error"] is None
+    assert snap["counters"]["errors"] == 4
+    recent = snap["recent_errors"]
+    assert [entry["kind"] for entry in recent] == ["linked", "background", "download", "search"]
+    assert recent[-1] == {"at": 1000.0, "kind": "search", "http_status": 503, "error": "HTTP 503 from the listing"}
+    assert recent[0]["http_status"] == 404
+
+
+def test_diagnostics_keep_only_the_newest_error_reasons_and_bound_each(tmp_path):
+    path = tmp_path / "providers.json"
+    store = ProviderDiagnosticsStore(path)
+    for index in range(8):
+        store.record_failure("github", error=f"failure {index}", now=1000.0 + index)
+    store.record_failure("github", error="x" * 1500, now=2000.0)
+
+    recent = ProviderDiagnosticsStore(path).snapshot()["providers"]["github"]["recent_errors"]
+    assert len(recent) == 5
+    assert recent[0]["error"] == "x" * 400
+    assert [entry["error"] for entry in recent[1:]] == ["failure 7", "failure 6", "failure 5", "failure 4"]
+    assert store.snapshot()["providers"]["github"]["counters"]["errors"] == 9
+
+    # Cut after stripping, or this would be stored blank and refused on read.
+    store.record_failure("github", error=" " * 450 + "the real reason", now=3000.0)
+    assert ProviderDiagnosticsStore(path).snapshot()["providers"]["github"]["recent_errors"][0]["error"] == "the real reason"
+
+
+def test_diagnostics_read_history_written_before_error_reasons_and_refuse_a_bad_one(tmp_path):
+    """Counters written by 0.9.33 and earlier have no reasons, and stay readable."""
+    path = tmp_path / "providers.json"
+    legacy = {
+        "state": "ready",
+        "counters": {"searches": 20, "errors": 3},
+        "last_http_status": 200, "last_latency_ms": 40, "last_error": None, "cooldown_until_epoch_s": 0.0,
+    }
+    path.write_text(json.dumps({"schema": 1, "providers": {"playground": legacy}}))
+    snap = ProviderDiagnosticsStore(path).snapshot()["providers"]["playground"]
+    assert snap["counters"]["errors"] == 3
+    assert snap["recent_errors"] == []
+
+    for bad in (
+        [{"at": 1.0, "kind": "guess", "http_status": None, "error": "x"}],
+        [{"at": 1.0, "kind": "search", "http_status": None}],
+        [{"at": 1.0, "kind": "search", "http_status": None, "error": "x" * 401}],
+        [{"at": 1.0, "kind": "search", "http_status": None, "error": "x"}] * 6,
+        "not a list",
+    ):
+        path.write_text(json.dumps({"schema": 1, "providers": {"playground": {**legacy, "recent_errors": bad}}}))
+        with pytest.raises(ValueError, match="recent error"):
+            ProviderDiagnosticsStore(path).snapshot()
+
+
 def test_diagnostics_rejects_corrupt_and_symlinked_state(tmp_path):
     path = tmp_path / "providers.json"
     path.write_text(json.dumps({"schema": 1, "providers": {"Bad ID": {}}}))

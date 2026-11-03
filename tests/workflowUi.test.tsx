@@ -3371,6 +3371,45 @@ describe("Home panel and managed setup", () => {
     await act(async () => { finish(sourcesSnapshot()); });
   });
 
+  it.each([
+    [
+      "the reasons it kept",
+      {
+        last_error: null,
+        recent_errors: [
+          { at: Date.now() / 1000 - 3 * 3600, kind: "download", http_status: null, error: "the download stopped" },
+          { at: Date.now() / 1000 - 2 * 86400 - 60, kind: "search", http_status: 503, error: "listing unavailable" },
+        ],
+      },
+      "3 errors counted; Working means its last search or download succeeded. 3 hours ago, a download: The download stopped. 2 days ago, a search, HTTP 503: Listing unavailable. Reasons are kept for the last 5 only, and not for errors counted before this version, so 1 has none.",
+    ],
+    ["only the last error, from a backend that keeps no reasons", { last_error: "listing unavailable" }, "Last error: listing unavailable"],
+  ])("says behind a working source's ? what its errors were: %s", async (_case, fields, expected) => {
+    render(<AdvancedModal
+      {...blocklistProps({
+        onLoadProviderSources: vi.fn().mockResolvedValue(sourcesSnapshot({
+          sources: [{
+            provider: "vgtimes", provider_display_name: "VGTimes", priority: 70,
+            discovery: "search", linked_target: false, enabled: true, state: "ready",
+            counters: {
+              searches: 20, results: 19, downloads_succeeded: 2, downloads_failed: 0, bytes_downloaded: 10,
+              downloads_throttled: 0, errors: 3, linked_reads: 0, parse_degraded: 0, parse_failed: 0,
+            },
+            last_http_status: 200, last_latency_ms: 40, last_throttle_wait_s: null, cooldown_seconds: 0,
+            ...fields,
+          }],
+          enabled_count: 1, total: 1,
+        })),
+      })}
+    />);
+
+    fireEvent.click(within(await screen.findByTestId("provider-sources")).getByRole("button", { name: "Choose" }));
+    const row = await screen.findByTestId("provider-source-vgtimes");
+    expect(within(row).getByText("Working")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: "?" }));
+    expect(row.textContent).toContain(expected);
+  });
+
   it("says a source that has never been asked has not been searched rather than showing zeroes", async () => {
     render(<AdvancedModal
       {...blocklistProps({
@@ -8514,6 +8553,61 @@ describe("Selection and staged-change persistence", () => {
     />);
     return onApplied;
   }
+
+  it.each([
+    ["reads ?? under its stopped script", false, "??", false, true],
+    ["is not created yet under its stopped script", false, null, true, true],
+    ["reads ?? under a script that runs", true, "??", false, false],
+    ["reads a value under its stopped script", false, "40", false, false],
+  ])("says under the list when a value %s, that Current cannot be read", async (_case, scriptActive, value, missing, shown) => {
+    // A value whose address its script allocates reads `??` until that script
+    // runs. The row keeps no Current, and the tip says why once.
+    const script = { generation: 1, record_id: 20, ok: true, active: scriptActive, value: "<script>", error: null };
+    const child = { generation: 1, record_id: 21, ok: true, active: false, value, error: null };
+    const page = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    try {
+      Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
+      if (missing) {
+        runtimeClient.queryRuntimeControlsPartial.mockResolvedValueOnce({
+          envelope: liveRuntime(), results: [script],
+          unavailable: [{ ...child, ok: false, value: null, error_code: "record_missing" }],
+        });
+      }
+      renderNested(missing ? [script] : [script, child]);
+      await screen.findByTestId("cheat-row-21");
+      // The tip is drawn while the read is still out, so an absent line proves
+      // nothing until Apply, which waits for that read, is enabled.
+      await waitFor(() => expect(screen.getAllByRole("button", { name: "Apply" })
+        .every((button) => !(button as HTMLButtonElement).disabled)).toBe(true));
+      expect(screen.getByText(/can pin it onto the CE Decky panel/)).toBeTruthy();
+      const note = screen.queryByTestId("cheats-current-unreadable");
+      if (shown) {
+        expect(note?.textContent).toBe("Current values cannot be read for some cheats while the scripts they need are off.");
+        expect(note?.querySelector("b")?.textContent).toBe("Current");
+      } else {
+        expect(note).toBeNull();
+      }
+      expect(screen.getByTestId("cheat-row-21").textContent).not.toContain("Current");
+    } finally {
+      if (page) Object.defineProperty(window, "innerHeight", page);
+    }
+  });
+
+  it("does not say Current cannot be read while nothing is running", async () => {
+    const page = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    try {
+      Object.defineProperty(window, "innerHeight", { value: 844, configurable: true });
+      render(<CheatSelectionModal appId={10} inspection={nestedInspection as any} live={false} pinned={[]}
+        startupPreferences={[]} rememberedPreferences={[]} configuredValues={[]}
+        onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+        onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+        onTogglePin={vi.fn().mockResolvedValue([])} onApplied={vi.fn()} onCancel={vi.fn()} />);
+      await screen.findByTestId("cheat-row-21");
+      expect(screen.queryByTestId("cheats-current-unreadable")).toBeNull();
+    } finally {
+      if (page) Object.defineProperty(window, "innerHeight", page);
+    }
+  });
 
   it("sets a table up with no Cheat Engine running, writing nothing to a session", async () => {
     const onApplied = vi.fn().mockResolvedValue(undefined);

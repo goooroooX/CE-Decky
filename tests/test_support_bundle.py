@@ -510,6 +510,25 @@ def test_the_bundle_says_which_table_sources_were_switched_off(tmp_path: Path):
         assert "on  fearless" in summary
 
 
+def test_the_bundle_carries_each_kept_reason_behind_a_sources_error_count(tmp_path: Path):
+    """A report reading "3 errors" is answerable only with what they were."""
+    service, _paths = _service(tmp_path)
+    service.provider_diagnostics.record_failure("vgtimes", error="HTTP 503 from the listing", http_status=503, now=1_700_000_000.0)
+    service.provider_diagnostics.record_search_success("vgtimes", results=1, latency_ms=5.0, http_status=200)
+
+    result = service.create_support_bundle([], 0)
+
+    with _archive(result) as archive:
+        merged = json.loads(archive.read("diagnostics/provider_sources.json"))
+        row = next(item for item in merged["sources"] if item["provider"] == "vgtimes")
+        assert row["last_error"] is None
+        assert row["recent_errors"] == [{"at": 1_700_000_000.0, "kind": "search", "http_status": 503, "error": "HTTP 503 from the listing"}]
+        providers = json.loads(archive.read("diagnostics/providers.json"))
+        assert providers["providers"]["vgtimes"]["recent_errors"] == row["recent_errors"]
+        summary = archive.read("summary.txt").decode("utf-8")
+        assert "error 2023-11-14T22:13:20Z search HTTP 503: HTTP 503 from the listing" in summary
+
+
 def test_the_bundle_says_when_the_source_choice_could_not_be_read(tmp_path: Path):
     service, paths = _service(tmp_path)
     (paths.state_root / "provider_sources.json").write_text(

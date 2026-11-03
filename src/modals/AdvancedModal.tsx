@@ -21,7 +21,7 @@ import { TableCodeModal } from "./TableCodeModal";
 import { openExternalWeb } from "../externalNavigation";
 import { logUiFailure } from "../supportLog";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
-import { absentLiveTarget, blockedKey, blockedRecordedOn, sentence, updateSummary, blockedRowDetail, blockedRowLabel, blockedRecordShape, derivedChangeSentence, derivedSummaryLine, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary } from "../uiModel";
+import { absentLiveTarget, blockedKey, blockedRecordedOn, sentence, updateSummary, blockedRowDetail, blockedRowLabel, blockedRecordShape, derivedChangeSentence, derivedSummaryLine, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary, sourceErrorsHelp } from "../uiModel";
 import type { BlockedTable, CELaunchCapability, CEStatus, DiagnosticsSnapshot, ManagedDataDeletion, ManagedDataScope, PanelPreferences, PluginStatus, PluginUpdateState, ProviderSourceStatus, ProviderSourcesSnapshot, RemovalReadiness, RuntimeEnvelope, SelfTestResult, SupportBundleResult, TableInspection } from "../types";
 
 export interface AdvancedContextSnapshot {
@@ -1237,7 +1237,12 @@ export function AdvancedModal(props: Props) {
                     source.enabled && source.cooldown_seconds > 0
                       ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
                       : null,
-                    source.last_error ? `Last error: ${source.last_error}` : null,
+                    // A backend that keeps reasons says what the count is made
+                    // of; an older one has only the last error, which the next
+                    // success clears.
+                    source.recent_errors
+                      ? sourceErrorsHelp(source, Date.now())
+                      : source.last_error ? `Last error: ${source.last_error}` : null,
                     source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null,
                   ].filter(Boolean).join(" ")}
                   actions={onSetProviderEnabled ? (
