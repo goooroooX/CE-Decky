@@ -100,6 +100,7 @@ REQUIREMENTS = {
     # own; what it needs is the device and a live Decky on it.
     "target_plugin_rpc.py": {"needs_procfs": False},
     "target_prefix_probe.py": {"needs_procfs": False},
+    "target_runtime_query.py": {"needs_procfs": False},
     "target_primitive_bench.py": {},
     "target_screenshot.py": {"needs_valve_hardware": True},
     "target_session_cost_probe.py": {},
