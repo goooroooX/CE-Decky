@@ -198,6 +198,7 @@ Each identifier below names one owned callback location, even when several rows 
 | `provider_catalog.retry_download` | `src/providerCatalog.tsx` | `onRetryDownload` |
 | `provider_catalog.search_query` | `src/providerCatalog.tsx` | `(event: any) => setQuery(String(event.target.value ?? ""))` |
 | `provider_catalog.use_saved_copy` | `src/providerCatalog.tsx` | `onUse` |
+| `scrollable_help.line` | `src/components/ScrollableHelp.tsx` | `() => undefined`: makes a line of long help a focus stop where Steam's scroll panel was not found |
 | `table_acquisition_modal.cancel` | `src/modals/TableAcquisitionModal.tsx` | `() => void cancel()` |
 | `table_acquisition_modal.cancel_back` | `src/modals/TableAcquisitionModal.tsx` | `() => void cancel()` |
 | `table_acquisition_modal.import_selected_table` | `src/modals/TableAcquisitionModal.tsx` | `() => void complete(selectedMember?.path ?? null)` |

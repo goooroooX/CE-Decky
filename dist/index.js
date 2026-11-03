@@ -5947,7 +5947,9 @@ function sourceErrorsHelp(source, nowMs) {
     if (unexplained > 0) {
         parts.push(`Reasons are kept for the last ${MAX_KEPT_SOURCE_ERRORS} only, and not for errors counted before this version, so ${unexplained === 1 ? "1 has" : `${unexplained} have`} none.`);
     }
-    return parts.join(" ");
+    // One line each, because each failure is read on its own and five of them can
+    // run past a handheld's screen, which is what `ScrollableHelp` is for.
+    return parts;
 }
 /**
  * How long ago something happened, in the coarsest unit that still reads as one.
@@ -10418,6 +10420,64 @@ function openExternalWeb(url) {
     window.open(normalized, "_blank", "noopener,noreferrer");
 }
 
+// Steam's panel takes a ref and a style, and its `Focusable` takes `focusable`
+// and `noFocusRing`; the library's declarations name none of them.
+const SteamScrollPanel$1 = DFL.ScrollPanelGroup;
+const SteamFocusable$1 = DFL.Focusable;
+const FRAME = {
+    maxHeight: "min(40vh, 300px)",
+    margin: "2px 0",
+    borderLeft: "3px solid hsla(210, 70%, 68%, 0.35)",
+};
+const FRAME_PANEL = { ...FRAME, display: "flex", flexDirection: "column" };
+const FRAME_PLAIN = { ...FRAME, overflowY: "auto" };
+const PANEL = { flex: 1, minHeight: 0 };
+const LINE = { padding: "2px 8px" };
+const CLASS = "ce-decky-help-scroll";
+// The rule brightens while focus is in the box, which is the whole of what
+// says so: its one stop carries no ring, so that Steam's ring has nothing to
+// travel to inside a box that scrolls. A thin scrollbar says there is more.
+const css = (panel) => [
+    `.${CLASS}:has(.gpfocuswithin), .${CLASS}:has(.gpfocus) { border-left-color: hsla(210, 85%, 74%, 0.95); }`,
+    ...(panel ? [
+        `.${CLASS} .${panel}::-webkit-scrollbar { display: initial !important; width: 4px; }`,
+        `.${CLASS} .${panel}::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; background-color: hsla(210, 70%, 68%, 0.45); }`,
+    ] : []),
+].join("\n");
+/**
+ * A row's help that can run longer than a handheld's screen, read with a D-pad.
+ *
+ * `PanelRow` draws help as a plain field, which Steam cannot put focus on, so
+ * text past the bottom of an 800 pixel screen was out of reach: the D-pad moves
+ * between controls, not through a paragraph. This is the shape the update
+ * window's notes use, Steam's own scroll panel holding one stop with no ring,
+ * and `docs/FIELD_NOTES.md` names the plugins it was read from. That stop
+ * exists only while the text overflows its box, so help that fits adds nothing
+ * to walk past. Where Steam's panel was not found, each line is a stop of its
+ * own in a box the browser scrolls, because Steam moves a view only by moving
+ * focus.
+ */
+function ScrollableHelp({ lines, testId }) {
+    const panelRef = SP_REACT.useRef(null);
+    // Unmeasurable counts as overflowing: help nobody can reach is worse than one
+    // stop too many.
+    const [overflowing, setOverflowing] = SP_REACT.useState(true);
+    const text = lines.join("\n");
+    SP_REACT.useLayoutEffect(() => {
+        const panel = panelRef.current;
+        if (!panel || !panel.clientHeight)
+            return;
+        setOverflowing(panel.scrollHeight > panel.clientHeight);
+    }, [text]);
+    const body = (stops) => lines.map((line, index) => (stops
+        ? SP_JSX.jsx(DFL.Focusable, { onActivate: traceUiAction("scrollable_help.line", () => undefined), children: SP_JSX.jsx("div", { style: LINE, children: line }) }, index)
+        : SP_JSX.jsx("div", { style: LINE, children: line }, index)));
+    if (!SteamScrollPanel$1) {
+        return (SP_JSX.jsxs("div", { className: CLASS, "data-testid": testId, style: FRAME_PLAIN, children: [SP_JSX.jsx("style", { children: css(undefined) }), body(true)] }));
+    }
+    return (SP_JSX.jsxs("div", { className: CLASS, "data-testid": testId, style: FRAME_PANEL, children: [SP_JSX.jsx("style", { children: css(DFL.scrollPanelClasses?.ScrollPanel) }), SP_JSX.jsx(SteamScrollPanel$1, { ref: panelRef, focusable: false, style: PANEL, children: SP_JSX.jsx(SteamFocusable$1, { noFocusRing: true, focusable: overflowing, children: body(false) }) })] }));
+}
+
 /**
  * What actually stopped the game being asked back, in the user's terms.
  *
@@ -10542,6 +10602,39 @@ function describeSource(source, countsUnreadable) {
     if (source.enabled && source.cooldown_seconds > 0)
         parts.push(`waiting ${source.cooldown_seconds}s`);
     return parts.join(" · ");
+}
+/**
+ * What a source's `?` says: how it is reached, any wait it asked for, and what
+ * its error count is made of.
+ *
+ * The errors can run to five reasons of a few hundred characters each, which
+ * is past the bottom of a handheld's screen in a field Steam cannot focus, so
+ * help that carries them is a `ScrollableHelp`; a source with none keeps the
+ * one paragraph it always had.
+ */
+function sourceHelp(source) {
+    const lines = [
+        // Both halves come from the registry rather than from one of them standing
+        // for the other: only two of these sources are ever named by another
+        // source's page, and describing all five as if they were claimed a route
+        // three of them do not have.
+        source.discovery === "linked_source"
+            ? "This source is never searched on its own. It is read only when another source's page names an exact page on it, and switching it off stops that."
+            : source.linked_target
+                ? "Searched for every game, and also read when another source's page names an exact page on it. Switching it off stops both."
+                : "Searched for every game. Switching it off stops that; nothing else points at this source.",
+        source.enabled && source.cooldown_seconds > 0
+            ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
+            : null,
+    ].filter((line) => Boolean(line));
+    const status = source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null;
+    // A backend that keeps reasons says what the count is made of; an older one
+    // has only the last error, which the next success clears.
+    const errors = source.recent_errors ? sourceErrorsHelp(source, Date.now()) : null;
+    if (errors) {
+        return SP_JSX.jsx(ScrollableHelp, { testId: `provider-source-help-${source.provider}`, lines: [...lines, ...errors, ...(status ? [status] : [])] });
+    }
+    return [...lines, source.last_error ? `Last error: ${source.last_error}` : null, status].filter(Boolean).join(" ");
 }
 /**
  * The state word for a source, in the user's terms rather than the store's.
@@ -11226,28 +11319,7 @@ function AdvancedModal(props) {
         return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("advanced_modal.sources.back", () => { if (!busy && !localBusyRef.current)
                 setSourcesOpen(false); }), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Table sources" }), SP_JSX.jsx(PanelRow, { tone: "header", testId: "provider-sources-summary", label: sourcesSummaryLabel, description: allOff && !providerSourcesError
                                         ? "Every source is off, so a table search cannot find anything. Switch at least one back on."
-                                        : sourcesSummaryDescription, help: sourcesSummaryHelp, actions: onResetProviderSources ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.switch_all_on", () => { void invoke(onResetProviderSources, (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause))); }), children: "Switch all on" })) : undefined }), providerSources?.diagnostics_reason && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "provider-sources-diagnostics-error", label: "Counts are unavailable", description: `${providerSources.diagnostics_reason} Searching will not repair it; Reset counts replaces the record with an empty one.`, help: "The switches themselves still work. What could not be read is the separate record of what each source has done. Ordinary use does not fix it: every search and download loads that whole record before adding to it, and a load that fails is deliberately ignored so a broken counter can never fail a search. So it stays broken until it is replaced, which is what Reset counts does. Nothing else is affected, and the counts start again from the next search.", actions: onResetProviderDiagnostics ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.reset_counts", () => { void invoke(onResetProviderDiagnostics, (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause))); }), children: "Reset counts" })) : undefined })), rows.map((source) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `provider-source-${source.provider}`, label: source.provider_display_name, description: describeSource(source, Boolean(providerSources?.diagnostics_reason)), trailing: sourceStateLabel(source), help: [
-                                        // Both halves come from the registry rather than from one
-                                        // of them standing for the other: only two of these sources
-                                        // are ever named by another source's page, and describing
-                                        // all five as if they were claimed a route three of them
-                                        // do not have.
-                                        source.discovery === "linked_source"
-                                            ? "This source is never searched on its own. It is read only when another source's page names an exact page on it, and switching it off stops that."
-                                            : source.linked_target
-                                                ? "Searched for every game, and also read when another source's page names an exact page on it. Switching it off stops both."
-                                                : "Searched for every game. Switching it off stops that; nothing else points at this source.",
-                                        source.enabled && source.cooldown_seconds > 0
-                                            ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
-                                            : null,
-                                        // A backend that keeps reasons says what the count is made
-                                        // of; an older one has only the last error, which the next
-                                        // success clears.
-                                        source.recent_errors
-                                            ? sourceErrorsHelp(source, Date.now())
-                                            : source.last_error ? `Last error: ${source.last_error}` : null,
-                                        source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null,
-                                    ].filter(Boolean).join(" "), actions: onSetProviderEnabled ? (SP_JSX.jsx(SmallButton, { disabled: blocked || switchesBlocked, onClick: traceUiAction("advanced_modal.source.toggle", () => {
+                                        : sourcesSummaryDescription, help: sourcesSummaryHelp, actions: onResetProviderSources ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.switch_all_on", () => { void invoke(onResetProviderSources, (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause))); }), children: "Switch all on" })) : undefined }), providerSources?.diagnostics_reason && (SP_JSX.jsx(PanelRow, { truncate: true, testId: "provider-sources-diagnostics-error", label: "Counts are unavailable", description: `${providerSources.diagnostics_reason} Searching will not repair it; Reset counts replaces the record with an empty one.`, help: "The switches themselves still work. What could not be read is the separate record of what each source has done. Ordinary use does not fix it: every search and download loads that whole record before adding to it, and a load that fails is deliberately ignored so a broken counter can never fail a search. So it stays broken until it is replaced, which is what Reset counts does. Nothing else is affected, and the counts start again from the next search.", actions: onResetProviderDiagnostics ? (SP_JSX.jsx(SmallButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.reset_counts", () => { void invoke(onResetProviderDiagnostics, (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause))); }), children: "Reset counts" })) : undefined })), rows.map((source) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `provider-source-${source.provider}`, label: source.provider_display_name, description: describeSource(source, Boolean(providerSources?.diagnostics_reason)), trailing: sourceStateLabel(source), help: sourceHelp(source), actions: onSetProviderEnabled ? (SP_JSX.jsx(SmallButton, { disabled: blocked || switchesBlocked, onClick: traceUiAction("advanced_modal.source.toggle", () => {
                                             void invoke(() => onSetProviderEnabled(source.provider, !source.enabled), (next) => { void reloadProviderSources(next); }, (cause) => setProviderSourcesError(describeError(cause)));
                                         }, { provider: source.provider, enabled: !source.enabled }), children: source.enabled ? "Switch off" : "Switch on" })) : undefined }, source.provider))), rows.length === 0 && (SP_JSX.jsx(PanelRow, { label: providerSourcesError ? "Sources could not be read" : "Reading sources…", description: providerSourcesError ?? "Asking the backend which sources this build can use." }))] }) }), SP_JSX.jsx("div", { style: { padding: "0 16px 8px" }, children: SP_JSX.jsx(DFL.DialogButton, { disabled: blocked, onClick: traceUiAction("advanced_modal.back_2", () => { if (!busy && !localBusyRef.current)
                                 setSourcesOpen(false); }), children: "Back" }) })] }) }));

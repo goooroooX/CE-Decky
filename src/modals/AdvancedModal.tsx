@@ -19,6 +19,7 @@ import { DebugDetails } from "../components/DebugDetails";
 import { describeError, leadWithCause } from "../errors";
 import { TableCodeModal } from "./TableCodeModal";
 import { openExternalWeb } from "../externalNavigation";
+import { ScrollableHelp } from "../components/ScrollableHelp";
 import { logUiFailure } from "../supportLog";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
 import { absentLiveTarget, blockedKey, blockedRecordedOn, sentence, updateSummary, blockedRowDetail, blockedRowLabel, blockedRecordShape, derivedChangeSentence, derivedSummaryLine, divergentLiveTarget, isExactRuntimeSession, isValidProcessBasename, isWineRuntimeExecutable, launchOwnership, providerDisplayName, releaseLabel, runtimeAttachCandidates, selfTestCheckLabel, selfTestSummary, sourceErrorsHelp } from "../uiModel";
@@ -286,6 +287,40 @@ function describeSource(source: ProviderSourceStatus, countsUnreadable: boolean)
   // serving out a wait; the deadline is just what it last said.
   if (source.enabled && source.cooldown_seconds > 0) parts.push(`waiting ${source.cooldown_seconds}s`);
   return parts.join(" · ");
+}
+
+/**
+ * What a source's `?` says: how it is reached, any wait it asked for, and what
+ * its error count is made of.
+ *
+ * The errors can run to five reasons of a few hundred characters each, which
+ * is past the bottom of a handheld's screen in a field Steam cannot focus, so
+ * help that carries them is a `ScrollableHelp`; a source with none keeps the
+ * one paragraph it always had.
+ */
+function sourceHelp(source: ProviderSourceStatus): ReactNode {
+  const lines = [
+    // Both halves come from the registry rather than from one of them standing
+    // for the other: only two of these sources are ever named by another
+    // source's page, and describing all five as if they were claimed a route
+    // three of them do not have.
+    source.discovery === "linked_source"
+      ? "This source is never searched on its own. It is read only when another source's page names an exact page on it, and switching it off stops that."
+      : source.linked_target
+        ? "Searched for every game, and also read when another source's page names an exact page on it. Switching it off stops both."
+        : "Searched for every game. Switching it off stops that; nothing else points at this source.",
+    source.enabled && source.cooldown_seconds > 0
+      ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
+      : null,
+  ].filter((line): line is string => Boolean(line));
+  const status = source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null;
+  // A backend that keeps reasons says what the count is made of; an older one
+  // has only the last error, which the next success clears.
+  const errors = source.recent_errors ? sourceErrorsHelp(source, Date.now()) : null;
+  if (errors) {
+    return <ScrollableHelp testId={`provider-source-help-${source.provider}`} lines={[...lines, ...errors, ...(status ? [status] : [])]} />;
+  }
+  return [...lines, source.last_error ? `Last error: ${source.last_error}` : null, status].filter(Boolean).join(" ");
 }
 
 /**
@@ -1223,28 +1258,7 @@ export function AdvancedModal(props: Props) {
                   label={source.provider_display_name}
                   description={describeSource(source, Boolean(providerSources?.diagnostics_reason))}
                   trailing={sourceStateLabel(source)}
-                  help={[
-                    // Both halves come from the registry rather than from one
-                    // of them standing for the other: only two of these sources
-                    // are ever named by another source's page, and describing
-                    // all five as if they were claimed a route three of them
-                    // do not have.
-                    source.discovery === "linked_source"
-                      ? "This source is never searched on its own. It is read only when another source's page names an exact page on it, and switching it off stops that."
-                      : source.linked_target
-                        ? "Searched for every game, and also read when another source's page names an exact page on it. Switching it off stops both."
-                        : "Searched for every game. Switching it off stops that; nothing else points at this source.",
-                    source.enabled && source.cooldown_seconds > 0
-                      ? "This source asked to be left alone for a while and searches honour that. A download you start yourself is not held by it, so a table can still be fetched from this source meanwhile."
-                      : null,
-                    // A backend that keeps reasons says what the count is made
-                    // of; an older one has only the last error, which the next
-                    // success clears.
-                    source.recent_errors
-                      ? sourceErrorsHelp(source, Date.now())
-                      : source.last_error ? `Last error: ${source.last_error}` : null,
-                    source.last_http_status ? `Last HTTP status ${source.last_http_status}.` : null,
-                  ].filter(Boolean).join(" ")}
+                  help={sourceHelp(source)}
                   actions={onSetProviderEnabled ? (
                     <SmallButton
                       disabled={blocked || switchesBlocked}

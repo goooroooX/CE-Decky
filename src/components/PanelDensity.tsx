@@ -1292,9 +1292,11 @@ interface RowProps {
    *
    * A diagnostics screen is full of controls whose purpose is obvious only to
    * whoever wrote them. Keeping the explanation one press away costs no height
-   * until it is asked for.
+   * until it is asked for. Usually a sentence; a row whose help can run past a
+   * handheld's screen hands a `ScrollableHelp` here instead, because this field
+   * is not something Steam can put focus on.
    */
-  help?: string;
+  help?: ReactNode;
   /**
    * A mark shown before the label rather than beside the row's controls.
    *

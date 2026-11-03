@@ -3101,7 +3101,7 @@ const MAX_KEPT_SOURCE_ERRORS = 5;
  * what was being done and why it failed, for the few whose reason is kept, and
  * how many of the count have none.
  */
-export function sourceErrorsHelp(source: ProviderSourceStatus, nowMs: number): string | null {
+export function sourceErrorsHelp(source: ProviderSourceStatus, nowMs: number): string[] | null {
   const total = source.counters?.errors ?? 0;
   const recent = source.recent_errors ?? [];
   if (!total && !recent.length) return null;
@@ -3120,7 +3120,9 @@ export function sourceErrorsHelp(source: ProviderSourceStatus, nowMs: number): s
   if (unexplained > 0) {
     parts.push(`Reasons are kept for the last ${MAX_KEPT_SOURCE_ERRORS} only, and not for errors counted before this version, so ${unexplained === 1 ? "1 has" : `${unexplained} have`} none.`);
   }
-  return parts.join(" ");
+  // One line each, because each failure is read on its own and five of them can
+  // run past a handheld's screen, which is what `ScrollableHelp` is for.
+  return parts;
 }
 
 /**

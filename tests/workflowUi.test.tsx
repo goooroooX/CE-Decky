@@ -3371,20 +3371,7 @@ describe("Home panel and managed setup", () => {
     await act(async () => { finish(sourcesSnapshot()); });
   });
 
-  it.each([
-    [
-      "the reasons it kept",
-      {
-        last_error: null,
-        recent_errors: [
-          { at: Date.now() / 1000 - 3 * 3600, kind: "download", http_status: null, error: "the download stopped" },
-          { at: Date.now() / 1000 - 2 * 86400 - 60, kind: "search", http_status: 503, error: "listing unavailable" },
-        ],
-      },
-      "3 errors counted; Working means its last search or download succeeded. 3 hours ago, a download: The download stopped. 2 days ago, a search, HTTP 503: Listing unavailable. Reasons are kept for the last 5 only, and not for errors counted before this version, so 1 has none.",
-    ],
-    ["only the last error, from a backend that keeps no reasons", { last_error: "listing unavailable" }, "Last error: listing unavailable"],
-  ])("says behind a working source's ? what its errors were: %s", async (_case, fields, expected) => {
+  function renderSource(fields: Record<string, unknown>) {
     render(<AdvancedModal
       {...blocklistProps({
         onLoadProviderSources: vi.fn().mockResolvedValue(sourcesSnapshot({
@@ -3402,12 +3389,62 @@ describe("Home panel and managed setup", () => {
         })),
       })}
     />);
+  }
 
+  async function openSourceHelp() {
     fireEvent.click(within(await screen.findByTestId("provider-sources")).getByRole("button", { name: "Choose" }));
     const row = await screen.findByTestId("provider-source-vgtimes");
     expect(within(row).getByText("Working")).toBeTruthy();
-    fireEvent.click(within(row).getByRole("button", { name: "?" }));
-    expect(row.textContent).toContain(expected);
+    const press = within(row).getByRole("button", { name: "?" });
+    fireEvent.click(press);
+    return { row, press };
+  }
+
+  it("says behind a working source's ? what each of its errors was, one line each", async () => {
+    renderSource({
+      last_error: null,
+      recent_errors: [
+        { at: Date.now() / 1000 - 3 * 3600, kind: "download", http_status: null, error: "the download stopped" },
+        { at: Date.now() / 1000 - 2 * 86400 - 60, kind: "search", http_status: 503, error: "listing unavailable" },
+      ],
+    });
+    await openSourceHelp();
+    const lines = [...screen.getByTestId("provider-source-help-vgtimes").querySelectorAll("[data-scroll-panel] > div > div")]
+      .map((line) => line.textContent);
+    expect(lines).toEqual([
+      "Searched for every game. Switching it off stops that; nothing else points at this source.",
+      "3 errors counted; Working means its last search or download succeeded.",
+      "3 hours ago, a download: The download stopped.",
+      "2 days ago, a search, HTTP 503: Listing unavailable.",
+      "Reasons are kept for the last 5 only, and not for errors counted before this version, so 1 has none.",
+      "Last HTTP status 200.",
+    ]);
+  });
+
+  it("puts a long error history in Steam's scroll panel, and closing it keeps the press", async () => {
+    // Five reasons of the length the store keeps run past the bottom of an
+    // 800 pixel screen in a field Steam cannot put focus on. Whether the box
+    // takes a stop is measured, and `scrollableHelp.test.tsx` proves that.
+    const reason = (index: number) => `failure ${index} ${"while reading the listing page ".repeat(12)}`.slice(0, 400);
+    const recent = Array.from({ length: 5 }, (_, index) => ({
+      at: Date.now() / 1000 - (index + 1) * 3600, kind: "search", http_status: 503, error: reason(index),
+    }));
+    renderSource({ last_error: null, recent_errors: recent });
+    const { row, press } = await openSourceHelp();
+    const box = screen.getByTestId("provider-source-help-vgtimes");
+    const panel = box.querySelector("[data-scroll-panel]") as HTMLElement;
+    expect(panel).not.toBeNull();
+    for (let index = 0; index < 5; index += 1) expect(panel.textContent).toContain(`Failure ${index} while reading`);
+    fireEvent.click(within(row).getByRole("button", { name: "\u00d7" }));
+    expect(screen.queryByTestId("provider-source-help-vgtimes")).toBeNull();
+    expect(within(row).getByRole("button", { name: "?" })).toBe(press);
+  });
+
+  it("keeps one paragraph behind ? for a backend that keeps no reasons", async () => {
+    renderSource({ last_error: "listing unavailable" });
+    const { row } = await openSourceHelp();
+    expect(screen.queryByTestId("provider-source-help-vgtimes")).toBeNull();
+    expect(row.textContent).toContain("nothing else points at this source. Last error: listing unavailable Last HTTP status 200.");
   });
 
   it("says a source that has never been asked has not been searched rather than showing zeroes", async () => {

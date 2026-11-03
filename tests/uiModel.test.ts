@@ -2330,11 +2330,11 @@ describe("sourceErrorsHelp", () => {
   }) as any;
 
   it("speaks of Working only where the row says it", () => {
-    expect(sourceErrorsHelp(source({}), 0)).toMatch(/^2 errors counted; Working means/);
+    expect(sourceErrorsHelp(source({}), 0)?.[0]).toBe("2 errors counted; Working means its last search or download succeeded.");
     // Off and Waiting are what those rows say, whatever the last attempt was.
-    expect(sourceErrorsHelp(source({ enabled: false }), 0)).toMatch(/^2 errors counted\. Reasons/);
-    expect(sourceErrorsHelp(source({ cooldown_seconds: 30 }), 0)).toMatch(/^2 errors counted\. Reasons/);
-    expect(sourceErrorsHelp(source({ state: "error" }), 0)).toMatch(/^2 errors counted\. Reasons/);
+    for (const overrides of [{ enabled: false }, { cooldown_seconds: 30 }, { state: "error" }]) {
+      expect(sourceErrorsHelp(source(overrides), 0)?.[0]).toBe("2 errors counted.");
+    }
   });
 
   it("says nothing for a source with no errors", () => {
