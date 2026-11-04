@@ -101,6 +101,10 @@ REQUIREMENTS = {
     "target_plugin_rpc.py": {"needs_procfs": False},
     "target_prefix_probe.py": {"needs_procfs": False},
     "target_runtime_query.py": {"needs_procfs": False},
+    # Writes its commands through that same socket and reads nothing else.
+    "target_runtime_control.py": {"needs_procfs": False},
+    # Finds the game's process and opens its memory through `/proc`.
+    "target_table_memory.py": {},
     "target_primitive_bench.py": {},
     "target_screenshot.py": {"needs_valve_hardware": True},
     "target_session_cost_probe.py": {},

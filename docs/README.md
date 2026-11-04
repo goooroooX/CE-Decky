@@ -9,6 +9,7 @@ The documents in this directory have distinct roles. Keep a fact in the narrowes
 | [SECURITY.md](SECURITY.md) | Threat model and mandatory trust boundaries |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Windows and SteamOS development, validation, and packaging workflow |
 | [REMOTE_TARGET.md](REMOTE_TARGET.md) | Driving a SteamOS device, such as a Steam Deck, over SSH from the machine the checkout is on |
+| [TABLE_REPAIR.md](TABLE_REPAIR.md) | Agent procedure for diagnosing silent table failures, proving candidate addresses and deriving a separate reviewed table without treating activation as effect proof |
 | [FIELD_NOTES.md](FIELD_NOTES.md) | What real hardware established about Steam, Proton and Cheat Engine, which table sources were evaluated and on what ground, which upstream commits a behavior was read from, and what is still unverified |
 | [IMPROVEMENTS.md](IMPROVEMENTS.md) | Improvements nothing owes: a better answer to a case that already has a safe one, with what exists toward it and what it needs before it reaches a user |
 | [UI_ACTION_AUDIT.md](UI_ACTION_AUDIT.md) | Every plugin-owned control, the functional route it takes and who owns the result, plus what the verification of those routes cannot reach. `tests/uiActionCoverage.test.ts` reads its inventory, so a control added without a row here fails that test |
