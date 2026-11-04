@@ -583,14 +583,14 @@ describe("compact QAM home navigation", () => {
   it("bounds the active-cheat summary instead of creating an unbounded home focus list", () => {
     const labels = Array.from({ length: 12 }, (_, index) => `Cheat ${index + 1}`);
     render(<HomePanel {...props({ activeCheatLabels: labels })} />);
-    expect(screen.getByText("Cheat 4")).toBeTruthy();
-    expect(screen.queryByText("Cheat 5")).toBeNull();
-    expect(screen.getByText("+8 more")).toBeTruthy();
+    expect(screen.getByText("Cheat 7")).toBeTruthy();
+    expect(screen.queryByText("Cheat 8")).toBeNull();
+    expect(screen.getByText("+5 more")).toBeTruthy();
     // Paging through the panel, the ring passes these lines: nothing in them
     // can be pressed, and Configure cheats lists them all.
     const block = screen.getByTestId("active-cheats");
     expect(block.querySelector('[data-testid="focusable"]')).toBeNull();
-    for (const label of ["Cheat 1", "Cheat 4", "+8 more"]) {
+    for (const label of ["Cheat 1", "Cheat 7", "+5 more"]) {
       const line = screen.getByText(label);
       expect(block.contains(line)).toBe(true);
       // One line each, cut rather than wrapped.
@@ -598,7 +598,7 @@ describe("compact QAM home navigation", () => {
     }
     // The names are drawn in the panel's light green; the count is not a name.
     expect(screen.getByText("Cheat 1").parentElement?.style.color).toBe("rgb(141, 220, 117)");
-    expect(screen.getByText("+8 more").parentElement?.style.color).toBe("");
+    expect(screen.getByText("+5 more").parentElement?.style.color).toBe("");
   });
 
   it("offers the second-run runtime entry point only while a table is selected and idle", () => {

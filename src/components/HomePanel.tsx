@@ -14,6 +14,8 @@ import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
 // so they sit at text spacing, and they are drawn in the light green the panel
 // uses for something that is on.
 const activeCheatListStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 0, minWidth: 0, lineHeight: "18px" };
+/** How many enabled cheats the block names before it counts the rest. */
+const ACTIVE_CHEATS_SHOWN = 7;
 const activeCheatNameStyle: CSSProperties = { display: "block", minWidth: 0, color: "#8ddc75" };
 import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from "../types";
 
@@ -615,10 +617,10 @@ export function HomePanel(props: Props) {
               testId="active-cheats"
               label={(
                 <span style={activeCheatListStyle}>
-                  {activeCheatLabels.slice(0, 4).map((label, index) => (
+                  {activeCheatLabels.slice(0, ACTIVE_CHEATS_SHOWN).map((label, index) => (
                     <span key={`${index}:${label}`} style={activeCheatNameStyle}><OneLine>{label}</OneLine></span>
                   ))}
-                  {activeCheatLabels.length > 4 && <OneLine>{`+${activeCheatLabels.length - 4} more`}</OneLine>}
+                  {activeCheatLabels.length > ACTIVE_CHEATS_SHOWN && <OneLine>{`+${activeCheatLabels.length - ACTIVE_CHEATS_SHOWN} more`}</OneLine>}
                 </span>
               )}
             />

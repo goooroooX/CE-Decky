@@ -1468,7 +1468,9 @@ function Content() {
       const result = latestRuntimeResult(liveSnapshot.results, control.id);
       if (!result?.ok || result.active !== true) continue;
       if (scriptListed.has(control.id) && !pinned.has(control.id)) scripts += 1;
-      else labels.push(control.path.join(" › "));
+      // The leaf alone: the groups a cheat sits in took most of a 300 pixel
+      // line, and the list is for recognising what is on, not where it lives.
+      else labels.push(controlRowLabel(control));
     }
     return { activeCheatLabels: labels, activeScriptCount: scripts };
   }, [activeCheatSnapshotReady, liveSnapshot, safeControls, pinnedIds]);
