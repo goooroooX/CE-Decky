@@ -309,9 +309,21 @@ def test_probe_refuses_unproven_target_or_recipe_identity(tmp_path, monkeypatch,
     path, proc, rpc, _ = fake_target(tmp_path, monkeypatch,
         pids=(10, 11) if condition == "ambiguous" else (10,),
         confirmations=(True, False) if condition == "pid-reused" else (True, True))
+    mapped = None
     if condition == "wrong-file":
+        # The running game keeps its mapped file alive, so a file put at the
+        # same path afterwards can never reuse its inode. Holding it open here is
+        # that mapping: without it a filesystem that hands a freed inode straight
+        # back gave the replacement the mapped file's number, and CI saw no
+        # refusal for a case the device cannot produce.
+        mapped = path.open("rb")
         path.unlink()
         path.write_bytes(b"a replacement file")
+        assert path.stat().st_ino != os.fstat(mapped.fileno()).st_ino
     rec = {"table_sha256": "b" * 64, "executable_sha256": "c" * 64} if condition == "wrong-recipe" else None
-    with pytest.raises(tool.Refused):
-        tool.probe(42, "a" * 64, path, rec, rpc=rpc, proc_root=proc)
+    try:
+        with pytest.raises(tool.Refused):
+            tool.probe(42, "a" * 64, path, rec, rpc=rpc, proc_root=proc)
+    finally:
+        if mapped is not None:
+            mapped.close()
