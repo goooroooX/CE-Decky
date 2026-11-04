@@ -9668,13 +9668,13 @@ const HEXPAW_DATA_URI = "data:image/png;base64,"
     + "0MrX9wbfWQq9Pi9J0eoPSSafv7PSnopDMZBC9cCbRZzlWRL7MvzKQ3Fa3AWfhKjmKPWtp5d/PuEdnh/2pTfHDnb89FN3n0YjWHoS"
     + "kpA//1uvL83o5S9czzsPd1Uq+DuPyP3fw/z/v7/+D7QvofTwNkQIAAAAAElFTkSuQmCC";
 
+/** How many enabled cheats the block under the runtime line names before it counts the rest. */
+const ACTIVE_CHEATS_SHOWN = 7;
 // The enabled cheats under the runtime line, when nothing is pinned. The block
 // keeps a row's own padding above and below; inside it the names are one list,
 // so they sit at text spacing, and they are drawn in the light green the panel
 // uses for something that is on.
 const activeCheatListStyle = { display: "flex", flexDirection: "column", gap: 0, minWidth: 0, lineHeight: "18px" };
-/** How many enabled cheats the block names before it counts the rest. */
-const ACTIVE_CHEATS_SHOWN = 7;
 const activeCheatNameStyle = { display: "block", minWidth: 0, color: "#8ddc75" };
 /**
  * The compact CE Decky quick-access panel.
