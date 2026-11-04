@@ -209,7 +209,8 @@ this way, after an ordinary import, adds that record without changing the
 digest. A new digest gets fresh exact-SHA review/consent; it inherits no
 execution permission or cross-SHA record choices.
 Stop owned CE, confirm cleanup, retire/replace the session through production,
-then launch the new exact-SHA session in the validated target environment.
+then launch the new exact-SHA session in the validated target environment;
+`target_table_switch.py --consent` does exactly that and reports each step.
 Do not swap tables in a live CE process. Test one function at a time and verify
 the field before activation, after activation and after deactivation. Compare
 actual gameplay, exercise a weapon/level transition and a fresh game process,

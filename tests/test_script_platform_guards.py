@@ -105,6 +105,9 @@ REQUIREMENTS = {
     "target_runtime_control.py": {"needs_procfs": False},
     # Finds the game's process and opens its memory through `/proc`.
     "target_table_memory.py": {},
+    # Drives the backend's own stop, select, consent and launch through the
+    # socket, and reads no process table of its own.
+    "target_table_switch.py": {"needs_procfs": False},
     "target_primitive_bench.py": {},
     "target_screenshot.py": {"needs_valve_hardware": True},
     "target_session_cost_probe.py": {},
