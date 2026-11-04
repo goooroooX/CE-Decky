@@ -171,6 +171,8 @@ A few things about that copy, because it is your table that is being changed:
 - nothing is done silently, and nothing is guessed. The copy is only made if the rest of the table can be shown to still hold together: every other cheat still there, nothing left pointing at what was taken out, and every other piece of code the table looks for still found in your game. If that cannot be shown, the press refuses and says why, instead of handing you a table nobody can stand behind;
 - the copy did not come from any site, so it carries none of the marks a download does. The panel calls it **Fixed** where a downloaded table names its source, and its review screen names the table it was made from.
 
+A table someone repaired outside CE Decky, such as one with its addresses corrected for your game's version, is also called **Fixed** when it is imported with the table it was made from named. Its review screen says the change was made outside CE Decky and was not checked by it, and names any cheat of the original the copy no longer offers, so read what it runs before you allow it.
+
 ## Where your data lives
 
 Everything CE Decky creates is under `~/.cheat-engine-decky/`:

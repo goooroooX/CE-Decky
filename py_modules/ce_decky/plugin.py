@@ -200,6 +200,9 @@ class Plugin:
     async def import_table(self, selection: str, member_path: str | None = None, password: str | None = None, app_id: int | None = None):
         return await self.operations.run_blocking(self._svc().import_table, selection, member_path, password, app_id)
 
+    async def import_repaired_table(self, selection: str, source_sha256: str, app_id: int | None = None):
+        return await self.operations.run_blocking(self._svc().import_repaired_table, selection, source_sha256, app_id)
+
     async def inspect_table_sha(self, digest: str, app_id: int | None = None):
         return await self.operations.run_blocking(self._svc().inspect_table_sha, digest, app_id)
 

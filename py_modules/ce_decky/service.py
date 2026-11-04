@@ -1627,6 +1627,73 @@ class PluginService:
             )
             return artifact.as_dict()
 
+    def import_repaired_table(
+        self,
+        selection: str,
+        source_sha256: str,
+        app_id: int | None = None,
+    ) -> dict[str, object]:
+        """Import a copy repaired outside CE Decky and record what it was made from.
+
+        The agent procedure in `docs/TABLE_REPAIR.md` produces such a copy: a
+        held table with corrected addresses, reviewed and imported by hand. As
+        an ordinary file it would list as `Local`, which hides the one fact a
+        reader of the row needs, that these bytes are somebody's repair of a
+        table this device already holds. The record says so and no more: the
+        transform is `external-repair`, which Review words as a change CE Decky
+        neither made nor checked, and the copy keeps its own digest, inspection
+        and consent like any other table.
+
+        What CE Decky can establish for itself it does: the source is a held,
+        verified table, the copy is different bytes, and the cheats the source
+        offers that the copy does not are named from both inspections, which
+        is the cost the copy's Review states before consent.
+        """
+        source = self._sha(source_sha256)
+        with self._mutation_lock:
+            try:
+                source_path = self.table_store.verified_blob(source)
+            except ValueError as exc:
+                log_activity(
+                    self.logger, "warning", "table_import.repair_refused",
+                    source_sha=source[:12], reason=str(exc),
+                )
+                raise
+            artifact = self.table_store.import_selection(
+                selection, sevenzip=self._find_7zip(), app_id=app_id,
+            )
+            if artifact.sha256 == source:
+                log_activity(
+                    self.logger, "warning", "table_import.repair_refused",
+                    source_sha=source[:12], reason="copy is the source",
+                )
+                raise ValueError("a repaired copy has to differ from the table it was made from")
+            copy_path = self.table_store.verified_blob(artifact.sha256)
+            kept = {
+                control.id for control in self._inspect_table_blob(copy_path, artifact.sha256, app_id).controls
+                if control.id is not None
+            }
+            # A group header with no script of its own is a heading, not a
+            # cheat, and naming one as lost would overstate the cost.
+            gone = [
+                control.description or f"record {control.id}"
+                for control in self._inspect_table_blob(source_path, source, app_id).controls
+                if control.id is not None and control.id not in kept
+                and not (control.group_header and not control.has_assembler_script)
+            ]
+            stored = self.table_store.import_derived(
+                read_regular_bytes(copy_path, max_bytes=MAX_CT_BYTES),
+                filename=artifact.filename,
+                derived_from={
+                    "sha256": source, "transforms": ["external-repair"], "scans": [], "orphaned": gone,
+                },
+            )
+        log_activity(
+            self.logger, "info", "table_import.repaired",
+            source_sha=source[:12], result_sha=stored.sha256[:12], records_gone=len(gone),
+        )
+        return stored.as_dict()
+
     def _inspect_table_blob(self, blob: bytes, digest: str, app_id: int | None = None):
         """Read one exact table, and record it as not working if it cannot be.
 

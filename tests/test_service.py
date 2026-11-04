@@ -2011,6 +2011,62 @@ SIGNED_FIXTURE = (
 )
 
 
+def _two_cheat_table(address: str, *, ammo: bool = True) -> str:
+    entries = (
+        '<CheatEntry><ID>1</ID><Description>"Health"</Description>'
+        f'<VariableType>4 Bytes</VariableType><Address>{address}</Address></CheatEntry>'
+    )
+    if ammo:
+        entries += ('<CheatEntry><ID>2</ID><Description>"Ammo"</Description>'
+                    '<VariableType>4 Bytes</VariableType><Address>game.exe+20</Address></CheatEntry>'
+                    '<CheatEntry><ID>3</ID><Description>"Extras"</Description><GroupHeader>1</GroupHeader></CheatEntry>')
+    return f'<?xml version="1.0"?>\n<CheatTable CheatEngineTableVersion="45"><CheatEntries>{entries}</CheatEntries></CheatTable>\n'
+
+
+def test_a_copy_repaired_outside_ce_decky_is_recorded_as_derived_from_its_source(tmp_path: Path):
+    """Agent-repaired bytes list as a fixed copy of a held table, never as `Local`.
+
+    The record names the source and a transform CE Decky did not perform, and
+    the cost is read from both inspections rather than taken from the caller:
+    a cheat the source offers and the copy does not is named.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("repaired"))
+    service.initialize()
+    (tmp_path / "source.CT").write_text(_two_cheat_table("game.exe+10"), encoding="utf-8")
+    source = service.import_table(str(tmp_path / "source.CT"))
+    (tmp_path / "repaired.CT").write_text(_two_cheat_table("game.exe+14", ammo=False), encoding="utf-8")
+
+    repaired = service.import_repaired_table(str(tmp_path / "repaired.CT"), str(source["sha256"]))
+
+    assert repaired["sha256"] != source["sha256"]
+    assert repaired["derived_from"] == {
+        "sha256": source["sha256"], "transforms": ["external-repair"], "scans": [], "orphaned": ["Ammo"],
+    }
+    assert repaired["filename"] == "repaired.CT"
+    # Stored, not only answered: the library row reads the record back.
+    assert service.table_store.get_table(str(repaired["sha256"]))["derived_from"] == repaired["derived_from"]
+    # The ordinary import of the same bytes keeps that history.
+    again = service.import_table(str(tmp_path / "repaired.CT"))
+    assert again["derived_from"] == repaired["derived_from"]
+
+
+def test_a_repaired_copy_needs_a_held_source_and_different_bytes(tmp_path: Path):
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("repaired"))
+    service.initialize()
+    (tmp_path / "source.CT").write_text(_two_cheat_table("game.exe+10"), encoding="utf-8")
+    source = service.import_table(str(tmp_path / "source.CT"))
+
+    with pytest.raises(ValueError, match="has to differ"):
+        service.import_repaired_table(str(tmp_path / "source.CT"), str(source["sha256"]))
+    assert service.table_store.get_table(str(source["sha256"]))["derived_from"] is None
+
+    (tmp_path / "repaired.CT").write_text(_two_cheat_table("game.exe+14"), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing"):
+        service.import_repaired_table(str(tmp_path / "repaired.CT"), "c" * 64)
+    listed = {table["sha256"] for table in service.table_store.list_tables()}
+    assert listed == {source["sha256"]}
+
+
 def test_a_signed_table_can_be_stored_again_without_its_signature(tmp_path: Path):
     """The one place CE Decky makes executable content rather than carrying it.
 

@@ -2131,7 +2131,8 @@ export function derivedSummaryLine(
       parts.push(scans === 0
         ? "code for a missing pattern removed"
         : scans === 1 ? "code for 1 missing pattern removed" : `code for ${scans} missing patterns removed`);
-    } else parts.push("a change this version cannot name");
+    } else if (transform === "external-repair") parts.push("repaired outside CE Decky");
+    else parts.push("a change this version cannot name");
   }
   // A record naming no transform at all is one the store refuses to write and
   // drops when it cannot read it, so this is the belt on that brace. What it
@@ -2166,6 +2167,18 @@ export function derivedSummaryLine(
 export function derivedChangeSentence(derivation: TableDerivation | null | undefined): string | null {
   if (!derivation) return null;
   const source = derivation.sha256.slice(0, 12);
+  // Somebody else's change, imported with its source named. CE Decky can say
+  // which of the source's cheats the copy no longer offers, because it reads
+  // both, and nothing about what the rest of the copy now does.
+  if (derivation.transforms.includes("external-repair")) {
+    const gone = derivation.orphaned ?? [];
+    const named = gone.slice(0, 2).join(", ");
+    const more = gone.length - Math.min(2, gone.length);
+    const cost = gone.length === 0
+      ? " Every cheat the original offers is in this copy."
+      : ` ${gone.length === 1 ? "One cheat of the original is" : `${gone.length} cheats of the original are`} not in this copy: ${more > 0 ? `${named} and ${more} more` : named}.`;
+    return `This copy was repaired outside CE Decky from ${source}. CE Decky did not make these changes and has not checked them, so read what it runs before allowing it.${cost}`;
+  }
   const parts: string[] = [];
   for (const transform of derivation.transforms) {
     if (transform === "remove-signature") parts.push("removing the signature");

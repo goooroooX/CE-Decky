@@ -57,6 +57,8 @@ export const importCEArchive = callable<[selection: string], {
 export const clearCEImport = callable<[], { ok: boolean }>("clear_ce_import");
 export const inspectTableSource = callable<[selection: string], TableSourceInspection>("inspect_table_source");
 export const importTable = callable<[selection: string, memberPath?: string | null, password?: string | null, appId?: number | null], TableStatus>("import_table");
+/** A copy repaired outside CE Decky, recorded as derived from a held table. Reached by the agent repair procedure, not by a panel control. */
+export const importRepairedTable = callable<[selection: string, sourceSha256: string, appId?: number | null], TableStatus>("import_repaired_table");
 export const inspectTableSha = callable<[digest: string, appId?: number | null], TableInspection>("inspect_table_sha");
 /** The cheats this game's startup leaves on that nobody asked for, by record ID. */
 export const startupLeftOn = callable<[appId: number], { table_sha256: string | null; record_ids: number[] }>("startup_left_on");

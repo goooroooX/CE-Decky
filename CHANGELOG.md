@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.35 — 2026-11-04
+
+- [New] A table repaired outside CE Decky and imported with the table it was made from named lists as **Fixed** rather than **Local**. Its Review says the change was made outside CE Decky and was not checked by it, and names the original's cheats the copy no longer offers; the copy still takes its own review and consent.
+
 ## 0.9.34 — 2026-11-03
 
 - [Fixed] A table source's **?** in Advanced, Table sources, says what its error count is made of, in a box the controller scrolls where it runs past the screen: when each of its last five failures happened, what was being done and why it failed, and that **Working** means its last search or download succeeded. A later success no longer clears the only reason kept, and the support bundle carries the same list. Errors counted before this version have no reason kept, and the **?** says how many.

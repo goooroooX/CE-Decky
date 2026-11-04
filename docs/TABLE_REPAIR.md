@@ -194,7 +194,19 @@ Passing a script as Lua's main filename executes it; `lua -e '<check>' <file>`
 also executes that file after the check. Host compilation does not validate
 dynamic AA strings or prove compatibility with the installed CE Lua runtime.
 
-Import through the ordinary plugin path. A new digest gets fresh exact-SHA review/consent; it inherits no
+Import it with the table it was made from named, so the library lists it as a
+**Fixed** copy of that table rather than as **Local**:
+
+```bash
+python3 scripts/target_plugin_rpc.py import_repaired_table \
+  '["<new-table-path>", "<source-table-sha>", <appid>]'
+```
+
+The source has to be a table this device holds, and the copy has to be
+different bytes. Review says the change was made outside CE Decky and names
+the source's cheats the copy no longer offers. Importing the same bytes again
+this way, after an ordinary import, adds that record without changing the
+digest. A new digest gets fresh exact-SHA review/consent; it inherits no
 execution permission or cross-SHA record choices.
 Stop owned CE, confirm cleanup, retire/replace the session through production,
 then launch the new exact-SHA session in the validated target environment.

@@ -932,7 +932,10 @@ def _normalize_table_metadata(raw: object, digest: str) -> dict[str, object]:
 
 # What CE Decky may say it did to a table's bytes. One name per transform, so a
 # record cannot describe a derivation this build does not know how to make.
-KNOWN_TRANSFORMS = frozenset({"remove-signature", "drop-unmatched-scans"})
+# `external-repair` is a copy repaired outside CE Decky and imported with the
+# table it was made from named: CE Decky records that history but made none of
+# the change, and Review says exactly that.
+KNOWN_TRANSFORMS = frozenset({"remove-signature", "drop-unmatched-scans", "external-repair"})
 
 # What one derivation record may carry of what the repair took out. Both lists
 # are what the copy's own Review says it changed and what that cost, and both

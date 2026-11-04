@@ -56,6 +56,7 @@ import {
   switchesLeftOn,
   tableSourceLabel,
   derivedSummaryLine,
+  derivedChangeSentence,
   fearlessIndexSentence,
   blockedRecordShape,
   providerShortName,
@@ -213,6 +214,22 @@ describe("controller UI model", () => {
     // nothing under it is the state this row was added to end.
     expect(derivedSummaryLine({ ...derivation, transforms: [], orphaned: [] }, "T.CT"))
       .toBe("from T.CT · what was changed is not recorded · no cheat lost");
+  });
+
+  it("calls a copy repaired outside CE Decky Fixed without claiming CE Decky made it", () => {
+    // The agent repair procedure imports its copy with the source named. The
+    // row is Fixed like any other derived copy, and its account says whose
+    // change it is and which of the source's cheats the copy no longer offers.
+    const derivation = { sha256: "d".repeat(64), transforms: ["external-repair"], scans: [], orphaned: ["Fly", "Spawn", "Spawn"] };
+    expect(tableSourceLabel({ origins: [], derived_from: derivation } as any)).toBe("Fixed");
+    expect(derivedSummaryLine(derivation, "Original.CT"))
+      .toBe("from Original.CT · repaired outside CE Decky · 3 cheats gone");
+    const sentence = derivedChangeSentence(derivation) ?? "";
+    expect(sentence).toBe(`This copy was repaired outside CE Decky from ${"d".repeat(12)}. CE Decky did not make these changes `
+      + "and has not checked them, so read what it runs before allowing it. 3 cheats of the original are not in this copy: Fly, Spawn and 1 more.");
+    expect(sentence).not.toContain("CE Decky made");
+    expect(derivedChangeSentence({ ...derivation, orphaned: [] }))
+      .toContain("Every cheat the original offers is in this copy.");
   });
 
   it("says what the indexed source's own copy of the listing holds", () => {
