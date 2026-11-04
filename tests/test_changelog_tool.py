@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.changelog import add_entry, set_date, start_version
+from scripts.changelog import add_dated_entry, add_entry, set_date, start_version
 
 CURRENT = [
     "# Changelog",
@@ -115,6 +115,20 @@ def test_a_date_move_changes_both_files_and_nothing_else():
     # Only those two lines: the older version keeps its own date.
     assert [line for line, before in zip(changelog, CURRENT) if line != before] == ["## 0.9.14 — 2026-09-05"]
     assert changelog[9] == "## 0.9.13 — 2026-09-04"
+
+
+def test_an_entry_dates_its_version_the_day_it_is_written():
+    """A version's date is when its last change was made, not when it started."""
+    changelog, agents = add_dated_entry(
+        "[Fixed] Written a day later.", "2026-09-05",
+        changelog=list(CURRENT), agents=list(AGENTS_LINES), version="0.9.14",
+    )
+
+    assert changelog[4] == "## 0.9.14 — 2026-09-05"
+    assert changelog[6] == "- [Fixed] Written a day later."
+    assert agents[2] == "Current development version: **0.9.14 — 2026-09-05**"
+    # The older version keeps its own date.
+    assert "## 0.9.13 — 2026-09-04" in changelog
 
 
 @pytest.mark.parametrize("date", ["2026-9-5", "05.09.2026", "2026-02-30"])

@@ -685,10 +685,13 @@ python scripts/changelog.py add "[Fixed] What changed, and why it was wrong befo
 ```
 
 It refuses a label that is not one of the five, an em dash, more than one line,
-and a version heading that `package.json` has moved past.
+and a version heading that `package.json` has moved past. It also dates the
+current version today, in both places that carry its date, because a version's
+date is when its last change was made.
 
 The current version's date is in two places, `AGENTS.md` and the newest
-changelog heading, and moves in both at once:
+changelog heading, and moves in both at once; set it explicitly where an entry
+should not be what dates the version:
 
 ```bash
 python scripts/changelog.py date            # today's local date

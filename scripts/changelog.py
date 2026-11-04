@@ -16,7 +16,10 @@ moment the entry is written rather than at the next QA run:
 - the version at the top matches `package.json`, so an entry cannot land under
   a heading the rest of the repository has moved past;
 - no em dash, which this project does not use in its own prose;
-- the entry goes above the current top entry of that version, on its own line.
+- the entry goes above the current top entry of that version, on its own line;
+- the version is dated the day the entry was written, in both places that carry
+  its date, because a version's date is when its last change was made and an
+  entry added on a later day left it showing the day the version was started.
 
 `date` moves the current version's date, which `AGENTS.md` and the newest
 changelog heading both carry and the release check holds equal. Changing one by
@@ -155,6 +158,13 @@ def set_date(
     return changelog, agents
 
 
+def add_dated_entry(
+    text: str, date: str, *, changelog: list[str], agents: list[str], version: str,
+) -> tuple[list[str], list[str]]:
+    """Both files with the entry added and the current version dated `date`."""
+    return set_date(date, changelog=add_entry(text, lines=changelog, version=version), agents=agents, version=version)
+
+
 def _checked_date(date: str) -> str:
     if not DATE.match(date):
         raise SystemExit(f"a date is YYYY-MM-DD, not {date!r}")
@@ -228,7 +238,7 @@ def start_version(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     subcommands = parser.add_subparsers(dest="command", required=True)
-    adder = subcommands.add_parser("add", help="add one entry to the current version")
+    adder = subcommands.add_parser("add", help="add one entry to the current version and date it today")
     adder.add_argument("entry", help='the entry, starting with its label: "[Fixed] ..."')
     dater = subcommands.add_parser("date", help="move the current version's date in AGENTS.md and CHANGELOG.md")
     dater.add_argument("date", nargs="?", help="YYYY-MM-DD; today's local date when omitted")
@@ -270,10 +280,17 @@ def main() -> None:
         AGENTS.write_text("\n".join(agents) + "\n", encoding="utf-8")
         print(f"changelog: {version} is dated {date} in AGENTS.md and CHANGELOG.md")
         return
-    lines = CHANGELOG.read_text(encoding="utf-8").splitlines()
-    updated = add_entry(arguments.entry, lines=lines, version=version)
-    CHANGELOG.write_text("\n".join(updated) + "\n", encoding="utf-8")
-    print(f"changelog: one entry added to {version}")
+    date = datetime.date.today().isoformat()
+    changelog, agents = add_dated_entry(
+        arguments.entry,
+        date,
+        changelog=CHANGELOG.read_text(encoding="utf-8").splitlines(),
+        agents=AGENTS.read_text(encoding="utf-8").splitlines(),
+        version=version,
+    )
+    CHANGELOG.write_text("\n".join(changelog) + "\n", encoding="utf-8")
+    AGENTS.write_text("\n".join(agents) + "\n", encoding="utf-8")
+    print(f"changelog: one entry added to {version}, dated {date}")
 
 
 if __name__ == "__main__":
