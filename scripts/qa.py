@@ -487,6 +487,12 @@ def _tests_for_changes(changed: Iterable[str]) -> list[str]:
     }
     for name in changed:
         path = Path(name)
+        if name.startswith("scripts/") and path.suffix == ".py":
+            # Every helper is judged by one registry of the host class it
+            # requires, and that test is not the helper's own. A new device
+            # helper passed its own tests unregistered and failed only the full
+            # gate, so any helper change selects the registry as well.
+            selected.add("tests/test_script_platform_guards.py")
         if name.startswith("tests/test_") and name.endswith(".py"):
             if (ROOT / name).exists():
                 selected.add(name)

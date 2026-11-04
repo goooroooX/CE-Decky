@@ -84,7 +84,22 @@ def test_changelog_selects_its_own_shape_check():
 def test_release_packaging_selects_the_workflow_check():
     """Either side of the artifact-name agreement selects the check for it."""
     assert qa._tests_for_changes([".github/workflows/release.yml"]) == ["tests/test_release_workflow.py"]
-    assert qa._tests_for_changes(["scripts/package_plugin.py"]) == ["tests/test_release_workflow.py"]
+    assert qa._tests_for_changes(["scripts/package_plugin.py"]) == [
+        "tests/test_release_workflow.py", "tests/test_script_platform_guards.py",
+    ]
+
+
+def test_any_helper_change_selects_the_host_guard_registry():
+    """The registry judges every guarded helper, and no helper's own test does.
+
+    A device helper added without its registry row passed its own tests and
+    failed only the full gate, so a change to any script selects the registry.
+    """
+    assert qa._tests_for_changes(["scripts/target_table_memory.py"]) == [
+        "tests/test_script_platform_guards.py", "tests/test_target_table_memory.py",
+    ]
+    assert "tests/test_script_platform_guards.py" in qa._tests_for_changes(["scripts/table_repair.py"])
+    assert "tests/test_script_platform_guards.py" not in qa._tests_for_changes(["docs/DEVELOPMENT.md"])
 
 
 def test_dependency_manifest_escalates_to_full_backend():
