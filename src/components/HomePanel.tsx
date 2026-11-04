@@ -1,13 +1,20 @@
 import { traceUiAction } from "../uiActions";
 import { ButtonItem, NavEntryPositionPreferences, PanelSection, PanelSectionRow, Spinner, ToggleField } from "@decky/ui";
-import { useRef } from "react";
+import { useRef, type CSSProperties } from "react";
 import { CheatRow } from "./CheatRow";
 import { CompatibilityMark } from "./CompatibilityMark";
-import { ActionRow, CONTENTS_ONLY, DensePanel, PanelRow, SectionHeading, SmallButton, SwitchBox, UPDATE_ACTION_CLASS } from "./PanelDensity";
+import { ActionRow, CONTENTS_ONLY, DensePanel, OneLine, PanelRow, SectionHeading, SmallButton, SwitchBox, UPDATE_ACTION_CLASS } from "./PanelDensity";
 import { HEXPAW_DATA_URI } from "../assets/hexpaw";
 import { leadWithCause } from "../errors";
 import { activeCountLabel, type BlockedMark, type PinnedCheatRow } from "../uiModel";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
+
+// The enabled cheats under the runtime line, when nothing is pinned. The block
+// keeps a row's own padding above and below; inside it the names are one list,
+// so they sit at text spacing, and they are drawn in the light green the panel
+// uses for something that is on.
+const activeCheatListStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 0, minWidth: 0, lineHeight: "18px" };
+const activeCheatNameStyle: CSSProperties = { display: "block", minWidth: 0, color: "#8ddc75" };
 import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from "../types";
 
 interface Props {
@@ -597,14 +604,25 @@ export function HomePanel(props: Props) {
         {runtimeReady && activeCheatSnapshotReady && pinnedMissing > 0 && (
           <PanelSectionRow><PanelRow status testId="pinned-status" label="Pinned controls" truncate description={`${pinnedMissing} pinned not found in the running table.`} /></PanelSectionRow>
         )}
-        {/* Read where they are, so the ring passes over them: each name is
-            the whole of what the row says, nothing on it can be pressed, and
-            Configure cheats right below holds the full list. */}
-        {pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (
-          <PanelSectionRow key={`${index}:${label}`}><PanelRow status label={label} /></PanelSectionRow>
-        ))}
-        {pinnedCount === 0 && activeCheatLabels.length > 4 && (
-          <PanelSectionRow><PanelRow status label={`+${activeCheatLabels.length - 4} more`} /></PanelSectionRow>
+        {/* One block read where it is, so the ring passes over it: nothing in
+            it can be pressed, and Configure cheats right below holds the full
+            list. Each name keeps to one line, and the lines sit close because
+            they are one list rather than rows of their own. */}
+        {pinnedCount === 0 && activeCheatLabels.length > 0 && (
+          <PanelSectionRow>
+            <PanelRow
+              status
+              testId="active-cheats"
+              label={(
+                <span style={activeCheatListStyle}>
+                  {activeCheatLabels.slice(0, 4).map((label, index) => (
+                    <span key={`${index}:${label}`} style={activeCheatNameStyle}><OneLine>{label}</OneLine></span>
+                  ))}
+                  {activeCheatLabels.length > 4 && <OneLine>{`+${activeCheatLabels.length - 4} more`}</OneLine>}
+                </span>
+              )}
+            />
+          </PanelSectionRow>
         )}
 
         {/* A table stays selected across restarts, so the second run must be

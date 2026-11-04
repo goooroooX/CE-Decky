@@ -586,11 +586,19 @@ describe("compact QAM home navigation", () => {
     expect(screen.getByText("Cheat 4")).toBeTruthy();
     expect(screen.queryByText("Cheat 5")).toBeNull();
     expect(screen.getByText("+8 more")).toBeTruthy();
-    // Paging through the panel, the ring passes these lines: a name has
-    // nothing to press and nothing hidden, and Configure cheats lists them all.
+    // Paging through the panel, the ring passes these lines: nothing in them
+    // can be pressed, and Configure cheats lists them all.
+    const block = screen.getByTestId("active-cheats");
+    expect(block.querySelector('[data-testid="focusable"]')).toBeNull();
     for (const label of ["Cheat 1", "Cheat 4", "+8 more"]) {
-      expect(screen.getByText(label).closest('[data-testid="focusable"]')).toBeNull();
+      const line = screen.getByText(label);
+      expect(block.contains(line)).toBe(true);
+      // One line each, cut rather than wrapped.
+      expect(line.classList.contains("ce-decky-ellipsis")).toBe(true);
     }
+    // The names are drawn in the panel's light green; the count is not a name.
+    expect(screen.getByText("Cheat 1").parentElement?.style.color).toBe("rgb(141, 220, 117)");
+    expect(screen.getByText("+8 more").parentElement?.style.color).toBe("");
   });
 
   it("offers the second-run runtime entry point only while a table is selected and idle", () => {
