@@ -6887,17 +6887,32 @@ function SignedMark() {
         }, children: "Signed" });
 }
 
-const DERIVED_LABEL = "CE Decky made this copy from another table";
 /**
- * One passive glyph for bytes this device produced rather than received.
+ * One green chip on a row whose bytes are a fixed copy of another table.
  *
- * Provenance, never status, and drawn in the panel's accent for the same reason
- * `SameTableMark` is: a row can carry a compatibility verdict beside it and the
- * two must not read as one finding. What it means is on the row's own line,
- * which names the table these bytes came from.
+ * The same chip as `SignedMark`, and for the same reason a word: provenance is
+ * a property of the bytes, known before anything is tried, and the panel calls
+ * these tables **Fixed** wherever it names where a table came from. Green
+ * because a fixed copy is the answer to a table that did not work here, and
+ * a word rather than a glyph so it does not read as the compatibility verdict
+ * drawn beside it in a similar green.
+ *
+ * The title says whose change it was: a copy CE Decky made itself, or one
+ * repaired outside it and imported with its source named.
  */
-function DerivedMark() {
-    return SP_JSX.jsx("span", { role: "img", title: DERIVED_LABEL, "aria-label": DERIVED_LABEL, style: { color: "var(--ce-accent, hsla(203, 89%, 66%, 0.85))", whiteSpace: "nowrap", flexShrink: 0, lineHeight: 0 }, children: SP_JSX.jsxs("svg", { width: "16", height: "16", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", style: { verticalAlign: "middle" }, children: [SP_JSX.jsx("rect", { x: "1.5", y: "3", width: "5.5", height: "10", rx: "1", fill: "none", stroke: "currentColor" }), SP_JSX.jsx("rect", { x: "9", y: "3", width: "5.5", height: "10", rx: "1", fill: "none", stroke: "currentColor" }), SP_JSX.jsx("path", { d: "M7.4 8h1.2M7.9 6.9L9.1 8l-1.2 1.1", fill: "none", stroke: "currentColor", strokeWidth: "1.2" })] }) });
+function FixedMark({ derivation }) {
+    const outside = derivation?.transforms?.includes("external-repair") === true;
+    return SP_JSX.jsx("span", { title: outside ? "Repaired outside CE Decky from another table" : "CE Decky made this copy from another table", style: {
+            flex: "0 0 auto",
+            padding: "0 4px",
+            borderRadius: 3,
+            fontSize: "0.7em",
+            lineHeight: "16px",
+            fontWeight: 700,
+            whiteSpace: "nowrap",
+            background: "hsla(105, 60%, 66%, 0.85)",
+            color: "hsla(0, 0%, 0%, 0.86)",
+        }, children: "Fixed" });
 }
 
 /**
@@ -8158,7 +8173,7 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
                         // has been republished, so it stays reachable: the row opens, the
                         // window says the copy is marked, and the ring lands on the download.
                         const blocked = blockedView.byDigest[table.sha256.toLowerCase()];
-                        return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { className: FOCUS_SCROLL_CLASS, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !onLocalSelected, onClick: traceUiAction("catalog.local_table", () => showExistingChoice(table, { provenance: "local_only" }), { table_sha: table.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: table.filename }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, table.sha256), blocked: blocked ?? null }), tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : null, table.derived_from ? SP_JSX.jsx(DerivedMark, {}) : null, SP_JSX.jsx("span", { style: ROW_MARK_LOCAL, children: "Local" })] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
+                        return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { className: FOCUS_SCROLL_CLASS, children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy || !onLocalSelected, onClick: traceUiAction("catalog.local_table", () => showExistingChoice(table, { provenance: "local_only" }), { table_sha: table.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: table.filename }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, table.sha256), blocked: blocked ?? null }), tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : null, table.derived_from ? SP_JSX.jsx(FixedMark, { derivation: table.derived_from }) : null, SP_JSX.jsx("span", { style: ROW_MARK_LOCAL, children: "Local" })] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
                                                         // When, which release, how large: the three a reader scans
                                                         // for, in that order, ahead of the identity that answers
                                                         // which exact bytes these are.
@@ -8214,7 +8229,8 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
                                         showExistingChoice(localTable, { result, provenance });
                                     else
                                         void acquire(result);
-                                }, { provider: result.provider, artifact_id: result.artifact_id, table_sha: localTable?.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: result.table_title }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, subjectDigest), blocked: failureRecord }), marks.duplicate ? SP_JSX.jsx(SameTableMark, {}) : null, localTable && tableIsSigned(localBySha.get(localTable.sha256)) ? SP_JSX.jsx(SignedMark, {}) : null, mark ? SP_JSX.jsx("span", { style: mark.style, children: mark.text }) : null] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
+                                }, { provider: result.provider, artifact_id: result.artifact_id, table_sha: localTable?.sha256 }), children: SP_JSX.jsxs("div", { style: RESULT_LINES, children: [SP_JSX.jsxs("div", { style: TITLE_ROW, children: [SP_JSX.jsx("span", { style: TITLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: result.table_title }) }), SP_JSX.jsx(CompatibilityMark, { evidence: gameCompatibility(compatibilityView, appId, subjectDigest), blocked: failureRecord }), marks.duplicate ? SP_JSX.jsx(SameTableMark, {}) : null, localTable && tableIsSigned(localBySha.get(localTable.sha256)) ? SP_JSX.jsx(SignedMark, {}) : null, localTable && localBySha.get(localTable.sha256)?.derived_from
+                                                    ? SP_JSX.jsx(FixedMark, { derivation: localBySha.get(localTable.sha256)?.derived_from }) : null, mark ? SP_JSX.jsx("span", { style: mark.style, children: mark.text }) : null] }), SP_JSX.jsx("span", { style: SUBTLE_TEXT, children: SP_JSX.jsx(FocusScrollText, { paced: true, children: [
                                                     // When, which release, how large. One post commonly carries
                                                     // every revision of the same table, so its attachments share a
                                                     // filename, a title and the date of the post they sit in: the
@@ -13499,7 +13515,9 @@ function ImportedTablesModal({ compatibility = [], tables, otherTables = [], own
                                         }), children: "Local file" })) }) })] }), SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: "Tables" }), failure && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-failure", status: true, label: "That did not work", description: failure }) })), remaining.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing imported yet", description: "Open a file above, or search online." }) })), remaining.length > 0 && entries.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Nothing matches that", description: "Clear the filter to see every table." }) })), (entries.length > 0 || filterable) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: "manage-summary", tone: "header", truncate: true, scroll: true, fillWithActions: filterable, label: canSelect ? `${mineCount} here, ${deviceCount} elsewhere` : `${mineCount + deviceCount} on this device`, description: canSelect ? "No provider or network needed." : "Choose a game to use one.", actions: filterable ? (SP_JSX.jsx("div", { style: MANAGE_FILTER, children: SP_JSX.jsx(FilterField, { placeholder: "Filter", disabled: selecting, value: filter, onChange: traceUiEdit("imported_tables_modal.filter_by_name_or_digest", (event) => moveTo(() => {
                                                 setFilter(String(event.target.value ?? ""));
                                                 setPage(0);
-                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), leadingMark: tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : undefined, mark: SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }), table.derived_from ? SP_JSX.jsx(DerivedMark, {}) : null] }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
+                                            })) }) })) : undefined }) })), SP_JSX.jsx("div", { ref: setListNode, style: pageHeight === null ? undefined : { minHeight: pageHeight }, "data-testid": "manage-list", children: visible.map(({ table, group }, index) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(PanelRow, { testId: `${group === "mine" ? "imported" : "stored"}-table-${table.sha256.slice(0, 8)}`, truncate: true, scroll: true, tone: group === "device" ? "aside" : "own", label: rowLabel(table, group, index), description: rowDescription(table), leadingMark: tableIsSigned(table) || table.derived_from
+                                            ? SP_JSX.jsxs(SP_JSX.Fragment, { children: [tableIsSigned(table) ? SP_JSX.jsx(SignedMark, {}) : null, table.derived_from ? SP_JSX.jsx(FixedMark, { derivation: table.derived_from }) : null] })
+                                            : undefined, mark: SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsx(CompatibilityMark, { evidence: compatibility.find((entry) => entry.table_sha256 === table.sha256), blocked: blockedReasons[table.sha256] ?? null }) }), actions: SP_JSX.jsx("div", { style: CONTENTS_ONLY, ref: (node) => {
                                                 if (node)
                                                     rowRefs.current.set(table.sha256, node);
                                                 else

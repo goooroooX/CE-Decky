@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.35 — 2026-11-05
 
+- [Changed] A fixed copy of a table carries a green **Fixed** chip, the same shape as **Signed**, in front of its name in Manage and beside it in search, in place of the small two-sheet icon.
 - [Changed] A cheat command refused because the table holds no record by that ID now names the ID, so a batch of several says which one to correct.
 - [Fixed] Moving the focus through the panel no longer stops on each enabled cheat listed under the runtime line when nothing is pinned. Up to seven are named, by the cheat's own name without the groups it sits in, in one compact block in light green with each name kept to one line, and Configure cheats still lists them all.
 - [New] A table repaired outside CE Decky and imported with the table it was made from named lists as **Fixed** rather than **Local**. Its Review says the change was made outside CE Decky and was not checked by it, and names the original's cheats the copy no longer offers; the copy still takes its own review and consent.

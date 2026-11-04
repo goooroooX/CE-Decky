@@ -20,7 +20,7 @@ import { PagerFooter } from "./components/PagerFooter";
 import { CompatibilityMark, gameCompatibility, isCompatibilityFailure } from "./components/CompatibilityMark";
 import { SameTableMark } from "./components/SameTableMark";
 import { SignedMark } from "./components/SignedMark";
-import { DerivedMark } from "./components/DerivedMark";
+import { FixedMark } from "./components/FixedMark";
 import type { CompatibilityEvidence, ArtifactResolution, AcquisitionStatus, BlockedTableCause, CatalogResult, CatalogSearchOutcome, ProviderSearchSummary, TableSearchProgress, TableStatus } from "./types";
 import { describeError } from "./errors";
 import { logUi, logUiFailure, logUiWarning } from "./supportLog";
@@ -1655,7 +1655,7 @@ export function ProviderCatalog({
                         and that this device made them. Neither is a verdict,
                         which is why neither is drawn on the glyph beside it. */}
                     {tableIsSigned(table) ? <SignedMark /> : null}
-                    {table.derived_from ? <DerivedMark /> : null}
+                    {table.derived_from ? <FixedMark derivation={table.derived_from} /> : null}
                     {/* The chip says what this device can do with the bytes,
                         which for a row that exists because the bytes are here
                         is always the same thing. What is recorded about them is
@@ -1749,6 +1749,8 @@ export function ProviderCatalog({
                       placeholder built from what the source said, and whether a
                       file is signed is not known until it is here. */}
                   {localTable && tableIsSigned(localBySha.get(localTable.sha256)) ? <SignedMark /> : null}
+                  {localTable && localBySha.get(localTable.sha256)?.derived_from
+                    ? <FixedMark derivation={localBySha.get(localTable.sha256)?.derived_from} /> : null}
                   {mark ? <span style={mark.style}>{mark.text}</span> : null}
                 </div>
                 <span style={SUBTLE_TEXT}><FocusScrollText paced>{[

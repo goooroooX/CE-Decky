@@ -8,7 +8,7 @@ import { PagerFooter } from "../components/PagerFooter";
 import { tableHolderLabel, type TableHolders } from "../tableHolders";
 import { CompatibilityMark, isCompatibilityFailure } from "../components/CompatibilityMark";
 import { SignedMark } from "../components/SignedMark";
-import { DerivedMark } from "../components/DerivedMark";
+import { FixedMark } from "../components/FixedMark";
 import type { CompatibilityEvidence, TableStatus } from "../types";
 import { describeError } from "../errors";
 import { MANAGE_PAGE_SIZE, MANAGE_ROW_HEIGHT, MIN_MANAGE_ROWS, advertisedRelease, clampPage, derivedFromLabel, pageCount, pageItems, shortBlockedReason, tableIsSigned, type BlockedMark } from "../uiModel";
@@ -856,10 +856,11 @@ export function ImportedTablesModal({ compatibility = [], tables, otherTables = 
                 tone={group === "device" ? "aside" : "own"}
                 label={rowLabel(table, group, index)}
                 description={rowDescription(table)}
-                leadingMark={tableIsSigned(table) ? <SignedMark /> : undefined}
+                leadingMark={tableIsSigned(table) || table.derived_from
+                  ? <>{tableIsSigned(table) ? <SignedMark /> : null}{table.derived_from ? <FixedMark derivation={table.derived_from} /> : null}</>
+                  : undefined}
                 mark={<>
                   <CompatibilityMark evidence={compatibility.find((entry) => entry.table_sha256 === table.sha256)} blocked={blockedReasons[table.sha256] ?? null} />
-                  {table.derived_from ? <DerivedMark /> : null}
                 </>}
                 actions={<div style={CONTENTS_ONLY} ref={(node) => {
                   if (node) rowRefs.current.set(table.sha256, node);

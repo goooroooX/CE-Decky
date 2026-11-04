@@ -1054,6 +1054,23 @@ describe("detached modal density", () => {
     const made = screen.getByTestId(`imported-table-${derived.sha256.slice(0, 8)}`);
     expect(made.textContent).toContain(`derived from ${table.sha256.slice(0, 12)}`);
     expect(made.textContent).not.toContain("Local file");
+    // The same chip as Signed, green, in front of the name, saying whose
+    // change it was when the pointer rests on it.
+    const fixed = within(made).getByText("Fixed");
+    expect(fixed.compareDocumentPosition(within(made).getByText(/unsigned/)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fixed.getAttribute("title")).toBe("CE Decky made this copy from another table");
+    const [r, g, b] = (fixed.style.background.match(/\d+/g) ?? []).map(Number);
+    expect(g > r && g > b).toBe(true);
+
+    cleanup();
+    const repaired = { ...derived, derived_from: { ...derived.derived_from, transforms: ["external-repair"] } };
+    render(<ImportedTablesModal tables={[repaired] as any} activeSha256={null} onSelect={vi.fn()} onClose={vi.fn()} />);
+    const outside = screen.getByTestId(`imported-table-${derived.sha256.slice(0, 8)}`);
+    expect(within(outside).getByText("Fixed").getAttribute("title")).toBe("Repaired outside CE Decky from another table");
+    // A table nobody derived carries no chip.
+    cleanup();
+    render(<ImportedTablesModal tables={[{ ...table, has_signature: false }] as any} activeSha256={null} onSelect={vi.fn()} onClose={vi.fn()} />);
+    expect(within(screen.getByTestId(`imported-table-${table.sha256.slice(0, 8)}`)).queryByText("Fixed")).toBeNull();
   });
 
   it("says nothing about a signature the store has not read yet", () => {
