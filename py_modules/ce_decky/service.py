@@ -5703,7 +5703,9 @@ class PluginService:
             raise ValueError("MemoryRecord ID is invalid")
         matches = [control for control in controls if control.id == record_id]
         if len(matches) != 1:
-            raise ValueError("MemoryRecord ID is missing or ambiguous in the exact table SHA")
+            # Named, because a batch names many records and the caller has to
+            # know which one the table does not hold to correct it.
+            raise ValueError(f"MemoryRecord ID {record_id} is missing or ambiguous in the exact table SHA")
         return matches[0]
 
     @staticmethod

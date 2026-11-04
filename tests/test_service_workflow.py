@@ -325,7 +325,7 @@ def test_archive_inspection_profile_session_and_runtime_command_workflow(tmp_pat
     assert runtime["prepared"]["session_id"] == prepared["session_id"]
     assert runtime["status"] is None
 
-    with pytest.raises(ValueError, match="missing or ambiguous"):
+    with pytest.raises(ValueError, match="MemoryRecord ID 999 is missing or ambiguous"):
         service.write_runtime_commands(10, [{"generation": 1, "kind": "query", "record_id": 999}])
     with pytest.raises(ValueError, match="read-only dropdown"):
         service.write_runtime_commands(10, [{"generation": 1, "kind": "set_value", "record_id": 2, "value": "9"}])

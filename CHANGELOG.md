@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.35 — 2026-11-04
 
+- [Changed] A cheat command refused because the table holds no record by that ID now names the ID, so a batch of several says which one to correct.
 - [Fixed] Moving the focus through the panel no longer stops on each enabled cheat listed under the runtime line when nothing is pinned. The names are one compact block in light green, each kept to one line, and Configure cheats still lists them all.
 - [New] A table repaired outside CE Decky and imported with the table it was made from named lists as **Fixed** rather than **Local**. Its Review says the change was made outside CE Decky and was not checked by it, and names the original's cheats the copy no longer offers; the copy still takes its own review and consent.
 - [Limitation] A window a table's own script opens, such as a trainer panel or an ESP overlay, is hidden like Cheat Engine's own windows, so a cheat whose whole effect is something drawn on screen shows nothing in Game Mode. The table's other cheats are unaffected.
