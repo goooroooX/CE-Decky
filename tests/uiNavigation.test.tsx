@@ -586,6 +586,11 @@ describe("compact QAM home navigation", () => {
     expect(screen.getByText("Cheat 4")).toBeTruthy();
     expect(screen.queryByText("Cheat 5")).toBeNull();
     expect(screen.getByText("+8 more")).toBeTruthy();
+    // Paging through the panel, the ring passes these lines: a name has
+    // nothing to press and nothing hidden, and Configure cheats lists them all.
+    for (const label of ["Cheat 1", "Cheat 4", "+8 more"]) {
+      expect(screen.getByText(label).closest('[data-testid="focusable"]')).toBeNull();
+    }
   });
 
   it("offers the second-run runtime entry point only while a table is selected and idle", () => {

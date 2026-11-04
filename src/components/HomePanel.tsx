@@ -597,11 +597,14 @@ export function HomePanel(props: Props) {
         {runtimeReady && activeCheatSnapshotReady && pinnedMissing > 0 && (
           <PanelSectionRow><PanelRow status testId="pinned-status" label="Pinned controls" truncate description={`${pinnedMissing} pinned not found in the running table.`} /></PanelSectionRow>
         )}
+        {/* Read where they are, so the ring passes over them: each name is
+            the whole of what the row says, nothing on it can be pressed, and
+            Configure cheats right below holds the full list. */}
         {pinnedCount === 0 && activeCheatLabels.slice(0, 4).map((label, index) => (
-          <PanelSectionRow key={`${index}:${label}`}><PanelRow label={label} truncate /></PanelSectionRow>
+          <PanelSectionRow key={`${index}:${label}`}><PanelRow status label={label} /></PanelSectionRow>
         ))}
         {pinnedCount === 0 && activeCheatLabels.length > 4 && (
-          <PanelSectionRow><PanelRow label={`+${activeCheatLabels.length - 4} more`} truncate /></PanelSectionRow>
+          <PanelSectionRow><PanelRow status label={`+${activeCheatLabels.length - 4} more`} /></PanelSectionRow>
         )}
 
         {/* A table stays selected across restarts, so the second run must be
