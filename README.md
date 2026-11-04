@@ -173,6 +173,29 @@ A few things about that copy, because it is your table that is being changed:
 
 A table someone repaired outside CE Decky, such as one with its addresses corrected for your game's version, is also called **Fixed** when it is imported with the table it was made from named. Its review screen says the change was made outside CE Decky and was not checked by it, and names any cheat of the original the copy no longer offers, so read what it runs before you allow it.
 
+### Fixing a table yourself, with a coding agent
+
+For when no table for your game's version works and you are comfortable with a terminal. It is optional and happens outside Game Mode; nothing above depends on it.
+
+What it takes:
+
+- the game running on a Linux machine you can reach with a terminal, either on the machine itself or over SSH from another computer;
+- a clone of this repository on that machine, and a coding agent that can run commands there. The agent reads the game's memory and drives CE Decky for you, so use one you trust with that machine;
+- the table you want fixed, already in CE Decky's library for the game, and the game started and in play.
+
+Then ask the agent, from the repository: *read AGENTS.md, and fix the table selected for the running game by following docs/TABLE_REPAIR.md*.
+
+What you get back is a separate copy listed as **Fixed** beside the original, which stays untouched. The agent works out which addresses no longer match your game, checks each cheat's targets in the game's memory before and after switching it, and reports what it confirmed, what it could not test and what it left out. The copy's review screen says it was changed outside CE Decky, and you review it and allow it like any other table.
+
+What it cannot promise:
+
+- a fix at all. Some tables depend on code the game no longer has, and the agent says so rather than guessing;
+- more than this version of the game. The copy is tied to the exact program it was fixed against;
+- cheats that need something you were not using, such as a particular weapon or piece of gear, until you try them, and anything drawn on screen, such as an ESP overlay, which CE Decky does not show (see [Limitations](#limitations));
+- anything about online play. CE Decky is for offline and single-player use.
+
+The fixed copy is still the table author's work, and their credits stay in it.
+
 ## Where your data lives
 
 Everything CE Decky creates is under `~/.cheat-engine-decky/`:
@@ -236,7 +259,7 @@ Only the five newest archives are kept, so collecting several while you narrow a
 ## Limitations
 
 - **CE Decky runs the cheats a table already contains, and nothing else.** Cheat Engine's own interface is never shown, so there is no memory scanning, no pointer scan, no editing a table and no writing a new one from the panel. If the table you found does not have the cheat you want, CE Decky cannot make it.
-- **A repaired copy is not a rewritten table.** CE Decky can take out what does not work and take off a signature. It cannot write a cheat, move one to a new version of the game, or work out what the author meant. Where a table's cheats are tangled together too tightly to take one out safely, it refuses rather than handing you a copy that quietly lost half the table.
+- **A repaired copy is not a rewritten table.** CE Decky can take out what does not work and take off a signature. It cannot write a cheat, move one to a new version of the game, or work out what the author meant. Moving a table to a new version of a game is something you can try yourself with a coding agent: see [Fixing a table yourself](#fixing-a-table-yourself-with-a-coding-agent). Where a table's cheats are tangled together too tightly to take one out safely, it refuses rather than handing you a copy that quietly lost half the table.
 - **A table is bound to its exact bytes.** A newer revision of the same table is a different table: it is imported, reviewed and authorized separately, and your saved cheat choices do not carry across.
 - **A very large table cannot be switched on the fly.** Confirming a change while the game runs means reading the whole table back, and past a certain size that cannot finish. The table still works: pick its cheats and values in the panel and they are applied when Cheat Engine starts. The panel says live controls are unavailable for a table that size.
 - **The game list leaves out what is not a game.** Proton builds, the Steam Linux Runtimes, Steamworks Common Redistributables and desktop applications you added to Steam yourself are hidden. They are recognised by what Steam records about them, not by name, so a game you added from its own `.desktop` entry, such as a flatpak game, is hidden too. There is no way to bring a hidden entry back yet.
