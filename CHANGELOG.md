@@ -5,6 +5,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 ## 0.9.35 — 2026-11-04
 
 - [New] A table repaired outside CE Decky and imported with the table it was made from named lists as **Fixed** rather than **Local**. Its Review says the change was made outside CE Decky and was not checked by it, and names the original's cheats the copy no longer offers; the copy still takes its own review and consent.
+- [Limitation] A window a table's own script opens, such as a trainer panel or an ESP overlay, is hidden like Cheat Engine's own windows, so a cheat whose whole effect is something drawn on screen shows nothing in Game Mode. The table's other cheats are unaffected.
 
 ## 0.9.34 — 2026-11-03
 
