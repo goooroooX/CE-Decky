@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.34 — 2026-11-05
 
+- [Changed] Configure cheats opened while Cheat Engine is running selects the cheats this table was last left with that are not on now, and says so, so Apply switches the same set on again. Closing without applying leaves Cheat Engine as it is and does not ask about the selection.
 - [Fixed] A cheat that Cheat Engine runs and sees go straight back off no longer fails the rest of an Apply in Configure cheats. The other cheats of that press go on and are saved as before, and a window names each cheat that did not switch on and why, including one that needed a script that did not. Those are remembered off, so Auto-load does not switch them on next time. The question about whether to stop using the table is asked only when nothing in the press switched on.
 - [Changed] A fixed copy of a table carries a green **Fixed** chip, the same shape as **Signed**, in front of its name in Manage and beside it in search, in place of the small two-sheet icon.
 - [Changed] A cheat command refused because the table holds no record by that ID now names the ID, so a batch of several says which one to correct.

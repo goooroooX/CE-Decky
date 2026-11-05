@@ -2244,6 +2244,42 @@ describe("Home panel and managed setup", () => {
     expect(runtimeClient.applyRuntimeSelection).not.toHaveBeenCalled();
   });
 
+  function renderWithRememberedHealth(onApplied = vi.fn().mockResolvedValue(undefined), onCancel = vi.fn()) {
+    const off = { ...liveRuntime().status.results[0], active: false };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: [off], unavailable: [] });
+    render(<CheatSelectionModal appId={10} inspection={inspect as any} live pinned={[]}
+      startupPreferences={[]} rememberedPreferences={[{ record_id: 7, active: true, value: "100" }]} configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      autoloadEnabled={false} onTogglePin={vi.fn()} onApplied={onApplied} onCancel={onCancel} />);
+  }
+
+  it("offers the cheats last left on to a running Cheat Engine, and closes over the offer without asking", async () => {
+    const onCancel = vi.fn();
+    renderWithRememberedHealth(undefined, onCancel);
+
+    await screen.findByTestId("cheats-remembered-offered");
+    expect((within(screen.getByTestId("cheat-row-7")).getByTestId("toggle") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Controller Back" }));
+    expect(screen.queryByTestId("unsaved-prompt")).toBeNull();
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(runtimeClient.applyRuntimeSelection).not.toHaveBeenCalled();
+  });
+
+  it("switches the offered cheats on with Apply", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: liveRuntime().status.results });
+    renderWithRememberedHealth(onApplied);
+
+    await screen.findByTestId("cheats-remembered-offered");
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toEqual([
+      expect.objectContaining({ record_id: 7, active: true }),
+    ]);
+  });
+
   it("hands up what one Apply could not switch on without asking about the table", async () => {
     const onApplied = vi.fn().mockResolvedValue(undefined);
     const onTableRefused = vi.fn();
@@ -2275,6 +2311,18 @@ describe("Home panel and managed setup", () => {
     expect(screen.getByTestId("cheat-not-switched-on-5")).toBeTruthy();
     expect(screen.queryByTestId("cheat-not-switched-on-6")).toBeNull();
     expect(screen.getByTestId("cheats-not-switched-on-more").textContent).toContain("And 4 more");
+  });
+
+  it("asks before closing over an offered cheat the reader has since edited", async () => {
+    const onCancel = vi.fn();
+    renderWithRememberedHealth(undefined, onCancel);
+
+    await screen.findByTestId("cheats-remembered-offered");
+    await revealDetails();
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "250" } });
+    fireEvent.click(screen.getByRole("button", { name: "Controller Back" }));
+    expect(screen.getByTestId("unsaved-prompt")).toBeTruthy();
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
   it("leaves Search responsible for review preparation failure without stacking an error modal", async () => {

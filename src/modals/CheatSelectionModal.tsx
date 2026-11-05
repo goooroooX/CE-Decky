@@ -182,6 +182,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
    * exact reason live control is unavailable, is one press away.
    */
   const storedOnlyLine = "Apply saves this table's selection; it runs when the game next starts.";
+  const rememberedOfferLine = "Apply switches these on in the running Cheat Engine; close without applying to leave it as it is.";
   const storedOnlyHelp = liveUnavailableReason
     ? `${liveUnavailableReason} Apply saves the selection for this exact table and does not change the Cheat Engine running now; it is applied the next time this game starts Cheat Engine.`
     : autoloadEnabled
@@ -256,6 +257,16 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   const [staged, setStaged] = useState<Record<number, StagedState>>({});
   const [touchedValues, setTouchedValues] = useState<Set<number>>(new Set<number>());
   const [touchedActive, setTouchedActive] = useState<Set<number>>(new Set<number>());
+  // The cheats this table was last left with that the running Cheat Engine does
+  // not have on, staged on when the screen opened so Apply switches them on
+  // again. Before the game starts this screen shows that selection; once it had
+  // started it showed only what was running, so the reader chose the same set
+  // again by hand every session. A record leaves this set when the reader
+  // presses its switch, which makes it their edit rather than the offer.
+  const [offered, setOffered] = useState<Set<number>>(new Set<number>());
+  // How many were offered, held so the row saying so does not come and go
+  // under the reader as they switch them off one by one.
+  const [offeredCount, setOfferedCount] = useState(0);
   const [loading, setLoading] = useState(true);
   // Records an inactive enclosing script has not created yet. They are not an
   // error; they simply cannot be read or set until their parent runs.
@@ -367,8 +378,20 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         }
         withWaitingRecords(next, results, unavailable);
         noteCurrentValues(results);
-        setStaged(next);
+        // Whatever reads off now and was remembered on, including a cheat its
+        // script has not created yet: Apply switches that script on first.
+        // One that reads nothing proves nothing and is left alone.
+        const offer = new Set(effectiveStartupPreferences(startupPreferences, rememberedPreferences).flatMap((preference) =>
+          preference.active === true && next[preference.record_id]?.active === false ? [preference.record_id] : []));
+        setStaged(offer.size === 0 ? next : Object.fromEntries(Object.entries(next).map(([recordId, state]) =>
+          [recordId, offer.has(Number(recordId)) ? { ...state, active: true } : state])));
         setLastConfirmed(next);
+        if (offer.size > 0) {
+          setTouchedActive(new Set(offer));
+          setOffered(offer);
+          setOfferedCount(offer.size);
+          logUi("cheats.remembered_offered", { app_id: appId, table: inspection.sha256.slice(0, 12), count: offer.size });
+        }
         setUnavailableRecords(new Set(
           unavailable.flatMap((result) => result.record_id === null ? [] : [result.record_id]),
         ));
@@ -560,6 +583,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     clearError();
     update(recordId, { active });
     setTouchedActive((current) => new Set(current).add(recordId));
+    setOffered((current) => {
+      if (!current.has(recordId)) return current;
+      const next = new Set(current);
+      next.delete(recordId);
+      return next;
+    });
     // Rows open only when asked. A cheat switched on here with no value is the
     // one press that asks: Apply refuses it until a value is typed, so the
     // press opens the field it is about to need.
@@ -624,6 +653,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     if (!changed) return false;
     setStaged(reconciled);
     setTouchedActive(new Set<number>());
+    setOffered(new Set<number>());
     setTouchedValues(new Set<number>());
     notePartialCommit({ runtimeChanged: true });
     return true;
@@ -1059,6 +1089,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       noteCurrentValues(finalState.results);
       setLastConfirmed(confirmedState);
       setTouchedActive(new Set<number>());
+      setOffered(new Set<number>());
       setTouchedValues(new Set<number>());
       operation.completed({ stored_only: false });
     } catch (cause) {
@@ -1142,7 +1173,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     // Reconciliation after a partial Apply clears the dirty sets, so counting
     // unapplied edits alone let the modal close silently over state that was
     // already committed. Anything left behind is acknowledged first.
-    if (unsavedCount > 0 || partialCommit) {
+    // An offer left as it was is not an edit: closing over it changes nothing
+    // anywhere, and asking whether to discard it would ask the reader to
+    // decline what they never chose.
+    const pendingOffer = [...offered].filter((recordId) => !touchedValues.has(recordId)
+      && staged[recordId]?.active === true && lastConfirmed[recordId]?.active !== true).length;
+    if (unsavedCount - pendingOffer > 0 || partialCommit) {
       setConfirmingClose(true);
       return;
     }
@@ -1229,6 +1265,19 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                 label={liveUnavailableReason ? "Live control is unavailable for this table" : "Cheat Engine is not running"}
                 description={tight ? undefined : storedOnlyLine}
                 help={tight ? `${storedOnlyLine} ${storedOnlyHelp}` : storedOnlyHelp}
+              />
+            </PanelSectionRow>
+          )}
+          {offeredCount > 0 && !storedOnly && (
+            <PanelSectionRow>
+              {/* Mounted once the first read has settled and not before, which
+                  is when this screen measures the space above its list. */}
+              <PanelRow
+                truncate
+                testId="cheats-remembered-offered"
+                label={offeredCount === 1 ? "Selected as you last had it" : "Selected as you last had them"}
+                description={tight ? undefined : rememberedOfferLine}
+                help={tight ? rememberedOfferLine : undefined}
               />
             </PanelSectionRow>
           )}
