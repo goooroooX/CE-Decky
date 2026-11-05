@@ -11,10 +11,12 @@ purely because every table tested happened not to have one.
 Method, and why each part is the way it is:
 
 * Sampling is by forum page stratum, not by game name. The FearLess index this
-  plugin already maintains is the forum's own topic listing, newest first, so
-  page 0 is this week and page 120 is a few years ago. Sampling strata gives a
-  reproducible spread of fresh and older titles without guessing a single game
-  name, and without going near a search route.
+  plugin already maintains is the forum's own topic listing, ordered by last
+  post, so page 0 is what people wrote in this week and page 120 a few years
+  ago. Sampling strata gives a reproducible spread of fresh and older titles
+  without guessing a single game name, and without going near a search route.
+  The index holds only (topic id, title) per listing page: it has no reply or
+  view counts, so recent activity is the only popularity signal it offers.
 * Every request is the production one: the same route, allowed hosts, referer,
   byte ceiling and rate-limit handling the plugin uses. A survey that fetched
   differently would measure a different provider.
