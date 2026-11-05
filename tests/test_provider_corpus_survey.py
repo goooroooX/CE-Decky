@@ -151,3 +151,20 @@ def test_the_engine_report_counts_each_distinct_stored_table_once_per_stratum(tm
     line = next(line for line in text.splitlines() if "names the Unreal object system" in line)
     assert "1/3" in line and "1/2" in line and "0/1" in line
     assert "upper bound" in text
+
+
+def test_the_format_report_counts_declared_versions_and_signatures_per_stratum(tmp_path):
+    from ce_decky.table_store import TableStore
+
+    store = TableStore(tmp_path / "store")
+    plain = store.import_ct(str(_table(tmp_path, "", "plain.CT")))
+    signed = store.import_ct(str(_table(tmp_path, "<Signature>AAAA</Signature>", "signed.CT")))
+    rows = [{"usable": True, "sha256": plain.sha256, "stratum": "fresh"},
+            {"usable": True, "sha256": signed.sha256, "stratum": "recent"},
+            {"usable": True, "sha256": plain.sha256, "stratum": "fresh"}]
+    text = survey.summarise_formats(rows, store)
+    assert "2 distinct usable table(s)" in text
+    signed_line = next(line for line in text.splitlines() if line.strip().startswith("signed"))
+    assert "1/2" in signed_line and "0/1" in signed_line and "1/1" in signed_line
+    version_line = next(line for line in text.splitlines() if "CheatEngineTableVersion 45" in line)
+    assert "2/2" in version_line

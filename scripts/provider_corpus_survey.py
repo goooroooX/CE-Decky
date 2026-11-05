@@ -157,10 +157,13 @@ def engine_marks(text: str, title: str) -> set[str]:
     return marks
 
 
-def summarise_engines(rows: list[dict[str, object]], store: TableStore) -> str:
-    """How many of the corpus's tables each engine layout could be checked through."""
+def _stored_tables(rows: list[dict[str, object]], store: TableStore):
+    """Each distinct usable table once, as its row and its verified stored file.
+
+    Returns the pairs and how many could not be read back from the store.
+    """
     seen: set[str] = set()
-    counted: list[tuple[str, set[str]]] = []
+    found: list[tuple[dict[str, object], Path]] = []
     unreadable = 0
     for row in rows:
         digest = row.get("sha256")
@@ -168,8 +171,66 @@ def summarise_engines(rows: list[dict[str, object]], store: TableStore) -> str:
             continue
         seen.add(digest)
         try:
-            text = store.verified_blob(digest).read_bytes().decode("utf-8", "replace")
+            found.append((row, store.verified_blob(digest)))
         except (OSError, ValueError):
+            unreadable += 1
+    return found, unreadable
+
+
+def summarise_formats(rows: list[dict[str, object]], store: TableStore) -> str:
+    """Which table format each table declares, and how many carry a signature.
+
+    Read through the production inspector, so the signature is the one the
+    panel marks: Cheat Engine refuses a signed table it cannot verify with no
+    dialog, so the share is a share of tables a user can meet that refusal on.
+    """
+    found, unreadable = _stored_tables(rows, store)
+    stats: list[tuple[str, str, bool]] = []
+    refused = 0
+    for row, path in found:
+        try:
+            inspection = inspect_table(path, str(row["sha256"]))
+        except (OSError, ValueError):
+            refused += 1
+            continue
+        stats.append((str(row.get("stratum") or "unknown"), inspection.table_version or "none",
+                      bool(inspection.has_signature)))
+    if not stats:
+        return "no usable tables in the corpus yet"
+    groups = [("all", stats)] + [
+        (name, [item for item in stats if item[0] == name]) for name, _, _ in STRATA
+        if any(item[0] == name for item in stats)
+    ]
+
+    def cell(members, predicate) -> str:
+        hits = sum(1 for item in members if predicate(item))
+        return f"{hits:5d}/{len(members):<4d}{hits * 100 // len(members):3d}%"
+
+    versions: dict[str, int] = {}
+    for _, version, _ in stats:
+        versions[version] = versions.get(version, 0) + 1
+    lines = [f"table formats: {len(stats)} distinct usable table(s)"
+             + (f", {unreadable} unreadable from the store" if unreadable else "")
+             + (f", {refused} the inspector refused" if refused else ""), ""]
+    lines.append("  " + " " * 34 + "".join(f"{name:>14}" for name, _ in groups))
+    lines.append(f"  {'signed':34}" + "".join(f"{cell(members, lambda item: item[2]):>14}" for _, members in groups))
+    for version, _ in sorted(versions.items(), key=lambda item: -item[1])[:8]:
+        lines.append(f"  {'CheatEngineTableVersion ' + version:34}"
+                     + "".join(f"{cell(members, lambda item, v=version: item[1] == v):>14}" for _, members in groups))
+    rest = len(versions) - min(len(versions), 8)
+    if rest:
+        lines.append(f"  and {rest} rarer version(s)")
+    return "\n".join(lines)
+
+
+def summarise_engines(rows: list[dict[str, object]], store: TableStore) -> str:
+    """How many of the corpus's tables each engine layout could be checked through."""
+    found, unreadable = _stored_tables(rows, store)
+    counted: list[tuple[str, set[str]]] = []
+    for row, path in found:
+        try:
+            text = path.read_bytes().decode("utf-8", "replace")
+        except OSError:
             unreadable += 1
             continue
         counted.append((str(row.get("stratum") or "unknown"), engine_marks(text, str(row.get("title") or ""))))
@@ -469,6 +530,9 @@ async def run(args: argparse.Namespace) -> int:
     if args.engines:
         print(summarise_engines(rows, TableStore(corpus / "store")))
         return 0
+    if args.formats:
+        print(summarise_formats(rows, TableStore(corpus / "store")))
+        return 0
     if args.summarise_only:
         print(summarise(rows))
         return 0
@@ -561,12 +625,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--summarise-only", action="store_true", help="report the corpus already collected and fetch nothing")
     parser.add_argument("--engines", action="store_true",
                         help="report which engine layout the corpus's tables reach their targets through, and fetch nothing")
+    parser.add_argument("--formats", action="store_true",
+                        help="report the table format each table declares and how many are signed, and fetch nothing")
     args = parser.parse_args(argv)
     if args.strata is not None and (not args.strata or set(args.strata) - {name for name, _, _ in STRATA}):
         parser.error("--strata names only " + ", ".join(name for name, _, _ in STRATA))
     # Summarising reads only the corpus already on this disk, so it never opens
     # the plugin's index and is not asked which home holds it.
-    if args.index is None and not (args.summarise_only or args.engines):
+    if args.index is None and not (args.summarise_only or args.engines or args.formats):
         args.index = steam_user_home(args.user_home) / ".cheat-engine-decky/cache/fearless-index.json"
     return asyncio.run(run(args))
 
