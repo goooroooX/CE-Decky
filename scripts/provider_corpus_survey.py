@@ -93,7 +93,9 @@ DEFAULT_RATE_LIMIT_WAIT = 20.0
 MAX_RATE_LIMIT_WAIT = 120.0
 
 MAX_ARTIFACT_BYTES = 24 * 1024 * 1024
-SUPPORTED_SUFFIXES = {".ct", ".zip", ".7z", ".7zip"}
+# `.rar` is opened by the production importer through the device's 7-Zip, and
+# refused there with its own reason where that 7-Zip has no RAR handler.
+SUPPORTED_SUFFIXES = {".ct", ".zip", ".7z", ".7zip", ".rar"}
 
 # What a table's own Lua can do to an owned session, from `celua.txt`. Grouped
 # by what it costs this project rather than by what it is: a call that asks
@@ -457,7 +459,12 @@ class Survey:
                 artifact = self.store.import_ct(str(destination), display_filename=filename)
             else:
                 members = inspect_archive(destination, self.sevenzip).as_dict()["members"]
-                tables = [m for m in members if str(m["path"]).casefold().endswith(".ct") and not m["encrypted"]]
+                named = [m for m in members if str(m["path"]).casefold().endswith(".ct")]
+                tables = [m for m in named if not m["encrypted"]]
+                if named and not tables:
+                    # The importer takes a password for this; the survey has none
+                    # to give, so the table is there and is not measured.
+                    return {"skipped": "archive's .CT is password-protected"}
                 if not tables:
                     return {"skipped": "archive holds no readable .CT"}
                 artifact = self.store.import_selection(
@@ -508,6 +515,39 @@ def summarise(rows: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def retry_topics(rows: list[dict[str, object]], reason: str) -> list[Sampled]:
+    """The topics every row of which was skipped for a reason starting `reason`.
+
+    A skip that a later version of this survey no longer makes, such as an
+    archive format it has since learned to open, is otherwise permanent: the
+    topic is in the corpus, so sampling never offers it again.
+    """
+    by_topic: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        if isinstance(row.get("topic_id"), str):
+            by_topic.setdefault(str(row["topic_id"]), []).append(row)
+    return [
+        Sampled(str(held[0].get("stratum") or "unknown"), topic_id, str(held[0].get("title") or ""))
+        for topic_id, held in by_topic.items()
+        if all(str(row.get("skipped") or "").startswith(reason) for row in held)
+    ]
+
+
+def drop_superseded(lines: list[str], held_lines: int, retried: set[str]) -> list[str]:
+    """The JSONL without the rows a retry replaced: those written before it, for its topics."""
+    kept: list[str] = []
+    for position, line in enumerate(lines):
+        if position < held_lines:
+            try:
+                topic = json.loads(line).get("topic_id")
+            except (ValueError, AttributeError):
+                topic = None
+            if topic in retried:
+                continue
+        kept.append(line)
+    return kept
+
+
 async def run(args: argparse.Namespace) -> int:
     corpus = args.corpus
     corpus.mkdir(parents=True, exist_ok=True)
@@ -537,25 +577,36 @@ async def run(args: argparse.Namespace) -> int:
         print(summarise(rows))
         return 0
 
-    index_copy = corpus / "fearless-index.json"
-    if not index_copy.is_file() or args.refresh_index:
-        if not args.index.is_file():
-            print(f"no FearLess index at {args.index}; run a table search once so the plugin builds it")
+    if args.retry_skipped:
+        samples = retry_topics(rows, args.retry_skipped)
+        if not samples:
+            print(f"no topic in the corpus was only skipped for {args.retry_skipped!r}")
+            return 0
+    else:
+        index_copy = corpus / "fearless-index.json"
+        if not index_copy.is_file() or args.refresh_index:
+            if not args.index.is_file():
+                print(f"no FearLess index at {args.index}; run a table search once so the plugin builds it")
+                return 1
+            shutil.copy2(args.index, index_copy)
+        pages = load_index(index_copy)
+        if not pages:
+            print("the FearLess index copy holds no pages")
             return 1
-        shutil.copy2(args.index, index_copy)
-    pages = load_index(index_copy)
-    if not pages:
-        print("the FearLess index copy holds no pages")
-        return 1
 
-    known_titles = frozenset(_title_key(str(row["title"])) for row in rows if isinstance(row.get("title"), str))
-    samples = [s for s in sample_topics(pages, args.per_stratum, args.seed, args.strata, known_titles)
-               if s.topic_id not in known_topics]
-    if not samples:
-        print("every sampled topic is already in the corpus; raise --per-stratum or change --seed")
-        print()
-        print(summarise(rows))
-        return 0
+        known_titles = frozenset(_title_key(str(row["title"])) for row in rows if isinstance(row.get("title"), str))
+        samples = [s for s in sample_topics(pages, args.per_stratum, args.seed, args.strata, known_titles)
+                   if s.topic_id not in known_topics]
+        if not samples:
+            print("every sampled topic is already in the corpus; raise --per-stratum or change --seed")
+            print()
+            print(summarise(rows))
+            return 0
+    retried = {sample.topic_id for sample in samples} if args.retry_skipped else set()
+    if retried:
+        rows = [row for row in rows if row.get("topic_id") not in retried]
+    held_lines = len(results_path.read_text(encoding="utf-8").splitlines()) if results_path.is_file() else 0
+    attempted: set[str] = set()
 
     context, _ = build_verified_ssl_context()
     network = NetworkClient(context)
@@ -568,11 +619,13 @@ async def run(args: argparse.Namespace) -> int:
             for position, sample in enumerate(samples, start=1):
                 print(f"[{position}/{len(samples)}] {sample.stratum:7} t={sample.topic_id} {sample.title[:60]}", flush=True)
                 base = {"topic_id": sample.topic_id, "stratum": sample.stratum, "title": sample.title}
+                attempted.add(sample.topic_id)
                 try:
                     records = await survey.topic_rows(sample)
                 except (NetworkError, ValueError) as exc:
                     sink.write(json.dumps({**base, "skipped": f"topic: {type(exc).__name__}"}) + "\n")
                     sink.flush()
+                    rows.append({**base, "skipped": f"topic: {type(exc).__name__}"})
                     continue
                 if not records:
                     sink.write(json.dumps({**base, "skipped": "no attachment"}) + "\n")
@@ -603,6 +656,14 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         await network.aclose()
         shutil.rmtree(scratch, ignore_errors=True)
+        if retried & attempted:
+            # Only a topic that was actually tried again loses its old rows, so
+            # a run cut short leaves the rest exactly as they were.
+            lines = results_path.read_text(encoding="utf-8").splitlines()
+            kept = drop_superseded(lines, held_lines, retried & attempted)
+            staged = results_path.with_suffix(".jsonl.part")
+            staged.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+            staged.replace(results_path)
     print(f"\nadded {added} table(s) this run")
     print()
     print(summarise(rows))
@@ -627,12 +688,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="report which engine layout the corpus's tables reach their targets through, and fetch nothing")
     parser.add_argument("--formats", action="store_true",
                         help="report the table format each table declares and how many are signed, and fetch nothing")
+    parser.add_argument("--retry-skipped", metavar="REASON",
+                        help="fetch again every topic whose rows were all skipped for a reason starting REASON, "
+                        "such as 'unsupported .rar', replacing those rows; samples nothing new")
     args = parser.parse_args(argv)
     if args.strata is not None and (not args.strata or set(args.strata) - {name for name, _, _ in STRATA}):
         parser.error("--strata names only " + ", ".join(name for name, _, _ in STRATA))
     # Summarising reads only the corpus already on this disk, so it never opens
     # the plugin's index and is not asked which home holds it.
-    if args.index is None and not (args.summarise_only or args.engines or args.formats):
+    if args.index is None and not (args.summarise_only or args.engines or args.formats or args.retry_skipped):
         args.index = steam_user_home(args.user_home) / ".cheat-engine-decky/cache/fearless-index.json"
     return asyncio.run(run(args))
 

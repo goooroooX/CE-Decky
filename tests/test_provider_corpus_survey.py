@@ -168,3 +168,23 @@ def test_the_format_report_counts_declared_versions_and_signatures_per_stratum(t
     assert "1/2" in signed_line and "0/1" in signed_line and "1/1" in signed_line
     version_line = next(line for line in text.splitlines() if "CheatEngineTableVersion 45" in line)
     assert "2/2" in version_line
+
+
+def test_a_retry_takes_only_topics_that_were_skipped_for_that_reason_alone():
+    rows = [
+        {"topic_id": "1", "stratum": "fresh", "title": "A", "skipped": "unsupported .rar"},
+        {"topic_id": "2", "stratum": "recent", "title": "B", "skipped": "unsupported .rar"},
+        {"topic_id": "2", "stratum": "recent", "title": "B", "usable": True, "sha256": "a" * 64},
+        {"topic_id": "3", "stratum": "fresh", "title": "C", "skipped": "no attachment"},
+    ]
+    assert [(item.topic_id, item.stratum, item.title) for item in survey.retry_topics(rows, "unsupported .rar")] == [
+        ("1", "fresh", "A")]
+
+
+def test_a_retry_replaces_only_the_earlier_rows_of_the_topics_it_tried():
+    import json
+
+    lines = [json.dumps({"topic_id": topic, "n": n}) for n, topic in enumerate(("1", "2", "1"))] + ["not json"]
+    lines.append(json.dumps({"topic_id": "1", "n": "new"}))
+    kept = survey.drop_superseded(lines, held_lines=4, retried={"1"})
+    assert [json.loads(line).get("n") if line != "not json" else line for line in kept] == [1, "not json", "new"]
