@@ -92,6 +92,9 @@ def switch(app_id, table_sha, rpc, *, consent=False, sleep=time.sleep, steps=Non
     # `save_profile` still makes the same checks when it selects it.
     try:
         rpc("inspect_table_sha", [table_sha, app_id])
+    except target_plugin_rpc.DeckyWebSocketClosed:
+        # A lost answer, not the backend's refusal: it says nothing about the table.
+        raise
     except RuntimeError as exc:
         raise SwitchRefused(f"the destination table cannot be used: {exc}") from exc
     if profile.get("table_sha256") != table_sha:

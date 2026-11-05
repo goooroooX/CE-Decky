@@ -158,6 +158,20 @@ def test_a_destination_that_cannot_be_used_leaves_the_running_cheat_engine_alone
     assert "stop_ce_for_game" not in backend.methods() and "save_profile" not in backend.methods()
 
 
+def test_a_lost_answer_is_not_reported_as_a_destination_the_backend_refused():
+    class Closed(FakeBackend):
+        def __call__(self, method, args):
+            if method == "inspect_table_sha":
+                self.calls.append((method, args))
+                raise switcher.target_plugin_rpc.DeckyWebSocketClosed("socket closed")
+            return super().__call__(method, args)
+
+    backend = Closed()
+    with pytest.raises(switcher.target_plugin_rpc.DeckyWebSocketClosed):
+        switcher.switch(APP, NEW, backend, consent=True, sleep=lambda _s: None)
+    assert "stop_ce_for_game" not in backend.methods()
+
+
 def test_a_mark_that_is_not_a_compatibility_failure_refuses_nothing():
     backend = FakeBackend(blocked=[{"sha256": NEW, "cause": "gone"},{"sha256": OLD, "cause": "refused"}])
     assert switcher.switch(APP, NEW, backend, consent=True, sleep=lambda _s: None)["ok"] is True
