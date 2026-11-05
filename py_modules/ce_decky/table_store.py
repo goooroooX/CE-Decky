@@ -436,6 +436,29 @@ class TableStore:
             if staged is not None:
                 staged.unlink(missing_ok=True)
 
+    def read_ct_candidate(self, source_text: str) -> bytes:
+        """One `.CT` file's exact bytes, structurally checked and stored nowhere.
+
+        For an import that has more to establish about the file before it may
+        be kept, such as a repaired copy against its source. Nothing is written
+        here, including the not-working record an ordinary import makes for
+        bytes that are not a table: a rejected candidate leaves no trace.
+        """
+        source = Path(source_text).expanduser().absolute()
+        if source.is_symlink() or not source.is_file():
+            raise ValueError("selected table does not exist or is not a regular file")
+        if source.suffix.lower() != ".ct":
+            raise ValueError("only a .CT file is accepted here")
+        try:
+            snapshot = read_regular_bytes(source, max_bytes=MAX_CT_BYTES)
+        except ValueError as exc:
+            raise ValueError("selected table could not be read safely") from exc
+        if not snapshot:
+            raise ValueError(f"table size must be between 1 byte and {MAX_CT_BYTES} bytes")
+        _reject_dtd_and_entities_bytes(snapshot)
+        _inspect_xml_bytes(snapshot)
+        return snapshot
+
     def import_derived(
         self, blob: bytes, *, filename: str, derived_from: dict[str, object],
     ) -> TableArtifact:

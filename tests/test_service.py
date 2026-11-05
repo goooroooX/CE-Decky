@@ -2067,6 +2067,43 @@ def test_a_repaired_copy_needs_a_held_source_and_different_bytes(tmp_path: Path)
     assert listed == {source["sha256"]}
 
 
+def test_a_refused_repaired_copy_leaves_the_library_exactly_as_it_was(tmp_path: Path):
+    """Everything is checked before anything is written, so a refusal writes nothing.
+
+    The source's own bytes under another name used to be imported first, which
+    renamed the source's record before the copy was refused, and a file that
+    was not a table was added to the not-working list by the import that then
+    failed.
+    """
+    service = PluginService(PluginPaths.for_tests(tmp_path), logging.getLogger("repaired"))
+    service.initialize()
+    (tmp_path / "source.CT").write_text(_two_cheat_table("game.exe+10"), encoding="utf-8")
+    source = service.import_table(str(tmp_path / "source.CT"))
+    before = service.table_store.get_table(str(source["sha256"]))
+
+    (tmp_path / "renamed.CT").write_bytes((tmp_path / "source.CT").read_bytes())
+    (tmp_path / "broken.CT").write_text("<CheatTable><CheatEntries>", encoding="utf-8")
+    (tmp_path / "repaired.zip").write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    from ce_decky.table_store import TableContentError
+
+    for name, refusal, match in (
+        ("renamed.CT", ValueError, "has to differ"),
+        ("broken.CT", TableContentError, None),
+        ("repaired.zip", ValueError, r"only a \.CT file"),
+    ):
+        with pytest.raises(refusal, match=match):
+            service.import_repaired_table(str(tmp_path / name), str(source["sha256"]))
+
+    assert service.table_store.get_table(str(source["sha256"])) == before
+    assert [table["sha256"] for table in service.table_store.list_tables()] == [source["sha256"]]
+    assert service.list_blocked_tables()["tables"] == []
+
+    (tmp_path / "repaired.CT").write_text(_two_cheat_table("game.exe+14"), encoding="utf-8")
+    repaired = service.import_repaired_table(str(tmp_path / "repaired.CT"), str(source["sha256"]))
+    assert {table["sha256"] for table in service.table_store.list_tables()} == {source["sha256"], repaired["sha256"]}
+    assert service.table_store.get_table(str(source["sha256"])) == before
+
+
 def test_a_signed_table_can_be_stored_again_without_its_signature(tmp_path: Path):
     """The one place CE Decky makes executable content rather than carrying it.
 

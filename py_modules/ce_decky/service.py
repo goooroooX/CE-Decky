@@ -1648,31 +1648,35 @@ class PluginService:
         verified table, the copy is different bytes, and the cheats the source
         offers that the copy does not are named from both inspections, which
         is the cost the copy's Review states before consent.
+
+        All of that is read before anything is written. The copy is one `.CT`
+        file, and the only write is the derived record at the end: a refusal
+        leaves the library, the source's own record and the not-working list
+        exactly as they were.
         """
         source = self._sha(source_sha256)
+        candidate = Path(selection).expanduser().absolute()
         with self._mutation_lock:
             try:
                 source_path = self.table_store.verified_blob(source)
+                blob = self.table_store.read_ct_candidate(selection)
+                digest = sha256(blob).hexdigest()
+                if digest == source:
+                    raise ValueError("a repaired copy has to differ from the table it was made from")
+                # Read from the file itself against the digest of the bytes
+                # already read, so a file that changes in between is refused,
+                # and through the inspector alone: an ordinary inspection
+                # failure records the table, and this one was never imported.
+                kept = {
+                    control.id for control in inspect_table(candidate, digest).controls
+                    if control.id is not None
+                }
             except ValueError as exc:
                 log_activity(
                     self.logger, "warning", "table_import.repair_refused",
-                    source_sha=source[:12], reason=str(exc),
+                    source_sha=source[:12], reason=str(exc)[:256],
                 )
                 raise
-            artifact = self.table_store.import_selection(
-                selection, sevenzip=self._find_7zip(), app_id=app_id,
-            )
-            if artifact.sha256 == source:
-                log_activity(
-                    self.logger, "warning", "table_import.repair_refused",
-                    source_sha=source[:12], reason="copy is the source",
-                )
-                raise ValueError("a repaired copy has to differ from the table it was made from")
-            copy_path = self.table_store.verified_blob(artifact.sha256)
-            kept = {
-                control.id for control in self._inspect_table_blob(copy_path, artifact.sha256, app_id).controls
-                if control.id is not None
-            }
             # A group header with no script of its own is a heading, not a
             # cheat, and naming one as lost would overstate the cost.
             gone = [
@@ -1681,13 +1685,20 @@ class PluginService:
                 if control.id is not None and control.id not in kept
                 and not (control.group_header and not control.has_assembler_script)
             ]
-            stored = self.table_store.import_derived(
-                read_regular_bytes(copy_path, max_bytes=MAX_CT_BYTES),
-                filename=artifact.filename,
-                derived_from={
-                    "sha256": source, "transforms": ["external-repair"], "scans": [], "orphaned": gone,
-                },
-            )
+            try:
+                stored = self.table_store.import_derived(
+                    blob,
+                    filename=candidate.name,
+                    derived_from={
+                        "sha256": source, "transforms": ["external-repair"], "scans": [], "orphaned": gone,
+                    },
+                )
+            except BlockedTableError as exc:
+                log_activity(
+                    self.logger, "warning", "table_import.repair_refused",
+                    source_sha=source[:12], copy_sha=digest[:12], reason=str(exc)[:256],
+                )
+                raise
         log_activity(
             self.logger, "info", "table_import.repaired",
             source_sha=source[:12], result_sha=stored.sha256[:12], records_gone=len(gone),
