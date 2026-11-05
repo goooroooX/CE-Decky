@@ -7,14 +7,27 @@ no Cheat Engine for the game, `associate_table` adds a table to the game's
 library without selecting it, and consent is bound to the selected SHA, so the
 order is fixed and was being rediscovered by hand on every switch:
 
-1. if CE Decky owns a Cheat Engine for this game, `stop_ce_for_game`, which
-   quiesces the active records before Cheat Engine exits;
+0. before anything is stopped, the destination is proved: `inspect_table_sha`
+   reads the exact stored file, `list_blocked_tables` says whether it is marked
+   as not working, and where Cheat Engine is running or `--consent` is given,
+   `get_ce_launch_capability` has to observe the game's Proton build. A file
+   the parser cannot read is recorded as not working by that inspection, as it
+   is whenever the panel shows it;
+1. if `get_ce_launch_capability` names this game as owning a Cheat Engine,
+   recovered or not, or a bridge is connected, `stop_ce_for_game` with
+   Auto-load held, which quiesces the active records before Cheat Engine
+   exits; anything short of a proven stop with every record confirmed put
+   down ends the switch before the profile is touched. Ownership that cannot
+   be read stops nothing;
 2. `save_profile` with the game's own name, shortcut flag and target process,
    which selects the table;
 3. with `--consent` only, `set_execution_consent` for that exact SHA;
-4. with consent in place, `launch_ce_for_game` through the Proton build the
-   backend observes the game running under, then `get_runtime_status` until
-   the bridge reports this exact table loaded and attached.
+4. with consent in place, `launch_ce_for_game` as a press, which lifts the
+   Auto-load hold, through the Proton build the backend observes the game
+   running under, then `get_runtime_status` until the bridge reports this
+   exact table loaded and attached. Without consent, or after a step that
+   failed once Cheat Engine was stopped, the hold stays, so nothing starts a
+   table by itself until a launch is pressed.
 
 Every step is the production RPC, and each answer is in the report. A failed
 or unconfirmed step stops the switch and says which one, and nothing is
@@ -36,6 +49,12 @@ if __package__:
 else:
     import host_platform
     import target_plugin_rpc
+
+MODULE_ROOT = Path(__file__).resolve().parents[1] / "py_modules"
+if str(MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(MODULE_ROOT))
+
+from ce_decky.table_blocklist import COMPATIBILITY_CAUSES  # noqa: E402
 
 
 class SwitchRefused(RuntimeError):
@@ -67,17 +86,49 @@ def switch(app_id, table_sha, rpc, *, consent=False, sleep=time.sleep, steps=Non
     if not profile.get("target_process"):
         raise SwitchRefused("the game profile names no target process; set it in the panel first")
 
-    runtime = rpc("get_runtime_status", [app_id])
-    current = ((runtime or {}).get("prepared") or {}).get("table_sha256")
-    if (runtime or {}).get("connected") or (runtime or {}).get("owned_launch_state") == "matched":
-        stopped = rpc("stop_ce_for_game", [app_id, current, False])
-        quiesce = (stopped or {}).get("quiesce") or {}
-        state = ((stopped or {}).get("operation") or {}).get("state")
-        steps.append({"step": "stop", "table_sha256": current, "state": state, "quiesce": quiesce})
-        if state != "stopped":
-            raise SwitchRefused(f"Cheat Engine did not report stopped ({state}); inspect it before switching")
-        if quiesce.get("asked") and (not quiesce.get("cleanup_confirmed") or quiesce.get("records_unsettled")):
-            raise SwitchRefused("the stop did not confirm that every active record was put down")
+    # The destination is proved before anything running is stopped: a table
+    # that is missing, damaged, unreadable or marked as not working would
+    # otherwise end a working Cheat Engine and then fail to be selected.
+    # `save_profile` still makes the same checks when it selects it.
+    try:
+        rpc("inspect_table_sha", [table_sha, app_id])
+    except RuntimeError as exc:
+        raise SwitchRefused(f"the destination table cannot be used: {exc}") from exc
+    if profile.get("table_sha256") != table_sha:
+        blocked = rpc("list_blocked_tables", []) or {}
+        if any(isinstance(row, dict) and row.get("sha256") == table_sha and row.get("cause") in COMPATIBILITY_CAUSES
+               for row in blocked.get("tables") or []):
+            raise SwitchRefused("the destination table is marked as not working; clear that mark first")
+
+    runtime = rpc("get_runtime_status", [app_id]) or {}
+    current = (runtime.get("prepared") or {}).get("table_sha256")
+    # Ownership is the launcher's answer, which also covers a Cheat Engine
+    # recovered from its record after a reload and not connected to a bridge.
+    capability = rpc("get_ce_launch_capability", [app_id]) or {}
+    if capability.get("ownership_state_error"):
+        raise SwitchRefused(f"Cheat Engine ownership cannot be read ({capability['ownership_state_error']})")
+    owners = [owner for owner in capability.get("owned_launch_owners") or []
+              if isinstance(owner, dict) and owner.get("app_id") == app_id]
+    if any(owner.get("state") in {"invalid", "unreadable"} for owner in owners):
+        raise SwitchRefused("this game's Cheat Engine ownership record cannot be trusted; repair it in Advanced first")
+    running = bool(owners or runtime.get("connected"))
+    tool = capability.get("observed_proton_tool") or {}
+    if (running or consent) and not tool.get("tool_id"):
+        raise SwitchRefused("the backend observes no Proton build for the running game, so nothing was stopped")
+    if running:
+        # Auto-load is held, or an open panel can start the old table again
+        # between this stop and the selection; the explicit launch lifts it.
+        stopped = rpc("stop_ce_for_game", [app_id, current, True]) or {}
+        quiesce = stopped.get("quiesce")
+        steps.append({"step": "stop", "table_sha256": current, "stopped": stopped.get("stopped"),
+                      "recovered": stopped.get("recovered"),
+                      "state": (stopped.get("operation") or {}).get("state"), "quiesce": quiesce})
+        if stopped.get("stopped") is not True:
+            raise SwitchRefused("Cheat Engine was not proven stopped; inspect it before switching")
+        if (not isinstance(quiesce, dict) or quiesce.get("cleanup_confirmed") is not True
+                or quiesce.get("records_unsettled")):
+            raise SwitchRefused("the stop did not confirm that every active record was put down, so the game "
+                                "is held from every start until it exits; nothing was selected")
 
     selected = rpc("save_profile", [app_id, profile["name"], bool(profile.get("is_shortcut")), table_sha,
                                     profile["target_process"]])
@@ -93,8 +144,6 @@ def switch(app_id, table_sha, rpc, *, consent=False, sleep=time.sleep, steps=Non
         steps.append({"step": "launch", "skipped": "this exact table has no execution consent"})
         return {"schema": 1, "app_id": app_id, "table_sha256": table_sha, "ok": True, "launched": False, "steps": steps}
 
-    capability = rpc("get_ce_launch_capability", [app_id])
-    tool = (capability or {}).get("observed_proton_tool") or {}
     if not tool.get("tool_id"):
         raise SwitchRefused("the backend observes no Proton build for the running game")
     launch = rpc("launch_ce_for_game", [app_id, tool["tool_id"], False])
