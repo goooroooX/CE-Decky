@@ -17,6 +17,9 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "py_modules"))
+# The runtime dependencies the plugin ships, as `main.py` adds them, so a
+# plain `python3` runs this; appended, so an installed copy still wins.
+sys.path.append(str(ROOT / "py_modules" / "vendor"))
 
 from ce_decky.catalog import (  # noqa: E402
     MAX_HTML_BYTES,
