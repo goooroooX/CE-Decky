@@ -176,9 +176,15 @@ function renderContent() { const plugin = (pluginFactory as any)(); return rende
 async function pressLocalFile() {
   // Pressed once it can be. A press on a Manage the panel still holds disabled
   // while it loads does nothing at all, and on a slow CI runner that was the
-  // press this case made, so the picker it waited for never opened.
-  const manage = await screen.findByRole("button", { name: "Manage" });
-  await waitFor(() => expect((manage as HTMLButtonElement).disabled).toBe(false), { timeout: 4000 });
+  // press this case made, so the picker it waited for never opened. Looked up
+  // again on every check rather than held: the Manage drawn while the first
+  // status read is in flight is replaced once it lands, and a reference to it
+  // stayed disabled after the panel had loaded.
+  const manage = await waitFor(() => {
+    const button = screen.getByRole("button", { name: "Manage" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    return button;
+  }, { timeout: 4000 });
   fireEvent.click(manage);
   // Waited for rather than read once. What the press opens depends on what the
   // panel has finished loading, and a case that opens it while the first status
