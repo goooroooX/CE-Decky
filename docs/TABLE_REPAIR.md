@@ -154,6 +154,9 @@ with the same target are not proof which is the durable global. Check their
 code references and repeat in another game state. Names, self links, owning
 objects, class ancestry, sane typed ranges and prediction/authoritative mirrors
 provide independent assertions. A single readable field provides none of that.
+In the 16/16 layout name index 0 is `None`, so any readable run of zeros read as
+an object decodes to a valid-looking name: require a readable nonzero class and
+a complete ancestry before a name says anything about an object.
 
 ## Derive, review and test
 
@@ -293,7 +296,9 @@ with expected data of exactly the overwritten length. An extra byte in the
 agent's expected string is a bad assertion, not a broken restore operation.
 
 Do not interpret no targets as a permanent mismatch. Conditional gear and mounted
-weapons require the relevant equipment. Enumerate the full bounded class lineage
+weapons require the relevant equipment. Zero writes is correct when a valid
+field already holds the cheat's value, and zero hook hits is correct while the
+game is paused or the event has not happened; neither is a mismatch. Enumerate the full bounded class lineage
 and required owning objects before deciding whether the layout is contradicted
 or the target is simply absent. A partial object survey cannot prove absence.
 For an enemy selector, independently check local player and allies as exclusions;

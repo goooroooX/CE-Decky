@@ -41,6 +41,17 @@ def test_a_different_seed_asks_for_different_topics():
     )
 
 
+def test_sampling_can_be_limited_to_named_strata():
+    chosen = survey.sample_topics(_pages(), 5, 3, strata=("fresh", "recent"))
+    assert {item.stratum for item in chosen} == {"fresh", "recent"} and len(chosen) == 10
+
+
+def test_a_game_already_chosen_or_already_held_is_not_sampled_again():
+    pages = {0: [("1", "Some Game"), ("2", "some  GAME"), ("3", "Held Game"), ("4", "Other Game")]}
+    chosen = survey.sample_topics(pages, 10, 1, strata=("fresh",), known_titles=frozenset({"held game"}))
+    assert sorted(item.title.casefold().split()[0] for item in chosen) == ["other", "some"]
+
+
 def _table(tmp_path: Path, body: str, name: str = "t.CT") -> Path:
     from hashlib import sha256
 
@@ -110,3 +121,33 @@ def test_the_summary_reports_shares_and_reasons():
     assert "2 usable table(s) of 3 fetched" in text
     assert "carries its own window" in text
     assert "no attachment" in text
+
+
+def test_engine_marks_name_the_layout_a_table_reaches_its_targets_through():
+    assert survey.engine_marks('local pool = getAddress("FNamePool")', "A game") == {
+        "ue_fnamepool", "ue_object_graph", "unreal"}
+    assert survey.engine_marks("[[[GWorld]+30]+38]", "A game") == {"ue_object_graph", "unreal"}
+    assert survey.engine_marks("game.exe+10", "A game [Engine:Unreal 5.3]") == {"unreal"}
+    assert survey.engine_marks('"Game-Win64-Shipping.exe"+10', "A game") == {"unreal"}
+    assert survey.engine_marks("LaunchMonoDataCollector()", "A game") == {"unity_mono"}
+    assert survey.engine_marks("GameAssembly.dll+10", "A game") == {"unity_il2cpp"}
+    assert survey.engine_marks("game.exe+10", "A game [Engine:Unity]") == {"unity_title_only"}
+    # A word that merely contains a marker is not one.
+    assert survey.engine_marks("MyUObjectsList unrealistic", "A game") == set()
+
+
+def test_the_engine_report_counts_each_distinct_stored_table_once_per_stratum(tmp_path):
+    from ce_decky.table_store import TableStore
+
+    store = TableStore(tmp_path / "store")
+    held = [store.import_ct(str(_table(tmp_path, f"<LuaScript>{lua}</LuaScript>", f"{n}.CT")))
+            for n, lua in enumerate(("GUObjectArray", "LaunchMonoDataCollector()", "print(1)"))]
+    rows = [{"usable": True, "sha256": artifact.sha256, "stratum": stratum, "title": "A game"}
+            for artifact, stratum in zip(held, ("fresh", "fresh", "recent"))]
+    rows.append(dict(rows[0]))
+    rows.append({"usable": True, "sha256": "f" * 64, "stratum": "recent", "title": "A game"})
+    text = survey.summarise_engines(rows, store)
+    assert "3 distinct usable table(s), 1 unreadable from the store" in text
+    line = next(line for line in text.splitlines() if "names the Unreal object system" in line)
+    assert "1/3" in line and "1/2" in line and "0/1" in line
+    assert "upper bound" in text

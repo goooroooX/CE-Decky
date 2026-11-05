@@ -115,6 +115,88 @@ _AA_SECTION_RE = re.compile(r"<AssemblerScript[^>]*>(.*?)</AssemblerScript>", re
 _AA_LUA_RE = re.compile(r"\{\$lua\}", re.I)
 
 
+# Which engine's object model a table reaches its targets through, read from
+# the table's own text and its topic title. It is the coverage question for a
+# detector that checks addresses through one engine's layout rather than one
+# table's recipe: such a reader can only check a table whose records go
+# through that layout. A name in the text is an upper bound, not proof that a
+# record's address is reached that way, and the report says so.
+ENGINE_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # The UE 4.23+ name pool, the 16/16 layout the development reader decodes.
+    ("ue_fnamepool", re.compile(r"\b(?:FNamePool|NamePoolData)\b")),
+    # The UE object system: its global arrays and the classes a chain walks.
+    ("ue_object_graph", re.compile(
+        r"\b(?:GUObjectArray|GObjects|GNames|FNamePool|NamePoolData|GWorld|UWorld|GEngine|UGameEngine|UObject"
+        r"|AActor|APawn|ACharacter|APlayerController|ULocalPlayer|UGameInstance|AGameStateBase|FName)\b")),
+    # An Unreal game's own module is `<Project>-Win64-Shipping.exe`, which a
+    # table names wherever it addresses that module, tag or no tag.
+    ("unreal", re.compile(r"\b(?:Unreal|UE4|UE5|UE ?[45]\.\d+)\b|-Win(?:64|GDK)-Shipping\b", re.I)),
+    ("unity_mono", re.compile(r"\b(?:LaunchMonoDataCollector|mono_[a-z]\w*)\b")),
+    ("unity_il2cpp", re.compile(r"\b(?:il2cpp\w*|GameAssembly(?:\.dll)?)\b", re.I)),
+)
+_TITLE_UNREAL_RE = re.compile(r"\b(?:Unreal|UE ?[45](?:\.\d+)?)\b", re.I)
+_TITLE_UNITY_RE = re.compile(r"\bUnity\b", re.I)
+
+
+def engine_marks(text: str, title: str) -> set[str]:
+    """The engine marks one table's text and its topic title carry."""
+    marks = {name for name, pattern in ENGINE_MARKERS if pattern.search(text)}
+    # A layout reader of the name pool is one of the object system too, and
+    # either is a table for an Unreal game.
+    if "ue_fnamepool" in marks:
+        marks.add("ue_object_graph")
+    if "ue_object_graph" in marks or _TITLE_UNREAL_RE.search(title):
+        marks.add("unreal")
+    if _TITLE_UNITY_RE.search(title) and not marks & {"unity_mono", "unity_il2cpp"}:
+        marks.add("unity_title_only")
+    return marks
+
+
+def summarise_engines(rows: list[dict[str, object]], store: TableStore) -> str:
+    """How many of the corpus's tables each engine layout could be checked through."""
+    seen: set[str] = set()
+    counted: list[tuple[str, set[str]]] = []
+    unreadable = 0
+    for row in rows:
+        digest = row.get("sha256")
+        if not row.get("usable") or not isinstance(digest, str) or digest in seen:
+            continue
+        seen.add(digest)
+        try:
+            text = store.verified_blob(digest).read_bytes().decode("utf-8", "replace")
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        counted.append((str(row.get("stratum") or "unknown"), engine_marks(text, str(row.get("title") or ""))))
+    if not counted:
+        return "no usable tables in the corpus yet"
+    labels = (
+        ("ue_object_graph", "names the Unreal object system"),
+        ("ue_fnamepool", "  of which the 4.23+ name pool"),
+        ("unreal", "an Unreal game, by module or title"),
+        ("unity_mono", "Unity, Mono"),
+        ("unity_il2cpp", "Unity, IL2CPP"),
+        ("unity_title_only", "Unity by title only"),
+    )
+    groups = [("all", [marks for _, marks in counted])]
+    for name, _, _ in STRATA:
+        members = [marks for stratum, marks in counted if stratum == name]
+        if members:
+            groups.append((name, members))
+    lines = [f"engine layout coverage: {len(counted)} distinct usable table(s)"
+             + (f", {unreadable} unreadable from the store" if unreadable else ""), ""]
+    lines.append("  " + " " * 34 + "".join(f"{name:>14}" for name, _ in groups))
+    for key, label in labels + (("", "none of these"),):
+        cells = []
+        for _, members in groups:
+            hits = sum(1 for marks in members if (not marks if not key else key in marks))
+            cells.append(f"{hits:5d}/{len(members):<4d}{hits * 100 // len(members):3d}%")
+        lines.append(f"  {label:34}" + "".join(f"{cell:>14}" for cell in cells))
+    lines += ["", "A mark is a name in the table's text, an upper bound on the tables whose",
+              "records are reached through that layout, not a count of them."]
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class Sampled:
     stratum: str
@@ -141,21 +223,37 @@ def load_index(index_path: Path) -> dict[int, list[tuple[str, str]]]:
     return pages
 
 
-def sample_topics(pages: dict[int, list[tuple[str, str]]], per_stratum: int, seed: int) -> list[Sampled]:
-    """A reproducible spread across forum age, deduplicated by topic."""
+def _title_key(title: str) -> str:
+    return " ".join(title.casefold().split())
+
+
+def sample_topics(
+    pages: dict[int, list[tuple[str, str]]], per_stratum: int, seed: int,
+    strata: tuple[str, ...] | None = None, known_titles: frozenset[str] = frozenset(),
+) -> list[Sampled]:
+    """A reproducible spread across forum age, deduplicated by topic and title.
+
+    The listing carries the same game in more than one topic, so a title
+    already chosen, or already in the corpus, is skipped: a corpus measuring
+    how tables differ is not served by two copies of one game's.
+    """
     rng = random.Random(seed)
     chosen: list[Sampled] = []
     seen: set[str] = set()
+    titles = set(known_titles)
     for name, first_page, last_page in STRATA:
+        if strata is not None and name not in strata:
+            continue
         candidates: list[tuple[str, str]] = []
         for page in range(first_page, last_page):
             candidates.extend(pages.get(page * TOPICS_PER_PAGE, []))
         rng.shuffle(candidates)
         taken = 0
         for topic_id, title in candidates:
-            if topic_id in seen:
+            if topic_id in seen or _title_key(title) in titles:
                 continue
             seen.add(topic_id)
+            titles.add(_title_key(title))
             chosen.append(Sampled(name, topic_id, title))
             taken += 1
             if taken >= per_stratum:
@@ -363,6 +461,9 @@ async def run(args: argparse.Namespace) -> int:
             if isinstance(row.get("topic_id"), str):
                 known_topics.add(row["topic_id"])
 
+    if args.engines:
+        print(summarise_engines(rows, TableStore(corpus / "store")))
+        return 0
     if args.summarise_only:
         print(summarise(rows))
         return 0
@@ -378,7 +479,9 @@ async def run(args: argparse.Namespace) -> int:
         print("the FearLess index copy holds no pages")
         return 1
 
-    samples = [s for s in sample_topics(pages, args.per_stratum, args.seed) if s.topic_id not in known_topics]
+    known_titles = frozenset(_title_key(str(row["title"])) for row in rows if isinstance(row.get("title"), str))
+    samples = [s for s in sample_topics(pages, args.per_stratum, args.seed, args.strata, known_titles)
+               if s.topic_id not in known_topics]
     if not samples:
         print("every sampled topic is already in the corpus; raise --per-stratum or change --seed")
         print()
@@ -444,14 +547,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--index", type=Path, help="FearLess index the plugin maintains, derived from --user-home when omitted; copied, never written")
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS, help="where the corpus and its scratch table store live")
     parser.add_argument("--per-stratum", type=int, default=12, help="topics sampled from each of fresh/recent/older")
+    parser.add_argument("--strata", type=lambda text: tuple(part.strip() for part in text.split(",") if part.strip()),
+                        help="comma-separated strata to sample, from " + ", ".join(name for name, _, _ in STRATA)
+                        + "; every stratum when omitted")
     parser.add_argument("--per-topic", type=int, default=1, help="artifacts taken from one topic")
     parser.add_argument("--seed", type=int, default=int(time.time()) // 86400, help="sampling seed; the default changes daily")
     parser.add_argument("--refresh-index", action="store_true", help="copy the plugin's index again before sampling")
     parser.add_argument("--summarise-only", action="store_true", help="report the corpus already collected and fetch nothing")
+    parser.add_argument("--engines", action="store_true",
+                        help="report which engine layout the corpus's tables reach their targets through, and fetch nothing")
     args = parser.parse_args(argv)
+    if args.strata is not None and (not args.strata or set(args.strata) - {name for name, _, _ in STRATA}):
+        parser.error("--strata names only " + ", ".join(name for name, _, _ in STRATA))
     # Summarising reads only the corpus already on this disk, so it never opens
     # the plugin's index and is not asked which home holds it.
-    if args.index is None and not args.summarise_only:
+    if args.index is None and not (args.summarise_only or args.engines):
         args.index = steam_user_home(args.user_home) / ".cheat-engine-decky/cache/fearless-index.json"
     return asyncio.run(run(args))
 
