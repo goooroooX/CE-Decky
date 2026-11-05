@@ -335,6 +335,35 @@ session replacement, and its enable and disable paths are checked again under
 that SHA. Gameplay evidence from the instrumented copy speaks for the logic the
 diff shows unchanged, not for the new session.
 
+## Improve the procedure
+
+Once the sequence of fixes that makes this table work is settled, and before
+the repair is reported as finished, read the whole repair run back for what
+the next repair would want, and propose it to the operator. A candidate is one
+of three things:
+
+- a finding: a behaviour of Cheat Engine, of a game engine's layout, of a table
+  pattern, or a false positive that this document does not yet name;
+- an approach: an order of steps, an assertion or a stop condition that settled
+  an ambiguity sooner than this document's route would have;
+- a helper: a recipe operation, a mode of an existing helper or a new one that
+  would replace a command written by hand, or several calls one helper should
+  own.
+
+Check each against this document and `docs/DEVELOPMENT.md` first: something
+already written where it belongs is not a candidate. For each that remains,
+give the operator the exact text or helper change, where it goes (this
+document, `docs/FIELD_NOTES.md` for a durable device conclusion, a helper under
+`scripts/`), and what it would have saved in this run: calls, a device session,
+a wrong turn. Propose, do not apply: the operator decides, and an accepted
+proposal is an ordinary change made afterwards, never folded into the delivery
+of the repaired table.
+
+What is true only of this table, such as its addresses, offsets, game or build,
+is not a candidate: it stays in the incident directory, and a proposal states
+the general case or is dropped. Finding nothing is a complete answer, and an
+invented suggestion is worse than none.
+
 ## Production automation boundary
 
 The reusable part is identity, dependency inventory, bounded observation,
