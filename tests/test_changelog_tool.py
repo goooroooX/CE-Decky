@@ -148,10 +148,13 @@ PACKAGE = '{\n  "name": "ce-decky",\n  "version": "0.9.14",\n  "license": "GPL-3
 BACKEND_INIT = '"""CE Decky backend package."""\n\n__version__ = "0.9.14"\n'
 
 
-def _start(new=None, *, changelog=CURRENT, agents=AGENTS_LINES, package=PACKAGE, backend_init=BACKEND_INIT):
+def _start(
+    new=None, *, changelog=CURRENT, agents=AGENTS_LINES, package=PACKAGE, backend_init=BACKEND_INIT,
+    released=lambda version: True,
+):
     return start_version(
         new, "2026-09-06", changelog=list(changelog), agents=list(agents),
-        package=package, backend_init=backend_init,
+        package=package, backend_init=backend_init, released=released,
     )
 
 
@@ -211,4 +214,20 @@ def test_a_version_with_no_entries_is_where_a_change_goes_rather_than_another():
         start_version(
             None, "2026-09-07", changelog=empty, agents=["Current development version: **0.9.15 — 2026-09-06**"],
             package=PACKAGE.replace("0.9.14", "0.9.15"), backend_init=BACKEND_INIT.replace("0.9.14", "0.9.15"),
+            released=lambda version: True,
         )
+
+
+def test_a_version_that_has_not_been_released_takes_the_next_change_itself():
+    # Its tag is what says it shipped. Until then a second version would split
+    # one release's changes across two headings, which is what had to be
+    # merged back by hand.
+    asked: list[str] = []
+
+    def released(version: str) -> bool:
+        asked.append(version)
+        return False
+
+    with pytest.raises(SystemExit, match=r"0\.9\.14 has not been released \(no tag v0\.9\.14\)"):
+        _start(released=released)
+    assert asked == ["0.9.14"]

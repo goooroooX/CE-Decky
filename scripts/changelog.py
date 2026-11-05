@@ -34,8 +34,10 @@ until the first change on it is written there. The next version is the current
 one with its last component advanced, because before 1.0 nothing else moves; a
 version is named only for the step the maintainer takes on purpose, such as
 1.0.0. It refuses four places that do not already agree, a version that is
-not after the current one, a second component moved before 1.0, and a current
-version with no entries, which is the one a change belongs under.
+not after the current one, a second component moved before 1.0, a current
+version with no entries, which is the one a change belongs under, and a current
+version that has not been released: its tag `v<version>` is what says it has,
+and until then every change is part of that version rather than of a next one.
 
 Standard library only, like every other script here.
 """
@@ -46,6 +48,8 @@ import argparse
 import datetime
 import json
 import re
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,13 +186,24 @@ def _version_parts(version: str) -> tuple[int, int, int]:
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
+def _released(version: str) -> bool:
+    """Whether the release tag of `version` exists in this checkout."""
+    found = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--quiet", "--verify", f"refs/tags/v{version}"],
+        capture_output=True, check=False,
+    )
+    return found.returncode == 0
+
+
 def start_version(
     new: str | None, date: str, *, changelog: list[str], agents: list[str], package: str, backend_init: str,
+    released: Callable[[str], bool],
 ) -> tuple[str, list[str], list[str], str, str]:
     """The next version, and all four places with it written in.
 
-    Returns the version and the changelog, `AGENTS.md`, `package.json` and
-    backend `__init__.py` as they should now read.
+    `released` answers whether a version has its release tag. Returns the
+    version and the changelog, `AGENTS.md`, `package.json` and backend
+    `__init__.py` as they should now read.
     """
     _checked_date(date)
     top = next((index for index, line in enumerate(changelog) if line.startswith("## ")), None)
@@ -218,6 +233,10 @@ def start_version(
     following = next((index for index in range(top + 1, len(changelog)) if changelog[index].startswith("## ")), len(changelog))
     if not any(changelog[index].startswith("- ") for index in range(top + 1, following)):
         raise SystemExit(f"{current} has no entries yet; a change belongs under it rather than under another version")
+    if not released(current):
+        raise SystemExit(
+            f"{current} has not been released (no tag v{current}); a change belongs under it until it is",
+        )
     before = _version_parts(current)
     if new is None:
         new = f"{before[0]}.{before[1]}.{before[2] + 1}"
@@ -259,6 +278,7 @@ def main() -> None:
             agents=AGENTS.read_text(encoding="utf-8").splitlines(),
             package=PACKAGE.read_text(encoding="utf-8"),
             backend_init=BACKEND_INIT.read_text(encoding="utf-8"),
+            released=_released,
         )
         CHANGELOG.write_text("\n".join(changelog) + "\n", encoding="utf-8")
         AGENTS.write_text("\n".join(agents) + "\n", encoding="utf-8")

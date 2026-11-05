@@ -2,7 +2,7 @@
 
 The compact entry point for coding agents. Everything else this project holds is in `docs/`, and **Authority and reading routes** below says which document owns what and which one wins.
 
-Current development version: **0.9.35 — 2026-11-05**
+Current development version: **0.9.34 — 2026-11-05**
 
 ## Start here
 
@@ -94,7 +94,7 @@ Say what is happening while it happens, on every run and whether or not there is
 
 Every tool call must resolve a decision or produce a required artifact. Reuse valid preflight, QA, artifact, path, and environment facts; read bounded sections and failure tails. Do not create a plan or evidence narrative for a one-step operation. A successful purpose-built helper is sufficient for its stated guarantees. After patching repeated or near-identical code, inspect only the intended diff hunk before QA and confirm it landed in the named symbol or test; do not spend a QA run discovering a misplaced patch. Stop once the requested outcome and required verification are complete.
 
-Versions represent completed product changes, not sessions or review rounds. Before 1.0 every completed product change, including new capabilities and incompatible protocol/schema/storage or architecture/security changes, advances only the last numeric component of `0.9.x`. Compare it numerically (`0.9.10` follows `0.9.9`); there is no `0.10`, and only the maintainer declares `1.0`. Follow-up work required to finish a product change stays on the version that change is on.
+One version is one release, never one change, one session or one review round. The development version is always the latest release tag with its last component advanced by one: after `v0.9.33` it is `0.9.34`, and it stays `0.9.34` until `v0.9.34` is tagged, however many changes and days it collects. Every completed product change, including new capabilities and incompatible protocol/schema/storage or architecture/security changes, is an entry under that version; none starts another. The next version is started only after the current one's tag exists, and versions are never skipped. Before 1.0 only the last numeric component moves, compared numerically (`0.9.10` follows `0.9.9`); there is no `0.10`, and only the maintainer declares `1.0`. `python scripts/changelog.py version` refuses an untagged current version.
 
 Keep the version and its date synchronized in `package.json`, `py_modules/ce_decky/__init__.py`, this file, and the newest `CHANGELOG.md` heading; `python scripts/changelog.py version` starts the next one in all four. There is no `Unreleased` section. Changelog entries use only `[New]`, `[Changed]`, `[Fixed]`, `[Security]`, or `[Limitation]`; add concise outcomes at the top of the current version and do not rewrite an older release. One version's entries are a single unbroken list: a blank line between two of them starts a second list and `tests/test_changelog_shape.py` refuses it, so a new entry goes directly above the one below it, which is what `python scripts/changelog.py add` does for you rather than anchoring an edit on text that changes every round.
 

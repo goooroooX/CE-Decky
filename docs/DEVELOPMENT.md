@@ -713,8 +713,11 @@ python scripts/changelog.py version 1.0.0 --date 2026-11-01
 
 Without a version it advances the last component, which is the only one that
 moves before 1.0. It refuses four places that disagree, a version that is not
-after the current one, a second component moved before 1.0, and a current
-version that has no entries yet, because that one is where the change belongs.
+after the current one, a second component moved before 1.0, a current
+version that has no entries yet, because that one is where the change belongs,
+and a current version with no release tag `v<version>` in this checkout,
+because until it ships every change is part of it. Fetch tags first on a
+checkout that may not have them.
 
 To prepare a release without publishing it:
 
