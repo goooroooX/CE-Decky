@@ -62,7 +62,13 @@ def request_id() -> int:
 
 
 def call(method: str, args: list[object], decky_url: str, timeout: float) -> object:
-    """One method on the live backend, with its answer or its refusal."""
+    """One method on the live backend, with its answer or its refusal.
+
+    Raises `RuntimeError` carrying the backend's own message for a refusal, and
+    `OSError`, `TimeoutError` or `DeckyWebSocketClosed` for transport. The last
+    is itself a `RuntimeError`, so a caller that must tell a refusal from a
+    lost answer catches `DeckyWebSocketClosed` first.
+    """
     identity = request_id()
     token = _auth_token(decky_url, min(timeout, 10.0))
     with DeckyWebSocket.connect(decky_url, token, timeout) as socket:
