@@ -116,6 +116,11 @@ REQUIREMENTS = {
     # Reads every webhelper thread out of `/proc`, so the process table is the
     # whole of what it needs and the default requirement is the correct one.
     "target_webhelper_threads.py": {},
+    # Runs the helpers above in turn; its own need is the thread sample,
+    # which reads `/proc`.
+    "target_incident_capture.py": {},
+    # Samples the same threads before it signals any of them.
+    "target_webhelper_recover.py": {},
     "target_ui_layout_probe.py": {"needs_procfs": False},
     # Asks Steam's own JavaScript what the library holds, through the same CEF
     # endpoint as the two above, so a process table is not what it needs either.
