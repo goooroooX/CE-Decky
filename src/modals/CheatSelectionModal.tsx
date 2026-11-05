@@ -1641,10 +1641,13 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         {!isShortScreen(windowNode) && (
           <div style={modalNoteStyle}>
             Tip: a cheat's <b>More</b> can pin it onto the CE Decky panel. Scripts load automatically when a cheat needs them.
+            {/* Carried on in the same paragraph, short enough that both fit
+                in two lines on a television; on a line of its own it made a
+                third line and a ragged second. */}
             {currentUnreadable && (
-              <div data-testid="cheats-current-unreadable">
-                <b>Current</b> values cannot be read for some cheats while the scripts they need are off.
-              </div>
+              <span data-testid="cheats-current-unreadable">
+                {" "}Some cheats show no <b>Current</b> value while their scripts are off.
+              </span>
             )}
           </div>
         )}

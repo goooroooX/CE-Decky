@@ -8706,7 +8706,7 @@ describe("Selection and staged-change persistence", () => {
       expect(screen.getByText(/can pin it onto the CE Decky panel/)).toBeTruthy();
       const note = screen.queryByTestId("cheats-current-unreadable");
       if (shown) {
-        expect(note?.textContent).toBe("Current values cannot be read for some cheats while the scripts they need are off.");
+        expect(note?.textContent).toBe(" Some cheats show no Current value while their scripts are off.");
         expect(note?.querySelector("b")?.textContent).toBe("Current");
       } else {
         expect(note).toBeNull();
