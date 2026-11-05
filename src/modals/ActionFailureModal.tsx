@@ -4,7 +4,8 @@ import { DialogButton, Focusable, ModalRoot, PanelSection, showModal } from "@de
 import { DensePanel, PanelRow, SectionHeading } from "../components/PanelDensity";
 import { ModalActions, modalActionStyle } from "../components/ModalActions";
 import { describeError, pythonTracebackSummary } from "../errors";
-import { logUi } from "../supportLog";
+import { logUi, logUiWarning } from "../supportLog";
+import type { RefusedActivation } from "../runtimeClient";
 
 interface Props {
   /** What the user was doing, in their terms. */
@@ -100,6 +101,68 @@ export function showActionFailure(subject: string, cause: unknown): boolean {
     }
     return true;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * How many refused cheats are named one per row before the rest are counted.
+ *
+ * The rows hold no control, so nothing scrolls this window from a controller,
+ * and a Steam Deck gives a modal 534 CSS pixels, so the list stays short enough
+ * to leave the heading, the sentence above it and Close on that screen.
+ */
+const REFUSED_ROWS = 5;
+
+/**
+ * The cheats one Apply could not switch on, while the rest of it worked.
+ *
+ * Not the question about the table. That question asks whether to stop using a
+ * table, and it was put on the device after a press in which one cheat of
+ * several was refused and the rest went on: a table that works, offered for
+ * retirement because of one of its cheats. What the reader can do about a
+ * single refused cheat is leave it off, so this says which ones and why.
+ */
+export function CheatsNotSwitchedOnModal({ refused, onClose }: { refused: readonly RefusedActivation[]; onClose: () => void }) {
+  useUiSurface("CheatsNotSwitchedOnModal");
+  const shown = refused.slice(0, REFUSED_ROWS);
+  const more = refused.length - shown.length;
+  return (
+    <ModalRoot onCancel={traceUiAction("cheats_not_switched_on_modal.on_close", onClose)}>
+      <Focusable style={{ minWidth: 440, maxWidth: 680 }}>
+        <DensePanel>
+          <PanelSection>
+            <SectionHeading>{refused.length === 1 ? "One cheat did not switch on" : `${refused.length} cheats did not switch on`}</SectionHeading>
+            <PanelRow
+              tone="header"
+              testId="cheats-not-switched-on"
+              label="Everything else you applied is on"
+              description="These stay off, and are remembered off for the next time this game starts. One that went straight back off usually could not find what it looks for in this build of the game, which is about that cheat rather than the whole table."
+            />
+            {shown.map((item) => (
+              <PanelRow key={item.record_id} truncate testId={`cheat-not-switched-on-${item.record_id}`} label={item.label} description={item.reason} />
+            ))}
+            {more > 0 ? <PanelRow testId="cheats-not-switched-on-more" label={`And ${more} more`} description="Each is off, for one of the reasons above." /> : null}
+          </PanelSection>
+        </DensePanel>
+        <ModalActions>
+          <DialogButton style={modalActionStyle} onClick={traceUiAction("cheats_not_switched_on_modal.close", onClose)}>Close</DialogButton>
+        </ModalActions>
+      </Focusable>
+    </ModalRoot>
+  );
+}
+
+/** Show what one Apply could not switch on. Returns whether the dialog opened. */
+export function showCheatsNotSwitchedOn(refused: readonly RefusedActivation[]): boolean {
+  if (refused.length === 0) return true;
+  try {
+    let close = () => undefined as void;
+    const handle = showModal(<CheatsNotSwitchedOnModal refused={refused} onClose={() => close()} />);
+    close = () => handle.Close();
+    return true;
+  } catch {
+    logUiWarning("cheats.not_switched_on_unshown", { count: refused.length });
     return false;
   }
 }

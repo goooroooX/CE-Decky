@@ -18,7 +18,7 @@ import { modalActionStyle } from "../components/ModalActions";
 import { CheatRow, cheatRowActionStyle, toggleBoxStyle } from "../components/CheatRow";
 import { ActionGroup, CONTENTS_ONLY, DensePanel, FilterField, PanelNote, PanelRow, RefusalBlock, SectionHeading, SideBySide, SmallButton, SwitchBox, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
 import { PagerFooter } from "../components/PagerFooter";
-import { applyRuntimeSelection, queryRuntimeControlsPartial, RuntimeQueryAbortedError, type RuntimeDesiredState } from "../runtimeClient";
+import { applyRuntimeSelection, queryRuntimeControlsPartial, RuntimeQueryAbortedError, type RefusedActivation, type RuntimeDesiredState } from "../runtimeClient";
 import {
   CONTROL_PAGE_SIZE,
   clampPage,
@@ -129,12 +129,15 @@ interface Props {
    * `leftOn` is what this press left switched on because the table's own code
    * was not read as surviving those cheats being switched off. Only this screen
    * knows which scripts a press started, so the list comes from here.
+   * `refused` is what it asked to switch on and Cheat Engine did not, in a press
+   * where something else did.
    */
   onApplied: (
     remembered: StartupPreference[],
     envelope: RuntimeEnvelope | null,
     leftOn?: readonly TableControl[],
     configurationOnly?: boolean,
+    refused?: readonly RefusedActivation[],
   ) => Promise<void> | void;
   /** Whether this game already starts Cheat Engine by itself for this table, which decides what Apply has to disclose. */
   autoloadEnabled: boolean;
@@ -966,6 +969,15 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         mutatedRuntime = true;
       }
       const confirmed = await applyRuntimeSelection(appId, desired);
+      const refused = confirmed.refused ?? [];
+      if (refused.length > 0) {
+        logUi("cheats.not_switched_on", {
+          app_id: appId,
+          table: inspection.sha256.slice(0, 12),
+          count: refused.length,
+          record_ids: refused.slice(0, 16).map((item) => item.record_id),
+        });
+      }
       if (confirmed.compatibilityMayHaveChanged) {
         await onCompatibilityConfirmed?.().catch((cause) => logUiFailure("cheats.compatibility_refresh_failed", cause, { appId }));
       }
@@ -1043,7 +1055,7 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
       // With no runtime writes there is no mutation baseline to preserve for
       // reconciliation, and a save failure must still show the latest readback.
       if (!mutatedRuntime) noteCurrentValues(finalState.results);
-      await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current, desired.length === 0);
+      await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current, desired.length === 0, refused);
       noteCurrentValues(finalState.results);
       setLastConfirmed(confirmedState);
       setTouchedActive(new Set<number>());

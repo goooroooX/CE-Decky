@@ -3260,6 +3260,44 @@ function showActionFailure(subject, cause) {
         return false;
     }
 }
+/**
+ * How many refused cheats are named one per row before the rest are counted.
+ *
+ * The rows hold no control, so nothing scrolls this window from a controller,
+ * and a Steam Deck gives a modal 534 CSS pixels, so the list stays short enough
+ * to leave the heading, the sentence above it and Close on that screen.
+ */
+const REFUSED_ROWS = 5;
+/**
+ * The cheats one Apply could not switch on, while the rest of it worked.
+ *
+ * Not the question about the table. That question asks whether to stop using a
+ * table, and it was put on the device after a press in which one cheat of
+ * several was refused and the rest went on: a table that works, offered for
+ * retirement because of one of its cheats. What the reader can do about a
+ * single refused cheat is leave it off, so this says which ones and why.
+ */
+function CheatsNotSwitchedOnModal({ refused, onClose }) {
+    useUiSurface("CheatsNotSwitchedOnModal");
+    const shown = refused.slice(0, REFUSED_ROWS);
+    const more = refused.length - shown.length;
+    return (SP_JSX.jsx(DFL.ModalRoot, { onCancel: traceUiAction("cheats_not_switched_on_modal.on_close", onClose), children: SP_JSX.jsxs(DFL.Focusable, { style: { minWidth: 440, maxWidth: 680 }, children: [SP_JSX.jsx(DensePanel, { children: SP_JSX.jsxs(DFL.PanelSection, { children: [SP_JSX.jsx(SectionHeading, { children: refused.length === 1 ? "One cheat did not switch on" : `${refused.length} cheats did not switch on` }), SP_JSX.jsx(PanelRow, { tone: "header", testId: "cheats-not-switched-on", label: "Everything else you applied is on", description: "These stay off, and are remembered off for the next time this game starts. One that went straight back off usually could not find what it looks for in this build of the game, which is about that cheat rather than the whole table." }), shown.map((item) => (SP_JSX.jsx(PanelRow, { truncate: true, testId: `cheat-not-switched-on-${item.record_id}`, label: item.label, description: item.reason }, item.record_id))), more > 0 ? SP_JSX.jsx(PanelRow, { testId: "cheats-not-switched-on-more", label: `And ${more} more`, description: "Each is off, for one of the reasons above." }) : null] }) }), SP_JSX.jsx(ModalActions, { children: SP_JSX.jsx(DFL.DialogButton, { style: modalActionStyle, onClick: traceUiAction("cheats_not_switched_on_modal.close", onClose), children: "Close" }) })] }) }));
+}
+/** Show what one Apply could not switch on. Returns whether the dialog opened. */
+function showCheatsNotSwitchedOn(refused) {
+    if (refused.length === 0)
+        return true;
+    try {
+        let close = () => undefined;
+        const handle = DFL.showModal(SP_JSX.jsx(CheatsNotSwitchedOnModal, { refused: refused, onClose: () => close() }));
+        close = () => handle.Close();
+        return true;
+    }
+    catch {
+        logUiWarning("cheats.not_switched_on_unshown", { count: refused.length });
+        return false;
+    }
+}
 
 // One 1280x800 Game Mode viewport fits roughly six compact record rows beside
 // the modal header, section/filter, pager and Apply/Cancel. Eight overflowed the
@@ -9019,6 +9057,25 @@ async function applyRuntimeSelection(appId, desiredStates) {
         specs.push(...(desired.active === false ? [...setActive, ...setValue] : [...setValue, ...setActive]));
         return specs;
     };
+    // A cheat Cheat Engine ran and saw go straight back off, kept rather than
+    // thrown so the rest of the call goes on; every other failure still ends it.
+    const refusals = new Map();
+    // What waited for one of those to create or allocate it, and so never came.
+    const blocked = new Map();
+    const settle = (batch) => {
+        for (const result of batch.results) {
+            if (result.ok)
+                continue;
+            if (result.error_code === "activation_rejected" && result.record_id !== null
+                && byId.get(result.record_id)?.active === true) {
+                refusals.set(result.record_id, result);
+                continue;
+            }
+            throw new RuntimeOperationError(describeMutationFailure(result, byId), batch.envelope, refusalIsAboutTheTable(result, byId));
+        }
+    };
+    const refusedOwner = (state) => ordered.find((other) => other !== state && refusals.has(other.record_id)
+        && (isAncestorOf(other, state) || (state.after ?? []).includes(other.record_id)));
     const mutations = [];
     const deferredIds = new Set(deferred.map((state) => state.record_id));
     for (const desired of ordered) {
@@ -9033,10 +9090,7 @@ async function applyRuntimeSelection(appId, desiredStates) {
     for (let offset = 0; offset < mutations.length; offset += COMMAND_BATCH_SIZE) {
         const batch = await sendRuntimeBatchAndWait(appId, mutations.slice(offset, offset + COMMAND_BATCH_SIZE), before.envelope);
         assertSameSession(before.envelope, batch.envelope, appId);
-        const failed = batch.results.find((result) => !result.ok);
-        if (failed) {
-            throw new RuntimeOperationError(describeMutationFailure(failed, byId), batch.envelope, refusalIsAboutTheTable(failed, byId));
-        }
+        settle(batch);
         lastEnvelope = batch.envelope;
     }
     // The ancestors are on now, so the records they create can be asked for. Wait
@@ -9044,9 +9098,24 @@ async function applyRuntimeSelection(appId, desiredStates) {
     // trip is enough, then mutate them shallowest-first like any other enable.
     if (deferred.length > 0) {
         const stillMissing = new Map(deferred.map((state) => [state.record_id, state]));
+        // A record whose script went straight back off is never going to appear,
+        // and one that waits for it would be written into memory nothing allocated.
+        // Asked again before every attempt, since a script refused in the previous
+        // attempt is the owner of what this one is waiting for.
+        const dropBlocked = () => {
+            for (const [recordId, state] of stillMissing) {
+                if (!refusedOwner(state))
+                    continue;
+                blocked.set(recordId, state);
+                stillMissing.delete(recordId);
+            }
+        };
         for (let attempt = 0; attempt < MATERIALIZATION_ATTEMPTS && stillMissing.size > 0; attempt += 1) {
             if (attempt > 0)
                 await new Promise((resolve) => setTimeout(resolve, MATERIALIZATION_DELAY_MS));
+            dropBlocked();
+            if (stillMissing.size === 0)
+                break;
             const observed = await queryRuntimeControlsPartial(appId, [...stillMissing.keys()], before.envelope);
             assertSameSession(before.envelope, observed.envelope, appId);
             lastEnvelope = observed.envelope;
@@ -9063,13 +9132,11 @@ async function applyRuntimeSelection(appId, desiredStates) {
             for (let offset = 0; offset < pending.length; offset += COMMAND_BATCH_SIZE) {
                 const batch = await sendRuntimeBatchAndWait(appId, pending.slice(offset, offset + COMMAND_BATCH_SIZE), before.envelope);
                 assertSameSession(before.envelope, batch.envelope, appId);
-                const failed = batch.results.find((result) => !result.ok);
-                if (failed) {
-                    throw new RuntimeOperationError(describeMutationFailure(failed, byId), batch.envelope, refusalIsAboutTheTable(failed, byId));
-                }
+                settle(batch);
                 lastEnvelope = batch.envelope;
             }
         }
+        dropBlocked();
         const unresolved = [...stillMissing.values()][0];
         if (unresolved) {
             throw new RuntimeOperationError(`${unresolved.label ?? `MemoryRecord ${unresolved.record_id}`} did not appear after its enclosing scripts were switched on.`, lastEnvelope);
@@ -9089,10 +9156,13 @@ async function applyRuntimeSelection(appId, desiredStates) {
             && other.structure.length < state.structure.length
             && other.structure.every((segment, position) => state.structure[position] === segment));
     };
+    // Refused and blocked records are reported rather than verified: what they
+    // read back is exactly the refusal already known.
+    const notComing = (recordId) => refusals.has(recordId) || blocked.has(recordId);
     const verified = await queryRuntimeControlsPartial(appId, ids, before.envelope);
     assertSameSession(before.envelope, verified.envelope, appId);
     for (const missing of verified.unavailable) {
-        if (missing.record_id === null)
+        if (missing.record_id === null || notComing(missing.record_id))
             continue;
         const desired = byId.get(missing.record_id);
         if (desired
@@ -9107,7 +9177,7 @@ async function applyRuntimeSelection(appId, desiredStates) {
         throw new RuntimeOperationError(missing.error ?? `${named} could not be read back after the change.`, verified.envelope);
     }
     for (const result of verified.results) {
-        if (result.record_id === null)
+        if (result.record_id === null || notComing(result.record_id))
             continue;
         const desired = byId.get(result.record_id);
         if (!desired)
@@ -9128,9 +9198,18 @@ async function applyRuntimeSelection(appId, desiredStates) {
                 : `${name} kept ${describeReadBack(result.value)} instead of ${wanted}.`, verified.envelope);
         }
     }
-    const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) => other !== candidate && other.active === true && candidate.structure && other.structure
+    const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true
+        && !notComing(candidate.record_id) && !ordered.some((other) => other !== candidate && other.active === true && candidate.structure && other.structure
         && candidate.structure.length < other.structure.length
         && candidate.structure.every((segment, index) => other.structure[index] === segment)));
+    // A refusal with nothing else switched on beside it is the table's answer,
+    // thrown as it always was. The scripts switched on only for a refused cheat
+    // do not count as something that worked: `proofTarget` already passes over
+    // an enclosing script whenever a cheat inside it was asked for.
+    const firstRefusal = [...refusals.values()][0];
+    if (firstRefusal && !proofTarget) {
+        throw new RuntimeOperationError(describeMutationFailure(firstRefusal, byId), verified.envelope, true);
+    }
     const prepared = verified.envelope?.prepared;
     let compatibilityConfirmed = false;
     // A confirmation that throws has not necessarily written nothing: the record
@@ -9149,7 +9228,30 @@ async function applyRuntimeSelection(appId, desiredStates) {
             logUiWarning("runtime.compatibility_not_recorded", { app_id: appId, reason: describeError(error) });
         }
     }
-    return { envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged };
+    const refused = [
+        ...[...refusals.values()].map((result) => {
+            const desired = byId.get(result.record_id);
+            return {
+                record_id: result.record_id,
+                label: desired?.label ?? `MemoryRecord ${result.record_id}`,
+                reason: "Cheat Engine ran it and it went straight back off.",
+            };
+        }),
+        // Only what was asked to come on: a flag CE Decky would have written down
+        // under a refused script, or a setting for one, is nobody's cheat.
+        ...[...blocked.values()].filter((desired) => desired.active === true).map((desired) => {
+            const owner = refusedOwner(desired);
+            return {
+                record_id: desired.record_id,
+                label: desired.label ?? `MemoryRecord ${desired.record_id}`,
+                reason: `It needs \u201c${owner?.label ?? `MemoryRecord ${owner?.record_id}`}\u201d, which did not switch on.`,
+            };
+        }),
+    ];
+    return {
+        envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged,
+        ...(refused.length > 0 ? { refused } : {}),
+    };
 }
 /**
  * Switch off everything that is on, and leave every switch at its off key.
@@ -12591,6 +12693,15 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 mutatedRuntime = true;
             }
             const confirmed = await applyRuntimeSelection(appId, desired);
+            const refused = confirmed.refused ?? [];
+            if (refused.length > 0) {
+                logUi("cheats.not_switched_on", {
+                    app_id: appId,
+                    table: inspection.sha256.slice(0, 12),
+                    count: refused.length,
+                    record_ids: refused.slice(0, 16).map((item) => item.record_id),
+                });
+            }
             if (confirmed.compatibilityMayHaveChanged) {
                 await onCompatibilityConfirmed?.().catch((cause) => logUiFailure("cheats.compatibility_refresh_failed", cause, { appId }));
             }
@@ -12662,7 +12773,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             // reconciliation, and a save failure must still show the latest readback.
             if (!mutatedRuntime)
                 noteCurrentValues(finalState.results);
-            await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current, desired.length === 0);
+            await onApplied(remembered, finalState.envelope ?? confirmed.envelope, leftOnRef.current, desired.length === 0, refused);
             noteCurrentValues(finalState.results);
             setLastConfirmed(confirmedState);
             setTouchedActive(new Set());
@@ -17405,7 +17516,7 @@ function Content() {
                     await refreshStatus().catch(() => undefined);
                 }, onValidateStartupPlan: (remembered, values) => validateEffectiveStartupPlan(game.appId, current.table_sha256, remembered, values), onSnapshot: recordLiveSnapshot, onSnapshotInvalidated: () => dropLiveSnapshot(), autoloadEnabled: Boolean(current.autoload_enabled), onCompatibilityConfirmed: async () => {
                     await refreshStatus().catch((cause) => logUiFailure("picker.compatibility_refresh_failed", cause, { app_id: game.appId }));
-                }, onApplied: async (remembered, envelope, leftOn, configurationOnly = false) => {
+                }, onApplied: async (remembered, envelope, leftOn, configurationOnly = false, refused = []) => {
                     // A selection made with nothing running is only ever going to reach
                     // Cheat Engine through auto-load, so switching cheats on there means
                     // asking for them - turning auto-load on is what the user just asked
@@ -17466,7 +17577,9 @@ function Content() {
                         title: "CE Decky",
                         body: configurationOnly ? "Values saved; each is written when its cheat or its script is switched on."
                             : envelope
-                                ? "Cheats applied and the confirmed state was saved for this exact table."
+                                ? refused.length > 0
+                                    ? "The other cheats were applied and the confirmed state was saved for this exact table."
+                                    : "Cheats applied and the confirmed state was saved for this exact table."
                                 : armAutoload
                                     ? "Cheats saved and auto-load switched on, so they run when this game starts."
                                     : disarmAutoload
@@ -17481,6 +17594,7 @@ function Content() {
                     const alsoOn = leftOnSentence(leftOn ?? []);
                     if (alsoOn)
                         toaster.toast({ title: "CE Decky", body: alsoOn });
+                    showCheatsNotSwitchedOn(refused);
                 }, onCancel: close }));
         });
     };

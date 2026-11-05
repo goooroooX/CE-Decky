@@ -714,15 +714,20 @@ describe("runtime ACK client", () => {
       generation: 2, record_id: 7, ok: false, active: false, value: null,
       error: "activation did not settle", error_code: "activation_rejected",
     }];
+    // Read back once more, because only then is it known that nothing else in
+    // the call came on, which is what makes the refusal the table's.
+    const readBack = [{ generation: 3, record_id: 7, ok: true, active: false, value: null, error: null }];
     api.getRuntimeStatus
       .mockResolvedValueOnce(envelope(1))
       .mockResolvedValueOnce(envelope(2, queried))
       .mockResolvedValueOnce(envelope(2, queried))
       .mockResolvedValueOnce(envelope(3, [...queried, ...refused]))
-      .mockResolvedValue(envelope(3, [...queried, ...refused]));
+      .mockResolvedValueOnce(envelope(3, [...queried, ...refused]))
+      .mockResolvedValue(envelope(4, [...queried, ...refused, ...readBack]));
     api.writeRuntimeCommands
       .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 2 })
-      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 3 });
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 3 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 4 });
 
     await expect(applyRuntimeSelection(10, [
       { record_id: 7, active: true, value: null, label: "Init -- ENABLE THIS FIRST" },
@@ -1372,5 +1377,93 @@ describe("a flag that waits for the script that allocates it", () => {
     ]);
 
     expect(sent()).toEqual([["set_value", 2, "0"]]);
+  });
+});
+
+describe("one refused cheat among several", () => {
+  beforeEach(() => {
+    api.getRuntimeStatus.mockReset();
+    api.writeRuntimeCommands.mockReset();
+    api.confirmTableWorking.mockReset();
+    api.confirmTableWorking.mockResolvedValue(true);
+  });
+
+  // A bridge holding the records it is given, which answers every command of a
+  // batch whatever an earlier one did, as the real one does. A record in
+  // `refuses` goes straight back off; one in `createdBy` exists only while the
+  // script named for it is on.
+  function bridge(present: number[], refuses: number[], createdBy: Record<number, number> = {}) {
+    let generation = 1;
+    const results: any[] = [];
+    const active = new Map(present.map((id) => [id, false]));
+    const exists = (id: number) => active.has(id) && (createdBy[id] === undefined || active.get(createdBy[id]) === true);
+    api.getRuntimeStatus.mockImplementation(async () => envelope(generation, [...results]));
+    api.writeRuntimeCommands.mockImplementation(async (_appId: number, commands: any[]) => {
+      for (const command of commands) {
+        const id = command.record_id;
+        if (!exists(id)) {
+          results.push({ generation, record_id: id, ok: false, active: null, value: null, error: "MemoryRecord missing", error_code: "record_missing" });
+        } else if (command.kind === "set_active" && command.value === "1" && refuses.includes(id)) {
+          results.push({ generation, record_id: id, ok: false, active: false, value: null, error: "activation did not settle", error_code: "activation_rejected" });
+        } else {
+          if (command.kind === "set_active") active.set(id, command.value === "1");
+          results.push({ generation, record_id: id, ok: true, active: active.get(id), value: null, error: null, error_code: null });
+        }
+        generation += 1;
+      }
+      return { ok: true, count: commands.length, next_generation: generation };
+    });
+    return active;
+  }
+
+  it("switches the rest on, names the refused one and does not call it the table's", async () => {
+    const active = bridge([1, 2, 3], [2]);
+
+    const outcome = await applyRuntimeSelection(10, [
+      { record_id: 1, active: true, value: null, label: "Health" },
+      { record_id: 2, active: true, value: null, label: "Defence factor" },
+      { record_id: 3, active: true, value: null, label: "Money" },
+    ]);
+
+    expect([...active]).toEqual([[1, true], [2, false], [3, true]]);
+    expect(outcome.refused).toEqual([
+      { record_id: 2, label: "Defence factor", reason: "Cheat Engine ran it and it went straight back off." },
+    ]);
+    // And what did work still counts as the table working.
+    expect(api.confirmTableWorking).toHaveBeenCalledWith(10, "b".repeat(64), "session", 1);
+  });
+
+  it("names what waited for a refused script, and nothing CE Decky only wrote down under it", async () => {
+    bridge([1, 10, 11, 20], [10], { 11: 10 });
+
+    const outcome = await applyRuntimeSelection(10, [
+      { record_id: 1, active: true, value: null, label: "Health", structure: ["Health"] },
+      { record_id: 10, active: true, value: null, label: "Weapons", structure: ["Weapons"] },
+      { record_id: 11, active: true, value: null, label: "Ammo", structure: ["Weapons", "Ammo"] },
+      { record_id: 20, active: null, value: "0", label: "Flag", held_off: true, after: [10], switch_values: { on: "1", off: "0" } },
+    ]);
+
+    expect(outcome.refused).toEqual([
+      { record_id: 10, label: "Weapons", reason: "Cheat Engine ran it and it went straight back off." },
+      { record_id: 11, label: "Ammo", reason: "It needs “Weapons”, which did not switch on." },
+    ]);
+    // The flag that waited for the refused script was never written.
+    const written = api.writeRuntimeCommands.mock.calls.flatMap((call: any[]) => call[1])
+      .filter((command: any) => command.kind === "set_value").map((command: any) => command.record_id);
+    expect(written).not.toContain(20);
+  });
+
+  it("still puts the question about the table when only scripts for the refused cheat came on", async () => {
+    bridge([10, 11], [11]);
+
+    const failure = await applyRuntimeSelection(10, [
+      { record_id: 10, active: true, value: null, label: "Weapons", structure: ["Weapons"] },
+      { record_id: 11, active: true, value: null, label: "Ammo", structure: ["Weapons", "Ammo"] },
+    ]).catch((cause) => cause);
+
+    expect(failure).toBeInstanceOf(RuntimeOperationError);
+    expect(failure.tableRefused).toBe(true);
+    expect(failure.message).toContain("“Ammo” did not switch on");
+    expect(api.confirmTableWorking).not.toHaveBeenCalled();
   });
 });

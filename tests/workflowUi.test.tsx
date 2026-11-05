@@ -122,7 +122,7 @@ vi.mock("@decky/ui", async () => (await import("./deckyUiMock")).deckyUiMock({
 }));
 
 import pluginFactory from "../src/index";
-import { ActionFailureModal } from "../src/modals/ActionFailureModal";
+import { ActionFailureModal, CheatsNotSwitchedOnModal } from "../src/modals/ActionFailureModal";
 import { PriorDurableCommitError } from "../src/durableWrite";
 import { AdvancedModal } from "../src/modals/AdvancedModal";
 import { UpdateModal } from "../src/modals/UpdateModal";
@@ -2242,6 +2242,39 @@ describe("Home panel and managed setup", () => {
     expect(row.textContent).toContain("Health");
     expect(row.textContent).toContain("pinned");
     expect(runtimeClient.applyRuntimeSelection).not.toHaveBeenCalled();
+  });
+
+  it("hands up what one Apply could not switch on without asking about the table", async () => {
+    const onApplied = vi.fn().mockResolvedValue(undefined);
+    const onTableRefused = vi.fn();
+    const refused = [{ record_id: 7, label: "Health", reason: "Cheat Engine ran it and it went straight back off." }];
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: liveRuntime().status.results, refused });
+    const off = { ...liveRuntime().status.results[0], active: false };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: [off], unavailable: [] });
+    render(<CheatSelectionModal appId={10} inspection={inspect as any} live pinned={[]}
+      startupPreferences={[]} rememberedPreferences={[]} configuredValues={[]}
+      onSaveConfiguredValues={vi.fn().mockResolvedValue(undefined)}
+      onValidateStartupPlan={vi.fn().mockResolvedValue({ action_count: 1, limit: 2048, fits: true })}
+      autoloadEnabled={false} onTogglePin={vi.fn()} onApplied={onApplied} onTableRefused={onTableRefused} onCancel={vi.fn()} />);
+
+    fireEvent.click(within(await screen.findByTestId("cheat-row-7")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(onApplied.mock.calls[0][4]).toEqual(refused);
+    expect(onTableRefused).not.toHaveBeenCalled();
+  });
+
+  it("names each cheat that did not switch on and why, and counts the rest past a screenful", () => {
+    const refused = Array.from({ length: 9 }, (_, index) => ({
+      record_id: index + 1, label: `Cheat ${index + 1}`, reason: index === 0 ? "Cheat Engine ran it and it went straight back off." : "It needs \u201cCheat 1\u201d, which did not switch on.",
+    }));
+    render(<CheatsNotSwitchedOnModal refused={refused} onClose={vi.fn()} />);
+    expect(screen.getByText("9 cheats did not switch on")).toBeTruthy();
+    expect(screen.getByTestId("cheat-not-switched-on-1").textContent).toContain("went straight back off");
+    expect(screen.getByTestId("cheat-not-switched-on-5")).toBeTruthy();
+    expect(screen.queryByTestId("cheat-not-switched-on-6")).toBeNull();
+    expect(screen.getByTestId("cheats-not-switched-on-more").textContent).toContain("And 4 more");
   });
 
   it("leaves Search responsible for review preparation failure without stacking an error modal", async () => {

@@ -640,10 +640,35 @@ function wantedValue(desired: RuntimeDesiredState): string | null {
   return desired.value;
 }
 
+/**
+ * A cheat an Apply asked to switch on that did not come on, and why, in words
+ * a reader can act on without the record number.
+ */
+export interface RefusedActivation {
+  record_id: number;
+  label: string;
+  reason: string;
+}
+
 export async function applyRuntimeSelection(
   appId: number,
   desiredStates: readonly RuntimeDesiredState[],
-): Promise<RuntimeBatchResult & { compatibilityConfirmed?: boolean; compatibilityMayHaveChanged?: boolean }> {
+): Promise<RuntimeBatchResult & {
+  compatibilityConfirmed?: boolean;
+  compatibilityMayHaveChanged?: boolean;
+  /**
+   * What did not switch on while something else in the same call did.
+   *
+   * The bridge runs every command of a batch whatever an earlier one did, so a
+   * cheat Cheat Engine ran and saw go straight back off has not stopped the
+   * others, which are on by the time its answer arrives. Failing the whole
+   * call there reported a working table as one that did not work, saved
+   * nothing of what had worked, and asked whether to stop using the table.
+   * Only when nothing this call switched on worked is the refusal still
+   * thrown, as the table's.
+   */
+  refused?: RefusedActivation[];
+}> {
   const byId = new Map<number, RuntimeDesiredState>();
   for (const state of desiredStates) {
     if (!Number.isInteger(state.record_id) || state.record_id < 0) {
@@ -769,6 +794,30 @@ export async function applyRuntimeSelection(
     return specs;
   };
 
+  // A cheat Cheat Engine ran and saw go straight back off, kept rather than
+  // thrown so the rest of the call goes on; every other failure still ends it.
+  const refusals = new Map<number, RuntimeResult>();
+  // What waited for one of those to create or allocate it, and so never came.
+  const blocked = new Map<number, RuntimeDesiredState>();
+  const settle = (batch: RuntimeBatchResult) => {
+    for (const result of batch.results) {
+      if (result.ok) continue;
+      if (
+        result.error_code === "activation_rejected" && result.record_id !== null
+        && byId.get(result.record_id)?.active === true
+      ) {
+        refusals.set(result.record_id, result);
+        continue;
+      }
+      throw new RuntimeOperationError(
+        describeMutationFailure(result, byId), batch.envelope, refusalIsAboutTheTable(result, byId),
+      );
+    }
+  };
+  const refusedOwner = (state: RuntimeDesiredState): RuntimeDesiredState | undefined => ordered.find((other) =>
+    other !== state && refusals.has(other.record_id)
+    && (isAncestorOf(other, state) || (state.after ?? []).includes(other.record_id)));
+
   const mutations: RuntimeCommandSpec[] = [];
   const deferredIds = new Set(deferred.map((state) => state.record_id));
   for (const desired of ordered) {
@@ -786,12 +835,7 @@ export async function applyRuntimeSelection(
       before.envelope,
     );
     assertSameSession(before.envelope, batch.envelope, appId);
-    const failed = batch.results.find((result) => !result.ok);
-    if (failed) {
-      throw new RuntimeOperationError(
-        describeMutationFailure(failed, byId), batch.envelope, refusalIsAboutTheTable(failed, byId),
-      );
-    }
+    settle(batch);
     lastEnvelope = batch.envelope;
   }
 
@@ -800,8 +844,21 @@ export async function applyRuntimeSelection(
   // trip is enough, then mutate them shallowest-first like any other enable.
   if (deferred.length > 0) {
     const stillMissing = new Map(deferred.map((state) => [state.record_id, state]));
+    // A record whose script went straight back off is never going to appear,
+    // and one that waits for it would be written into memory nothing allocated.
+    // Asked again before every attempt, since a script refused in the previous
+    // attempt is the owner of what this one is waiting for.
+    const dropBlocked = () => {
+      for (const [recordId, state] of stillMissing) {
+        if (!refusedOwner(state)) continue;
+        blocked.set(recordId, state);
+        stillMissing.delete(recordId);
+      }
+    };
     for (let attempt = 0; attempt < MATERIALIZATION_ATTEMPTS && stillMissing.size > 0; attempt += 1) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, MATERIALIZATION_DELAY_MS));
+      dropBlocked();
+      if (stillMissing.size === 0) break;
       const observed = await queryRuntimeControlsPartial(appId, [...stillMissing.keys()], before.envelope);
       assertSameSession(before.envelope, observed.envelope, appId);
       lastEnvelope = observed.envelope;
@@ -818,15 +875,11 @@ export async function applyRuntimeSelection(
           appId, pending.slice(offset, offset + COMMAND_BATCH_SIZE), before.envelope,
         );
         assertSameSession(before.envelope, batch.envelope, appId);
-        const failed = batch.results.find((result) => !result.ok);
-        if (failed) {
-          throw new RuntimeOperationError(
-        describeMutationFailure(failed, byId), batch.envelope, refusalIsAboutTheTable(failed, byId),
-      );
-        }
+        settle(batch);
         lastEnvelope = batch.envelope;
       }
     }
+    dropBlocked();
     const unresolved = [...stillMissing.values()][0];
     if (unresolved) {
       throw new RuntimeOperationError(
@@ -851,10 +904,13 @@ export async function applyRuntimeSelection(
       && other.structure!.every((segment, position) => state.structure![position] === segment),
     );
   };
+  // Refused and blocked records are reported rather than verified: what they
+  // read back is exactly the refusal already known.
+  const notComing = (recordId: number) => refusals.has(recordId) || blocked.has(recordId);
   const verified = await queryRuntimeControlsPartial(appId, ids, before.envelope);
   assertSameSession(before.envelope, verified.envelope, appId);
   for (const missing of verified.unavailable) {
-    if (missing.record_id === null) continue;
+    if (missing.record_id === null || notComing(missing.record_id)) continue;
     const desired = byId.get(missing.record_id);
     if (
       desired
@@ -872,7 +928,7 @@ export async function applyRuntimeSelection(
     );
   }
   for (const result of verified.results) {
-    if (result.record_id === null) continue;
+    if (result.record_id === null || notComing(result.record_id)) continue;
     const desired = byId.get(result.record_id);
     if (!desired) continue;
     if (desired.active !== null && result.active !== desired.active) {
@@ -897,11 +953,20 @@ export async function applyRuntimeSelection(
       );
     }
   }
-  const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true && !ordered.some((other) =>
+  const proofTarget = ordered.find((candidate) => activatedHere.has(candidate.record_id) && candidate.active === true
+    && !notComing(candidate.record_id) && !ordered.some((other) =>
     other !== candidate && other.active === true && candidate.structure && other.structure
     && candidate.structure.length < other.structure.length
     && candidate.structure.every((segment, index) => other.structure![index] === segment),
   ));
+  // A refusal with nothing else switched on beside it is the table's answer,
+  // thrown as it always was. The scripts switched on only for a refused cheat
+  // do not count as something that worked: `proofTarget` already passes over
+  // an enclosing script whenever a cheat inside it was asked for.
+  const firstRefusal = [...refusals.values()][0];
+  if (firstRefusal && !proofTarget) {
+    throw new RuntimeOperationError(describeMutationFailure(firstRefusal, byId), verified.envelope, true);
+  }
   const prepared = verified.envelope?.prepared;
   let compatibilityConfirmed = false;
   // A confirmation that throws has not necessarily written nothing: the record
@@ -919,7 +984,30 @@ export async function applyRuntimeSelection(
       logUiWarning("runtime.compatibility_not_recorded", { app_id: appId, reason: describeError(error) });
     }
   }
-  return { envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged };
+  const refused: RefusedActivation[] = [
+    ...[...refusals.values()].map((result) => {
+      const desired = byId.get(result.record_id as number);
+      return {
+        record_id: result.record_id as number,
+        label: desired?.label ?? `MemoryRecord ${result.record_id}`,
+        reason: "Cheat Engine ran it and it went straight back off.",
+      };
+    }),
+    // Only what was asked to come on: a flag CE Decky would have written down
+    // under a refused script, or a setting for one, is nobody's cheat.
+    ...[...blocked.values()].filter((desired) => desired.active === true).map((desired) => {
+      const owner = refusedOwner(desired);
+      return {
+        record_id: desired.record_id,
+        label: desired.label ?? `MemoryRecord ${desired.record_id}`,
+        reason: `It needs \u201c${owner?.label ?? `MemoryRecord ${owner?.record_id}`}\u201d, which did not switch on.`,
+      };
+    }),
+  ];
+  return {
+    envelope: verified.envelope ?? lastEnvelope, results: verified.results, compatibilityConfirmed, compatibilityMayHaveChanged,
+    ...(refused.length > 0 ? { refused } : {}),
+  };
 }
 
 /**

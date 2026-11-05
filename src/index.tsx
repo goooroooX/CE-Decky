@@ -89,12 +89,12 @@ import { forgetSearchOutcomes } from "./providerCatalog";
 import { commitSourceSelection, countsReadable, everySourceOn, sourceSwitched } from "./providerSelection";
 import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImport";
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
-import { DIFFERENT_BUILD_EXPLANATION, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
+import { DIFFERENT_BUILD_EXPLANATION, type RefusedActivation, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
 import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, settingsForStartedScripts, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
-import { showActionFailure } from "./modals/ActionFailureModal";
+import { showActionFailure, showCheatsNotSwitchedOn } from "./modals/ActionFailureModal";
 import { AdvancedModal, type AdvancedContextSnapshot } from "./modals/AdvancedModal";
 import { UpdateModal } from "./modals/UpdateModal";
 import { ArchiveImportModal } from "./modals/ArchiveImportModal";
@@ -3153,7 +3153,7 @@ function Content() {
         onCompatibilityConfirmed={async () => {
           await refreshStatus().catch((cause) => logUiFailure("picker.compatibility_refresh_failed", cause, { app_id: game.appId }));
         }}
-        onApplied={async (remembered: StartupPreference[], envelope: RuntimeEnvelope | null, leftOn?: readonly TableControl[], configurationOnly = false) => {
+        onApplied={async (remembered: StartupPreference[], envelope: RuntimeEnvelope | null, leftOn?: readonly TableControl[], configurationOnly = false, refused: readonly RefusedActivation[] = []) => {
           // A selection made with nothing running is only ever going to reach
           // Cheat Engine through auto-load, so switching cheats on there means
           // asking for them - turning auto-load on is what the user just asked
@@ -3214,7 +3214,9 @@ function Content() {
             title: "CE Decky",
             body: configurationOnly ? "Values saved; each is written when its cheat or its script is switched on."
               : envelope
-              ? "Cheats applied and the confirmed state was saved for this exact table."
+              ? refused.length > 0
+                ? "The other cheats were applied and the confirmed state was saved for this exact table."
+                : "Cheats applied and the confirmed state was saved for this exact table."
               : armAutoload
                 ? "Cheats saved and auto-load switched on, so they run when this game starts."
                 : disarmAutoload
@@ -3228,6 +3230,7 @@ function Content() {
           // than records Cheat Engine has activated.
           const alsoOn = leftOnSentence(leftOn ?? []);
           if (alsoOn) toaster.toast({ title: "CE Decky", body: alsoOn });
+          showCheatsNotSwitchedOn(refused);
         }}
         onCancel={close}
       />
