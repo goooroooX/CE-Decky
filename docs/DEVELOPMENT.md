@@ -728,7 +728,24 @@ To prepare a release without publishing it:
 5. Review the package contents and checksums.
 6. Run `python scripts/check_release.py --tag v<version>`. It is the check the release workflow runs first, so missing or empty release notes, a row left under **Still worth checking** in `docs/FIELD_NOTES.md`, or a pre-release notice left in `README.md` is found here rather than after the tag is pushed.
 
-Only after explicit user approval, create and push the exact tag `v<version>`. `.github/workflows/release.yml` then:
+Only after explicit user approval, and once CI on the exact head is green, create and push the exact tag `v<version>`. It is annotated, with the message `CE Decky <version>`, on that exact head:
+
+```bash
+git tag -a v<version> -m "CE Decky <version>" <exact-head> && git push origin v<version>
+```
+
+Then wait for the release workflow on that head, the same way as for CI, and read what it published:
+
+```bash
+until gh run list --workflow release.yml --limit 5 --json headSha,status,conclusion \
+  -q '.[] | select(.headSha == "<exact-head>" and .status == "completed") | .conclusion' \
+  | grep .; do sleep 20; done
+gh release view v<version> --json tagName,isPrerelease,assets
+```
+
+A stable version is published with `isPrerelease` false and carries `CE-Decky-v<version>.zip` and `SHA256SUMS`.
+
+`.github/workflows/release.yml`, once the tag is pushed:
 
 - rejects a tag that differs from `package.json`, lacks its changelog heading or its release notes;
 - restores pinned dependencies from `pnpm-lock.yaml`;
