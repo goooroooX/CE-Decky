@@ -653,7 +653,10 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     if (!changed) return false;
     setStaged(reconciled);
     setTouchedActive(new Set<number>());
+    // The form now shows what the game holds rather than the offer, so the row
+    // saying Apply switches the offered cheats on would describe nothing.
     setOffered(new Set<number>());
+    setOfferedCount(0);
     setTouchedValues(new Set<number>());
     notePartialCommit({ runtimeChanged: true });
     return true;

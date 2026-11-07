@@ -2280,6 +2280,21 @@ describe("Home panel and managed setup", () => {
     ]);
   });
 
+  it("drops the offer once a failed Apply has reconciled the form to the game", async () => {
+    const off = { ...liveRuntime().status.results[0], active: false };
+    const on = { ...off, active: true, generation: 2 };
+    runtimeClient.applyRuntimeSelection.mockRejectedValueOnce(new Error("temporary bridge failure"));
+    renderWithRememberedHealth();
+    await screen.findByTestId("cheats-remembered-offered");
+    // The reconciliation after the failure: the offered cheat reached the game.
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: liveRuntime(), results: [on], unavailable: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await screen.findByText(/temporary bridge failure/);
+    await waitFor(() => expect(screen.queryByTestId("cheats-remembered-offered")).toBeNull());
+  });
+
   it("hands up what one Apply could not switch on without asking about the table", async () => {
     const onApplied = vi.fn().mockResolvedValue(undefined);
     const onTableRefused = vi.fn();

@@ -12379,7 +12379,10 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
             return false;
         setStaged(reconciled);
         setTouchedActive(new Set());
+        // The form now shows what the game holds rather than the offer, so the row
+        // saying Apply switches the offered cheats on would describe nothing.
         setOffered(new Set());
+        setOfferedCount(0);
         setTouchedValues(new Set());
         notePartialCommit({ runtimeChanged: true });
         return true;

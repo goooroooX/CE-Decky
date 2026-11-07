@@ -8,6 +8,7 @@ import { HEXPAW_DATA_URI } from "../assets/hexpaw";
 import { leadWithCause } from "../errors";
 import { activeCountLabel, type BlockedMark, type PinnedCheatRow } from "../uiModel";
 import type { AppDetailsSnapshot, GameSummary } from "../steam/client";
+import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from "../types";
 
 /** How many enabled cheats the block under the runtime line names before it counts the rest. */
 const ACTIVE_CHEATS_SHOWN = 7;
@@ -17,7 +18,6 @@ const ACTIVE_CHEATS_SHOWN = 7;
 // uses for something that is on.
 const activeCheatListStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 0, minWidth: 0, lineHeight: "18px" };
 const activeCheatNameStyle: CSSProperties = { display: "block", minWidth: 0, color: "#8ddc75" };
-import type { CompatibilityEvidence, ManagedCEInstallStatus, TableStatus } from "../types";
 
 interface Props {
   pluginVersion: string | null;
