@@ -727,6 +727,10 @@ def _build_support_bundle(
         ("state/profiles.json", paths.state_root / "profiles.json"),
         ("state/artifact_resolutions.json", paths.state_root / "artifact_resolutions.json"),
         ("state/table_compatibility.json", paths.state_root / "table_compatibility.json"),
+        # The record as an older version wrote it, kept when this version
+        # rewrote it into its own shape. A report of history lost across an
+        # update is answered by comparing these two files.
+        ("state/table_compatibility.before-schema-4.json", paths.state_root / "table_compatibility.before-schema-4.json"),
         ("state/blocked_tables.json", paths.state_root / "blocked_tables.json"),
         ("state/provider_sources.json", paths.state_root / "provider_sources.json"),
         ("state/providers.json", paths.cache_root / "providers.json"),

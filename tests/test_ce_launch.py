@@ -1613,6 +1613,11 @@ def test_a_shortcut_executable_path_is_read_from_its_own_processes(tmp_path: Pat
     _proc(proc, 71, environ, argv=["Z:" + str(game).replace("/", "\\")])
 
     assert observe_game_executable_paths({SHORTCUT: "game.exe", 424242: "game.exe"}, proc_root=proc) == {SHORTCUT: str(game)}
+    # Every process that named the path is kept with it, because a digest of the
+    # file is about the run only once each of them is shown to map it.
+    _proc(proc, 75, environ, argv=["Z:" + str(game).replace("/", "\\")])
+    from ce_decky.ce_launch import observe_game_executables
+    assert observe_game_executables({SHORTCUT: "game.exe"}, proc_root=proc) == {SHORTCUT: (str(game), (71, 75))}
 
 
 def test_an_attached_launch_records_another_app_id_the_game_called_itself(tmp_path: Path, monkeypatch, caplog):

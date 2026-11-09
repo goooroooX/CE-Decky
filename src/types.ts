@@ -1467,4 +1467,13 @@ export interface CompatibilityEvidence {
   last_working_at: number;
   invalidated: boolean;
   state: "matching" | "retest" | "unknown";
+  /**
+   * What `state` was decided by. `executable-sha256` is a game whose executable
+   * declared no version and had no build ID when the cheat worked, compared by
+   * the executable's exact bytes instead. Absent from an older backend, which
+   * only ever compared by version and build.
+   */
+  comparison?: "version-build" | "executable-sha256";
+  /** The comparison is still being made in the background; ask again shortly. */
+  pending?: boolean;
 }

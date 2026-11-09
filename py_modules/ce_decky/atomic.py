@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import json
 import os
 import tempfile
@@ -331,6 +332,68 @@ def read_regular_range(path: Path, *, offset: int, length: int) -> tuple[bytes, 
         final_info = os.fstat(fd)
         _ensure_stable_range_read(info, final_info, len(data), expected)
         return bytes(data), final_info
+    finally:
+        os.close(fd)
+
+
+def file_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    """What says one regular file is still the file it was: device, inode, size, both times."""
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def sha256_regular_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    expected_identity: tuple[int, int, int, int, int] | None = None,
+    should_stop=None,
+    chunk_bytes: int = 1024 * 1024,
+) -> tuple[str, os.stat_result]:
+    """Stream one regular file through SHA-256, refusing anything that moved.
+
+    The readers above keep what they read; this one keeps a digest, so a file
+    of hundreds of megabytes costs one chunk of memory. The guarantees are
+    theirs: no final symlink component, a regular file, one descriptor, and a
+    refusal when that inode changes underneath the read. Two more are this
+    reader's own. `expected_identity`, where given, is the identity a caller
+    already established for the bytes it means, and a descriptor that opens
+    anything else is refused rather than hashed, because a digest of the file
+    that replaced it would be an answer to a different question. And
+    `should_stop` is asked between chunks, which is the only place a read can be
+    stopped: a blocked `read` is not interrupted by it.
+    """
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    if path.is_symlink():
+        raise ValueError("file path must be a regular file")
+    flags = os.O_RDONLY | _NONBLOCKING_OPEN | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise ValueError("file is missing")
+    except OSError as exc:
+        raise ValueError("file could not be opened safely") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("file path must be a regular file")
+        if expected_identity is not None and file_identity(info) != tuple(expected_identity):
+            raise ValueError("file changed before reading")
+        if info.st_size <= 0 or info.st_size > max_bytes:
+            raise ValueError("file size is outside the hashing bound")
+        digest = hashlib.sha256()
+        total = 0
+        while total <= info.st_size:
+            if should_stop is not None and should_stop():
+                raise ValueError("hashing was stopped")
+            chunk = os.read(fd, chunk_bytes)
+            if not chunk:
+                break
+            total += len(chunk)
+            digest.update(chunk)
+        final_info = os.fstat(fd)
+        _ensure_stable_descriptor_read(info, final_info, total, "file")
+        return digest.hexdigest(), final_info
     finally:
         os.close(fd)
 

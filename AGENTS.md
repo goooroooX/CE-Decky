@@ -2,7 +2,7 @@
 
 The compact entry point for coding agents. Everything else this project holds is in `docs/`, and **Authority and reading routes** below says which document owns what and which one wins.
 
-Current development version: **0.9.34 — 2026-11-07**
+Current development version: **0.9.35 — 2026-11-09**
 
 ## Start here
 
@@ -174,6 +174,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Make the live backend do something, rather than reading what it holds | `scripts/target_plugin_rpc.py`; one bounded call through Decky's own socket, for behaviour that only exists in the loaded process |
 | Start the game a device check needs, or end it, without a pattern kill | `scripts/target_game_launch.py launch`/`stop`; Steam's own URI, and the game's processes by PID. A profile is not an install: choose the game by `on_device`, `starts_the_game` and `tables_worked` in `scripts/target_state_probe.py`, and `launch` refuses one this device does not hold. `--wait-target` waits on past the AppID for the program a table attaches to |
 | What does this plugin hold for a game right now: selected and previous table SHA and the selected table's verified file, consent, auto-load, pins, remembered state, configured values, sessions, owned launches, which games a stop holds, and which AppIDs are running | `scripts/target_state_probe.py`, with `--appid` for one game's records one by one |
+| An install changes the shape of the record of tables that worked: what will the new version rewrite it into, and afterwards, is that exactly what it holds | `scripts/target_state_probe.py --compatibility-migration <dir>`, before the install and again after it with the same `<dir>` |
 | What exactly would Auto-load do for this game: which scripts it starts, which values it writes, which defaults it holds off or has to leave on | `scripts/target_state_probe.py --appid <id> --startup-plan`; the production planner's own plan, read only |
 | What do the provider caches hold: how much of the FearLess listing is indexed, how stale it is, how much it still owes, and whether its background pass is armed | `scripts/target_state_probe.py`, in `provider_caches` |
 | Which Decky paths and versions does the live plugin process report | `scripts/target_decky_env_probe.py`, when procfs permits it; never installation authority |
@@ -195,6 +196,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | What does a table switch on by itself, and which of those may be switched off | `scripts/ct_scan_survey.py --table <table> --flags`; it reads the records' own answers through the production inspector and names every flag the hook reader refused, which is where a count about a table's flags comes from rather than from a line written by hand |
 | What does a table scan for, and does this game's program hold it | `scripts/ct_scan_survey.py`; `--tables` over a directory reports what the production parser read out of real tables and what it refused, with the reason and an example of each, and `--table` and `--executable` runs the check the panel runs and prints which patterns are present, which are missing and what it cost. `--tables` with `--repair-coverage` answers how much of a corpus the repair can produce a proven table for, and how much of that a user can be offered. Read only: no table is stored and no game is started |
 | What version do real Windows executables declare, and what does reading one cost | `scripts/pe_version_survey.py`; it walks a directory of `.exe` through the production version reader and reports, per file, the version, the size of the resource section, how far into it the directory walk reached and how many spans the read cost |
+| What does hashing a game's executable for the compatibility fallback cost, and does a status read stay quick while it runs | `scripts/executable_digest_bench.py` |
 | One bounded read-only snapshot of the host, for a report | `scripts/target_snapshot.py` |
 | Does this exact plugin ZIP work inside this exact Decky runtime, without starting a live service | `scripts/decky_compat_probe.py`; inputs and the reviewed local-runtime restriction are in `docs/DEVELOPMENT.md` |
 | Does the latest published CE Decky still work in Decky's latest releases, and how is that daily watch operated | `scripts/decky_compat_monitor.py`; its pairs, ledger, `STATUS.md`, `retest` and native failed-workflow notifications are in `docs/DEVELOPMENT.md` |

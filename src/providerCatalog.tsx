@@ -18,6 +18,7 @@ import { MODAL_BOTTOM_PADDING, latchChrome, rowsThatFit, viewportHeight, type La
 import { CONTENTS_ONLY, FOCUS_SCROLL_CLASS, FocusScrollText, PanelRow, SectionHeading, SmallButton, focusFirstEnabled, usePageHeight, useRowHeight } from "./components/PanelDensity";
 import { PagerFooter } from "./components/PagerFooter";
 import { CompatibilityMark, gameCompatibility, isCompatibilityFailure } from "./components/CompatibilityMark";
+import { usePendingCompatibilityRefresh } from "./pendingCompatibility";
 import { SameTableMark } from "./components/SameTableMark";
 import { SignedMark } from "./components/SignedMark";
 import { FixedMark } from "./components/FixedMark";
@@ -691,6 +692,17 @@ export function ProviderCatalog({
       setCompatibilityView((entries) => entries.map((entry) => isCompatibilityFailure(next.byDigest[entry.table_sha256]) ? { ...entry, invalidated: true } : entry));
     }
   };
+  // A comparison still being made when this screen opened, or one a cheat
+  // proved while it was open, reaches it without closing it.
+  usePendingCompatibilityRefresh(compatibilityView, async () => {
+    if (!onRefreshProvenance) return;
+    const generation = contextGenerationRef.current;
+    const next = await onRefreshProvenance();
+    if (generation !== contextGenerationRef.current) return;
+    setResolutionView(next.resolutions);
+    setCompatibilityView(next.compatibility.map((entry) => (
+      isCompatibilityFailure(blockedView.byDigest[entry.table_sha256]) ? { ...entry, invalidated: true } : entry)));
+  }, "table_search");
 
   useLayoutEffect(() => {
     const identity = `${gameIdentity}\u0000${gameName}\u0000${shortcutExecutable ?? ""}`;

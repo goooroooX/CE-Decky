@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.35 — 2026-11-09
+
+- [New] A table that worked on a game whose executable declares no version and that has no Steam build ID, which is common for non-Steam games, is now marked **Worked with this executable** with the solid green ring while the game's executable is byte for byte the one it worked with, and asks for a retest once those bytes change. Only the executable file is compared, not the libraries and data beside it. The executable is read in the background, never by the screen itself, and the mark settles on an open panel or Search within a few seconds. The record of tables that worked is rewritten into its new shape once when this version loads, with every row and mark kept and the previous file kept beside it as `table_compatibility.before-schema-4.json`, which is what an older version has to be given back, because it cannot read the new shape. Tables proven before this version gain the comparison from their next success.
+
 ## 0.9.34 — 2026-11-07
 
 - [Changed] Configure cheats opened while Cheat Engine is running selects the cheats this table was last left with that are not on now, and says so, so Apply switches the same set on again. Closing without applying leaves Cheat Engine as it is and does not ask about the selection.

@@ -186,3 +186,33 @@ it("shows a mark for every state the backend can produce, on every screen that a
   expect(gameCompatibility([], 10, proven.table_sha256)).toBeUndefined();
   expect(compatibilityGlyph(undefined)).toBeNull();
 });
+
+it("says a match by executable bytes was a match by executable bytes, and nothing more", () => {
+  const byBytes: CompatibilityEvidence = { ...evidence, pe_version: null, comparison: "executable-sha256" };
+  const view = render(<CompatibilityMark evidence={byBytes} />);
+  const matched = screen.getByLabelText("Worked with this executable");
+  // The same glyph family: a solid ring around the same check.
+  expect(matched.querySelector("circle")?.getAttribute("stroke-dasharray")).toBeNull();
+  // Every other state keeps its own sentence, because none of them is a claim
+  // about these bytes being the ones in front of the reader.
+  view.rerender(<CompatibilityMark evidence={{ ...byBytes, state: "unknown" }} />);
+  expect(screen.getByLabelText("Worked before; current build unknown")).toBeTruthy();
+  view.rerender(<CompatibilityMark evidence={{ ...byBytes, state: "retest" }} />);
+  expect(screen.getByLabelText("Worked before; retest needed")).toBeTruthy();
+  view.rerender(<CompatibilityMark evidence={{ ...evidence, comparison: "version-build" }} />);
+  expect(screen.getByLabelText("Worked on this build")).toBeTruthy();
+});
+
+it("never carries one game's executable match onto a row it is not about", () => {
+  const byBytes: CompatibilityEvidence = { ...evidence, app_id: 20, pe_version: null, comparison: "executable-sha256" };
+  // Another game's match, seen from this game's Search, and the device-wide
+  // history with no game at all: both are worked-before, with no current claim.
+  const borrowed = gameCompatibility([byBytes], 10, evidence.table_sha256);
+  const history = deviceCompatibilityHistory([byBytes])[0];
+  for (const row of [borrowed, history]) {
+    const view = render(<CompatibilityMark evidence={row} />);
+    expect(screen.queryByLabelText("Worked with this executable")).toBeNull();
+    expect(screen.getByLabelText("Worked before; current build unknown")).toBeTruthy();
+    view.unmount();
+  }
+});

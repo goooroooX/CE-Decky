@@ -128,6 +128,7 @@ import { causeAsLabel, describeError, leadWithCause } from "./errors";
 import { notifyAuthorityChanged, subscribeAuthorityChanged } from "./panelAuthority";
 import { requestPanelFocus, subscribePanelFocus, takePanelFocus } from "./panelFocus";
 import { logUi, logUiFailure, logUiWarning, readSupportLog } from "./supportLog";
+import { usePendingCompatibilityRefresh } from "./pendingCompatibility";
 import { nextPanelInstance, panelRenderer, startSupportLogFlush } from "./supportFlush";
 import { elapsedSince, monotonicNow, rendererStartedAt } from "./elapsed";
 import { PriorDurableCommitError, commitDesiredState, configuredValuesMatch, describeCommitFailure, rememberedMatches } from "./durableWrite";
@@ -454,6 +455,10 @@ function Content() {
     statusInFlightRef.current = { generation, promise: attempt };
     return attempt;
   }, []);
+  // A compatibility comparison the backend is still making settles on Home
+  // without the panel being closed: asked again, a bounded number of times,
+  // only while one is pending.
+  usePendingCompatibilityRefresh(status?.table_compatibility?.entries, refreshStatus, "panel");
 
   /**
    * Take one table out of what this panel believes it has, without asking.

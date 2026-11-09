@@ -82,6 +82,26 @@ def test_bundle_collects_exact_artifact_resolution_provenance(tmp_path: Path):
         assert payload["entries"][0]["table_sha256"] == "b" * 64
         compatibility = json.loads(archive.read("state/table_compatibility.json"))
         assert compatibility["entries"][0]["pe_version"] == "1"
+        assert compatibility["entries"][0]["comparison"] == "version-build"
+
+
+def test_bundle_carries_the_executable_comparison_and_the_record_before_it_was_rewritten(tmp_path: Path):
+    from ce_decky.table_compatibility import BACKUP_NAME
+    service, paths = _service(tmp_path)
+    original = json.dumps({"schema": 3, "entries": [{
+        "app_id": 10, "table_sha256": "b" * 64, "target_process": "game.exe", "pe_version": None,
+        "steam_build_id": None, "last_working_at": 1700000000, "invalidated": False,
+        "failure_epoch": "0" * 32, "executable_path": None}]}).encode()
+    (paths.state_root / "table_compatibility.json").write_bytes(original)
+    service.initialize()
+    service.table_compatibility.record(20, "c" * 64, "game.exe", {"executable_sha256": "d" * 64}, failure_epoch="0" * 32)
+    with _archive(service.create_support_bundle([], 0)) as archive:
+        assert archive.read(f"state/{BACKUP_NAME}") == original
+        entries = json.loads(archive.read("state/table_compatibility.json"))["entries"]
+        assert [(row["comparison"], row["executable_sha256"]) for row in entries] == [
+            ("version-build", None), ("executable-sha256", "d" * 64)]
+        # Nothing of the executable itself: a digest is all a record carries.
+        assert not [name for name in archive.namelist() if name.endswith(".exe")]
 
 
 def test_bundle_lands_in_the_user_home_with_the_files_a_report_needs(tmp_path: Path):

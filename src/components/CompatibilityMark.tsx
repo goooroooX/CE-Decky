@@ -78,6 +78,24 @@ const GLYPH_LABEL: Record<CompatibilityGlyph, string> = {
   unknown: "Worked before; current build unknown",
 };
 
+/**
+ * The sentence a mark is read as, which says what was compared.
+ *
+ * A match on a game whose executable declares no version was decided by the
+ * executable's exact bytes, and "this build" would claim a version comparison
+ * nobody made. The same glyph, because it is the same strength of claim: these
+ * bytes worked here before, and these are the same bytes.
+ */
+export function compatibilityLabel(
+  state: CompatibilityGlyph,
+  evidence: CompatibilityEvidence | undefined,
+  blocked?: BlockedMark | null,
+): string {
+  if (state === "failed" && blocked?.reason) return `${GLYPH_LABEL.failed}: ${blocked.reason}`;
+  if (state === "matching" && evidence?.comparison === "executable-sha256") return "Worked with this executable";
+  return GLYPH_LABEL[state];
+}
+
 function glyphBody(state: CompatibilityGlyph) {
   if (state === "matching") return <path d="M4.5 8l2.2 2.2 4.8-4.8" fill="none" stroke="currentColor" strokeWidth="1.6" />;
   if (state === "failed") return <path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" fill="none" stroke="currentColor" strokeWidth="1.6" />;
@@ -105,9 +123,7 @@ function glyphBody(state: CompatibilityGlyph) {
 export function CompatibilityMark({ evidence, blocked }: { evidence?: CompatibilityEvidence; blocked?: BlockedMark | null }) {
   const state = compatibilityGlyph(evidence, blocked);
   if (!state) return null;
-  const label = state === "failed" && blocked?.reason
-    ? `${GLYPH_LABEL.failed}: ${blocked.reason}`
-    : GLYPH_LABEL[state];
+  const label = compatibilityLabel(state, evidence, blocked);
   return <span
     role="img"
     title={label}

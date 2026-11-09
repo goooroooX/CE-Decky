@@ -4,7 +4,7 @@ import re
 import threading
 import time
 
-from .atomic import atomic_write_json, load_json, read_regular_bytes
+from .atomic import MAX_JSON_BYTES, atomic_write_bytes, atomic_write_json, load_json, read_regular_bytes
 from .managed_ce import discover_steam_library_roots
 from .profiles import _optional_process
 
@@ -26,7 +26,27 @@ MAX_EVIDENCE = 4096
 # they did, which is why the shape before this one is read rather than refused:
 # 2 is this shape with the field absent, and absent is a value it has. See
 # `_current_shape`.
-SCHEMA = 3
+#
+# 4 adds the SHA-256 of that executable and which comparison the record is
+# judged by. A game whose executable declares no version and which Steam gives
+# no build ID had nothing comparable even while it ran, so a table proven on it
+# could never be more than "worked before". Its executable's exact bytes are the
+# one thing left to compare, and `comparison` says that this record is compared
+# by them: `version-build` is everything before, and a record whose fallback
+# digest could not be read is still `executable-sha256` with a `None` digest,
+# which compares as unknown rather than borrowing a version that turned up later.
+#
+# Every older record is `version-build` with no digest, which is exactly the
+# claim it made. A digest is never filled in from today's file: that would tie a
+# success to bytes nobody observed at the time.
+SCHEMA = 4
+COMPARISON_VERSION_BUILD = 'version-build'
+COMPARISON_EXECUTABLE = 'executable-sha256'
+COMPARISONS = (COMPARISON_VERSION_BUILD, COMPARISON_EXECUTABLE)
+# Where the record an older version wrote is kept once it has been rewritten into
+# this shape, beside it. An older version cannot read this shape, so this file is
+# what it is put back from.
+BACKUP_NAME = 'table_compatibility.before-schema-4.json'
 # What an executable path may be before this refuses to store it. Absolute, and
 # no longer than a path this filesystem can hold.
 MAX_EXECUTABLE_PATH = 4096
@@ -97,9 +117,30 @@ def steam_build_id(user_home: Path, app_id: int, *, libraries=None) -> str | Non
         return None
 
 
+def comparison_basis(fingerprint: dict) -> str:
+    """Which comparison a new record is judged by: the one rule, in one place.
+
+    A version or a build ID observed at the success is what dates it, as it
+    always has. Only where neither was observed does the executable's digest
+    become the basis, and it stays the basis even when the digest itself could
+    not be read: a version that becomes readable later is not what this success
+    was observed against.
+    """
+    if fingerprint.get('pe_version') is not None or fingerprint.get('steam_build_id') is not None:
+        return COMPARISON_VERSION_BUILD
+    return COMPARISON_EXECUTABLE
+
+
 def compatibility_state(entry: dict, fingerprint: dict) -> str:
     if entry['invalidated']:
         return 'retest'
+    if entry['comparison'] == COMPARISON_EXECUTABLE:
+        # Different bytes are a different program, whatever its version says
+        # now; missing bytes on either side are nothing compared.
+        saved, current = entry['executable_sha256'], fingerprint.get('executable_sha256')
+        if saved is None or current is None:
+            return 'unknown'
+        return 'matching' if saved == current else 'retest'
     compared = [entry[key] == fingerprint.get(key) for key in ('pe_version', 'steam_build_id')
                 if entry[key] is not None and fingerprint.get(key) is not None]
     if not all(compared):
@@ -107,15 +148,23 @@ def compatibility_state(entry: dict, fingerprint: dict) -> str:
     return 'matching' if compared else 'unknown'
 
 
-def _current_shape(raw):
-    """The record as this version writes it, reading the one shape before it.
+_ADDED_IN = {
+    3: {'executable_path': None},
+    4: {'executable_sha256': None, 'comparison': COMPARISON_VERSION_BUILD},
+}
 
-    Schema 2 is schema 3 without `executable_path`, and that field is already
-    one a record may not have: it is `None` for every route that never saw a
-    path. So the row that comes out of here carries exactly the claims the row
-    on disk carried and not one more - the absent field is stated absent, never
-    guessed at - and it is then validated by the same strict reader as any other
-    row, which is what keeps this from being a second, laxer way in.
+
+def _current_shape(raw):
+    """The record as this version writes it, reading the shapes before it.
+
+    Schema 2 is schema 3 without `executable_path`, and schema 3 is schema 4
+    without `executable_sha256` and `comparison`. Each added field is one an
+    older record says nothing about, and the value given it here is the one that
+    says nothing: no path, no digest, and the version-and-build comparison every
+    older record was always judged by. So the row that comes out of here carries
+    exactly the claims the row on disk carried and not one more, and it is then
+    validated by the same strict reader as any other row, which is what keeps
+    this from being a second, laxer way in.
 
     What refusing it cost was not the history alone. `record()` treats an
     unreadable file as no history, so the first table proven after the upgrade
@@ -126,11 +175,27 @@ def _current_shape(raw):
     as it was read for that same reader to judge.
     """
     schema = raw.get('schema') if isinstance(raw, dict) else None
-    if type(schema) is not int or schema != 2 or set(raw) != {'schema', 'entries'} or not isinstance(raw['entries'], list):
+    if type(schema) is not int or schema not in (2, 3) or set(raw) != {'schema', 'entries'} or not isinstance(raw['entries'], list):
         return raw
-    return {'schema': SCHEMA, 'entries': [
-        {**row, 'executable_path': None} if isinstance(row, dict) and 'executable_path' not in row else row
-        for row in raw['entries']]}
+    rows = raw['entries']
+    # An older record that already claims a newer field is not an older record,
+    # and is handed back as it was for the strict reader to refuse.
+    if any(isinstance(row, dict) and set(row) & _ADDED_SINCE[schema] for row in rows):
+        return raw
+    fields = {}
+    for added in range(schema + 1, SCHEMA + 1):
+        fields.update(_ADDED_IN[added])
+    return {'schema': SCHEMA, 'entries': [{**row, **fields} if isinstance(row, dict) else row for row in rows]}
+
+
+_ADDED_SINCE = {
+    old: frozenset().union(*(_ADDED_IN[added] for added in range(old + 1, SCHEMA + 1)))
+    for old in (2, 3)
+}
+_FIELDS = frozenset({
+    'failure_epoch', 'app_id', 'table_sha256', 'target_process', 'pe_version', 'steam_build_id',
+    'last_working_at', 'invalidated', 'executable_path', 'executable_sha256', 'comparison',
+})
 
 
 class TableCompatibility:
@@ -150,7 +215,7 @@ class TableCompatibility:
             raise ValueError('invalid compatibility count')
         keys = set()
         for row in rows:
-            if not isinstance(row, dict) or set(row) != {'failure_epoch', 'app_id', 'table_sha256', 'target_process', 'pe_version', 'steam_build_id', 'last_working_at', 'invalidated', 'executable_path'}:
+            if not isinstance(row, dict) or set(row) != _FIELDS:
                 raise ValueError('invalid compatibility entry')
             epoch = row['failure_epoch']
             if not isinstance(epoch, str) or not re.fullmatch('[0-9a-f]{32}', epoch):
@@ -181,6 +246,16 @@ class TableCompatibility:
                 raise ValueError('invalid compatibility target process') from exc
             if process is None:
                 raise ValueError('invalid compatibility target process')
+            if row['comparison'] not in COMPARISONS:
+                raise ValueError('invalid compatibility comparison')
+            digest = row['executable_sha256']
+            if digest is not None and (not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest)):
+                raise ValueError('invalid compatibility executable digest')
+            # A digest is the only thing an executable-compared record is judged
+            # by, so one on a record judged by version and build is a claim
+            # nothing reads, and is refused rather than carried.
+            if digest is not None and row['comparison'] != COMPARISON_EXECUTABLE:
+                raise ValueError('invalid compatibility executable digest')
             for field in ('pe_version', 'steam_build_id'):
                 value = row[field]
                 if value is not None and (not isinstance(value, str) or not value or len(value.encode()) > 256 or any(ord(c) < 32 for c in value)):
@@ -205,13 +280,92 @@ class TableCompatibility:
             except ValueError:
                 previous = []
             rows = [row for row in previous if (row['app_id'], row['table_sha256']) != (app_id, digest)]
-            rows.append(dict(app_id=app_id, table_sha256=digest, target_process=target_process,
-                             pe_version=fingerprint.get('pe_version'), steam_build_id=fingerprint.get('steam_build_id'),
-                             executable_path=fingerprint.get('executable_path'),
-                             last_working_at=int(time.time()), invalidated=False, failure_epoch=failure_epoch))
+            comparison = comparison_basis(fingerprint)
+            row = dict(app_id=app_id, table_sha256=digest, target_process=target_process,
+                       pe_version=fingerprint.get('pe_version'), steam_build_id=fingerprint.get('steam_build_id'),
+                       executable_path=fingerprint.get('executable_path'),
+                       executable_sha256=fingerprint.get('executable_sha256') if comparison == COMPARISON_EXECUTABLE else None,
+                       comparison=comparison,
+                       last_working_at=int(time.time()), invalidated=False, failure_epoch=failure_epoch)
+            rows.append(row)
             payload = {'schema': SCHEMA, 'entries': rows[-MAX_EVIDENCE:]}
             self._validated(payload)
             atomic_write_json(self.path, payload)
+            return dict(row)
+
+    def add_executable_digest(self, row, executable_sha256):
+        """Give the exact success `row` the digest that was still being read when it was recorded.
+
+        Compare-and-set against every field that row was written with: a row
+        that has since been replaced by a newer success, invalidated by a
+        failure, or given a digest already is not the success this digest was
+        read for, and is left alone. Returns whether the digest was written.
+        """
+        if not isinstance(executable_sha256, str) or not re.fullmatch('[0-9a-f]{64}', executable_sha256):
+            raise ValueError('invalid compatibility executable digest')
+        with self._lock:
+            rows = self._load()
+            for index, current in enumerate(rows):
+                if current != row:
+                    continue
+                if current['comparison'] != COMPARISON_EXECUTABLE or current['executable_sha256'] is not None or current['invalidated']:
+                    return False
+                rows[index] = {**current, 'executable_sha256': executable_sha256}
+                payload = {'schema': SCHEMA, 'entries': rows}
+                self._validated(payload)
+                atomic_write_json(self.path, payload)
+                return True
+            return False
+
+    def migrate(self, backup: Path):
+        """Rewrite an older record into this version's shape, keeping the original.
+
+        Run once by the backend as it initializes, before it answers anything:
+        Decky has ended the backend that wrote the older shape by then, so
+        nothing else is writing this file. The original bytes are copied to
+        `backup` first, and an existing backup is never overwritten, because the
+        first one is the only copy an older version could still read. The
+        rewrite is then read back and must hold exactly the rows the original
+        did, field for field, with only the fields this version added. Returns
+        what happened, for the log: `missing`, `current`, `unreadable` (left
+        exactly as it was, and reported), or `migrated`.
+        """
+        with self._lock:
+            original = read_regular_bytes(self.path, max_bytes=MAX_JSON_BYTES, allow_missing=True)
+            if original is None:
+                return {'outcome': 'missing'}
+            # A backup already there is an earlier original, and that is the copy
+            # to keep: it is the one an older version could still read.
+            kept = read_regular_bytes(backup, max_bytes=MAX_JSON_BYTES, allow_missing=True) is not None
+
+            def unreadable(schema, exc):
+                # Left exactly as it is. Its bytes are copied aside all the same,
+                # because the next success recorded reads it as no history and
+                # replaces it, and this copy is then all that is left of it.
+                if not kept:
+                    atomic_write_bytes(backup, original)
+                return {'outcome': 'unreadable', 'schema': schema if type(schema) is int else None,
+                        'reason': str(exc)[:256], 'backup_kept': kept}
+
+            try:
+                raw = load_json(self.path, None)
+            except ValueError as exc:
+                return unreadable(None, exc)
+            schema = raw.get('schema') if isinstance(raw, dict) else None
+            if schema == SCHEMA:
+                return {'outcome': 'current'}
+            try:
+                rows = self._validated(_current_shape(raw))
+            except ValueError as exc:
+                return unreadable(schema, exc)
+            if not kept:
+                atomic_write_bytes(backup, original)
+            atomic_write_json(self.path, {'schema': SCHEMA, 'entries': rows})
+            if self._load() != rows or [
+                {key: row[key] for key in row if key not in _ADDED_SINCE[schema]} for row in rows
+            ] != raw['entries']:
+                raise ValueError('compatibility migration did not read back as written')
+            return {'outcome': 'migrated', 'schema': schema, 'rows': len(rows), 'backup_kept': kept}
 
     def invalidate(self, digest):
         with self._lock:

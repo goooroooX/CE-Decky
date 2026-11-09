@@ -54,6 +54,21 @@ const GLYPH_LABEL = {
     matching: "Worked on this build",
     unknown: "Worked before; current build unknown",
 };
+/**
+ * The sentence a mark is read as, which says what was compared.
+ *
+ * A match on a game whose executable declares no version was decided by the
+ * executable's exact bytes, and "this build" would claim a version comparison
+ * nobody made. The same glyph, because it is the same strength of claim: these
+ * bytes worked here before, and these are the same bytes.
+ */
+function compatibilityLabel(state, evidence, blocked) {
+    if (state === "failed" && blocked?.reason)
+        return `${GLYPH_LABEL.failed}: ${blocked.reason}`;
+    if (state === "matching" && evidence?.comparison === "executable-sha256")
+        return "Worked with this executable";
+    return GLYPH_LABEL[state];
+}
 function glyphBody(state) {
     if (state === "matching")
         return SP_JSX.jsx("path", { d: "M4.5 8l2.2 2.2 4.8-4.8", fill: "none", stroke: "currentColor", strokeWidth: "1.6" });
@@ -80,9 +95,7 @@ function CompatibilityMark({ evidence, blocked }) {
     const state = compatibilityGlyph(evidence, blocked);
     if (!state)
         return null;
-    const label = state === "failed" && blocked?.reason
-        ? `${GLYPH_LABEL.failed}: ${blocked.reason}`
-        : GLYPH_LABEL[state];
+    const label = compatibilityLabel(state, evidence, blocked);
     return SP_JSX.jsx("span", { role: "img", title: label, "aria-label": label, style: { color: GLYPH_COLOR[state], whiteSpace: "nowrap", flexShrink: 0, lineHeight: 0 }, children: SP_JSX.jsxs("svg", { width: "16", height: "16", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false", style: { verticalAlign: "middle" }, children: [SP_JSX.jsx("circle", { cx: "8", cy: "8", r: "6.5", fill: "none", stroke: "currentColor", strokeDasharray: state === "unknown" ? "2.6 2.2" : undefined }), glyphBody(state)] }) });
 }
 /**
@@ -6863,6 +6876,56 @@ function PagerFooter({ testId, page, pages, onPage, disabled, trailing, preferNe
     return (SP_JSX.jsx("div", { ref: containerRef, className: PAGER_FOOTER_CLASS, "data-testid": testId, style: style, children: SP_JSX.jsxs(ActionGroup, { style: FOOTER_FOCUS_ROW, navEntryPreferPosition: preferNext ? DFL.NavEntryPositionPreferences.PREFERRED_CHILD : undefined, children: [SP_JSX.jsx("span", {}), pages > 0 ? (SP_JSX.jsxs("div", { style: FOOTER_PAGER, children: [SP_JSX.jsx("div", { ref: previousPageRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { disabled: disabled || page === 0, onClick: traceUiAction("pager.previous", () => { turnedRef.current = "previous"; onPage(Math.max(0, page - 1), "previous"); }, { screen: testId, page: page - 1 }), children: "\u2039 Previous" }) }), SP_JSX.jsx("span", { style: FOOTER_PAGE_COUNT, children: `${page + 1} / ${pages}` }), SP_JSX.jsx("div", { ref: nextPageRef, style: CONTENTS_ONLY, children: SP_JSX.jsx(SmallButton, { preferredFocus: preferNext, disabled: disabled || page >= pages - 1, onClick: traceUiAction("pager.next", () => { turnedRef.current = "next"; onPage(Math.min(pages - 1, page + 1), "next"); }, { screen: testId, page: page + 1 }), children: "Next \u203a" }) })] })) : SP_JSX.jsx("span", {}), SP_JSX.jsx("div", { style: FOOTER_TRAILING, children: trailing })] }) }));
 }
 
+/**
+ * How often, and for how long, a screen asks again for a compatibility record
+ * whose comparison is still being made.
+ *
+ * A game whose executable declares no version is compared by the executable's
+ * own bytes, and the backend reads them in the background rather than inside
+ * the call that answers the screen. The answer is `pending` until that read is
+ * done, which was measured well under a second for an executable of half a
+ * gigabyte. A screen that is open when the read finishes should show it without
+ * being closed and opened again, and a screen with nothing pending should not
+ * be polling at all. The bound is the backend's own read deadline with room to
+ * spare: past it, the answer is not coming from this read.
+ */
+const PENDING_COMPATIBILITY_DELAY_MS = 3000;
+const PENDING_COMPATIBILITY_ATTEMPTS = 20;
+function hasPendingCompatibility(entries) {
+    return Boolean(entries?.some((entry) => entry.pending));
+}
+/**
+ * Ask again, a bounded number of times, while any of `entries` is pending.
+ *
+ * Each answer is a new list, so each one schedules at most the next ask; a
+ * list with nothing pending schedules nothing and resets the count. The timer
+ * belongs to the screen and goes with it.
+ */
+function usePendingCompatibilityRefresh(entries, refresh, surface) {
+    const attempts = SP_REACT.useRef(0);
+    const refreshRef = SP_REACT.useRef(refresh);
+    refreshRef.current = refresh;
+    const pending = hasPendingCompatibility(entries);
+    SP_REACT.useEffect(() => {
+        if (!pending) {
+            attempts.current = 0;
+            return;
+        }
+        if (attempts.current >= PENDING_COMPATIBILITY_ATTEMPTS) {
+            if (attempts.current === PENDING_COMPATIBILITY_ATTEMPTS) {
+                attempts.current += 1;
+                logUiWarning("compatibility.pending_gave_up", { surface, attempts: PENDING_COMPATIBILITY_ATTEMPTS });
+            }
+            return;
+        }
+        const timer = setTimeout(() => {
+            attempts.current += 1;
+            refreshRef.current().catch((cause) => logUiFailure("compatibility.pending_refresh_failed", cause, { surface }));
+        }, PENDING_COMPATIBILITY_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [entries, pending, surface]);
+}
+
 const SAME_TABLE_LABEL = "Same table bytes as another source";
 /**
  * One passive glyph for a result whose exact final bytes are already known from
@@ -7343,6 +7406,18 @@ function ProviderCatalog({ gameIdentity, gameName, artifactResolutions = [], com
             setCompatibilityView((entries) => entries.map((entry) => isCompatibilityFailure(next.byDigest[entry.table_sha256]) ? { ...entry, invalidated: true } : entry));
         }
     };
+    // A comparison still being made when this screen opened, or one a cheat
+    // proved while it was open, reaches it without closing it.
+    usePendingCompatibilityRefresh(compatibilityView, async () => {
+        if (!onRefreshProvenance)
+            return;
+        const generation = contextGenerationRef.current;
+        const next = await onRefreshProvenance();
+        if (generation !== contextGenerationRef.current)
+            return;
+        setResolutionView(next.resolutions);
+        setCompatibilityView(next.compatibility.map((entry) => (isCompatibilityFailure(blockedView.byDigest[entry.table_sha256]) ? { ...entry, invalidated: true } : entry)));
+    }, "table_search");
     SP_REACT.useLayoutEffect(() => {
         const identity = `${gameIdentity}\u0000${gameName}\u0000${shortcutExecutable ?? ""}`;
         if (identityRef.current === identity)
@@ -15011,6 +15086,10 @@ function Content() {
         statusInFlightRef.current = { generation, promise: attempt };
         return attempt;
     }, []);
+    // A compatibility comparison the backend is still making settles on Home
+    // without the panel being closed: asked again, a bounded number of times,
+    // only while one is pending.
+    usePendingCompatibilityRefresh(status?.table_compatibility?.entries, refreshStatus, "panel");
     /**
      * Take one table out of what this panel believes it has, without asking.
      *

@@ -1019,6 +1019,141 @@ def test_working_evidence_requires_accepted_activation_and_later_readback(tmp_pa
         assert saved.focus_error == "Ex unavailable"
 
 
+def _versionless_proof(tmp_path, monkeypatch):
+    """A confirmed cheat on a running game whose executable declares no version.
+
+    The digest read is held open by a gate, so the success is recorded while it
+    is still being read, which is the case the ticket exists for. The process
+    proof is the module's own and has its own regressions; here it answers for
+    exactly the identity the file has now.
+    """
+    import threading
+    from dataclasses import replace
+    import ce_decky.service as service_module
+    from ce_decky.atomic import sha256_regular_file
+    from ce_decky.executable_digest import ExecutableDigests, regular_file_identity
+    from ce_decky.session_protocol import RuntimeResult
+    service = _service(tmp_path)
+    _import_fake_ce(service)
+    source = tmp_path / "working.CT"
+    _write_ct(source)
+    digest = service.import_table(str(source))["sha256"]
+    service.save_profile(10, "Game", False, digest, "game.exe")
+    service.set_execution_consent(10, digest, True)
+    exe = tmp_path / "library" / "game.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"no version resource here" * 100)
+    gate = threading.Event()
+
+    def gated(path, **kwargs):
+        gate.wait(5)
+        return sha256_regular_file(path, **kwargs)
+
+    service.executable_digests = ExecutableDigests(service.logger, reader=gated)
+    monkeypatch.setattr(service_module, "observe_game_executable_path", lambda app_id, process: str(exe))
+    monkeypatch.setattr(service_module, "observe_game_executable_paths", lambda targets: {10: str(exe)})
+    monkeypatch.setattr(service_module, "observe_game_executables", lambda targets: {10: (str(exe), (4242,))})
+    monkeypatch.setattr(service.executable_digests, "running_identity",
+                        lambda path, pids: (regular_file_identity(path), None))
+    prepared = service.prepare_session(10)
+    status = RuntimeStatus(prepared["session_id"], 10, prepared["ce_sha256"], digest,
+                           prepared["descriptor_sha256"], 1, True, "game.exe", 123, (), (),
+                           table_load_state="loaded")
+    path = Path(prepared["status_path"])
+    path.write_bytes(render_status(status))
+    service.write_runtime_commands(10, [{"generation": 1, "kind": "set_active", "record_id": 1, "value": "1"}])
+    path.write_bytes(render_status(replace(status, results=(RuntimeResult(1, 1, True, True, None, None),))))
+    service.get_runtime_status(10)
+    service.write_runtime_commands(10, [{"generation": 2, "kind": "query", "record_id": 1}])
+    path.write_bytes(render_status(replace(status, results=(RuntimeResult(2, 1, True, True, None, None),))))
+    assert service.confirm_table_working(10, digest, prepared["session_id"], 1) is True
+    return service, digest, exe, gate
+
+
+def _wait_for_digest_worker(service):
+    worker = service.executable_digests._worker
+    if worker is not None:
+        worker.join(5)
+
+
+def test_a_versionless_executable_earns_a_match_by_its_bytes(tmp_path, monkeypatch):
+    service, digest, exe, gate = _versionless_proof(tmp_path, monkeypatch)
+    # The success is recorded at once, compared by the executable, with the
+    # digest still being read: worked before, and the panel is told to ask again.
+    stored = service.table_compatibility.snapshot()["entries"][0]
+    assert (stored["comparison"], stored["executable_sha256"]) == ("executable-sha256", None)
+    entry = service.get_status(10)["table_compatibility"]["entries"][0]
+    assert (entry["state"], entry["pending"], entry["comparison"]) == ("unknown", True, "executable-sha256")
+    assert "executable_sha256" not in entry and "executable_path" not in entry
+
+    gate.set()
+    _wait_for_digest_worker(service)
+    # A status read is a read: only the runtime poll gives the success its digest.
+    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] is None
+    service.get_runtime_status(10)
+    expected = hashlib.sha256(exe.read_bytes()).hexdigest()
+    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] == expected
+    entry = service.get_status(10)["table_compatibility"]["entries"][0]
+    assert (entry["state"], entry["pending"]) == ("matching", False)
+
+    # Different bytes are a retest, once they have been read; until then, unknown.
+    exe.write_bytes(b"an update" * 100)
+    entry = service.get_status(10)["table_compatibility"]["entries"][0]
+    assert entry["state"] in ("unknown", "retest")
+    _wait_for_digest_worker(service)
+    entry = service.get_status(10)["table_compatibility"]["entries"][0]
+    assert (entry["state"], entry["pending"]) == ("retest", False)
+
+
+def test_a_late_digest_never_lands_on_a_success_that_has_changed(tmp_path, monkeypatch):
+    service, digest, exe, gate = _versionless_proof(tmp_path, monkeypatch)
+    # A failure recorded and cleared while the digest is read retires the
+    # success it was being read for.
+    service.block_table(digest, "did not work", 10)
+    service.unblock_table(digest)
+    gate.set()
+    _wait_for_digest_worker(service)
+    service.get_runtime_status(10)
+    stored = service.table_compatibility.snapshot()["entries"][0]
+    assert stored["executable_sha256"] is None and stored["invalidated"] is True
+    assert service._executable_digest_tickets == {}
+
+
+def test_a_late_digest_for_a_file_that_changed_since_the_success_is_dropped(tmp_path, monkeypatch):
+    service, digest, exe, gate = _versionless_proof(tmp_path, monkeypatch)
+    exe.write_bytes(b"replaced before it was read" * 100)
+    gate.set()
+    _wait_for_digest_worker(service)
+    service.get_runtime_status(10)
+    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] is None
+    assert service._executable_digest_tickets == {}
+
+
+def test_the_store_is_rewritten_once_at_load_and_every_row_is_kept(tmp_path):
+    from ce_decky.table_compatibility import BACKUP_NAME
+    service = _service(tmp_path)
+    path = service.table_compatibility.path
+    rows = [{"app_id": app_id, "table_sha256": sha * 64, "target_process": "game.exe", "pe_version": "1",
+             "steam_build_id": None, "last_working_at": 1700000000, "invalidated": False,
+             "failure_epoch": "0" * 32, "executable_path": None} for app_id, sha in ((10, "a"), (20, "b"))]
+    original = json.dumps({"schema": 3, "entries": rows}).encode()
+    path.write_bytes(original)
+    service.initialize()
+    assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 4
+    assert path.with_name(BACKUP_NAME).read_bytes() == original
+    assert [row["app_id"] for row in service.table_compatibility.snapshot()["entries"]] == [10, 20]
+
+
+def test_unload_stops_the_digest_reader_and_its_answer_goes_nowhere(tmp_path, monkeypatch):
+    service, digest, exe, gate = _versionless_proof(tmp_path, monkeypatch)
+    service.begin_close()
+    gate.set()
+    _wait_for_digest_worker(service)
+    assert service.executable_digests.lookup(str(exe), None).state == "unavailable"
+    assert service.executable_digests._results == {}
+    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] is None
+
+
 def test_working_evidence_survives_a_heartbeat_that_lapses_while_the_cheat_switches_on(tmp_path, monkeypatch):
     """Activating a script holds Cheat Engine's main thread past the heartbeat.
 

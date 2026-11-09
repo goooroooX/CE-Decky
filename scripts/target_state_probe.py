@@ -46,7 +46,11 @@ from ce_decky.ct_inspector import inspect_table  # noqa: E402
 from ce_decky.session_protocol import SessionStore, effective_startup_plan, startup_left_on  # noqa: E402
 from ce_decky.steam_library import local_library, shortcut_program  # noqa: E402
 from ce_decky.table_blocklist import TableBlocklist  # noqa: E402
-from ce_decky.table_compatibility import TableCompatibility  # noqa: E402
+from ce_decky.table_compatibility import (  # noqa: E402
+    BACKUP_NAME as COMPATIBILITY_BACKUP,
+    SCHEMA as COMPATIBILITY_SCHEMA,
+    TableCompatibility,
+)
 from ce_decky.table_store import TableStore  # noqa: E402
 
 # A device holds a handful of profiles, and this is a diagnostic rather than an
@@ -348,6 +352,8 @@ def _table_evidence(state_root: Path, tables_root: Path) -> tuple[dict[str, obje
                 "target_process": row["target_process"],
                 "pe_version": row["pe_version"],
                 "steam_build_id": row["steam_build_id"],
+                "comparison": row["comparison"],
+                "executable_sha256": row["executable_sha256"],
             }
             for row in snapshot["entries"]
             if not row["invalidated"] and row["failure_epoch"] == epochs.get(row["table_sha256"], floor)
@@ -759,6 +765,60 @@ def probe(
     return report
 
 
+def compatibility_migration(home: Path, evidence: Path) -> dict[str, object]:
+    """Preview, and afterwards confirm, the rewrite of the positive record.
+
+    A version that changes the shape of `state/table_compatibility.json`
+    rewrites it once when it loads. Run this before that version is installed
+    and it reads the file as it is - nothing on the device is written - and
+    keeps, under `evidence`, the exact bytes (`original.json`) and the shape
+    the new reader makes of them (`expected.json`), which is exactly what the
+    new writer will put there. Run it again with the same directory after the
+    install and it reports whether the file now holds exactly that and whether
+    the kept backup is byte for byte the original. `evidence` belongs under
+    ignored `build/incidents/`; it holds device paths.
+    """
+    state_root = _directory(home, "DECKY_USER_HOME") / ".cheat-engine-decky" / "state"
+    path = state_root / "table_compatibility.json"
+    original_path, expected_path = evidence / "original.json", evidence / "expected.json"
+    on_disk = path.read_bytes() if path.is_file() else None
+    try:
+        on_disk_schema = json.loads(on_disk).get("schema") if on_disk is not None else None
+    except (ValueError, AttributeError):
+        on_disk_schema = None
+    report: dict[str, object] = {"store": str(path), "present": on_disk is not None, "schema_on_disk": on_disk_schema,
+                                 "schema_this_version_writes": COMPATIBILITY_SCHEMA}
+    snapshot = TableCompatibility(path).snapshot()
+    report["rows_read"] = len(snapshot["entries"])
+    report["reason"] = snapshot["reason"]
+    if not expected_path.exists():
+        if on_disk is None:
+            report["phase"] = "nothing to migrate"
+            return report
+        evidence.mkdir(parents=True, exist_ok=True)
+        # The first reading is the reference, and a later run never replaces it.
+        if not original_path.exists():
+            original_path.write_bytes(on_disk)
+        if snapshot["reason"]:
+            # Nothing to expect: the new version leaves it as it is and copies
+            # it aside, and `original.json` is that copy's reference.
+            report["phase"] = "unreadable"
+            report["evidence"] = str(evidence)
+            return report
+        expected_path.write_text(json.dumps({"schema": COMPATIBILITY_SCHEMA, "entries": snapshot["entries"]},
+                                            indent=2, sort_keys=True), encoding="utf-8")
+        report["phase"] = "previewed"
+        report["evidence"] = str(evidence)
+        return report
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    report["phase"] = "verified"
+    report["matches_preview"] = on_disk is not None and json.loads(on_disk) == expected
+    backup = state_root / COMPATIBILITY_BACKUP
+    report["backup_present"] = backup.is_file()
+    report["backup_is_original"] = backup.is_file() and backup.read_bytes() == original_path.read_bytes()
+    return report
+
+
 def _paths(home: Path | None, settings_dir: Path | None) -> tuple[Path, Path, str]:
     """The two paths, from the command line or else from the install authority.
 
@@ -796,6 +856,11 @@ def _parser() -> argparse.ArgumentParser:
         "--startup-plan", action="store_true",
         help="with --appid, the exact actions Auto-load would carry for that game, from the production planner",
     )
+    parser.add_argument(
+        "--compatibility-migration", type=Path, metavar="DIR",
+        help="instead of the snapshot: preview the positive record's rewrite into DIR before an install, "
+             "and with the same DIR afterwards confirm the file holds exactly that; writes only into DIR",
+    )
     parser.add_argument("--proc-root", type=Path, default=Path("/proc"), help=argparse.SUPPRESS)
     return parser
 
@@ -811,7 +876,10 @@ def main(argv: list[str] | None = None) -> int:
         return host_platform.refuse(exc)
     try:
         home, settings_dir, paths_from = _paths(args.home, args.settings_dir)
-        report = probe(home, settings_dir, args.appid, args.proc_root, startup_plan=args.startup_plan)
+        if args.compatibility_migration is not None:
+            report = compatibility_migration(home, args.compatibility_migration)
+        else:
+            report = probe(home, settings_dir, args.appid, args.proc_root, startup_plan=args.startup_plan)
         report["paths_from"] = paths_from
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"target state probe: {exc}", file=sys.stderr)

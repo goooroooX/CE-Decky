@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -40,6 +41,7 @@ from .ce_launch import (
     observe_game_container,
     observe_game_executable_path,
     observe_game_executable_paths,
+    observe_game_executables,
     observe_any_running_steam_game,
     observe_running_app_ids,
 )
@@ -78,7 +80,15 @@ from .ct_scans import (
     other_module,
     scans_in_table,
 )
-from .table_compatibility import TableCompatibility, compatibility_state, steam_build_id
+from .executable_digest import ExecutableDigests, regular_file_identity
+from .table_compatibility import (
+    BACKUP_NAME as TABLE_COMPATIBILITY_BACKUP,
+    COMPARISON_EXECUTABLE,
+    TableCompatibility,
+    comparison_basis,
+    compatibility_state,
+    steam_build_id,
+)
 from .acquisition import AcquisitionManager
 from .paths import PluginPaths
 from .preferences import PreferenceStore
@@ -105,6 +115,16 @@ _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _PROCESS_RE = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]{1,255}\.exe$", re.IGNORECASE)
 _ALLOWED_RUNTIME_COMMAND_KEYS = frozenset({"generation", "kind", "record_id", "value", "target_pid"})
 RUNTIME_HEARTBEAT_TTL_SECONDS = 3.0
+# How long a success recorded while its executable was still being read waits
+# for that digest, and how many such successes wait at once. One per game and
+# table, and the read itself is bounded far below this: the ticket outlives it
+# so that a panel closed straight after the success still settles it when it is
+# next opened.
+EXECUTABLE_DIGEST_TICKET_S = 3600.0
+MAX_EXECUTABLE_DIGEST_TICKETS = 16
+# Executable-compared records whose last published state is remembered for the
+# change log. Forgotten all at once past this, which costs one repeated line each.
+MAX_EXECUTABLE_STATES = 256
 RUNTIME_STATUS_MAX_FUTURE_SKEW_SECONDS = 5.0
 
 
@@ -450,6 +470,16 @@ class PluginService:
         self.table_compatibility = TableCompatibility(paths.state_root / "table_compatibility.json")
         self._compatibility_pending = {}
         self._startup_compatibility_pending = {}
+        # The executable's digest, for a game that declares no version and has
+        # no build ID. Read by one worker of its own, never here: see
+        # `executable_digest`. A success recorded while that read was still
+        # running leaves a ticket naming the exact row it wrote, and only that
+        # row can be given the digest later; see `_settle_executable_digests`.
+        self.executable_digests = ExecutableDigests(logger)
+        self._executable_digest_tickets: OrderedDict[tuple[int, str], dict] = OrderedDict()
+        # The last state each executable-compared record was published in, so
+        # a change is logged once rather than on every status read.
+        self._executable_states: dict[tuple[int, str], tuple] = {}
         self._launch_reservations: dict[int, tuple[str, str, str]] = {}
         # Managed setup spans asynchronous download/native extraction plus a final
         # synchronous identity commit.  Keep a service-level reservation across
@@ -474,6 +504,7 @@ class PluginService:
             # The signature fact for tables stored before it was recorded. A
             # row carries the mark, and a row is listed from metadata.
             self.table_store.fill_signature_marks(self.logger)
+            self._migrate_table_compatibility()
         if not self.paths.config_path.exists():
             self.config_store.save(self.config_store.load())
         self._adopt_legacy_preferences()
@@ -498,6 +529,27 @@ class PluginService:
         """
         self.provider_catalog.start_background_index()
         self.plugin_updates.start_background_checks()
+
+    def _migrate_table_compatibility(self) -> None:
+        """Rewrite the positive record into this version's shape, at load.
+
+        Here rather than on the next write, because load is the one moment
+        nothing else can be writing it: Decky ends the backend that wrote the
+        older shape before it starts this one, and nothing below answers a call
+        until initialization returns. The original is kept beside it for an
+        older version to be put back on. A record this reader refuses is left
+        exactly as it is and reported, never rewritten as empty history.
+        """
+        try:
+            outcome = self.table_compatibility.migrate(self.table_compatibility.path.with_name(TABLE_COMPATIBILITY_BACKUP))
+        except Exception as exc:  # noqa: BLE001 - a migration must never block backend load
+            log_failure(self.logger, "table_compatibility.migration_failed", exc,
+                        expected=isinstance(exc, (OSError, ValueError)))
+            return
+        if outcome["outcome"] in ("migrated", "unreadable"):
+            log_activity(self.logger, "info" if outcome["outcome"] == "migrated" else "warning",
+                         f"table_compatibility.{outcome['outcome']}",
+                         **{key: value for key, value in outcome.items() if key != "outcome"})
 
     def _adopt_legacy_preferences(self) -> None:
         """Move the two preferences 0.9.28 briefly kept in the configuration.
@@ -1301,7 +1353,7 @@ class PluginService:
 
     def _game_fingerprint(self, profile):
         path = self._observed_game_executable_path(profile)
-        return {
+        fingerprint = {
             "pe_version": None if path is None else self._read_pe_version(path),
             "steam_build_id": None if profile is None or profile.is_shortcut else steam_build_id(self.paths.user_home, profile.app_id),
             # Kept with the evidence so the same question can be asked again
@@ -1310,6 +1362,113 @@ class PluginService:
             # comparable at all the moment it closes.
             "executable_path": path,
         }
+        if path is None or comparison_basis(fingerprint) != COMPARISON_EXECUTABLE:
+            return fingerprint
+        # Nothing else comparable was observed, so this success is dated by the
+        # executable's bytes - the bytes this run of the game is actually
+        # executing, which the file at that path is only shown to be by
+        # `_running_executable_identity`.
+        identity, reason = self._running_executable_identity(profile.app_id, profile.target_process, path)
+        answer = None if identity is None else self.executable_digests.lookup(path, identity)
+        if answer is not None and answer.state == "ready":
+            fingerprint["executable_sha256"] = answer.digest
+        elif answer is not None and answer.state == "pending":
+            # Not waited for here: this runs under the mutation lock, and the
+            # success is real whether or not its digest has been read yet. The
+            # caller records the success without it and leaves a ticket.
+            fingerprint["pending_executable"] = (path, identity)
+        else:
+            log_activity(self.logger, "info", "table_compatibility.executable_unavailable",
+                         app_id=profile.app_id, executable=Path(path).name,
+                         reason=reason if answer is None else answer.reason)
+        return fingerprint
+
+    def _running_executable_identity(self, app_id, target_process, path):
+        """The identity of `path` where the running game is shown to be those bytes."""
+        observed = observe_game_executables({app_id: target_process}).get(app_id)
+        if observed is None or observed[0] != path:
+            return None, "the running game could not be matched to one executable"
+        return self.executable_digests.running_identity(path, observed[1])
+
+    def _record_compatibility(self, app_id, digest, target_process, fingerprint, *, failure_epoch, session):
+        """Record one success, and leave a ticket for a digest still being read."""
+        pending = fingerprint.pop("pending_executable", None)
+        row = self.table_compatibility.record(app_id, digest, target_process, fingerprint, failure_epoch=failure_epoch)
+        key = (app_id, digest)
+        self._executable_digest_tickets.pop(key, None)
+        if pending is not None and isinstance(row, dict):
+            path, identity = pending
+            self._executable_digest_tickets[key] = {
+                "row": row, "path": path, "identity": identity, "session": session,
+                "expires": time.monotonic() + EXECUTABLE_DIGEST_TICKET_S,
+            }
+            while len(self._executable_digest_tickets) > MAX_EXECUTABLE_DIGEST_TICKETS:
+                dropped, _ = self._executable_digest_tickets.popitem(last=False)
+                log_activity(self.logger, "info", "table_compatibility.executable_ticket_dropped",
+                             app_id=dropped[0], table_sha=dropped[1][:12], reason="too many waiting")
+        comparison = row.get("comparison") if isinstance(row, dict) else None
+        return {
+            "comparison": comparison,
+            "executable": None if comparison != COMPARISON_EXECUTABLE else (
+                "pending" if pending is not None else (row.get("executable_sha256") or "unavailable")[:12]),
+        }
+
+    def _settle_executable_digests(self) -> None:
+        """Give a success recorded while its digest was being read that digest.
+
+        Called from the runtime status read, which already records proof and
+        which the panel repeats while a game is selected, so a digest that
+        finishes reading reaches the record within one poll. Only the exact row
+        the ticket's success wrote can take it: a newer success for the same
+        table and game, an invalidation, a failure recorded since, or a changed
+        failure epoch each mean the row is no longer that success, and the
+        digest is dropped rather than attached to something it was not read
+        for. The digest itself is bound to the file identity proven at the
+        success, so a file changed since cannot supply it.
+        """
+        if not self._executable_digest_tickets:
+            return
+        # Under the lock as a whole: several status reads run at once, and two
+        # of them settling one ticket would each decide about the same row.
+        # Everything inside is a dictionary lookup, except the write itself.
+        with self._mutation_lock:
+            now = time.monotonic()
+            for key, ticket in list(self._executable_digest_tickets.items()):
+                app_id, digest = key
+                if now >= ticket["expires"]:
+                    self._executable_digest_tickets.pop(key, None)
+                    log_activity(self.logger, "info", "table_compatibility.executable_ticket_dropped",
+                                 app_id=app_id, table_sha=digest[:12], reason="expired")
+                    continue
+                answer = self.executable_digests.lookup(ticket["path"], ticket["identity"])
+                if answer.state == "pending":
+                    continue
+                if answer.state != "ready":
+                    self._executable_digest_tickets.pop(key, None)
+                    log_activity(self.logger, "info", "table_compatibility.executable_ticket_dropped",
+                                 app_id=app_id, table_sha=digest[:12], reason=answer.reason)
+                    continue
+                try:
+                    floor, epochs = self.table_blocklist.failure_epochs()
+                    written = (epochs.get(digest, floor) == ticket["row"]["failure_epoch"]
+                               and not is_compatibility_failure(self.table_blocklist.find(digest))
+                               and self.table_compatibility.add_executable_digest(ticket["row"], answer.digest))
+                except OSError as exc:
+                    # Nothing was decided: the ticket stays for the next poll,
+                    # and its expiry still bounds how long it can.
+                    log_activity(self.logger, "warning", "table_compatibility.executable_not_recorded",
+                                 app_id=app_id, table_sha=digest[:12], reason=str(exc)[:256])
+                    continue
+                except ValueError as exc:
+                    self._executable_digest_tickets.pop(key, None)
+                    log_activity(self.logger, "warning", "table_compatibility.executable_not_recorded",
+                                 app_id=app_id, table_sha=digest[:12], reason=str(exc)[:256])
+                    continue
+                self._executable_digest_tickets.pop(key, None)
+                log_activity(self.logger, "info", "table_compatibility.executable_recorded" if written
+                             else "table_compatibility.executable_ticket_dropped",
+                             app_id=app_id, table_sha=digest[:12], session=ticket["session"][:12],
+                             executable_digest=answer.digest[:12], **({} if written else {"reason": "the success changed"}))
 
     def _observed_game_executable_path(self, profile):
         """The absolute path of the running game's own target executable."""
@@ -1369,6 +1528,37 @@ class PluginService:
             }
         return fingerprints
 
+    def _executable_fingerprints(self, profiles, fingerprints, current_app_id, recorded_paths, digest_apps):
+        """Add the executable's digest where a record is compared by one.
+
+        Only for a game whose own record is compared that way, and only where
+        the comparison is about the game in front of the reader: one that is
+        running, or the selected one. A device-wide list has no current game to
+        claim a match for, so no game's executable is read for it merely
+        because the game has a record. One bounded process scan, and none at
+        all when no record needs it.
+        """
+        digest_apps = {app_id for app_id in digest_apps if app_id in profiles and profiles[app_id].target_process}
+        if not digest_apps:
+            return
+        observed = observe_game_executables({app_id: profiles[app_id].target_process for app_id in digest_apps})
+        for app_id in digest_apps:
+            if app_id in observed:
+                path, pids = observed[app_id]
+                identity, reason = self.executable_digests.running_identity(path, pids)
+            elif app_id == current_app_id:
+                path = recorded_paths.get((app_id, profiles[app_id].target_process.casefold()))
+                identity = None if path is None else regular_file_identity(path)
+                reason = "the executable this table worked with is not there now" if identity is None else None
+            else:
+                continue
+            answer = None if identity is None else self.executable_digests.lookup(path, identity)
+            fingerprints.setdefault(app_id, {}).update({
+                "executable_sha256": answer.digest if answer is not None and answer.state == "ready" else None,
+                "executable_state": "unavailable" if answer is None else answer.state,
+                "executable_reason": reason if answer is None else answer.reason,
+            })
+
     def _compatibility_snapshot(self, current_app_id=None):
         snapshot = self.table_compatibility.snapshot()
         if not snapshot["entries"]:
@@ -1383,9 +1573,14 @@ class PluginService:
         for entry in sorted(snapshot["entries"], key=lambda row: row["last_working_at"]):
             if entry.get("executable_path"):
                 recorded_paths[(entry["app_id"], entry["target_process"].casefold())] = entry["executable_path"]
+        digest_apps = {
+            entry["app_id"] for entry in snapshot["entries"]
+            if entry["comparison"] == COMPARISON_EXECUTABLE and entry["executable_sha256"] and not entry["invalidated"]
+        }
         try:
             profiles = {p.app_id: p for p in self.profile_store.list_profiles() if p.app_id in wanted}
             fingerprints = self._compatibility_fingerprints(profiles, current_app_id, recorded_paths)
+            self._executable_fingerprints(profiles, fingerprints, current_app_id, recorded_paths, digest_apps)
         except (OSError, ValueError):
             profiles, fingerprints = {}, {}
         try:
@@ -1400,6 +1595,15 @@ class PluginService:
             if profile is None or not profile.target_process or profile.target_process.casefold() != entry["target_process"].casefold():
                 current = {}
             entry["state"] = compatibility_state(entry, current)
+            key = (entry["app_id"], entry["table_sha256"])
+            # Asked again shortly by the panel, which is how a digest still
+            # being read reaches a screen that is already open.
+            entry["pending"] = key in self._executable_digest_tickets or (
+                entry["comparison"] == COMPARISON_EXECUTABLE and bool(entry["executable_sha256"])
+                and current.get("executable_state") == "pending")
+            if entry["comparison"] == COMPARISON_EXECUTABLE:
+                self._journal_executable_state(entry, current)
+            entry.pop("executable_sha256", None)
             # The path is what the comparison above was made from, and the
             # comparison is made here. Nothing on the panel reads it, so it is
             # dropped rather than published: it is an absolute path into the
@@ -1409,6 +1613,21 @@ class PluginService:
             # which is where a support bundle can still show what was compared.
             entry.pop("executable_path", None)
         return snapshot
+
+    def _journal_executable_state(self, entry, current):
+        """Log an executable-compared record's state when it changes, and only then."""
+        key = (entry["app_id"], entry["table_sha256"])
+        state = (entry["state"], entry["pending"], current.get("executable_state"), current.get("executable_reason"))
+        if self._executable_states.get(key) == state:
+            return
+        if len(self._executable_states) >= MAX_EXECUTABLE_STATES and key not in self._executable_states:
+            self._executable_states.clear()
+        self._executable_states[key] = state
+        log_activity(self.logger, "info", "table_compatibility.executable_state", app_id=entry["app_id"],
+                     table_sha=entry["table_sha256"][:12], state=entry["state"], pending=entry["pending"],
+                     saved=(entry["executable_sha256"] or "none")[:12],
+                     current=(current.get("executable_sha256") or current.get("executable_state") or "not compared")[:12],
+                     reason=current.get("executable_reason"))
 
     def _observe_startup_compatibility(self, app_id, envelope):
         pending = self._startup_compatibility_pending.get(app_id)
@@ -1446,10 +1665,11 @@ class PluginService:
                 or profile.target_process.casefold() != (status.get("target_process") or "").casefold()):
             self._startup_compatibility_pending.pop(app_id, None)
             return
-        self.table_compatibility.record(app_id, digest, profile.target_process, self._game_fingerprint(profile), failure_epoch=pending["epoch"])
+        recorded = self._record_compatibility(app_id, digest, profile.target_process, self._game_fingerprint(profile),
+                                              failure_epoch=pending["epoch"], session=pending["session"])
         self._startup_compatibility_pending.pop(app_id, None)
         log_activity(self.logger, "info", "table_compatibility.startup_confirmed", app_id=app_id,
-                     session=pending["session"][:12], table_sha=digest[:12], record_id=proved)
+                     session=pending["session"][:12], table_sha=digest[:12], record_id=proved, **recorded)
 
     def _observe_compatibility(self, app_id, envelope):
         # Only mutations accepted in this backend lifetime can earn a new mark.
@@ -1517,12 +1737,12 @@ class PluginService:
             profile = self.profile_store.get(app_id)
             observed_profile = None if profile is None else replace(profile, target_process=observed_process)
             floor, epochs = self.table_blocklist.failure_epochs()
-            self.table_compatibility.record(app_id, digest, observed_process, self._game_fingerprint(observed_profile),
-                                            failure_epoch=epochs.get(digest, floor))
+            recorded = self._record_compatibility(app_id, digest, observed_process, self._game_fingerprint(observed_profile),
+                                                  failure_epoch=epochs.get(digest, floor), session=session_id)
             self._compatibility_pending.pop(app_id, None)
             log_activity(self.logger, "info", "table_compatibility.confirmed",
                          app_id=app_id, table_sha=digest[:12], session=session_id[:12], record_id=record_id,
-                         generation=proof["query"])
+                         generation=proof["query"], **recorded)
             return True
 
     def _observed_game_version(self, profile) -> str | None:
@@ -2476,6 +2696,13 @@ class PluginService:
                     self.logger, "backend.owner_begin_close_failed", exc,
                     expected=isinstance(exc, (OSError, RuntimeError, ValueError)), owner=owner,
                 )
+        # After the owners, and on its own: it costs nothing and writes nothing,
+        # refusing new reads and stopping the one in progress at its next chunk,
+        # and nothing about it may stand in front of stopping a Cheat Engine.
+        try:
+            self.executable_digests.close()
+        except Exception as exc:  # noqa: BLE001 - a prologue never fails an unload
+            log_failure(self.logger, "backend.owner_begin_close_failed", exc, expected=False, owner="executable_digests")
         # One line, whether or not anything was owed. The owners above are quiet
         # when they have nothing to do, and a prologue that is silent when it
         # succeeds is indistinguishable on the device from one that was never
@@ -4052,6 +4279,7 @@ class PluginService:
             self._observe_compatibility(app_id, envelope)
         except (OSError, ValueError) as exc:
             log_activity(self.logger, "warning", "table_compatibility.not_recorded", app_id=app_id, reason=str(exc)[:256])
+        self._settle_executable_digests()
         return envelope
 
     def _journal_runtime_state(self, app_id: int, envelope: dict[str, object]) -> None:

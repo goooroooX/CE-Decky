@@ -538,3 +538,33 @@ def test_a_state_file_that_cannot_be_read_gives_no_count_rather_than_zero(tmp_pa
 
     assert "table_compatibility" in report["table_evidence_errors"]
     assert report["profiles"][0]["tables_worked"] is None
+
+
+def test_the_compatibility_migration_is_previewed_and_then_confirmed_without_touching_the_device(tmp_path: Path):
+    import json
+    from ce_decky.table_compatibility import BACKUP_NAME, TableCompatibility
+    home = tmp_path / "home"
+    state = home / ".cheat-engine-decky" / "state"
+    state.mkdir(parents=True)
+    store = state / "table_compatibility.json"
+    original = json.dumps({"schema": 3, "entries": [{
+        "app_id": 10, "table_sha256": "a" * 64, "target_process": "game.exe", "pe_version": "1",
+        "steam_build_id": None, "last_working_at": 1700000000, "invalidated": False,
+        "failure_epoch": "0" * 32, "executable_path": None}]}).encode()
+    store.write_bytes(original)
+    evidence = tmp_path / "build" / "incidents" / "compat"
+
+    previewed = target_state_probe.compatibility_migration(home, evidence)
+    assert (previewed["phase"], previewed["schema_on_disk"], previewed["rows_read"]) == ("previewed", 3, 1)
+    # Read only: the device's file is exactly as it was.
+    assert store.read_bytes() == original and not (state / BACKUP_NAME).exists()
+
+    # What the new backend does at load, and then the confirmation.
+    TableCompatibility(store).migrate(state / BACKUP_NAME)
+    verified = target_state_probe.compatibility_migration(home, evidence)
+    assert verified["phase"] == "verified" and verified["schema_on_disk"] == 4
+    assert verified["matches_preview"] is True and verified["backup_is_original"] is True
+
+    # A file that is not what the preview said is reported, not passed.
+    TableCompatibility(store).record(20, "b" * 64, "game.exe", {"pe_version": "2"}, failure_epoch="0" * 32)
+    assert target_state_probe.compatibility_migration(home, evidence)["matches_preview"] is False

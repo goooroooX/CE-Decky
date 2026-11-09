@@ -769,6 +769,21 @@ def observe_game_executable_paths(
     Only the game's own unambiguous Wine Z path supplies an executable path.
     Owned CE environments never count as a game; incomplete scans supply none.
     """
+    return {app_id: path for app_id, (path, _) in observe_game_executables(
+        targets, proc_root=proc_root, max_processes=max_processes).items()}
+
+
+def observe_game_executables(
+    targets: dict[int, str], *, proc_root: Path = Path("/proc"),
+    max_processes: int = MAX_SCANNED_PROCESSES,
+) -> dict[int, tuple[str, tuple[int, ...]]]:
+    """`observe_game_executable_paths`, with the processes each path came from.
+
+    The path names a file; the processes are what is running. A digest of the
+    file is a statement about the run only once those processes are shown to
+    have mapped that exact inode, which `executable_digest` checks, so every
+    process that named the path is kept rather than the first.
+    """
     targets = {_app_id(app_id): basename for app_id, basename in targets.items() if _process_basename(basename)}
     if not targets:
         return {}
@@ -782,6 +797,7 @@ def observe_game_executable_paths(
     except OSError:
         return {}
     found: dict[int, str] = {}
+    pids: dict[int, list[int]] = {}
     ambiguous: set[int] = set()
     scanned = 0
     for entry in entries:
@@ -813,7 +829,8 @@ def observe_game_executable_paths(
         if app_id in found and found[app_id] != host_path:
             ambiguous.add(app_id)
         found[app_id] = host_path
-    return {app_id: path for app_id, path in found.items() if app_id not in ambiguous}
+        pids.setdefault(app_id, []).append(int(entry.name))
+    return {app_id: (path, tuple(pids[app_id])) for app_id, path in found.items() if app_id not in ambiguous}
 
 
 def _host_path_from_wine_z(windows_path: str) -> str | None:
