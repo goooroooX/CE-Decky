@@ -23,6 +23,8 @@ import {
   refusedStartupEnable,
   CONTROL_PAGE_SIZE,
   controlAcceptsTypedValue,
+  storedValueOutsideList,
+  declaredValue,
   controlIsSwitch,
   DROPDOWN_SEARCH_THRESHOLD,
   DROPDOWN_VALUE_LIMIT,
@@ -1079,6 +1081,18 @@ describe("compact cheat rows", () => {
     expect(controlAcceptsTypedValue({ ...base, path: ["s"], structure: ["s"], kind: "script" })).toBe(false);
     expect(controlAcceptsTypedValue({ ...base, path: ["d"], structure: ["d"], kind: "dropdown" })).toBe(true);
     expect(controlAcceptsTypedValue({ ...base, path: ["d"], structure: ["d"], kind: "dropdown", dropdown_read_only: true })).toBe(false);
+  });
+
+  it("names a saved value its read-only list does not declare, and nothing else", () => {
+    const state = { ...base, path: ["State"], structure: ["State"], kind: "dropdown" as const, dropdown_read_only: true,
+      dropdown_values: [["-1", "Default"], ["0", "Unlocked"], ["1", "Locked"]] as [string, string][] };
+    expect(storedValueOutsideList(state, [undefined, null, "0", "5"])).toBe("5");
+    expect(storedValueOutsideList(state, ["1", null])).toBeNull();
+    // A list that takes a typed value holds whatever was typed into it.
+    expect(storedValueOutsideList({ ...state, dropdown_read_only: false }, ["5"])).toBeNull();
+    // A switch's toggle is its value, and startup writes its key.
+    const flag = { ...state, dropdown_values: [["0", "Disabled"], ["1", "Enabled"]] as [string, string][], switch_on_value: "1" };
+    expect(storedValueOutsideList(flag, ["*"])).toBeNull();
   });
 
   it("draws a two-entry on/off list as a switch and nothing else", () => {
@@ -2317,6 +2331,26 @@ describe("a value its running scripts read", () => {
     expect(settingsForStartedScripts([controls[1]], controls, after, configured, new Set([3]))).toEqual([]);
     expect(settingsForStartedScripts([controls[1]], controls, new Map([[1, true], [2, true], [3, true]]), configured, new Set())).toEqual([]);
     expect(settingsForStartedScripts([], controls, after, configured, new Set())).toEqual([]);
+  });
+
+  it("never hands Cheat Engine a value a read-only list does not declare", () => {
+    // Saved before the read-only mark was read. The backend refuses it live,
+    // which failed an Apply part of the way through, and startup leaves it out.
+    const state = place(9, ["Activate", "Jump", "State"], "dropdown", {
+      dropdown_read_only: true, dropdown_values: [["0", "Unlocked"], ["1", "Locked"]],
+    });
+    const withState = [...controls, state];
+    expect(declaredValue(state, "5")).toBeNull();
+    expect(declaredValue(state, "1")).toBe("1");
+    expect(declaredValue({ ...state, dropdown_read_only: false }, "5")).toBe("5");
+    expect(declaredValue(controls[2], "2.5")).toBe("2.5");
+
+    const after = new Map<number, boolean | null>([[1, true], [2, true]]);
+    expect(settingsForStartedScripts([controls[1]], withState, after, new Map([[9, "5"]]), new Set())).toEqual([]);
+    expect(settingsForStartedScripts([controls[1]], withState, after, new Map([[9, "1"]]), new Set()))
+      .toEqual([{ control: state, value: "1", running: [1] }]);
+    // What the game holds is left alone: it is only written back where it differs.
+    expect(pinnedControlValue("0", declaredValue(state, "5"), declaredValue(state, "5"))).toBe("0");
   });
 });
 

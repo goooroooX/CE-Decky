@@ -23,6 +23,8 @@ import {
   CONTROL_PAGE_SIZE,
   clampPage,
   controlAcceptsTypedValue,
+  storedValueOutsideList,
+  declaredValue,
   DROPDOWN_SEARCH_THRESHOLD,
   describeValueChoices,
   matchingDropdownValues,
@@ -247,10 +249,13 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   // Kept with the record rather than beside it so that opening another row
   // starts empty, and closing this one forgets a query that named nothing.
   const [valueQuery, setValueQuery] = useState<{ id: number; text: string } | null>(null);
-  // The one record whose free field the reader asked for. A table never says its
-  // list is exhaustive - not one of the 1414 list records in the corpus declares
-  // `DropDownReadOnly` - so the field has to stay reachable, and putting it
-  // beside every list put two controls in front of a reader who needed one.
+  // The one record whose free field the reader asked for. A list Cheat Engine
+  // does not mark read-only accepts any value there, so the field has to stay
+  // reachable for one, and putting it beside every list put two controls in
+  // front of a reader who needed one. Most lists are marked: 1243 of the
+  // corpus's 2344 (`ct_scan_survey.py --dropdowns`), and those get no field.
+  // This used to say none were, which was the parser reading an element Cheat
+  // Engine never writes instead of the attribute it does.
   const [typedValue, setTypedValue] = useState<number | null>(null);
   const [lastConfirmed, setLastConfirmed] = useState<Record<number, StagedState>>({});
   const [confirmingClose, setConfirmingClose] = useState(false);
@@ -287,11 +292,18 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     currentValuesRef.current = new Map(results.flatMap((result) =>
       result.record_id === null ? [] : [[result.record_id, result.value] as const]));
   };
-  const resolvedValue = (recordId: number, live: string | null | undefined, remembered: readonly StartupPreference[] = rememberedPreferences): string | null => pinnedControlValue(
-    live,
-    remembered.find((item) => item.record_id === recordId)?.value,
-    configuredByIdRef.current.get(recordId),
-  );
+  // A saved value its read-only list does not declare is never written, so it
+  // never stands for the row's value either: the row falls through to what the
+  // game holds, and the open row says the saved one is not used.
+  const resolvedValue = (recordId: number, live: string | null | undefined, remembered: readonly StartupPreference[] = rememberedPreferences): string | null => {
+    const control = controlById.get(recordId);
+    const saved = (value: string | null | undefined) => control ? declaredValue(control, value ?? null) : value;
+    return pinnedControlValue(
+      live,
+      saved(remembered.find((item) => item.record_id === recordId)?.value),
+      saved(configuredByIdRef.current.get(recordId)),
+    );
+  };
 
   // A record missing because a script around it is off is a cheat waiting for
   // that script, not a broken control. It is staged off, so it has a switch,
@@ -1392,6 +1404,17 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                   && !control.dropdown_values.some(([value]) => value === state?.value);
                 const typing = controlAcceptsTypedValue(control)
                   && (!listed || typedValue === recordId || offList);
+                // Until a value is chosen here, which is what replaces it: the
+                // typed and the remembered value are the two Apply rewrites. A
+                // legacy startup value is not one, and the launch logs it.
+                const keptOutsideList = isExpanded && !touchedValues.has(recordId)
+                  ? storedValueOutsideList(control, [
+                    configuredByIdRef.current.get(recordId),
+                    ...rememberedPreferences
+                      .filter((preference) => preference.record_id === recordId)
+                      .map((preference) => preference.value),
+                  ])
+                  : null;
                 const summary = [
                   // The group, cut to fit, while the row is closed. An open row
                   // states the whole path at the top of its own block, so
@@ -1472,6 +1495,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
                           )}
                           {control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (
                             <Field label="Value" description="This read-only dropdown declares no values, so it cannot be changed." />
+                          )}
+                          {keptOutsideList !== null && (
+                            <PanelNote>{`Saved value \u201c${keptOutsideList}\u201d is not one this list offers, so it is never written.${choices && choices.total > 0 ? " Choosing one replaces it." : ""}`}</PanelNote>
                           )}
                           {/* What this costs the reader, and nothing about how
                               it works. Both halves used to explain the

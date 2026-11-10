@@ -1698,6 +1698,32 @@ def effective_startup_plan(profile: GameProfile, inspection: TableInspection) ->
     return _startup_actions(_effective_startup_preferences(profile), inspection, _startup_configured(profile))
 
 
+def outside_read_only_list(control, value: str) -> bool:
+    """True when this value is one the record's read-only list does not declare."""
+    return bool(control.dropdown_read_only) and value not in {item[0] for item in control.dropdown_values}
+
+
+def stored_values_outside_read_only_lists(profile: GameProfile, inspection: TableInspection) -> list[dict[str, object]]:
+    """Each value this profile holds that its record's read-only list does not declare.
+
+    Never written by the plan above. Named so a launch can log what it left out:
+    such a value was typed while every list still took one, and a report about
+    a cheat that stopped doing what it did is answered from that line.
+    """
+    controls = {control.id: control for control in inspection.controls if control.id is not None}
+    found: list[dict[str, object]] = []
+    stored = (
+        [("startup", item.record_id, item.value) for item in profile.startup]
+        + [("remembered", item.record_id, item.value) for item in profile.remembered]
+        + [("configured", item.record_id, item.value) for item in profile.configured_values]
+    )
+    for source, record_id, value in stored:
+        control = controls.get(record_id)
+        if value is not None and control is not None and outside_read_only_list(control, value):
+            found.append({"source": source, "record_id": record_id, "value": value})
+    return found
+
+
 def _held_off_switch_preferences(
     preferences: list[StartupPreference],
     controls: dict[int, object],
@@ -2061,11 +2087,18 @@ def _startup_actions(
             raise ValueError(f"startup MemoryRecord {preference.record_id} is not present in exact table SHA")
         if control.kind == "group" or control.group_header:
             raise ValueError(f"startup MemoryRecord {preference.record_id} is a presentation-only group header")
-        if preference.value is not None:
-            if control.dropdown_read_only and preference.value not in {item[0] for item in control.dropdown_values}:
-                raise ValueError(f"startup value for MemoryRecord {preference.record_id} is outside read-only dropdown")
+        value = preference.value
+        if value is not None and outside_read_only_list(control, value):
+            # Stored before this list was read as read-only, when any value
+            # could be typed into it, and never written now. Refusing it
+            # refused every Apply and every Auto-load of the table over one
+            # record the panel no longer offers a way to edit. A switch on
+            # still gets its on key, because its toggle is its value and an
+            # activation with nothing written freezes whatever the game holds.
+            value = control.switch_on_value if preference.active is True else None
+        if value is not None:
             actions.append(StartupAction(
-                preference.record_id, "value", preference.value, control.path, structure=control.structure,
+                preference.record_id, "value", value, control.path, structure=control.structure,
             ))
         if preference.active is not None:
             actions.append(StartupAction(

@@ -243,3 +243,25 @@ def test_a_baseline_that_does_not_exist_is_a_sentence(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="cannot check out no-such-revision"):
         survey.startup_plans_against("no-such-revision", [tmp_path], tables=tmp_path, include_installed=False)
+
+
+def test_dropdowns_counts_what_configure_cheats_draws_for_each_list(tmp_path: Path):
+    def listed(record_id: int, entries: str, options: str = "") -> str:
+        return (f'<CheatEntry><ID>{record_id}</ID><Description>"L{record_id}"</Description>'
+                f'<VariableType>Byte</VariableType><Address>game.exe+{record_id}</Address>'
+                f'<DropDownList{options}>{entries}</DropDownList></CheatEntry>')
+    marked = ' ReadOnly="1" DescriptionOnly="1" DisplayValueAsItem="1"'
+    entries = (
+        listed(1, "0:Disabled\n1:Enabled\n*:--", marked)
+        + listed(2, "-1:Default\n0:Unlocked\n1:Locked", marked)
+        + listed(3, "0:Pistol\n1:Rifle")
+        + listed(4, "0:Off\n1:On")
+    )
+    (tmp_path / "lists.CT").write_text(
+        f'<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries>{entries}</CheatEntries></CheatTable>'
+    )
+    (tmp_path / "copy.ct").write_bytes((tmp_path / "lists.CT").read_bytes())
+    answer = survey.dropdowns_corpus([tmp_path])
+    assert answer["tables"] == 1 and answer["duplicate_copies"] == 1
+    assert (answer["lists"], answer["read_only"], answer["switches"], answer["read_only_switches"]) == (4, 2, 2, 1)
+    assert answer["accept_a_typed_value"] == 1 and answer["tables_with_a_read_only_list"] == 1

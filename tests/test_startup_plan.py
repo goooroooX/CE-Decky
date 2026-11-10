@@ -1002,6 +1002,85 @@ def test_a_read_only_record_with_no_declared_values_accepts_none_of_them(tmp_pat
             write()
 
 
+READ_ONLY_LISTS_TABLE = """<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID><Description>State</Description><VariableType>4 Bytes</VariableType>
+      <Address>game.exe+1234</Address>
+      <DropDownList ReadOnly="1">-1:Default
+0:Unlocked
+1:Locked
+</DropDownList>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID><Description>Immortal</Description><VariableType>Byte</VariableType>
+      <Address>game.exe+1238</Address>
+      <DropDownList ReadOnly="1" DescriptionOnly="1" DisplayValueAsItem="1">0:Disabled
+1:Enabled
+*:--
+</DropDownList>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>
+"""
+
+
+def test_a_value_saved_outside_a_read_only_list_is_kept_but_never_written(tmp_path: Path, caplog):
+    """A value saved before 0.9.35 read Cheat Engine's read-only mark.
+
+    Until then every list took a typed value, so a profile can hold one its
+    list does not declare. Refusing it refused every Apply, which sends what
+    the profile holds back, and every Auto-load of the table, over a record the
+    panel no longer offers a field for. It is kept and never written; a switch
+    that is on gets its on key, and a new value outside the list is refused.
+    """
+    service = _service(tmp_path, "kept-outside")
+    source = tmp_path / "read-only-lists.CT"
+    source.write_text(READ_ONLY_LISTS_TABLE, encoding="utf-8")
+    digest = service.import_table(str(source))["sha256"]
+    service.save_profile(950, "Game", False, digest, "game.exe")
+    service.set_execution_consent(950, digest, True)
+    service.set_autoload(950, digest, True)
+    # Written straight to the store, the way the version before held them.
+    service.profile_store.set_remembered(app_id=950, table_sha256=digest, states=[
+        StartupPreference(1, True, "5"), StartupPreference(2, True, "*"),
+    ])
+    service.profile_store.set_configured_values(app_id=950, table_sha256=digest, values=[ConfiguredValue(1, "7")])
+
+    profile = service.profile_store.get(950)
+    inspection = _inspection(service, digest)
+    plan = [(action.record_id, action.kind, action.value) for action in effective_startup_plan(profile, inspection)]
+    assert (1, "active", "1") in plan and (2, "active", "1") in plan
+    assert [item for item in plan if item[1] == "value"] == [(2, "value", "1")]
+
+    # Apply sends both back unchanged beside a change elsewhere, and is saved.
+    service.validate_effective_startup_plan(950, digest)
+    kept = service.set_remembered_cheats(950, digest, [
+        {"record_id": 1, "active": False, "value": "5"}, {"record_id": 2, "active": True, "value": "*"},
+    ])
+    assert kept["remembered"][0] == {"record_id": 1, "active": False, "value": "5"}
+    assert service.set_configured_values(950, digest, [{"record_id": 1, "value": "7"}])["configured_values"] == [
+        {"record_id": 1, "value": "7"},
+    ]
+    # A new one is still refused, on every path.
+    for write in (
+        lambda: service.set_remembered_cheats(950, digest, [{"record_id": 1, "active": True, "value": "6"}]),
+        lambda: service.set_configured_values(950, digest, [{"record_id": 1, "value": "6"}]),
+        lambda: service.set_startup_preference(950, digest, 1, None, "6"),
+    ):
+        with pytest.raises(ValueError, match="read-only dropdown"):
+            write()
+
+    # The launch says what it left out of the game.
+    with caplog.at_level(logging.WARNING, logger="kept-outside"):
+        service.prepare_session(950)
+    line, = [record.getMessage() for record in caplog.records if "value_outside_read_only_list" in record.getMessage()]
+    assert "count=3" in line and "1 remembered=5" in line and "2 remembered=*" in line and "1 configured=7" in line
+    with pytest.raises(ValueError, match="read-only dropdown"):
+        service.write_runtime_commands(950, [{"generation": 1, "kind": "set_value", "record_id": 1, "value": "5"}])
+
+
 def test_an_action_waiting_on_a_script_that_was_itself_moved_is_kept():
     """A flag whose script is itself a flag-like record placed after its own owner.
 

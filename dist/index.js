@@ -5353,6 +5353,33 @@ function switchOffValues(inspection, controls) {
     const ids = new Set(controls.flatMap((control) => control.id === null ? [] : [control.id]));
     return new Map((inspection.switch_off_values ?? []).filter(([recordId]) => ids.has(recordId)));
 }
+/**
+ * This value as Cheat Engine may be given it: `null` where a read-only list does not declare it.
+ *
+ * Applied to what a profile saved, never to what the game holds: the backend
+ * refuses such a write live, so sending a saved one failed an Apply part of the
+ * way through, and startup leaves it out the same way. A row resolving its
+ * value falls through to what the game holds instead.
+ */
+function declaredValue(control, value) {
+    if (value === null || control.kind !== "dropdown" || !control.dropdown_read_only)
+        return value;
+    return control.dropdown_values.some(([declared]) => declared === value) ? value : null;
+}
+/**
+ * A value this profile holds for a record whose read-only list does not declare it.
+ *
+ * Saved while every list still took a typed value, which lasted until CE Decky
+ * read Cheat Engine's read-only mark. Startup never writes it, so the row says
+ * so rather than leaving the reader to wonder where their value went. A switch
+ * is left out: its toggle is its value, and startup writes its key.
+ */
+function storedValueOutsideList(control, stored) {
+    if (control.kind !== "dropdown" || !control.dropdown_read_only || controlIsSwitch(control))
+        return null;
+    const declared = new Set(control.dropdown_values.map(([value]) => value));
+    return stored.find((value) => typeof value === "string" && !declared.has(value)) ?? null;
+}
 /** True when this exact control accepts a typed value. */
 function controlAcceptsTypedValue(control) {
     if (controlIsSwitch(control))
@@ -5585,7 +5612,7 @@ function pinnedCheatRows(controls, pinned, results, remembered = [], configured 
         // press on this row resolves it too.
         // A switch says what it is by being on or off, so `= 1` beside it is the
         // same fact written twice in the row's own scarcest space.
-        const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(isWaiting ? null : latest.value, rememberedById.get(control.id)?.value, configuredById.get(control.id)?.value));
+        const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(isWaiting ? null : latest.value, declaredValue(control, rememberedById.get(control.id)?.value ?? null), declaredValue(control, configuredById.get(control.id)?.value ?? null)));
         const currentValue = isWaiting ? null : presentableControlValue(latest.value);
         // Said here too, because this row writes the flag's off key the moment it
         // is pressed and the picker's own warning is two screens away. A cheat its
@@ -5781,7 +5808,7 @@ function settingsForStartedScripts(started, controls, activeById, configured, sk
         if (control.id === null || skip.has(control.id) || activeById.get(control.id) === true)
             return [];
         const value = configured.get(control.id);
-        if (value == null || displayableControlValue(value) === null || !controlNeedsValueInput(control))
+        if (value == null || displayableControlValue(declaredValue(control, value)) === null || !controlNeedsValueInput(control))
             return [];
         const scripts = enclosingScripts(control, controls);
         if (!scripts.some((script) => startedIds.has(script.id)))
@@ -12066,10 +12093,13 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     // Kept with the record rather than beside it so that opening another row
     // starts empty, and closing this one forgets a query that named nothing.
     const [valueQuery, setValueQuery] = SP_REACT.useState(null);
-    // The one record whose free field the reader asked for. A table never says its
-    // list is exhaustive - not one of the 1414 list records in the corpus declares
-    // `DropDownReadOnly` - so the field has to stay reachable, and putting it
-    // beside every list put two controls in front of a reader who needed one.
+    // The one record whose free field the reader asked for. A list Cheat Engine
+    // does not mark read-only accepts any value there, so the field has to stay
+    // reachable for one, and putting it beside every list put two controls in
+    // front of a reader who needed one. Most lists are marked: 1243 of the
+    // corpus's 2344 (`ct_scan_survey.py --dropdowns`), and those get no field.
+    // This used to say none were, which was the parser reading an element Cheat
+    // Engine never writes instead of the attribute it does.
     const [typedValue, setTypedValue] = SP_REACT.useState(null);
     const [lastConfirmed, setLastConfirmed] = SP_REACT.useState({});
     const [confirmingClose, setConfirmingClose] = SP_REACT.useState(false);
@@ -12104,7 +12134,14 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const noteCurrentValues = (results) => {
         currentValuesRef.current = new Map(results.flatMap((result) => result.record_id === null ? [] : [[result.record_id, result.value]]));
     };
-    const resolvedValue = (recordId, live, remembered = rememberedPreferences) => pinnedControlValue(live, remembered.find((item) => item.record_id === recordId)?.value, configuredByIdRef.current.get(recordId));
+    // A saved value its read-only list does not declare is never written, so it
+    // never stands for the row's value either: the row falls through to what the
+    // game holds, and the open row says the saved one is not used.
+    const resolvedValue = (recordId, live, remembered = rememberedPreferences) => {
+        const control = controlById.get(recordId);
+        const saved = (value) => control ? declaredValue(control, value ?? null) : value;
+        return pinnedControlValue(live, saved(remembered.find((item) => item.record_id === recordId)?.value), saved(configuredByIdRef.current.get(recordId)));
+    };
     // A record missing because a script around it is off is a cheat waiting for
     // that script, not a broken control. It is staged off, so it has a switch,
     // and so an inner script in that state is one Apply switches on on the way
@@ -13043,6 +13080,17 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                                 && !control.dropdown_values.some(([value]) => value === state?.value);
                                             const typing = controlAcceptsTypedValue(control)
                                                 && (!listed || typedValue === recordId || offList);
+                                            // Until a value is chosen here, which is what replaces it: the
+                                            // typed and the remembered value are the two Apply rewrites. A
+                                            // legacy startup value is not one, and the launch logs it.
+                                            const keptOutsideList = isExpanded && !touchedValues.has(recordId)
+                                                ? storedValueOutsideList(control, [
+                                                    configuredByIdRef.current.get(recordId),
+                                                    ...rememberedPreferences
+                                                        .filter((preference) => preference.record_id === recordId)
+                                                        .map((preference) => preference.value),
+                                                ])
+                                                : null;
                                             const summary = [
                                                 // The group, cut to fit, while the row is closed. An open row
                                                 // states the whole path at the top of its own block, so
@@ -13064,7 +13112,7 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                                             ].filter(Boolean).join(" \u00b7 ");
                                             return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(CheatRow, { testId: `cheat-row-${recordId}`, label: controlRowLabel(control), summary: summary, active: state?.active ?? null, disabled: applying || pinning, highlighted: isExpanded, onActiveChange: traceUiAction("cheat_selection_modal.active", (checked) => touchActive(recordId, checked), (active) => ({ app_id: appId, table_sha: inspection.sha256, record_id: recordId, active })), actions: (SP_JSX.jsx(DFL.DialogButton, { style: cheatRowActionStyle, disabled: applying, onClick: traceUiAction("cheat_selection_modal.expand_record", () => { clearError(); setExpanded((current) => current === recordId ? null : recordId); }, { record_id: recordId, open: expanded !== recordId }), children: isExpanded ? "Less" : "More" })), body: isExpanded ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(PanelNote, { children: control.path.join(" \u203a ") }), control.description.trim() && control.description.trim() !== controlRowLabel(control)
                                                                 ? SP_JSX.jsx(PanelNote, { children: control.description.trim() })
-                                                                : null, searchable && listed && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), blockedBy(control) && state?.active === true && (storedOnly || touchedActive.has(recordId)) ? (SP_JSX.jsx(PanelNote, { children: `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.` })) : controlAcceptsTypedValue(control) && state?.active !== true
+                                                                : null, searchable && listed && (SP_JSX.jsx(DFL.TextField, { label: "Find a value", value: valueQuery?.id === recordId ? valueQuery.text : "", onChange: traceUiEdit("cheat_selection_modal.find_a_value", (event) => setValueQuery({ id: recordId, text: String(event.target.value ?? "") }), { record_id: recordId }), disabled: applying })), choices && choices.total > 0 && (SP_JSX.jsx(DFL.DropdownItem, { label: "Value", description: searchable ? describeValueChoices(choices) : undefined, rgOptions: choices.options.map(([value, label]) => ({ data: value, label: label || value })), selectedOption: state?.value ?? "", onChange: traceUiAction("cheat_selection_modal.value", (option) => touchValue(recordId, String(option.data)), { record_id: recordId }), disabled: applying || pinning })), control.kind === "dropdown" && control.dropdown_read_only && control.dropdown_values.length === 0 && (SP_JSX.jsx(DFL.Field, { label: "Value", description: "This read-only dropdown declares no values, so it cannot be changed." })), keptOutsideList !== null && (SP_JSX.jsx(PanelNote, { children: `Saved value \u201c${keptOutsideList}\u201d is not one this list offers, so it is never written.${choices && choices.total > 0 ? " Choosing one replaces it." : ""}` })), blockedBy(control) && state?.active === true && (storedOnly || touchedActive.has(recordId)) ? (SP_JSX.jsx(PanelNote, { children: `Also switches on \u201c${controlRowLabel(blockedBy(control))}\u201d.` })) : controlAcceptsTypedValue(control) && state?.active !== true
                                                                 && (touchedValues.has(recordId) || configuredByIdRef.current.has(recordId)) ? (SP_JSX.jsx(PanelNote, { children: enclosingScripts(control, safeControls).length > 0
                                                                     ? "Value saved; written while its script runs."
                                                                     : "Value saved; written when this record is switched on." })) : null, controlAcceptsTypedValue(control) && listed && !typing && (SP_JSX.jsx(SmallButton, { disabled: applying || pinning, onClick: traceUiAction("cheat_selection_modal.type_a_value", () => setTypedValue(recordId), { record_id: recordId }), children: "Type a value instead" })), typing && (SP_JSX.jsx(DFL.TextField, { label: listed ? "Custom value" : "Value", value: state?.value ?? "", onChange: traceUiEdit("cheat_selection_modal.edit_value", (event) => {
@@ -17814,7 +17862,10 @@ function Content() {
         // a row reading `100` sent nothing and activated on whatever the game held.
         const needsValue = controlNeedsValueInput(control);
         const valueToApply = needsValue
-            ? pinnedControlValue(latestRuntimeResult(liveSnapshot.results, recordId)?.value, current.remembered?.find((item) => item.record_id === recordId)?.value, current.configured_values?.find((item) => item.record_id === recordId)?.value)
+            // A saved value its read-only list does not declare is never one of them:
+            // the backend refuses that write, and startup leaves it out. What the
+            // game holds is, because it is only ever written back where it differs.
+            ? pinnedControlValue(latestRuntimeResult(liveSnapshot.results, recordId)?.value, declaredValue(control, current.remembered?.find((item) => item.record_id === recordId)?.value ?? null), declaredValue(control, current.configured_values?.find((item) => item.record_id === recordId)?.value ?? null))
             : null;
         if (active && needsValue && valueToApply === null) {
             setError(`${controlRowLabel(control)} needs a value before it can be switched on. Open Configure cheats, enter one there, and apply.`);

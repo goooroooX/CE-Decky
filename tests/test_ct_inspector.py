@@ -303,12 +303,12 @@ def test_a_dropped_value_list_is_counted_as_a_list_and_not_as_one_value(tmp_path
     assert inspection.controls[0].dropdown_values == ()
 
 
-def _one_dropdown(entries: str, tmp_path, read_only: str = "") -> object:
+def _one_dropdown(entries: str, tmp_path, read_only: str = "", options: str = "") -> object:
     data = (
         '<?xml version="1.0"?><CheatTable CheatEngineTableVersion="45"><CheatEntries>'
         '<CheatEntry><ID>1</ID><Description>"bEnableGodMode"</Description>'
         '<VariableType>4 Bytes</VariableType><Address>game.exe+10</Address>'
-        f'<DropDownList>{entries}</DropDownList>{read_only}'
+        f'<DropDownList{options}>{entries}</DropDownList>{read_only}'
         '</CheatEntry></CheatEntries></CheatTable>'
     ).encode("utf-8")
     return _inspect(data, tmp_path).controls[0]
@@ -371,6 +371,42 @@ def test_a_list_that_is_not_a_pair_is_never_a_switch(tmp_path):
     assert _one_dropdown("0:On/Off\n1:Enabled", tmp_path / "both").switch_on_value is None
     # Two entries that write the same key cannot switch anything.
     assert _one_dropdown("1:Disabled\n1:Enabled", tmp_path / "same").switch_on_value is None
+
+
+# How Cheat Engine writes a list it lets nobody type into, which is the shape
+# most read-only lists in the corpus take.
+CE_READ_ONLY = ' ReadOnly="1" DescriptionOnly="1" DisplayValueAsItem="1"'
+
+
+def test_a_list_cheat_engine_marks_read_only_is_read_only(tmp_path):
+    # The attribute is Cheat Engine's own form; the element never was, and
+    # reading only that left every read-only list open to a typed value.
+    picker = _one_dropdown("-1:Default\n0:Unlocked\n1:Locked", tmp_path / "attr", options=' ReadOnly="1"')
+    assert picker.kind == "dropdown" and picker.dropdown_read_only is True
+    assert picker.dropdown_values == (("-1", "Default"), ("0", "Unlocked"), ("1", "Locked"))
+    # Set only by the exact text `1`, as Cheat Engine reads it.
+    assert _one_dropdown("0:A\n1:B", tmp_path / "zero", options=' ReadOnly="0"').dropdown_read_only is False
+    assert _one_dropdown("0:A\n1:B", tmp_path / "none", options=' DisplayValueAsItem="1"').dropdown_read_only is False
+
+
+def test_the_caption_for_an_unlisted_value_is_not_a_choice(tmp_path):
+    # `*` is what Cheat Engine shows for a value the list does not hold, and its
+    # picker writes nothing when it is chosen. Counted as a third entry it kept
+    # this record a list with a free field, when it is an on/off switch.
+    flag = _one_dropdown("0:Disabled\n1:Enabled\n*:--", tmp_path / "flag", options=CE_READ_ONLY)
+    assert flag.dropdown_values == (("0", "Disabled"), ("1", "Enabled"))
+    assert flag.dropdown_read_only is True and flag.switch_on_value == "1"
+
+
+def test_a_star_is_an_ordinary_value_unless_all_three_options_are_set(tmp_path):
+    # Cheat Engine treats `*` as the caption only with all three set; without
+    # them it is a value like any other, and dropping it would hide a choice.
+    for name, options in (("ro", ' ReadOnly="1" DisplayValueAsItem="1"'), ("desc", ' DescriptionOnly="1" DisplayValueAsItem="1"')):
+        kept = _one_dropdown("0:Disabled\n1:Enabled\n*:--", tmp_path / name, options=options)
+        assert kept.dropdown_values[-1] == ("*", "--") and kept.switch_on_value is None
+    # Only a value of exactly `*` is the caption.
+    spaced = _one_dropdown("0:Disabled\n1:Enabled\n *:--", tmp_path / "spaced", options=CE_READ_ONLY)
+    assert len(spaced.dropdown_values) == 3
 
 
 def test_a_record_carries_what_its_script_declares_for_its_own_symbol(tmp_path):

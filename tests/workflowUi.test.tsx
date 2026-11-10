@@ -5279,10 +5279,10 @@ describe("Cheat selection workflow", () => {
   });
 
   it("offers the list alone, and the free field behind one press", async () => {
-    // A table never says its list is exhaustive - not one of the corpus's 1414
-    // list records declares `DropDownReadOnly` - so the field has to stay
-    // reachable. Beside every list it was a second control on a row that needed
-    // one, which is the clutter drawing switches as switches exists to remove.
+    // A list Cheat Engine does not mark read-only accepts any value, so the
+    // field has to stay reachable for one. Beside every list it was a second
+    // control on a row that needed one, which is the clutter drawing switches as
+    // switches exists to remove.
     const picker = {
       id: 305, description: "Weapon", path: ["Weapon"], structure: ["Weapon"], variable_type: "4 Bytes",
       kind: "dropdown", group_header: false, has_assembler_script: false,
@@ -5343,6 +5343,31 @@ describe("Cheat selection workflow", () => {
     const list = screen.getByLabelText("Value");
     expect(list.tagName).toBe("SELECT");
     expect(screen.queryByRole("button", { name: "Type a value instead" })).toBeNull();
+  });
+
+  it("says a saved value a read-only list does not declare is never written", async () => {
+    // Saved before the read-only mark was read, when every list took a typed
+    // value. The field it was typed into is gone, so the row says why the value
+    // does nothing, and choosing one of the list's own replaces it.
+    const state = {
+      id: 309, description: "State", path: ["State"], structure: ["State"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["-1", "Default"], ["0", "Unlocked"], ["1", "Locked"]], dropdown_read_only: true,
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 309, ok: true, active: false, value: "0" }], unavailable: [],
+    });
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 1, controls: [state] } as any,
+      configuredValues: [{ record_id: 309, value: "5" }],
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    expect(screen.getByText("Saved value \u201c5\u201d is not one this list offers, so it is never written. Choosing one replaces it.")).toBeTruthy();
+    expect(screen.queryByLabelText("Custom value")).toBeNull();
+    // The row stands for what the game holds rather than for a value that is
+    // never written.
+    expect((screen.getByLabelText("Value") as HTMLSelectElement).value).toBe("0");
   });
 
   it("keeps a value the list does not offer in front of the reader", async () => {

@@ -91,7 +91,7 @@ import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImp
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
 import { DIFFERENT_BUILD_EXPLANATION, type RefusedActivation, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
-import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, settingsForStartedScripts, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
+import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, declaredValue, settingsForStartedScripts, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
 import { focusFirstEnabled } from "./components/PanelDensity";
 import { showActionFailure, showCheatsNotSwitchedOn } from "./modals/ActionFailureModal";
@@ -3336,10 +3336,13 @@ function Content() {
     // a row reading `100` sent nothing and activated on whatever the game held.
     const needsValue = controlNeedsValueInput(control);
     const valueToApply = needsValue
+      // A saved value its read-only list does not declare is never one of them:
+      // the backend refuses that write, and startup leaves it out. What the
+      // game holds is, because it is only ever written back where it differs.
       ? pinnedControlValue(
           latestRuntimeResult(liveSnapshot.results, recordId)?.value,
-          current.remembered?.find((item) => item.record_id === recordId)?.value,
-          current.configured_values?.find((item) => item.record_id === recordId)?.value,
+          declaredValue(control, current.remembered?.find((item) => item.record_id === recordId)?.value ?? null),
+          declaredValue(control, current.configured_values?.find((item) => item.record_id === recordId)?.value ?? null),
         )
       : null;
     if (active && needsValue && valueToApply === null) {

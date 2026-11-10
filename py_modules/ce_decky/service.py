@@ -103,7 +103,10 @@ from .providers import (
     selectable_providers,
 )
 from .provider_sources import ProviderSourceSelection
-from .session_protocol import MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, startup_left_on, switch_off_values, wine_z_path
+from .session_protocol import (
+    MAX_STARTUP_ACTIONS, RuntimeCommand, SessionStore, effective_startup_plan, outside_read_only_list,
+    startup_left_on, stored_values_outside_read_only_lists, switch_off_values, wine_z_path,
+)
 from .table_blocklist import CAUSE_REFUSED, CAUSE_UNUSABLE, MAX_REASON_BYTES as MAX_BLOCKED_REASON_BYTES, BlockedTableError, TableBlocklist, is_compatibility_failure
 from . import frontend_journal, journal_records
 from .game_run_holds import GameRunHolds, RunHold, new_hold
@@ -3954,10 +3957,8 @@ class PluginService:
             if value is not None:
                 if control.kind not in {"value", "dropdown"}:
                     raise ValueError("startup value can only be assigned to value/dropdown MemoryRecords")
-                if control.dropdown_read_only:
-                    allowed = {item[0] for item in control.dropdown_values}
-                    if value not in allowed:
-                        raise ValueError("startup value is outside the exact table's read-only dropdown")
+                kept = self._stored_values(app_id, digest, "startup").get(record_id)
+                self._assert_declared_or_kept(control, value, kept, "startup value")
             # Remembered and configured writes are budgeted against the exact
             # expanded plan; this legacy path was still counting stored fields
             # only, so the implicit enclosing scripts a startup preference needs
@@ -3986,6 +3987,30 @@ class PluginService:
                 value=value,
             )
             return profile.as_dict()
+
+    def _stored_values(self, app_id: int, digest: str, field: str) -> dict[int, str | None]:
+        """What this profile already holds in one of its value lists, by record.
+
+        Empty where there is no profile or it is bound to another table: a value
+        is only ever kept for the exact table it was stored against.
+        """
+        profile = self.profile_store.get(app_id)
+        if profile is None or profile.table_sha256 != digest:
+            return {}
+        return {item.record_id: item.value for item in getattr(profile, field)}
+
+    @staticmethod
+    def _assert_declared_or_kept(control, value: str, kept: str | None, label: str) -> None:
+        """Refuse a value the record's read-only list does not declare, unless it is already stored.
+
+        CE Decky read no list as read-only before 0.9.35, so a value outside one
+        could be typed and saved; the panel sends what it holds back with every
+        Apply, and refusing that refused the Apply over a record nobody touched.
+        Kept, it is never written: the startup plan leaves it out. A new one is
+        still refused, and so is every live write outside the list.
+        """
+        if outside_read_only_list(control, value) and value != kept:
+            raise ValueError(f"{label} is outside the exact table's read-only dropdown")
 
     def _require_profile(self, app_id: int, digest: str):
         profile = self.profile_store.get(app_id)
@@ -4045,6 +4070,7 @@ class PluginService:
             if not isinstance(states, list) or len(states) > 1024:
                 raise ValueError("remembered cheat state must be a bounded list")
             inspection = self._inspect_table_blob(self.table_store.verified_blob(digest), digest, app_id)
+            kept_remembered = self._stored_values(app_id, digest, "remembered")
             parsed: list[StartupPreference] = []
             seen: set[int] = set()
             for raw in states:
@@ -4068,10 +4094,7 @@ class PluginService:
                 if value is not None:
                     if control.kind not in {"value", "dropdown"}:
                         raise ValueError("remembered value can only be assigned to value/dropdown MemoryRecords")
-                    if control.dropdown_read_only:
-                        allowed = {item[0] for item in control.dropdown_values}
-                        if value not in allowed:
-                            raise ValueError("remembered value is outside the exact table's read-only dropdown")
+                    self._assert_declared_or_kept(control, value, kept_remembered.get(record_id), "remembered value")
                 parsed.append(StartupPreference(record_id, active, value))
             self._assert_effective_startup_plan_fits(
                 replace(self._require_profile(app_id, digest), autoload_enabled=True, remembered=parsed),
@@ -4086,6 +4109,7 @@ class PluginService:
             if not isinstance(values, list) or len(values) > 1024:
                 raise ValueError("configured values must be a bounded list")
             inspection = self._inspect_table_blob(self.table_store.verified_blob(digest), digest, app_id)
+            kept_configured = self._stored_values(app_id, digest, "configured_values")
             parsed: list[ConfiguredValue] = []
             seen: set[int] = set()
             for raw in values:
@@ -4105,10 +4129,7 @@ class PluginService:
                 control = self._actionable_control_by_id(inspection.controls, record_id)
                 if control.kind not in {"value", "dropdown"}:
                     raise ValueError("configured value can only target value/dropdown MemoryRecords")
-                if control.dropdown_read_only:
-                    allowed = {item[0] for item in control.dropdown_values}
-                    if value not in allowed:
-                        raise ValueError("configured value is outside the exact table's read-only dropdown")
+                self._assert_declared_or_kept(control, value, kept_configured.get(record_id), "configured value")
                 parsed.append(ConfiguredValue(record_id, value))
             self._assert_effective_startup_plan_fits(
                 replace(self._require_profile(app_id, digest), autoload_enabled=True, configured_values=parsed),
@@ -4250,6 +4271,18 @@ class PluginService:
             self._assert_session_replacement_safe(app_id)
             prepared = self.session_store.prepare(profile, blob, inspection, imported.sha256)
             actions = effective_startup_plan(profile, inspection)
+            # What this startup leaves out of the game, at the moment it does:
+            # remembered and typed values count only where Auto-load reads them.
+            unwritten = [
+                item for item in stored_values_outside_read_only_lists(profile, inspection)
+                if profile.autoload_enabled or item["source"] == "startup"
+            ]
+            if unwritten:
+                log_activity(
+                    self.logger, "warning", "startup.value_outside_read_only_list",
+                    app_id=app_id, table_sha256=digest, count=len(unwritten),
+                    records="; ".join(f"{item['record_id']} {item['source']}={item['value']}" for item in unwritten),
+                )
             # The same eligibility the descriptor carries to the bridge, so the
             # record the bridge reports and the records accepted here cannot
             # disagree about what a successful startup proved.

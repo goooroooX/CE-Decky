@@ -20,6 +20,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --tables <dir> --parameters --include-installed --json
     python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --include-installed --json
     python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --baseline HEAD
+    python3 scripts/ct_scan_survey.py --tables <dir> --dropdowns --include-installed
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -524,6 +525,41 @@ def _corpus(roots: list[Path], one, *, progress: bool = False) -> dict[str, obje
                               for name in ("ct_inspector.py", "profiles.py", "session_protocol.py")}, "results": tables}
 
 
+def dropdowns_one(table: Path) -> dict[str, object]:
+    """How one table's value lists read: which are read-only and which are switches.
+
+    Through the production inspector, so the counts are what Configure cheats
+    draws: a switch is a toggle and nothing else, a read-only list offers its
+    entries and no field, and every other list can also be typed into.
+    """
+    data = table.read_bytes()
+    if len(data) > MAX_TABLE_BYTES:
+        raise ValueError("that table is larger than one this reads")
+    found = inspect_table(table, sha256(data).hexdigest())
+    lists = [control for control in found.controls if control.kind == "dropdown"]
+    switches = [control for control in lists if control.switch_on_value]
+    return {
+        "table": table.name,
+        "sha256": found.sha256,
+        "controls": len(found.controls),
+        "lists": len(lists),
+        "read_only": sum(control.dropdown_read_only for control in lists),
+        "switches": len(switches),
+        "read_only_switches": sum(control.dropdown_read_only for control in switches),
+        "accept_a_typed_value": sum(not control.dropdown_read_only and not control.switch_on_value for control in lists),
+    }
+
+
+def dropdowns_corpus(roots: list[Path]) -> dict[str, object]:
+    answer = _corpus(roots, dropdowns_one)
+    answer["method"] = "static_inspection_no_execution"
+    tables = answer["results"]
+    for key in ("lists", "read_only", "switches", "read_only_switches", "accept_a_typed_value"):
+        answer[key] = sum(int(table[key]) for table in tables)
+    answer["tables_with_a_read_only_list"] = sum(bool(table["read_only"]) for table in tables)
+    return answer
+
+
 def parameters_corpus(roots: list[Path]) -> dict[str, object]:
     answer = _corpus(roots, parameters_one)
     tables = answer["results"]
@@ -905,6 +941,10 @@ def main() -> int:
         help="the production startup plan of every table for each synthetic profile shape; no execution",
     )
     parser.add_argument(
+        "--dropdowns", action="store_true",
+        help="how many value lists are read-only, are drawn as switches, or also take a typed value",
+    )
+    parser.add_argument(
         "--baseline", metavar="REV",
         help="with --startup-plans: compare this tree's plans with those of REV, shape by shape, from a temporary worktree",
     )
@@ -923,8 +963,11 @@ def main() -> int:
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"ct scan survey: {exc}", file=sys.stderr)
             return 1
-    if args.include_installed and not (args.parameters or args.startup_plans):
-        parser.error("--include-installed needs --parameters or --startup-plans")
+    if args.include_installed and not (args.parameters or args.startup_plans or args.dropdowns):
+        parser.error("--include-installed needs --parameters, --startup-plans or --dropdowns")
+    if args.dropdowns and (args.parameters or args.startup_plans or args.scripts or args.flags
+                           or args.repair or args.repair_coverage or args.executable):
+        parser.error("--dropdowns is a separate read-only survey mode")
     if (args.parameters or args.startup_plans) and (args.scripts or args.flags or args.repair or args.repair_coverage or args.executable):
         parser.error("--parameters and --startup-plans are separate read-only survey modes")
     if args.parameters and args.startup_plans:
@@ -935,7 +978,7 @@ def main() -> int:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if (args.parameters or args.startup_plans) and (args.tables is not None or args.include_installed):
+        if (args.parameters or args.startup_plans or args.dropdowns) and (args.tables is not None or args.include_installed):
             roots = [args.tables] if args.tables is not None else []
             if args.include_installed:
                 from target_plugin_install import resolve_install_authority
@@ -944,7 +987,9 @@ def main() -> int:
                 if not home:
                     raise ValueError("the install authority reports no user_home")
                 roots.append(Path(str(home)) / ".cheat-engine-decky" / "tables" / "sha256")
-            if args.startup_plans and args.baseline:
+            if args.dropdowns:
+                answer["dropdowns_corpus"] = dropdowns_corpus(roots)
+            elif args.startup_plans and args.baseline:
                 answer["startup_plans_diff"] = startup_plans_against(
                     args.baseline, roots, tables=args.tables, include_installed=args.include_installed,
                 )
@@ -968,9 +1013,11 @@ def main() -> int:
             answer["startup_plans"] = startup_plans_one(args.table)
         if args.table is not None and args.flags:
             answer["flags"] = flags_one(args.table)
+        if args.table is not None and args.dropdowns:
+            answer["dropdowns"] = dropdowns_one(args.table)
         if args.table is not None and args.repair:
             answer["repair"] = repair_one(args.table, list(args.repair))
-        if args.table is not None and not args.repair and not args.flags and not args.scripts and not args.parameters and not args.startup_plans:
+        if args.table is not None and not args.repair and not args.flags and not args.scripts and not args.parameters and not args.startup_plans and not args.dropdowns:
             if args.executable is None:
                 parser.error("--table needs --executable, which is the program to look in")
             answer["check"] = check_one(args.table, args.executable, args.repeat)
@@ -983,7 +1030,8 @@ def main() -> int:
         return 0
     if isinstance(answer.get("startup_plans_diff"), dict):
         print(json.dumps(answer["startup_plans_diff"], indent=2, sort_keys=True))
-    parameters = answer.get("parameters_corpus") or answer.get("parameters") or answer.get("startup_plans_corpus")
+    parameters = (answer.get("parameters_corpus") or answer.get("parameters") or answer.get("startup_plans_corpus")
+                  or answer.get("dropdowns_corpus") or answer.get("dropdowns"))
     if isinstance(parameters, dict):
         print(json.dumps({key: value for key, value in parameters.items() if key not in {"results", "unlinked"}}, indent=2, sort_keys=True))
     coverage = answer.get("repair_coverage")

@@ -2381,6 +2381,36 @@ export function switchOffValues(
   return new Map((inspection.switch_off_values ?? []).filter(([recordId]) => ids.has(recordId)));
 }
 
+/**
+ * This value as Cheat Engine may be given it: `null` where a read-only list does not declare it.
+ *
+ * Applied to what a profile saved, never to what the game holds: the backend
+ * refuses such a write live, so sending a saved one failed an Apply part of the
+ * way through, and startup leaves it out the same way. A row resolving its
+ * value falls through to what the game holds instead.
+ */
+export function declaredValue(control: TableControl, value: string | null): string | null {
+  if (value === null || control.kind !== "dropdown" || !control.dropdown_read_only) return value;
+  return control.dropdown_values.some(([declared]) => declared === value) ? value : null;
+}
+
+/**
+ * A value this profile holds for a record whose read-only list does not declare it.
+ *
+ * Saved while every list still took a typed value, which lasted until CE Decky
+ * read Cheat Engine's read-only mark. Startup never writes it, so the row says
+ * so rather than leaving the reader to wonder where their value went. A switch
+ * is left out: its toggle is its value, and startup writes its key.
+ */
+export function storedValueOutsideList(
+  control: TableControl,
+  stored: readonly (string | null | undefined)[],
+): string | null {
+  if (control.kind !== "dropdown" || !control.dropdown_read_only || controlIsSwitch(control)) return null;
+  const declared = new Set(control.dropdown_values.map(([value]) => value));
+  return stored.find((value): value is string => typeof value === "string" && !declared.has(value)) ?? null;
+}
+
 /** True when this exact control accepts a typed value. */
 export function controlAcceptsTypedValue(control: TableControl): boolean {
   if (controlIsSwitch(control)) return false;
@@ -2649,8 +2679,8 @@ export function pinnedCheatRows(
     // same fact written twice in the row's own scarcest space.
     const value = controlIsSwitch(control) ? null : presentableControlValue(pinnedControlValue(
       isWaiting ? null : latest.value,
-      rememberedById.get(control.id)?.value,
-      configuredById.get(control.id)?.value,
+      declaredValue(control, rememberedById.get(control.id)?.value ?? null),
+      declaredValue(control, configuredById.get(control.id)?.value ?? null),
     ));
     const currentValue = isWaiting ? null : presentableControlValue(latest.value);
     // Said here too, because this row writes the flag's off key the moment it
@@ -2865,7 +2895,7 @@ export function settingsForStartedScripts(
   return controls.flatMap((control) => {
     if (control.id === null || skip.has(control.id) || activeById.get(control.id) === true) return [];
     const value = configured.get(control.id);
-    if (value == null || displayableControlValue(value) === null || !controlNeedsValueInput(control)) return [];
+    if (value == null || displayableControlValue(declaredValue(control, value)) === null || !controlNeedsValueInput(control)) return [];
     const scripts = enclosingScripts(control, controls);
     if (!scripts.some((script) => startedIds.has(script.id!))) return [];
     if (!readByRunningScripts(control, controls, activeById)) return [];

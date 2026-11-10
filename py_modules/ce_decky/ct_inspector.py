@@ -628,8 +628,27 @@ def _walk_entry(
                 # that symbol alone rather than answer for it by document order.
                 repeated.add(scan.name)
 
-    dropdown = _parse_dropdown(_child_text(element, "DropDownList") or "", sanitized, dropped)
-    dropdown_read_only = (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
+    dropdown_element = _first_child(element, "DropDownList")
+    dropdown = _parse_dropdown((dropdown_element.text or "") if dropdown_element is not None else "", sanitized, dropped)
+    # Cheat Engine keeps a list's options as attributes of `<DropDownList>`
+    # itself, each set only by the exact text `1`: `ReadOnly`, `DescriptionOnly`
+    # and `DisplayValueAsItem` (`MemoryRecordUnit.pas` at `ec45d5f4`, where it
+    # loads and saves them). Cheat Engine reads nothing else; a
+    # `<DropDownReadOnly>` element is not part of its format, and is still
+    # accepted here because this reader always has. Reading the element alone
+    # left every read-only list in the corpus open to a typed value.
+    options = {
+        name for name in ("ReadOnly", "DescriptionOnly", "DisplayValueAsItem")
+        if dropdown_element is not None and dropdown_element.get(name) == "1"
+    }
+    dropdown_read_only = "ReadOnly" in options or (_child_text(element, "DropDownReadOnly") or "").strip() == "1"
+    if {"ReadOnly", "DescriptionOnly", "DisplayValueAsItem"} <= options:
+        # With all three set, an entry whose value is exactly `*` is the caption
+        # Cheat Engine shows for a value the list does not hold, and choosing it
+        # writes nothing: its own picker cancels the edit. It is not a choice,
+        # and counting it as one kept `0:Disabled`, `1:Enabled`, `*:--` from
+        # reading as the on/off pair it is.
+        dropdown = tuple(item for item in dropdown if item[0] != "*")
     address = _child_text(element, "Address") or ""
     # What this script's own code was read as surviving, read once: the script
     # facts below and the hand-down to the records it holds both ask it.
