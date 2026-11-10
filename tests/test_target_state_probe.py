@@ -407,6 +407,56 @@ def test_the_startup_plan_is_the_planners_own_record_by_record(tmp_path: Path):
     assert "startup_plan" not in target_state_probe.probe(home, settings, 78, proc)
 
 
+def test_without_an_appid_the_startup_plan_is_every_profiles(tmp_path: Path):
+    from ce_decky.profiles import StartupPreference
+    from ce_decky.table_store import TableStore
+
+    home, settings, proc = tmp_path / "home", tmp_path / "settings", tmp_path / "proc"
+    for path in (home, settings, proc):
+        path.mkdir()
+    managed = home / ".cheat-engine-decky"
+    (managed / "state").mkdir(parents=True)
+    source = tmp_path / "plan.CT"
+    source.write_text(PLAN_TABLE, encoding="utf-8")
+    sha = TableStore(managed / "tables").import_ct(str(source)).sha256
+    store = ProfileStore(managed / "state" / "profiles.json")
+    store.upsert(app_id=78, name="Safe Game", is_shortcut=False, table_sha256=sha, target_process=None)
+    store.set_remembered(app_id=78, table_sha256=sha, states=[StartupPreference(3, True, "5")])
+    store.upsert(app_id=79, name="Safe Game", is_shortcut=False, table_sha256=None, target_process=None)
+
+    plans = target_state_probe.probe(home, settings, None, proc, startup_plan=True)["startup_plans"]
+
+    assert set(plans) == {"78", "79"}
+    assert (3, "value", "5") in [(item["record_id"], item["kind"], item["value"]) for item in plans["78"]["actions"]]
+    assert plans["79"]["error"] == "no table is selected"
+    assert "startup_plans" not in target_state_probe.probe(home, settings, None, proc)
+
+
+def test_two_revisions_plans_are_compared_game_by_game():
+    def plan(*actions, error=None, left_on=()):
+        return {"actions": [{"record_id": r, "kind": k, "value": v, "label": "renamed" if r == 9 else "x"} for r, k, v in actions],
+                "error": error, "left_on": [{"record_id": record} for record in left_on]}
+    before = {"1": plan((3, "value", "5"), (3, "active", "1")), "2": plan((9, "active", "1")), "4": plan()}
+    after = {"1": plan((3, "active", "1"), left_on=(7,)), "2": plan((9, "active", "1")), "5": plan(error="gone")}
+
+    diff = target_state_probe.compare_plans(before, after)
+
+    assert diff["games"]["1"] == {"removed": [(3, "value", "5")], "added": [], "left_on": [[], [7]]}
+    # A label is how an action reads, not what it does.
+    assert diff["games"]["2"] == "same"
+    assert diff["only_baseline"] == ["4"] and diff["only_candidate"] == ["5"] and diff["same"] is False
+    # The same actions in another order are another plan.
+    swapped = {"1": plan((3, "active", "1"), (3, "value", "5"))}
+    assert target_state_probe.compare_plans({"1": before["1"]}, swapped)["games"]["1"] == {"reordered": True}
+    assert target_state_probe.compare_plans({"2": before["2"]}, {"2": after["2"]})["same"] is True
+
+
+def test_a_baseline_needs_the_startup_plan(capsys):
+    with pytest.raises(SystemExit):
+        target_state_probe.main(["--baseline", "HEAD"])
+    assert "--baseline compares startup plans" in capsys.readouterr().err
+
+
 def test_the_appid_report_names_the_selected_tables_verified_file(tmp_path: Path):
     from ce_decky.table_store import TableStore
 

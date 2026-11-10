@@ -741,6 +741,13 @@ def probe(
         "privacy": "launch-option values and installer environment markers are never emitted",
     }
 
+    if startup_plan and app_id is None:
+        # Every game's at once, by AppID, which is what a change to the planner
+        # or the inspector is checked against before it reaches this device.
+        report["startup_plans"] = {
+            str(profile.app_id): _startup_plan(profile, managed_root / "tables") for profile in profiles
+        } if profile_error is None else {}
+
     if app_id is not None:
         if isinstance(app_id, bool) or app_id < 1 or app_id > 0xFFFFFFFF:
             raise ValueError("AppID must be between 1 and 4294967295")
@@ -847,6 +854,104 @@ def _paths(home: Path | None, settings_dir: Path | None) -> tuple[Path, Path, st
     )
 
 
+def _plans_by_game(report: dict[str, object]) -> dict[str, dict]:
+    """The plans one probe report carries, by AppID, however it was asked."""
+    if isinstance(report.get("startup_plans"), dict):
+        return dict(report["startup_plans"])
+    if isinstance(report.get("startup_plan"), dict):
+        return {str(report["app_id"]): report["startup_plan"]}
+    return {}
+
+
+def compare_plans(baseline: dict[str, dict], candidate: dict[str, dict]) -> dict[str, object]:
+    """How each game's plan moved between two revisions, action by action.
+
+    An action is its record, its kind and its value; a label is how it is read,
+    so a label alone moving is not a plan that moved. A game only one side
+    planned is named apart.
+    """
+    def sequence(plan: dict) -> list[tuple]:
+        return [(item["record_id"], item["kind"], item["value"]) for item in plan.get("actions", [])]
+
+    def actions(plan: dict) -> set[tuple]:
+        return set(sequence(plan))
+
+    def left_on(plan: dict) -> list:
+        return sorted(item["record_id"] for item in plan.get("left_on", []))
+
+    games: dict[str, object] = {}
+    for app_id in sorted(baseline.keys() & candidate.keys(), key=int):
+        old, new = baseline[app_id], candidate[app_id]
+        row: dict[str, object] = {}
+        if actions(old) != actions(new):
+            row["removed"] = sorted(actions(old) - actions(new))
+            row["added"] = sorted(actions(new) - actions(old))
+        elif sequence(old) != sequence(new):
+            # The same actions in another order is another plan: a value
+            # written before the script that creates its record writes nothing.
+            row["reordered"] = True
+        if old.get("action_count") != new.get("action_count"):
+            # The reported actions are bounded; the count is not.
+            row["action_count"] = [old.get("action_count"), new.get("action_count")]
+        if old.get("error") != new.get("error"):
+            row["error"] = [old.get("error"), new.get("error")]
+        if left_on(old) != left_on(new):
+            row["left_on"] = [left_on(old), left_on(new)]
+        games[app_id] = row or "same"
+    only_baseline = sorted(baseline.keys() - candidate.keys(), key=int)
+    only_candidate = sorted(candidate.keys() - baseline.keys(), key=int)
+    return {
+        "same": all(row == "same" for row in games.values()) and not only_baseline and not only_candidate,
+        "games": games,
+        "only_baseline": only_baseline,
+        "only_candidate": only_candidate,
+    }
+
+
+def plans_against(
+    rev: str, candidate: dict[str, object], home: Path, settings_dir: Path, app_id: int | None,
+) -> dict[str, object]:
+    """This tree's startup plans of this device's state, compared with those of `rev`.
+
+    `rev` is checked out into a temporary worktree and asked by this same
+    script, copied in, with the same exact home and settings directory, so the
+    state is the same and only its planner and inspector differ. The worktree is
+    removed whatever happens. Read only, like the rest of this probe.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    scratch = Path(tempfile.mkdtemp(prefix="state-probe-baseline-"))
+    tree = scratch / "tree"
+    added = subprocess.run(["git", "worktree", "add", "--detach", "--quiet", str(tree), rev], cwd=ROOT,
+                           capture_output=True, text=True, check=False)
+    if added.returncode != 0:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise RuntimeError(f"cannot check out {rev}: {added.stderr.strip() or 'git worktree add failed'}")
+    try:
+        shutil.copy2(Path(__file__).resolve(), tree / "scripts" / "target_state_probe.py")
+        command = [sys.executable, str(tree / "scripts" / "target_state_probe.py"), "--startup-plan",
+                   "--home", str(home), "--settings-dir", str(settings_dir)]
+        if app_id is not None:
+            command += ["--appid", str(app_id)]
+        try:
+            ran = subprocess.run(command, cwd=tree, capture_output=True, text=True, check=False, timeout=600)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"the probe at {rev} did not answer within {exc.timeout:.0f} seconds") from None
+        if ran.returncode != 0:
+            tail = " / ".join(ran.stderr.strip().splitlines()[-3:])
+            raise RuntimeError(f"the probe at {rev} failed with exit code {ran.returncode}: {tail}")
+        baseline = json.loads(ran.stdout)
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=ROOT, check=False,
+                       capture_output=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+    resolved = subprocess.run(["git", "rev-parse", rev], cwd=ROOT, capture_output=True, text=True, check=False)
+    return {"baseline": resolved.stdout.strip() or rev,
+            **compare_plans(_plans_by_game(baseline), _plans_by_game(candidate))}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, help="exact DECKY_USER_HOME; omitted, it is user_home from `target_plugin_install.py authority`")
@@ -854,7 +959,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--appid", type=int, help="exact Steam/non-Steam AppID for profile/session/runtime correlation")
     parser.add_argument(
         "--startup-plan", action="store_true",
-        help="with --appid, the exact actions Auto-load would carry for that game, from the production planner",
+        help="the exact actions Auto-load would carry, from the production planner: for the game --appid "
+             "names, or for every profile",
+    )
+    parser.add_argument(
+        "--baseline", metavar="REV",
+        help="with --startup-plan: compare each game's plan with the one REV's planner and inspector build "
+             "from the same state, from a temporary worktree",
     )
     parser.add_argument(
         "--compatibility-migration", type=Path, metavar="DIR",
@@ -868,8 +979,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.startup_plan and args.appid is None:
-        parser.error("--startup-plan answers for one game; name it with --appid")
+    if args.baseline and not args.startup_plan:
+        parser.error("--baseline compares startup plans; add --startup-plan")
+    if args.baseline and args.compatibility_migration is not None:
+        parser.error("--compatibility-migration is a mode of its own; it takes no --baseline")
     try:
         host_platform.require("The plugin state probe")
     except host_platform.UnsupportedHost as exc:
@@ -878,6 +991,9 @@ def main(argv: list[str] | None = None) -> int:
         home, settings_dir, paths_from = _paths(args.home, args.settings_dir)
         if args.compatibility_migration is not None:
             report = compatibility_migration(home, args.compatibility_migration)
+        elif args.baseline:
+            candidate = probe(home, settings_dir, args.appid, args.proc_root, startup_plan=True)
+            report = plans_against(args.baseline, candidate, home, settings_dir, args.appid)
         else:
             report = probe(home, settings_dir, args.appid, args.proc_root, startup_plan=args.startup_plan)
         report["paths_from"] = paths_from
