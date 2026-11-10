@@ -21,6 +21,7 @@ the check the panel runs and prints what it found, with what it cost.
     python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --include-installed --json
     python3 scripts/ct_scan_survey.py --tables <dir> --startup-plans --baseline HEAD
     python3 scripts/ct_scan_survey.py --tables <dir> --dropdowns --include-installed
+    python3 scripts/ct_scan_survey.py --tables <dir> --dropdowns --baseline HEAD
 
 It reads and nothing else: no table is stored, no game is started, and the
 executable is opened through the same bounded reader the product uses. The
@@ -693,20 +694,22 @@ def compare_startup_plans(baseline: dict[str, object], candidate: dict[str, obje
     }
 
 
-def startup_plans_against(rev: str, roots: list[Path], *, tables: Path | None, include_installed: bool) -> dict[str, object]:
-    """This tree's startup plans of a corpus, compared with those of `rev`.
+def _at_revision(
+    rev: str, flags: list[str], key: str, run_here, *, tables: Path | None, include_installed: bool,
+) -> tuple[str, dict[str, object], dict[str, object]]:
+    """One corpus question asked of `rev` and of this tree at once.
 
     `rev` is checked out into a temporary worktree and asked by this same
-    script, copied in, so a revision from before `--startup-plans` existed
-    is asked the same question; only its planner and inspector are its own.
-    It runs beside this tree's own pass, and the worktree is removed whatever
-    happens. Read only, like every other mode here.
+    script, copied in, so a revision from before the question existed is asked
+    it the same way; only its inspector and planner are its own. It runs beside
+    this tree's own pass (`run_here`), and the worktree is removed whatever
+    happens. Read only, like every other mode here. Returns the revision as Git
+    resolves it, its answer under `key`, and this tree's.
     """
     import shutil
     import subprocess
     import tempfile
 
-    roots = [root.resolve() for root in roots]
     scratch = Path(tempfile.mkdtemp(prefix="ct-scan-baseline-"))
     tree = scratch / "tree"
     added = subprocess.run(["git", "worktree", "add", "--detach", "--quiet", str(tree), rev], cwd=ROOT,
@@ -719,7 +722,7 @@ def startup_plans_against(rev: str, roots: list[Path], *, tables: Path | None, i
         shutil.copy2(Path(__file__).resolve(), tree / "scripts" / "ct_scan_survey.py")
         # The same corpus by the same flags, so both sides resolve the
         # installed store through the same authority.
-        command = [sys.executable, str(tree / "scripts" / "ct_scan_survey.py"), "--startup-plans", "--json"]
+        command = [sys.executable, str(tree / "scripts" / "ct_scan_survey.py"), *flags, "--json"]
         if tables is not None:
             command += ["--tables", str(tables.resolve())]
         if include_installed:
@@ -729,11 +732,11 @@ def startup_plans_against(rev: str, roots: list[Path], *, tables: Path | None, i
         with (scratch / "baseline.json").open("w", encoding="utf-8") as output, \
                 (scratch / "baseline.err").open("w", encoding="utf-8") as errors:
             child = subprocess.Popen(command, cwd=tree, stdout=output, stderr=errors)
-            candidate = startup_plans_corpus(roots, progress=True)
+            candidate = run_here()
             if child.wait() != 0:
                 tail = (scratch / "baseline.err").read_text(encoding="utf-8").strip().splitlines()[-3:]
                 raise RuntimeError(f"the survey at {rev} failed with exit code {child.returncode}: {' / '.join(tail)}")
-        baseline = json.loads((scratch / "baseline.json").read_text(encoding="utf-8"))["startup_plans_corpus"]
+        baseline = json.loads((scratch / "baseline.json").read_text(encoding="utf-8"))[key]
     finally:
         # A pass on this side that failed leaves the other one running.
         if child is not None and child.poll() is None:
@@ -743,8 +746,69 @@ def startup_plans_against(rev: str, roots: list[Path], *, tables: Path | None, i
                        capture_output=True)
         shutil.rmtree(scratch, ignore_errors=True)
     resolved = subprocess.run(["git", "rev-parse", rev], cwd=ROOT, capture_output=True, text=True, check=False)
-    return {"baseline": resolved.stdout.strip() or rev, "candidate_corpus_sha256": candidate["corpus_sha256"],
+    return resolved.stdout.strip() or rev, baseline, candidate
+
+
+def startup_plans_against(rev: str, roots: list[Path], *, tables: Path | None, include_installed: bool) -> dict[str, object]:
+    """This tree's startup plans of a corpus, compared with those of `rev`, shape by shape."""
+    roots = [root.resolve() for root in roots]
+    resolved, baseline, candidate = _at_revision(
+        rev, ["--startup-plans"], "startup_plans_corpus", lambda: startup_plans_corpus(roots, progress=True),
+        tables=tables, include_installed=include_installed,
+    )
+    return {"baseline": resolved, "candidate_corpus_sha256": candidate["corpus_sha256"],
             "baseline_corpus_sha256": baseline["corpus_sha256"], **compare_startup_plans(baseline, candidate)}
+
+
+# What an answer carries about the run rather than about the corpus: when and
+# where it ran, which sources it read, and the paths it was given. Two
+# revisions differ in all of these by construction, so none is a finding.
+_RUN_FIELDS = frozenset({"utc", "host", "source_sha256", "roots", "by_root", "results", "method", "product_version"})
+
+
+def compare_answers(baseline: dict[str, object], candidate: dict[str, object]) -> dict[str, object]:
+    """What moved between two revisions' answers to one corpus question.
+
+    Every field the two answers both carry about the corpus, where it differs,
+    and for a question answered with a row per table, how many tables' rows
+    moved, which, and which tables only one side read. `same` is the one-word
+    answer: nothing a reader would compare moved.
+    """
+    changed = {
+        key: {"baseline": baseline[key], "candidate": candidate[key]}
+        for key in sorted(baseline.keys() & candidate.keys())
+        if key not in _RUN_FIELDS and baseline[key] != candidate[key]
+    }
+    answer: dict[str, object] = {"same": not changed, "changed": changed}
+    if isinstance(baseline.get("results"), list) and isinstance(candidate.get("results"), list):
+        # A row's own file name is where it was found, not what it says.
+        def rows(results: list) -> dict[str, dict]:
+            return {row["sha256"]: {key: value for key, value in row.items() if key != "table"} for row in results}
+        before, after = rows(baseline["results"]), rows(candidate["results"])
+        both = sorted(before.keys() & after.keys())
+        moved = [digest for digest in both if before[digest] != after[digest]]
+        only_baseline = sorted(digest[:8] for digest in before.keys() - after.keys())
+        only_candidate = sorted(digest[:8] for digest in after.keys() - before.keys())
+        answer["tables"] = {"same": len(both) - len(moved), "moved": len(moved),
+                            "examples": [digest[:8] for digest in moved[:3]],
+                            "only_baseline": only_baseline, "only_candidate": only_candidate}
+        answer["same"] = bool(answer["same"]) and not moved and not only_baseline and not only_candidate
+    return answer
+
+
+def _corpus_question(args, roots: list[Path]) -> tuple[list[str], str, object]:
+    """The corpus mode these arguments name: its flag, its answer's key, and how to ask it here."""
+    if args.dropdowns:
+        return ["--dropdowns"], "dropdowns_corpus", lambda: dropdowns_corpus(roots)
+    if args.parameters:
+        return ["--parameters"], "parameters_corpus", lambda: parameters_corpus(roots)
+    if args.flags:
+        return ["--flags"], "flags_corpus", lambda: flags_corpus(args.tables)
+    if args.scripts:
+        return ["--scripts"], "scripts_corpus", lambda: scripts_corpus(args.tables)
+    if args.repair_coverage:
+        return ["--repair-coverage"], "repair_coverage", lambda: repair_coverage(args.tables)
+    return [], "survey", lambda: survey_tables(args.tables)
 
 
 # How many examples of each shape `--scripts` names. They are there to be
@@ -902,6 +966,19 @@ def table_by_sha(prefix: str, store: Path | None) -> Path:
     return TableStore(store).verified_blob(matches[0])
 
 
+def _roots(args) -> list[Path]:
+    """The directories a corpus mode reads: `--tables`, and the installed store with `--include-installed`."""
+    roots = [args.tables] if args.tables is not None else []
+    if args.include_installed:
+        from target_plugin_install import resolve_install_authority
+        authority = resolve_install_authority()
+        home = authority.get("user_home")
+        if not home:
+            raise ValueError("the install authority reports no user_home")
+        roots.append(Path(str(home)) / ".cheat-engine-decky" / "tables" / "sha256")
+    return roots
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tables", type=Path, help="a directory of .CT files to read patterns out of")
@@ -946,11 +1023,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--baseline", metavar="REV",
-        help="with --startup-plans: compare this tree's plans with those of REV, shape by shape, from a temporary worktree",
+        help="compare this tree's answer to a corpus mode with that of REV, from a temporary worktree; "
+             "--startup-plans is compared shape by shape",
     )
     parser.add_argument(
         "--include-installed", action="store_true",
-        help="with --parameters or --startup-plans: also read tables under user_home from the install authority, deduplicated by SHA",
+        help="with --parameters, --startup-plans or --dropdowns: also read tables under user_home from the install authority, deduplicated by SHA",
     )
     parser.add_argument("--json", action="store_true", help="the same answer, for a report")
     args = parser.parse_args()
@@ -972,21 +1050,25 @@ def main() -> int:
         parser.error("--parameters and --startup-plans are separate read-only survey modes")
     if args.parameters and args.startup_plans:
         parser.error("name one of --parameters and --startup-plans")
-    if args.baseline and not args.startup_plans:
-        parser.error("--baseline needs --startup-plans")
+    if args.baseline and (args.table is not None or args.repair or args.executable
+                          or (args.tables is None and not args.include_installed)):
+        parser.error("--baseline compares a corpus: name --tables <dir> or --include-installed, and no single table")
+    if args.baseline and args.tables is not None:
+        # Both sides are given the same absolute path, so the paths an answer
+        # names, such as an unreadable table's, are the same on both.
+        args.tables = args.tables.resolve()
     if args.tables is None and args.table is None and not args.include_installed:
         parser.error("name --tables <dir>, or --table <file.CT> with --executable <game.exe>")
     answer: dict[str, object] = {}
     try:
-        if (args.parameters or args.startup_plans or args.dropdowns) and (args.tables is not None or args.include_installed):
-            roots = [args.tables] if args.tables is not None else []
-            if args.include_installed:
-                from target_plugin_install import resolve_install_authority
-                authority = resolve_install_authority()
-                home = authority.get("user_home")
-                if not home:
-                    raise ValueError("the install authority reports no user_home")
-                roots.append(Path(str(home)) / ".cheat-engine-decky" / "tables" / "sha256")
+        if args.baseline and not args.startup_plans:
+            flags, key, run_here = _corpus_question(args, _roots(args))
+            resolved, baseline, candidate = _at_revision(
+                args.baseline, flags, key, run_here, tables=args.tables, include_installed=args.include_installed,
+            )
+            answer["baseline_diff"] = {"baseline": resolved, "question": key, **compare_answers(baseline, candidate)}
+        elif (args.parameters or args.startup_plans or args.dropdowns) and (args.tables is not None or args.include_installed):
+            roots = _roots(args)
             if args.dropdowns:
                 answer["dropdowns_corpus"] = dropdowns_corpus(roots)
             elif args.startup_plans and args.baseline:
@@ -1030,6 +1112,8 @@ def main() -> int:
         return 0
     if isinstance(answer.get("startup_plans_diff"), dict):
         print(json.dumps(answer["startup_plans_diff"], indent=2, sort_keys=True))
+    if isinstance(answer.get("baseline_diff"), dict):
+        print(json.dumps(answer["baseline_diff"], indent=2, sort_keys=True))
     parameters = (answer.get("parameters_corpus") or answer.get("parameters") or answer.get("startup_plans_corpus")
                   or answer.get("dropdowns_corpus") or answer.get("dropdowns"))
     if isinstance(parameters, dict):

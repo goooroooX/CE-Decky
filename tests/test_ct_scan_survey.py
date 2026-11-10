@@ -227,15 +227,30 @@ def test_a_corpus_pass_says_how_far_it_is_on_stderr_only(tmp_path: Path, capsys)
     assert "1 read" in captured.err and answer["tables"] == 1
 
 
-def test_a_baseline_needs_the_startup_plans(monkeypatch, capsys):
+def test_a_baseline_compares_a_corpus_and_never_one_table(monkeypatch, capsys):
     import sys
 
     import pytest
 
-    monkeypatch.setattr(sys, "argv", ["ct_scan_survey.py", "--tables", ".", "--baseline", "HEAD"])
+    monkeypatch.setattr(sys, "argv", ["ct_scan_survey.py", "--table", "one.CT", "--flags", "--baseline", "HEAD"])
     with pytest.raises(SystemExit):
         survey.main()
-    assert "--baseline needs --startup-plans" in capsys.readouterr().err
+    assert "--baseline compares a corpus" in capsys.readouterr().err
+
+
+def test_two_revisions_answers_are_compared_by_what_they_say_about_the_corpus():
+    row = {"table": "a.CT", "sha256": "ab" * 32, "controls": 3, "lists": 2, "read_only": 0}
+    before = {"lists": 2, "read_only": 0, "utc": "then", "host": "here", "source_sha256": {"x": "1"},
+              "results": [row, {**row, "sha256": "cd" * 32}]}
+    after = {"lists": 2, "read_only": 1, "utc": "now", "host": "there", "source_sha256": {"x": "2"},
+             "results": [{**row, "table": "/elsewhere/a.CT", "read_only": 1}, {**row, "sha256": "ef" * 32}]}
+    diff = survey.compare_answers(before, after)
+    # When and where each ran, and the path a row was found at, are not findings.
+    assert diff["changed"] == {"read_only": {"baseline": 0, "candidate": 1}}
+    assert diff["tables"] == {"same": 0, "moved": 1, "examples": ["abababab"],
+                              "only_baseline": ["cdcdcdcd"], "only_candidate": ["efefefef"]}
+    assert diff["same"] is False
+    assert survey.compare_answers({"tables": 3, "utc": "a"}, {"tables": 3, "utc": "b"}) == {"same": True, "changed": {}}
 
 
 def test_a_baseline_that_does_not_exist_is_a_sentence(tmp_path: Path):
