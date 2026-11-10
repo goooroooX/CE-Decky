@@ -134,3 +134,15 @@ def test_find_text_names_the_rows_that_say_it_whatever_they_are_called():
     assert panel_read.rows_saying(rows, "Its Script Has Not Run Yet") == ["cheat-row-7"]
     assert panel_read.rows_saying(rows, "not found in the running table") == ["pinned-status"]
     assert panel_read.rows_saying(rows, "nothing like this") == []
+
+
+def test_a_row_names_the_rows_it_holds_so_one_of_them_can_be_pressed(capsys):
+    # Every cheat row draws the same More, so the list read as one row named
+    # no control that could be pressed on one cheat alone.
+    answer = {"title": "Big Picture", "page": {"width": 1280, "height": 800}, "surfaces": [{"rows": [{
+        "testid": "cheat-list", "text": "ImmortalMore", "controls": [],
+        "inner": ["cheat-row-7", "cheat-row-8"],
+    }]}]}
+    panel_read._print(answer, None, False)
+    assert "rows inside: cheat-row-7, cheat-row-8" in capsys.readouterr().out
+    assert "_INNER" in panel_read._READ and "inner:" in panel_read._READ

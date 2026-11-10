@@ -146,6 +146,7 @@ _SCREEN = r"""
 _READ = """
 (() => {
   const MAX_DEPTH = %(depth)d;
+  const MAX_INNER = 24;
 %(screen)s
   const text = (node) => (node.textContent || "").replace(/\\s+/g, " ").trim();
   // A switch Steam draws is a div: not a button, not an input, and with no name
@@ -209,6 +210,10 @@ _READ = """
         height: Math.round(box.height),
         controls: controls(row),
         clipped: row.querySelectorAll(".ce-decky-marquee[data-clipped]").length,
+        // The rows reported as part of this one keep their own names, which
+        // is what `--press <testid>:<name>` and `--describe` take. Without
+        // them a list of identical buttons could not be told apart.
+        inner: Array.from(row.querySelectorAll("[data-testid]")).map((el) => el.dataset.testid).slice(0, MAX_INNER),
       });
     }
     // A modal's own footer, which is outside the dense block on purpose: it is
@@ -1081,6 +1086,8 @@ def _print(answer: dict[str, Any], testid: str | None, metrics: bool) -> None:
                 marks.append(f"{row['clipped']} clipped")
             shape = f" [{', '.join(marks)}]" if marks else ""
             print(f"  - {row.get('testid')}{shape}: {row.get('text')}")
+            if row.get("inner"):
+                print(f"      rows inside: {', '.join(row['inner'])}")
             for control in row.get("controls", []):
                 state = []
                 if control.get("disabled"):
