@@ -13,6 +13,7 @@ import math
 from pathlib import PurePosixPath
 import re
 import time
+import unicodedata
 import uuid
 from typing import Awaitable, Callable, Iterable, Iterator, NamedTuple, Protocol
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -305,6 +306,15 @@ FEARLESS_INDEX_QUIET_WAIT_LIMIT_SECONDS = 300.0
 # so the daily pass re-reads only what has actually aged out - the leading
 # pages every search already refreshed are skipped rather than rebuilt.
 FEARLESS_INDEX_MAX_AGE_SECONDS = 24 * 60 * 60
+# Topics a refreshed page no longer lists and no other page does yet. The forum
+# sorts by activity, so a bump pushes everything below it down a page, and a
+# topic pushed past the pages a refresh reads lands on one still holding its
+# older copy, which never listed it: replacing pages one at a time lost it from
+# every page. It is kept until a page lists it again, or until every page has
+# been read since it went, which is when it is really gone. Bounded by count and
+# by age, so a forum that deletes topics leaves nothing that grows.
+MAX_FEARLESS_DISPLACED_TOPICS = 2_000
+FEARLESS_DISPLACED_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 FEARLESS_DEFAULT_COOLDOWN_SECONDS = 60
 # Playground groups every cheat page for a game under one taxonomy. Only the
 # `table` category holds Cheat Engine tables; trainers, save files, save
@@ -1113,6 +1123,32 @@ def sitemap_prefilter_tokens(game_aliases: list[str]) -> list[str]:
     return sorted(tokens)
 
 
+def prefilter_folded(text: str) -> str:
+    """`text` without case or accents, which a forum title and a library name may write differently."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(character for character in decomposed if not unicodedata.combining(character)).casefold()
+
+
+def title_prefilter_tokens(game_aliases: list[str]) -> list[str]:
+    """The longest word of each alias, in any script, that a listed title must contain one of to be scored.
+
+    FearLess titles keep the forum's own spelling, Cyrillic included, so the
+    ASCII words `sitemap_prefilter_tokens` reads drop every alias written in
+    another script, and an English alias beside it then filtered out a topic
+    titled only in Russian. An alias with no word of three letters cannot be
+    gated on, so then nothing is: the scorer decides every title. Both sides
+    are read through `prefilter_folded`, so `pokémon` still gates in a topic
+    the forum spelled `Pokemon`.
+    """
+    tokens: set[str] = set()
+    for alias in game_aliases:
+        words = [word for word in re.split(r"[\W_]+", prefilter_folded(alias)) if len(word) >= 3]
+        if not words:
+            return []
+        tokens.add(max(words, key=len))
+    return sorted(tokens)
+
+
 def playground_game_slug(url: str) -> str | None:
     """Return the game slug of one Playground cheat page URL."""
     match = PLAYGROUND_ENTRY_RE.match(urlsplit(url).path.rstrip("/"))
@@ -1665,6 +1701,7 @@ class CatalogService:
             self._fearless_fetched,
             self._fearless_page_step,
             self._searched_at,
+            self._fearless_displaced,
         ) = self._load_fearless_index()
         # The marker has two homes and the newest of them is the answer. The
         # index cache carries it for the ordinary path, where a search that was
@@ -1912,6 +1949,7 @@ class CatalogService:
         self._fearless_total_pages = None
         self._fearless_total_topics = None
         self._fearless_fetched = {}
+        self._fearless_displaced = {}
         self._fearless_last_refresh_at = None
         self._fearless_last_refresh_pages = 0
         self._fearless_index_error = None
@@ -2518,6 +2556,11 @@ class CatalogService:
             self._fearless_cooldown_until = time.time() + cooldown_remaining
         if not provider_ready and not self._fearless_pages:
             raise ProviderCooldown("provider is in persisted cooldown")
+        # Whether the refusal this search ends up reporting is already in the
+        # provider's diagnostics: a cooldown it walked into was written by
+        # whoever was refused, and a 429 it meets is written where it is met.
+        # Written again by the search, one refusal counted as two.
+        refusal_recorded = not provider_ready
         had_index = bool(self._fearless_pages)
         # Measured before page zero is read, because reading it is what makes
         # the answer no. How long ago the index last had any attention at all:
@@ -2572,6 +2615,7 @@ class CatalogService:
                 self._fearless_index_error = str(exc)[:2048]
                 self._set_fearless_cooldown(exc, record=bool(self._fearless_pages))
                 provider_ready = False
+                refusal_recorded = True
                 if not self._fearless_pages:
                     raise
             except ProviderChallenged as exc:
@@ -2590,15 +2634,22 @@ class CatalogService:
         for start in sorted(self._fearless_pages):
             for topic_id, title in self._fearless_pages[start]:
                 topics.setdefault(topic_id, fearless_topic_title(title))
-        tokens = sitemap_prefilter_tokens(game_aliases)
+        # Moved off a refreshed page onto one not read since: still on the
+        # forum, and its topic is read live like any other before it is offered.
+        for topic_id, (title, _) in self._fearless_displaced.items():
+            topics.setdefault(topic_id, fearless_topic_title(title))
+        tokens = title_prefilter_tokens(game_aliases)
         ranked: list[tuple[float, str, str]] = []
         for topic_id, title in topics.items():
-            if tokens and not any(token in title.casefold() for token in tokens):
+            if tokens and not any(token in prefilter_folded(title) for token in tokens):
                 continue
             score = match_breakdown(game_aliases, Candidate(title, provider_trust=0.7)).confidence
             if score >= 0.55:
                 ranked.append((score, topic_id, title))
-        ranked.sort(reverse=True)
+        # Best first, and among equals in the listing's own order, which is the
+        # forum's by latest activity: only the first few are read, and sorting
+        # the topic number as text put "9999" ahead of "10000".
+        ranked.sort(key=lambda item: -item[0])
 
         rows: list[ArtifactRecord] = _provider_rows()
         if not provider_ready:
@@ -2618,7 +2669,7 @@ class CatalogService:
                 reason = f"{reason}; {matches} matching topic(s) in the cached listing"
             if waiting:
                 reason = f"{reason}; asking again in {waiting}s"
-            _note_provider_unavailable(reason)
+            _note_provider_unavailable(reason, recorded=refusal_recorded)
             self._start_fearless_index()
             return rows
         try:
@@ -2725,6 +2776,7 @@ class CatalogService:
                     )
                     self._fearless_pages = {}
                     self._fearless_fetched = {}
+                    self._fearless_displaced = {}
                     if start:
                         raise ValueError("FearLess forum page size changed under the index")
                 step = listing_step
@@ -2742,6 +2794,7 @@ class CatalogService:
                     raise ValueError("FearLess forum totals contradict the current page size")
             if step is not None and start >= listing.total_pages * step:
                 raise ValueError("FearLess forum page offset exceeds the advertised index")
+            previous_rows = self._fearless_pages.get(start, [])
             self._fearless_pages[start] = listing.rows
             self._fearless_fetched[start] = time.time()
             self._fearless_total_pages = listing.total_pages
@@ -2760,6 +2813,28 @@ class CatalogService:
                 offset: fetched for offset, fetched in self._fearless_fetched.items()
                 if offset in self._fearless_pages
             }
+            self._carry_displaced_fearless_topics(previous_rows)
+
+    def _carry_displaced_fearless_topics(self, previous_rows: list[tuple[str, str]]) -> None:
+        """Keep what the page just replaced listed and no page lists now; drop what a page lists again or is gone."""
+        now = time.time()
+        listed = {topic_id for rows in self._fearless_pages.values() for topic_id, _ in rows}
+        displaced = {
+            topic_id: (title, at) for topic_id, (title, at) in self._fearless_displaced.items()
+            if topic_id not in listed and now - at < FEARLESS_DISPLACED_MAX_AGE_SECONDS
+        }
+        for topic_id, title in previous_rows:
+            if topic_id not in listed:
+                displaced.setdefault(topic_id, (title, now))
+        # Gone for good once every page the listing has was read after it left:
+        # a topic only moved would have been listed by one of them.
+        if self._fearless_total_pages is not None and len(self._fearless_fetched) >= self._fearless_total_pages:
+            oldest = min(self._fearless_fetched.values())
+            displaced = {topic_id: entry for topic_id, entry in displaced.items() if entry[1] >= oldest}
+        if len(displaced) > MAX_FEARLESS_DISPLACED_TOPICS:
+            newest = sorted(displaced.items(), key=lambda item: item[1][1], reverse=True)
+            displaced = dict(newest[:MAX_FEARLESS_DISPLACED_TOPICS])
+        self._fearless_displaced = displaced
 
     def _pending_fearless_page_starts(self) -> list[int]:
         """Listing pages the index still owes: never fetched, or aged out.
@@ -3079,9 +3154,29 @@ class CatalogService:
                         await self._refresh_fearless_page(start)
                         fetched = True
                         break
+                    except ProviderChallenged as exc:
+                        # A challenge has no deadline to sit out, and asking
+                        # again is asking to be challenged again: the pass ends,
+                        # and the refusal is the provider's to show, recorded
+                        # with no cooldown invented for it and none erased.
+                        self._fearless_index_error = str(exc)[:2048]
+                        if self.diagnostics is not None:
+                            try:
+                                self.diagnostics.record_failure(
+                                    "fearless", error=str(exc), http_status=403,
+                                    background=True, preserve_cooldown=True,
+                                )
+                            except ValueError:
+                                pass
+                        log_failure(
+                            self.logger, "fearless.index_challenged", exc, expected=True,
+                            indexed=len(self._fearless_pages), total=self._fearless_total_pages,
+                        )
+                        give_up = True
+                        break
                     except ProviderRateLimited as exc:
                         self._fearless_index_error = str(exc)[:2048]
-                        cooldown = self._set_fearless_cooldown(exc, record=True)
+                        cooldown = self._set_fearless_cooldown(exc, record=True, background=True)
                         rate_limits += 1
                         log_failure(
                             self.logger, "fearless.index_rate_limited", exc, expected=True,
@@ -3198,7 +3293,13 @@ class CatalogService:
         except (TypeError, ValueError):
             return remaining
 
-    def _set_fearless_cooldown(self, exc: ProviderRateLimited, *, record: bool) -> int:
+    def _set_fearless_cooldown(self, exc: ProviderRateLimited, *, record: bool, background: bool = False) -> int:
+        """Start the cooldown a 429 asks for, and record the refusal where `record` says this call owns it.
+
+        `background` is the index pass, which no search asked for: the refusal
+        is the provider's state like any other, but counting it as a search made
+        one the user never pressed appear on the screen that counts them.
+        """
         cooldown = parse_retry_after(exc.retry_after) or FEARLESS_DEFAULT_COOLDOWN_SECONDS
         self._fearless_cooldown_until = time.time() + cooldown
         if record and self.diagnostics is not None:
@@ -3208,6 +3309,7 @@ class CatalogService:
                     error=str(exc),
                     http_status=429,
                     retry_after=exc.retry_after,
+                    background=background,
                 )
             except ValueError:
                 pass
@@ -3363,10 +3465,17 @@ class CatalogService:
             # pass disarmed until the next search arms it - which is the state
             # that is correct for it anyway.
             "searched": self._searched_at,
+            # Optional, and advisory like freshness: topics a refresh moved off
+            # the pages read so far, with when they went.
+            "displaced": {
+                topic_id: [title, at] for topic_id, (title, at) in self._fearless_displaced.items()
+            },
         }
 
     @staticmethod
-    def _no_fearless_index() -> tuple[dict[int, list[tuple[str, str]]], None, None, dict[int, float], None, float]:
+    def _no_fearless_index() -> tuple[
+        dict[int, list[tuple[str, str]]], None, None, dict[int, float], None, float, dict[str, tuple[str, float]],
+    ]:
         """What a cache that cannot be read leaves this process holding.
 
         A function rather than a constant, and this is not a style choice: the
@@ -3375,11 +3484,14 @@ class CatalogService:
         load a cache the same two dictionaries. The first one to index anything
         fills them in for all of them.
         """
-        return {}, None, None, {}, None, 0.0
+        return {}, None, None, {}, None, 0.0, {}
 
     def _load_fearless_index(
         self,
-    ) -> tuple[dict[int, list[tuple[str, str]]], int | None, int | None, dict[int, float], int | None, float]:
+    ) -> tuple[
+        dict[int, list[tuple[str, str]]], int | None, int | None, dict[int, float], int | None, float,
+        dict[str, tuple[str, float]],
+    ]:
         try:
             raw = load_json(
                 self.cache_path.with_name("fearless-index.json"),
@@ -3469,7 +3581,26 @@ class CatalogService:
                 or not 0 < float(searched) <= time.time() + FEARLESS_INDEX_MAX_AGE_SECONDS
             ):
                 searched = 0.0
-            return pages, total_pages, total_topics, fetched, page_step, float(searched)
+            # Dropped whole rather than in part where anything is out of bounds:
+            # it only ever adds topics a page will list again.
+            displaced: dict[str, tuple[str, float]] = {}
+            raw_displaced = raw.get("displaced")
+            if isinstance(raw_displaced, dict) and len(raw_displaced) <= MAX_FEARLESS_DISPLACED_TOPICS:
+                now = time.time()
+                for topic_id, item in raw_displaced.items():
+                    if (
+                        not isinstance(topic_id, str) or not topic_id.isdigit()
+                        or len(topic_id) > MAX_FEARLESS_TOPIC_ID_DIGITS
+                        or not isinstance(item, list) or len(item) != 2
+                        or not isinstance(item[0], str) or not item[0]
+                        or len(item[0].encode("utf-8")) > MAX_FEARLESS_TOPIC_TITLE * 4
+                        or isinstance(item[1], bool) or not isinstance(item[1], (int, float))
+                        or not now - FEARLESS_DISPLACED_MAX_AGE_SECONDS < float(item[1]) <= now + FEARLESS_INDEX_MAX_AGE_SECONDS
+                    ):
+                        displaced = {}
+                        break
+                    displaced[topic_id] = (item[0], float(item[1]))
+            return pages, total_pages, total_topics, fetched, page_step, float(searched), displaced
         except (OSError, ValueError, TypeError):
             return self._no_fearless_index()
 

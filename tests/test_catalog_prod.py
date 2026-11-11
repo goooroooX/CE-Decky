@@ -4030,3 +4030,148 @@ async def test_one_failed_tick_does_not_end_the_background_schedule(tmp_path, mo
     # And cancellation is still what ends it.
     await service.close()
     assert schedule.done()
+
+
+class _ListingNetwork:
+    """A FearLess listing whose pages the test rewrites between reads."""
+
+    def __init__(self, pages: dict[int, list[tuple[str, str]]], *, step: int = 50, status: int = 200):
+        self.pages = pages
+        self.step = step
+        self.status = status
+        self.calls: list[str] = []
+
+    async def get(self, url, **kwargs):
+        self.calls.append(url)
+        if "viewforum.php" in url:
+            if self.status != 200:
+                return _Response(self.status)
+            start = int(url.split("start=")[1]) if "start=" in url else 0
+            count = len(self.pages)
+            return _Response(200, _fearless_listing(
+                *self.pages[start], page=start // self.step + 1, pages=count,
+                total=count * self.step, page_step=self.step,
+            ).encode())
+        if "viewtopic.php" in url:
+            return _Response(200, (FIXTURES / "fearless_current.html").read_bytes())
+        raise AssertionError(f"unexpected URL: {url}")
+
+
+class _Clock:
+    """`time` with a clock that moves a second per read, so order is never a tie."""
+
+    def __init__(self):
+        self.now = 1_800_000_000.0
+
+    def time(self):
+        self.now += 1.0
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.mark.asyncio
+async def test_a_topic_a_partial_refresh_pushes_onto_an_older_page_stays_searchable(tmp_path, monkeypatch):
+    # Sorted by activity: one bump moves every topic below it down a page, and
+    # the page it lands on still holds the copy from before it got there.
+    monkeypatch.setattr(catalog_module, "time", _Clock())
+    old = {0: [("1", "A"), ("2", "B"), ("3", "C")], 50: [("4", "D"), ("5", "E"), ("123", "Example Game")],
+           100: [("7", "G"), ("8", "H"), ("9", "I")]}
+    network = _ListingNetwork(old)
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    for start in (0, 50, 100):
+        await service._refresh_fearless_page(start)
+    network.pages = {0: [("10", "X"), ("1", "A"), ("2", "B")], 50: [("3", "C"), ("4", "D"), ("5", "E")],
+                     100: [("123", "Example Game"), ("7", "G"), ("8", "H")]}
+    for start in (0, 50):
+        await service._refresh_fearless_page(start)
+    assert set(service._fearless_displaced) == {"123"}
+
+    # Kept across a reload, and searched: its topic is read live like any other.
+    await service._persist_fearless_index()
+    await service.close()
+    reloaded = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    assert set(reloaded._fearless_displaced) == {"123"}
+    rows = await reloaded._fearless(["example game"])
+    assert any("t=123" in call for call in network.calls)
+    assert rows
+
+    # Listed again once the page it moved to is read, which pushes the last
+    # topic off the end in its turn.
+    await reloaded._refresh_fearless_page(100)
+    assert set(reloaded._fearless_displaced) == {"9"}
+    # Really gone: once every page has been read since it left, it is dropped.
+    network.pages[100] = [("7", "G"), ("8", "H"), ("9", "I")]
+    await reloaded._refresh_fearless_page(100)
+    assert set(reloaded._fearless_displaced) == {"123"}
+    for start in (0, 50, 100):
+        await reloaded._refresh_fearless_page(start)
+    assert reloaded._fearless_displaced == {}
+    await reloaded.close()
+
+
+def test_a_title_in_another_script_is_not_gated_out_by_an_alias_in_latin():
+    from ce_decky.catalog import title_prefilter_tokens
+
+    tokens = title_prefilter_tokens(["the witcher 3", "ведьмак 3"])
+    assert tokens == ["witcher", "ведьмак"]
+    assert any(token in "Ведьмак 3: Дикая Охота".casefold() for token in tokens)
+    # Accents are no part of the gate: the forum may spell a name without them.
+    from ce_decky.catalog import prefilter_folded
+    accented = title_prefilter_tokens(["pokémon café mix"])
+    assert any(token in prefilter_folded("Pokemon Cafe Mix") for token in accented)
+    assert any(token in prefilter_folded("Ведьмак 3: Дикая Охота") for token in title_prefilter_tokens(["ведьмак 3 дикая охота"]))
+    # An alias with no word long enough to gate on gates nothing.
+    assert title_prefilter_tokens(["ys", "ys origin"]) == []
+
+
+@pytest.mark.asyncio
+async def test_equally_matching_topics_are_read_in_the_listings_order(tmp_path, monkeypatch):
+    # Sorted as text, "9999" came before "10000", whatever the forum put first.
+    network = _ListingNetwork({0: [("10000", "Example Game"), ("9999", "Example Game")]})
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    await service._fearless(["example game"])
+    topics = [call for call in network.calls if "viewtopic.php" in call]
+    assert "t=10000" in topics[0] and "t=9999" in topics[1]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_a_fearless_refusal_is_counted_once_and_a_background_one_is_no_search(tmp_path, monkeypatch):
+    from ce_decky.catalog import ParseIssues, _PARSE_ISSUES
+    from ce_decky.providers import ProviderDiagnosticsStore
+
+    monkeypatch.setattr(catalog_module, "FEARLESS_INDEX_REQUEST_INTERVAL_SECONDS", 0.0)
+    store = ProviderDiagnosticsStore(tmp_path / "providers.json")
+    network = _ListingNetwork({0: [("123", "Example Game")], 50: [("124", "Other Game")]})
+    service = CatalogService(network, tmp_path / "results.json", store)  # type: ignore[arg-type]
+    await service._refresh_fearless_page(0)
+
+    # A 429 met by a search with an index in hand is recorded where it is met,
+    # and the search is told so rather than recording it a second time.
+    network.status = 429
+    issues = ParseIssues()
+    token = _PARSE_ISSUES.set(issues)
+    try:
+        await service._fearless(["example game"])
+    finally:
+        _PARSE_ISSUES.reset(token)
+    assert issues.unavailable is not None and issues.unavailable_recorded is True
+    counters = store.snapshot()["providers"]["fearless"]["counters"]
+    assert (counters["searches"], counters["errors"]) == (1, 1)
+
+    # The index pass is no search: its 429 and its challenge are the provider's
+    # state, recorded without a search, and a challenge ends the pass.
+    if service._fearless_index_task is not None:
+        service._fearless_index_task.cancel()
+    service._fearless_cooldown_until = 0.0
+    service._fearless_pages.pop(50, None)
+    network.status = 403
+    service._searched_at = time.time()
+    await service._build_fearless_index()
+    fearless = store.snapshot()["providers"]["fearless"]
+    assert fearless["counters"]["searches"] == 1 and fearless["counters"]["errors"] == 2
+    assert fearless["last_http_status"] == 403 and fearless["background_refusal_at"] is not None
+    assert sum(1 for call in network.calls if "start=50" in call) == 1
+    await service.close()
