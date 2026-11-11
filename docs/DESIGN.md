@@ -416,8 +416,9 @@ inside the first page, so the daily refresh is one or two pages rather than all
 of them, and a search reads no further than that either. That read never sees a
 topic deleted, or one moved into or out of the forum with its old last post,
 which lands deep in the listing, so every page is still read at least once a week,
-and a front that does not reach the anchor within eight pages leaves that day
-to the ordinary walk of every due page. The background pass reads at most 32 pages a pass, a
+and a front that does not reach the anchor within eight pages, as after weeks
+nobody searched, leaves the ordinary walk of every due page to set the anchor
+again from that read of the front. The background pass reads at most 32 pages a pass, a
 second apart, and waits half an hour before the next; while the listing still
 has pages this device never read, a pass that read its whole slice without a
 refusal is followed on the next five-minute tick instead, so a first index

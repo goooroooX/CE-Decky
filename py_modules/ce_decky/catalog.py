@@ -335,11 +335,13 @@ MAX_FEARLESS_DISPLACED_TOPICS = 2_000
 # was last whole is above every one that was not. Reading from the front until a
 # page reaches a last post no newer than the newest the front held then is
 # reading everything that changed: the rest only moved down, and what a refresh
-# pushes off the pages it read is kept with the displaced topics above. A day's
-# activity measured 2026-11-11 filled less than one page, so the daily refresh
-# that read every page is one or two pages. Bounded, because a front that does
-# not reach the anchor is a listing this cannot reason about, and then the
-# ordinary walk of every due page does it.
+# pushes off the pages it read is kept with the displaced topics above. One page
+# held about two days of the forum's activity on 2026-11-11 (`docs/FIELD_NOTES.md`,
+# Measurements), so the daily refresh that read every page is one or two pages,
+# and eight reach about two weeks back, as far as a search after two quiet days
+# reads anyway. Bounded, because a front that does not reach the anchor is a
+# listing this cannot reason about, and then the ordinary walk of every due page
+# does it.
 FEARLESS_ANCHOR_MAX_PAGES = 8
 # How long a page may go unread however well anchored the index is: anchoring
 # sees what was posted in, never a topic deleted, or moved into or out of the
@@ -2963,6 +2965,12 @@ class CatalogService:
         ):
             self._fearless_anchor_run = None
             self._fearless_anchor_gave_up_at = now
+            # An anchor further back than this read reaches stays out of reach
+            # on every later day too, so it is given up for the way the first
+            # was set: the page zero this read started from becomes the anchor
+            # once the ordinary walk has read every page after it.
+            self._fearless_head_activity = None
+            self._fearless_front_seen = (started, head)
             log_activity(self.logger, "info", "fearless.index_anchor_not_reached", pages=pages)
             return
         self._fearless_anchor_run = (started, head, following, pages)

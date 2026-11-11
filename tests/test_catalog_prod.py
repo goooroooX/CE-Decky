@@ -4349,9 +4349,14 @@ async def test_a_front_that_never_reaches_the_anchor_leaves_the_ordinary_walk(tm
     clock.now += 86_400 + 60
     network.timed = {0: [("3", "C", forum + 9)], 50: [("4", "D", forum + 8)]}
     await service._refresh_fearless_page(0)
-    # Given up for the day: every due page is read the ordinary way.
+    # Given up: every due page is read the ordinary way, and that walk sets
+    # the anchor again from the front this read started at, rather than every
+    # later day trying for an anchor that has fallen out of reach.
     assert service._pending_fearless_page_starts() == [50]
-    assert service._fearless_head_activity == forum - 1
+    assert service._fearless_head_activity is None
+    await service._refresh_fearless_page(50)
+    assert service._fearless_head_activity == forum + 9
+    assert service._pending_fearless_page_starts() == []
     await service.close()
 
 
