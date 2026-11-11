@@ -312,7 +312,34 @@ function resultsForCommands(
   return selected;
 }
 
-export async function sendRuntimeBatchAndWait(
+// One batch at a time per game. Each batch claims the next generation from
+// the control log it read, so two in flight at once claimed the same one and
+// the backend refused the second as stale: a press made while the panel was
+// reading its live state in the background was lost. Batches queue in order,
+// and a multi-batch read takes its place again for each batch, so a press waits
+// for at most the one batch already sent.
+const runtimeLanes = new Map<number, Promise<void>>();
+
+function inRuntimeLane<T>(appId: number, work: () => Promise<T>): Promise<T> {
+  const previous = runtimeLanes.get(appId) ?? Promise.resolve();
+  const run = previous.then(work);
+  const settled = run.then(() => undefined, () => undefined);
+  runtimeLanes.set(appId, settled);
+  void settled.then(() => {
+    if (runtimeLanes.get(appId) === settled) runtimeLanes.delete(appId);
+  });
+  return run;
+}
+
+export function sendRuntimeBatchAndWait(
+  appId: number,
+  specs: readonly RuntimeCommandSpec[],
+  expectedEnvelope?: RuntimeEnvelope,
+): Promise<RuntimeBatchResult> {
+  return inRuntimeLane(appId, () => sendRuntimeBatchNow(appId, specs, expectedEnvelope));
+}
+
+async function sendRuntimeBatchNow(
   appId: number,
   specs: readonly RuntimeCommandSpec[],
   expectedEnvelope?: RuntimeEnvelope,

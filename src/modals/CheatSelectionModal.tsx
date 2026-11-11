@@ -914,14 +914,19 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
         //
         // A record this press switches on gets its saved choice. One with no
         // choice and a readable value is switched on over what it holds; an
-        // unreadable one needs its remembered fallback sent explicitly.
+        // unreadable one needs its remembered fallback sent explicitly. A saved
+        // value its read-only list does not declare is no choice: the row shows
+        // what the game holds instead, and writing that back, which the list
+        // may not declare either, is a write the backend refuses, failing the
+        // whole Apply. Whatever is sent is one the list declares.
         const valueOnEnable = active === true && controlNeedsValueInput(control)
-          && (configuredByIdRef.current.has(control.id) || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
+          && (declaredValue(control, configuredByIdRef.current.get(control.id) ?? null) !== null
+            || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
         const setting = state.active !== true && touchedValues.has(control.id)
           && readByRunningScripts(control, safeControls, activeById);
         const value = !deferredValues.has(control.id)
           && (state.active === true && (touchedValues.has(control.id) || valueOnEnable) || setting)
-          ? displayableControlValue(state.value)
+          ? declaredValue(control, displayableControlValue(state.value))
           : null;
         if (active === null && value === null) return [];
         // What has to be on still when the value lands: the record itself for

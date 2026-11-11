@@ -840,6 +840,29 @@ describe("Home panel and managed setup", () => {
     await waitFor(() => expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before + 1));
   });
 
+  it("drops a background read a press overtook instead of drawing it over the press's own result", async () => {
+    // The read on show runs outside any press, so a press can start while it
+    // is still out; what it then brings back is older than the press's readback.
+    renderContent();
+    expect(await screen.findByText("1 active")).toBeTruthy();
+    const stale = { envelope: liveRuntime(), results: liveRuntime().status.results, unavailable: [] };
+    const off = { envelope: liveRuntime(), results: [{ ...liveRuntime().status.results[0], active: false, generation: 3 }], unavailable: [] };
+    let release!: () => void;
+    runtimeClient.queryRuntimeControlsPartial
+      .mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(stale); }))
+      .mockResolvedValue(off);
+    runtimeClient.deactivateAllActiveControls.mockResolvedValue({
+      queried: 1, active: 1, deactivated: 1, deactivatedIds: [7], corrected: 0, correctedIds: [], envelope: liveRuntime(),
+    });
+    await act(async () => { quickAccess.visible = false; quickAccess.listeners.forEach((notify) => notify()); });
+    await act(async () => { quickAccess.visible = true; quickAccess.listeners.forEach((notify) => notify()); });
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    fireEvent.click(await screen.findByRole("button", { name: "Disable all" }));
+    await waitFor(() => expect(screen.queryByText("1 active")).toBeNull());
+    await act(async () => { release(); });
+    expect(screen.queryByText("1 active")).toBeNull();
+  });
+
   it("reads its own runtime lines in place and keeps a stop for the ones the backend wrote", async () => {
     // Home spends almost all of its time on an attached session, so a stop on
     // that line is one the ring rests on with nothing to press on every pass
@@ -5386,6 +5409,32 @@ describe("Cheat selection workflow", () => {
     expect((screen.getByLabelText("Value") as HTMLSelectElement).value).toBe("0");
   });
 
+  it("switches on a read-only list whose saved value it does not declare without writing what the game holds", async () => {
+    // The saved 7 is not used, so the row stands for the game's 5, which the
+    // list does not declare either; writing it back was refused, and with it
+    // the whole Apply.
+    const state = {
+      id: 309, description: "State", path: ["State"], structure: ["State"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["-1", "Default"], ["0", "Unlocked"], ["1", "Locked"]], dropdown_read_only: true,
+    };
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({
+      envelope: liveRuntime(), results: [{ record_id: 309, ok: true, active: false, value: "5" }], unavailable: [],
+    });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: liveRuntime(), results: [] });
+    renderCheatModal({
+      inspection: { ...inspect, total_entries: 1, controls: [state] } as any,
+      configuredValues: [{ record_id: 309, value: "7" }],
+    });
+
+    fireEvent.click(within(await screen.findByTestId("cheat-row-309")).getByTestId("toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls[0][1]).toEqual([
+      expect.objectContaining({ record_id: 309, active: true, value: null }),
+    ]);
+  });
+
   it("keeps a value the list does not offer in front of the reader", async () => {
     // A record that allows free entry is for exactly this, and hiding what the
     // reader already set behind a press would hide their own answer.
@@ -6531,6 +6580,37 @@ describe("Pinned live controls", () => {
     await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
     const sent = runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1];
     expect(sent.filter((state: any) => state.active === true).map((state: any) => state.record_id)).toEqual([30, 31, 32]);
+  });
+
+  it("switches on a pinned read-only list without writing back a value the list does not declare", async () => {
+    // The row stands for what the game holds, and the game can move between
+    // the read and the press; a write of an undeclared value is refused.
+    const list = {
+      id: 40, description: "State", path: ["State"], structure: ["State"], variable_type: "4 Bytes",
+      kind: "dropdown", group_header: false, has_assembler_script: false,
+      dropdown_values: [["-1", "Default"], ["0", "Unlocked"], ["1", "Locked"]], dropdown_read_only: true,
+    };
+    const snapshot = status(true);
+    snapshot.profiles[0].pinned = [40];
+    snapshot.profiles[0].remembered = [{ record_id: 40, active: false, value: "7" }];
+    api.getStatus.mockResolvedValue(snapshot);
+    api.inspectTableSha.mockResolvedValue({ ...inspect, total_entries: 1, controls: [list] });
+    const results = [{ generation: 1, record_id: 40, ok: true, active: false, value: "5", error: null }];
+    const live = liveRuntime();
+    live.status.results = results;
+    api.getRuntimeStatus.mockResolvedValue(live);
+    runtimeClient.queryRuntimeControls.mockResolvedValue({ envelope: live, results });
+    runtimeClient.queryRuntimeControlsPartial.mockResolvedValue({ envelope: live, results, unavailable: [] });
+    runtimeClient.applyRuntimeSelection.mockResolvedValue({ envelope: live, results });
+    api.setRememberedCheats.mockResolvedValue({});
+    renderContent();
+
+    fireEvent.click(within(await screen.findByTestId("pinned-cheat-40")).getByTestId("toggle"));
+
+    await waitFor(() => expect(runtimeClient.applyRuntimeSelection).toHaveBeenCalled());
+    expect(runtimeClient.applyRuntimeSelection.mock.calls.at(-1)![1]).toEqual([
+      expect.objectContaining({ record_id: 40, active: true, value: null }),
+    ]);
   });
 
   it("holds off from a pinned script a flag it allocates though the table files it beside it", async () => {

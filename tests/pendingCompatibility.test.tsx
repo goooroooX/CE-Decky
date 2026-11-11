@@ -55,3 +55,25 @@ it("gives up after its bound, and a screen that closes takes its timer with it",
   await act(async () => { vi.advanceTimersByTime(PENDING_COMPATIBILITY_DELAY_MS * 2); });
   expect(closing).not.toHaveBeenCalled();
 });
+
+it("asks again after an ask that failed, within the same bound", async () => {
+  // A failed ask brings no new list, so nothing else would schedule the next.
+  const refresh = vi.fn()
+    .mockRejectedValueOnce(new Error("backend busy"))
+    .mockResolvedValue(undefined);
+  render(<Screen entries={[row(true)]} refresh={refresh} />);
+  await act(async () => { vi.advanceTimersByTime(PENDING_COMPATIBILITY_DELAY_MS); });
+  await act(async () => { vi.advanceTimersByTime(PENDING_COMPATIBILITY_DELAY_MS); });
+  expect(refresh).toHaveBeenCalledTimes(2);
+
+  const failing = vi.fn(async () => { throw new Error("gone"); });
+  const view = render(<Screen entries={[row(true)]} refresh={failing} />);
+  for (let index = 0; index < PENDING_COMPATIBILITY_ATTEMPTS + 5; index += 1) {
+    await act(async () => { vi.advanceTimersByTime(PENDING_COMPATIBILITY_DELAY_MS); });
+  }
+  expect(failing).toHaveBeenCalledTimes(PENDING_COMPATIBILITY_ATTEMPTS);
+  // A different comparison pending is asked about from the start.
+  view.rerender(<Screen entries={[{ ...row(true), table_sha256: "b".repeat(64) }]} refresh={failing} />);
+  await act(async () => { vi.advanceTimersByTime(PENDING_COMPATIBILITY_DELAY_MS); });
+  expect(failing).toHaveBeenCalledTimes(PENDING_COMPATIBILITY_ATTEMPTS + 1);
+});

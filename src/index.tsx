@@ -312,7 +312,12 @@ function Content() {
    * dropped because the read failed, and leaving the previous failure on screen
    * described a healthy session as broken.
    */
+  // Counts the actions that have started, and the snapshots dropped on
+  // purpose, so a read made in the background can tell that what it read may
+  // be older than what happened while it ran.
+  const actionEpochRef = useRef(0);
   const dropLiveSnapshot = useCallback((reason: string | null = null) => {
+    actionEpochRef.current += 1;
     setLiveSnapshot(null);
     setLiveSnapshotError(reason);
   }, []);
@@ -693,6 +698,7 @@ function Content() {
       throw new Error(message);
     }
     busyRef.current = true;
+    actionEpochRef.current += 1;
     setBusy(true);
     setError(null);
     const started = monotonicNow();
@@ -1531,6 +1537,8 @@ function Content() {
    */
   const captureLiveSnapshot = useCallback(async (
     appId: number, tableInspection: TableInspection,
+    /** False once what this reads may be older than what an action since then set. */
+    stillCurrent?: () => boolean,
   ): Promise<RuntimeEnvelope | null> => {
     const controls = safeActionableControls(tableInspection);
     const recordIds = controls.flatMap((control) => control.id === null ? [] : [control.id]);
@@ -1544,12 +1552,19 @@ function Content() {
       const queried = await queryReadingInertScripts(
         appId, controls, recordIds, panelAborterRef.current.signal,
       );
+      if (stillCurrent && !stillCurrent()) {
+        // A press began while this read, and its own readback is newer than
+        // what this read before it.
+        logUi("runtime.live_snapshot_superseded", { appId });
+        return null;
+      }
       recordLiveSnapshot([...queried.results, ...queried.unavailable], queried.envelope);
       return queried.envelope;
     } catch (cause) {
       // A sweep the closing panel abandoned says nothing about the session, so
-      // it must not leave "live controls unavailable" behind it either.
-      if (cause instanceof RuntimeQueryAbortedError) return null;
+      // it must not leave "live controls unavailable" behind it either; nor
+      // does one a press overtook, whose own readback says what holds now.
+      if (cause instanceof RuntimeQueryAbortedError || (stillCurrent && !stillCurrent())) return null;
       logUiFailure("runtime.live_snapshot_failed", cause, { appId });
       dropLiveSnapshot(describeError(cause));
       return null;
@@ -1560,8 +1575,10 @@ function Content() {
   // value showed what the game held when it was last read, which could be long
   // ago. Each time it comes back into view with an exact session, the live
   // state is read again: queries only, in the background over what is already
-  // shown, never while a press is under way and never two at once. Not on
-  // mount, where hydration has just read it.
+  // shown, never started while a press is under way and never two at once. A
+  // press made while it reads waits for at most the batch already sent, and
+  // what the read saw is then dropped rather than drawn over the press's own
+  // readback. Not on mount, where hydration has just read it.
   const shownRef = useRef(quickAccessVisible);
   const readOnShowRef = useRef(false);
   const showReadRef = useRef(false);
@@ -1574,7 +1591,9 @@ function Content() {
     readOnShowRef.current = false;
     if (showReadRef.current) return;
     showReadRef.current = true;
-    void captureLiveSnapshot(selectedGame.appId, inspection).finally(() => { showReadRef.current = false; });
+    const epoch = actionEpochRef.current;
+    void captureLiveSnapshot(selectedGame.appId, inspection, () => actionEpochRef.current === epoch)
+      .finally(() => { showReadRef.current = false; });
   }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot]);
 
   // The backend knows whether it installed this Cheat Engine itself, which it
@@ -3437,7 +3456,11 @@ function Content() {
           {
             record_id: recordId,
             active,
-            value: active ? valueToApply : null,
+            // What the game holds stands in for a value, but a read-only
+            // list's undeclared one is never written back: the backend refuses
+            // it, and the game changing between the read and the press is
+            // enough to make the write happen.
+            value: active ? declaredValue(control, valueToApply) : null,
             switch_values: switchValuesFor(control),
             structure: control.structure,
             label: controlRowLabel(control),

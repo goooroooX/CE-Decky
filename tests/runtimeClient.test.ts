@@ -1508,3 +1508,27 @@ describe("one refused cheat among several", () => {
     expect(api.confirmTableWorking).not.toHaveBeenCalled();
   });
 });
+
+describe("one runtime batch at a time", () => {
+  it("queues a press behind a background read instead of claiming the generation it holds", async () => {
+    // The backend refuses a generation it has already been sent; two batches
+    // that read the log together claimed the same one, and the press lost.
+    let generation = 1;
+    const results: any[] = [];
+    api.getRuntimeStatus.mockImplementation(async () => envelope(generation, [...results]));
+    api.writeRuntimeCommands.mockImplementation(async (_appId: number, commands: any[]) => {
+      await Promise.resolve();
+      if (commands[0].generation !== generation) throw new Error(`runtime command generation is stale; next generation is ${generation}`);
+      for (const command of commands) {
+        results.push({ generation, record_id: command.record_id, ok: true, active: command.kind === "set_active", value: "1", error: null });
+        generation += 1;
+      }
+      return { ok: true, count: commands.length, next_generation: generation };
+    });
+    const read = queryRuntimeControlsPartial(10, [1, 2]);
+    const press = sendRuntimeCommandAndWait(10, { kind: "set_active", record_id: 3, value: "1" });
+    await expect(press).resolves.toMatchObject({ result: { record_id: 3, ok: true } });
+    await expect(read).resolves.toMatchObject({ results: [{ record_id: 1 }, { record_id: 2 }] });
+    expect(api.writeRuntimeCommands.mock.calls.map((call: any[]) => call[1][0].generation)).toEqual([1, 3]);
+  });
+});

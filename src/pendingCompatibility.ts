@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CompatibilityEvidence } from "./types";
 import { logUiFailure, logUiWarning } from "./supportLog";
 
@@ -26,8 +26,10 @@ export function hasPendingCompatibility(entries: readonly CompatibilityEvidence[
  * Ask again, a bounded number of times, while any of `entries` is pending.
  *
  * Each answer is a new list, so each one schedules at most the next ask; a
- * list with nothing pending schedules nothing and resets the count. The timer
- * belongs to the screen and goes with it.
+ * list with nothing pending schedules nothing and resets the count, as does a
+ * different set of comparisons pending. A failed ask brings no new list, so it
+ * schedules the next one itself, out of the same bound. The timer belongs to
+ * the screen and goes with it.
  */
 export function usePendingCompatibilityRefresh(
   entries: readonly CompatibilityEvidence[] | undefined,
@@ -37,9 +39,16 @@ export function usePendingCompatibilityRefresh(
   const attempts = useRef(0);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
-  const pending = hasPendingCompatibility(entries);
+  const [failures, setFailures] = useState(0);
+  const pendingKey = (entries ?? []).filter((entry) => entry.pending)
+    .map((entry) => `${entry.app_id}:${entry.table_sha256}`).sort().join(",");
+  const keyRef = useRef(pendingKey);
   useEffect(() => {
-    if (!pending) {
+    if (keyRef.current !== pendingKey) {
+      keyRef.current = pendingKey;
+      attempts.current = 0;
+    }
+    if (!pendingKey) {
       attempts.current = 0;
       return;
     }
@@ -50,10 +59,17 @@ export function usePendingCompatibilityRefresh(
       }
       return;
     }
+    let current = true;
     const timer = setTimeout(() => {
       attempts.current += 1;
-      refreshRef.current().catch((cause) => logUiFailure("compatibility.pending_refresh_failed", cause, { surface }));
+      refreshRef.current().catch((cause) => {
+        logUiFailure("compatibility.pending_refresh_failed", cause, { surface });
+        if (current) setFailures((count) => count + 1);
+      });
     }, PENDING_COMPATIBILITY_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [entries, pending, surface]);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [entries, pendingKey, surface, failures]);
 }

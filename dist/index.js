@@ -6965,23 +6965,29 @@ function PagerFooter({ testId, page, pages, onPage, disabled, trailing, preferNe
  */
 const PENDING_COMPATIBILITY_DELAY_MS = 3000;
 const PENDING_COMPATIBILITY_ATTEMPTS = 20;
-function hasPendingCompatibility(entries) {
-    return Boolean(entries?.some((entry) => entry.pending));
-}
 /**
  * Ask again, a bounded number of times, while any of `entries` is pending.
  *
  * Each answer is a new list, so each one schedules at most the next ask; a
- * list with nothing pending schedules nothing and resets the count. The timer
- * belongs to the screen and goes with it.
+ * list with nothing pending schedules nothing and resets the count, as does a
+ * different set of comparisons pending. A failed ask brings no new list, so it
+ * schedules the next one itself, out of the same bound. The timer belongs to
+ * the screen and goes with it.
  */
 function usePendingCompatibilityRefresh(entries, refresh, surface) {
     const attempts = SP_REACT.useRef(0);
     const refreshRef = SP_REACT.useRef(refresh);
     refreshRef.current = refresh;
-    const pending = hasPendingCompatibility(entries);
+    const [failures, setFailures] = SP_REACT.useState(0);
+    const pendingKey = (entries ?? []).filter((entry) => entry.pending)
+        .map((entry) => `${entry.app_id}:${entry.table_sha256}`).sort().join(",");
+    const keyRef = SP_REACT.useRef(pendingKey);
     SP_REACT.useEffect(() => {
-        if (!pending) {
+        if (keyRef.current !== pendingKey) {
+            keyRef.current = pendingKey;
+            attempts.current = 0;
+        }
+        if (!pendingKey) {
             attempts.current = 0;
             return;
         }
@@ -6992,12 +6998,20 @@ function usePendingCompatibilityRefresh(entries, refresh, surface) {
             }
             return;
         }
+        let current = true;
         const timer = setTimeout(() => {
             attempts.current += 1;
-            refreshRef.current().catch((cause) => logUiFailure("compatibility.pending_refresh_failed", cause, { surface }));
+            refreshRef.current().catch((cause) => {
+                logUiFailure("compatibility.pending_refresh_failed", cause, { surface });
+                if (current)
+                    setFailures((count) => count + 1);
+            });
         }, PENDING_COMPATIBILITY_DELAY_MS);
-        return () => clearTimeout(timer);
-    }, [entries, pending, surface]);
+        return () => {
+            current = false;
+            clearTimeout(timer);
+        };
+    }, [entries, pendingKey, surface, failures]);
 }
 
 const SAME_TABLE_LABEL = "Same table bytes as another source";
@@ -8837,7 +8851,28 @@ function resultsForCommands(envelope, commands) {
     }
     return selected;
 }
-async function sendRuntimeBatchAndWait(appId, specs, expectedEnvelope) {
+// One batch at a time per game. Each batch claims the next generation from
+// the control log it read, so two in flight at once claimed the same one and
+// the backend refused the second as stale: a press made while the panel was
+// reading its live state in the background was lost. Batches queue in order,
+// and a multi-batch read takes its place again for each batch, so a press waits
+// for at most the one batch already sent.
+const runtimeLanes = new Map();
+function inRuntimeLane(appId, work) {
+    const previous = runtimeLanes.get(appId) ?? Promise.resolve();
+    const run = previous.then(work);
+    const settled = run.then(() => undefined, () => undefined);
+    runtimeLanes.set(appId, settled);
+    void settled.then(() => {
+        if (runtimeLanes.get(appId) === settled)
+            runtimeLanes.delete(appId);
+    });
+    return run;
+}
+function sendRuntimeBatchAndWait(appId, specs, expectedEnvelope) {
+    return inRuntimeLane(appId, () => sendRuntimeBatchNow(appId, specs, expectedEnvelope));
+}
+async function sendRuntimeBatchNow(appId, specs, expectedEnvelope) {
     if (specs.length < 1)
         throw new Error("Runtime command batch is empty.");
     if (specs.length > COMMAND_BATCH_SIZE)
@@ -12847,14 +12882,19 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
                 //
                 // A record this press switches on gets its saved choice. One with no
                 // choice and a readable value is switched on over what it holds; an
-                // unreadable one needs its remembered fallback sent explicitly.
+                // unreadable one needs its remembered fallback sent explicitly. A saved
+                // value its read-only list does not declare is no choice: the row shows
+                // what the game holds instead, and writing that back, which the list
+                // may not declare either, is a write the backend refuses, failing the
+                // whole Apply. Whatever is sent is one the list declares.
                 const valueOnEnable = active === true && controlNeedsValueInput(control)
-                    && (configuredByIdRef.current.has(control.id) || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
+                    && (declaredValue(control, configuredByIdRef.current.get(control.id) ?? null) !== null
+                        || presentableControlValue(currentValuesRef.current.get(control.id)) === null);
                 const setting = state.active !== true && touchedValues.has(control.id)
                     && readByRunningScripts(control, safeControls, activeById);
                 const value = !deferredValues.has(control.id)
                     && (state.active === true && (touchedValues.has(control.id) || valueOnEnable) || setting)
-                    ? displayableControlValue(state.value)
+                    ? declaredValue(control, displayableControlValue(state.value))
                     : null;
                 if (active === null && value === null)
                     return [];
@@ -15096,7 +15136,12 @@ function Content() {
      * dropped because the read failed, and leaving the previous failure on screen
      * described a healthy session as broken.
      */
+    // Counts the actions that have started, and the snapshots dropped on
+    // purpose, so a read made in the background can tell that what it read may
+    // be older than what happened while it ran.
+    const actionEpochRef = SP_REACT.useRef(0);
     const dropLiveSnapshot = SP_REACT.useCallback((reason = null) => {
+        actionEpochRef.current += 1;
         setLiveSnapshot(null);
         setLiveSnapshotError(reason);
     }, []);
@@ -15462,6 +15507,7 @@ function Content() {
             throw new Error(message);
         }
         busyRef.current = true;
+        actionEpochRef.current += 1;
         setBusy(true);
         setError(null);
         const started = monotonicNow();
@@ -16290,7 +16336,9 @@ function Content() {
      * attached, correctly started session into a reported failure for a read-only
      * query that has no bearing on it.
      */
-    const captureLiveSnapshot = SP_REACT.useCallback(async (appId, tableInspection) => {
+    const captureLiveSnapshot = SP_REACT.useCallback(async (appId, tableInspection, 
+    /** False once what this reads may be older than what an action since then set. */
+    stillCurrent) => {
         const controls = safeActionableControls(tableInspection);
         const recordIds = controls.flatMap((control) => control.id === null ? [] : [control.id]);
         if (recordIds.length > MAX_LIVE_CONTROLS)
@@ -16302,13 +16350,20 @@ function Content() {
             // child threw away the whole snapshot: pinned controls disappeared and
             // Disable all went dead while the bridge was perfectly healthy.
             const queried = await queryReadingInertScripts(appId, controls, recordIds, panelAborterRef.current.signal);
+            if (stillCurrent && !stillCurrent()) {
+                // A press began while this read, and its own readback is newer than
+                // what this read before it.
+                logUi("runtime.live_snapshot_superseded", { appId });
+                return null;
+            }
             recordLiveSnapshot([...queried.results, ...queried.unavailable], queried.envelope);
             return queried.envelope;
         }
         catch (cause) {
             // A sweep the closing panel abandoned says nothing about the session, so
-            // it must not leave "live controls unavailable" behind it either.
-            if (cause instanceof RuntimeQueryAbortedError)
+            // it must not leave "live controls unavailable" behind it either; nor
+            // does one a press overtook, whose own readback says what holds now.
+            if (cause instanceof RuntimeQueryAbortedError || (stillCurrent && !stillCurrent()))
                 return null;
             logUiFailure("runtime.live_snapshot_failed", cause, { appId });
             dropLiveSnapshot(describeError(cause));
@@ -16319,8 +16374,10 @@ function Content() {
     // value showed what the game held when it was last read, which could be long
     // ago. Each time it comes back into view with an exact session, the live
     // state is read again: queries only, in the background over what is already
-    // shown, never while a press is under way and never two at once. Not on
-    // mount, where hydration has just read it.
+    // shown, never started while a press is under way and never two at once. A
+    // press made while it reads waits for at most the batch already sent, and
+    // what the read saw is then dropped rather than drawn over the press's own
+    // readback. Not on mount, where hydration has just read it.
     const shownRef = SP_REACT.useRef(quickAccessVisible);
     const readOnShowRef = SP_REACT.useRef(false);
     const showReadRef = SP_REACT.useRef(false);
@@ -16336,7 +16393,9 @@ function Content() {
         if (showReadRef.current)
             return;
         showReadRef.current = true;
-        void captureLiveSnapshot(selectedGame.appId, inspection).finally(() => { showReadRef.current = false; });
+        const epoch = actionEpochRef.current;
+        void captureLiveSnapshot(selectedGame.appId, inspection, () => actionEpochRef.current === epoch)
+            .finally(() => { showReadRef.current = false; });
     }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot]);
     // The backend knows whether it installed this Cheat Engine itself, which it
     // answers from the installation's own location rather than by matching the
@@ -18073,7 +18132,11 @@ function Content() {
                 {
                     record_id: recordId,
                     active,
-                    value: active ? valueToApply : null,
+                    // What the game holds stands in for a value, but a read-only
+                    // list's undeclared one is never written back: the backend refuses
+                    // it, and the game changing between the read and the press is
+                    // enough to make the write happen.
+                    value: active ? declaredValue(control, valueToApply) : null,
                     switch_values: switchValuesFor(control),
                     structure: control.structure,
                     label: controlRowLabel(control),
