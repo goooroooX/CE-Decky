@@ -402,8 +402,10 @@ best-matching topic pages needed to discover their current attachments, taking
 equal matches in the listing's own order, which is the forum's by latest
 activity. Before scoring, a title has to hold the longest word of one of the
 game's names in whatever script that name is written, so a topic titled only in
-Russian is scored for a game that also has an English name; a name with no word
-of three letters gates nothing. The listing moves under the index: one bump
+Russian is scored for a game that also has an English name, or share two words
+with one of those names as the scorer reads them, so a topic titled with a
+game's name alone is scored for a library name that adds an expansion's; a name
+with no word of three letters gates nothing. The listing moves under the index: one bump
 pushes every topic below it down a page, so a topic pushed off a page a refresh
 read lands on one still holding its older copy. Such a topic is kept beside the
 pages, bounded in number and age, until a page lists it again or every page has
@@ -425,7 +427,11 @@ refusal is followed on the next five-minute tick instead, so a first index
 takes about an hour rather than an afternoon. A pass that is refused stops,
 building the index at its first 429 and maintaining it at its second, and the
 pass after it waits twice as long each time that happens in a row, up to six
-hours. A pass gives way to a search and to a download from this source while
+hours. That wait outlives a reload of the plugin without a record of its own:
+the provider record says when background work was last refused and its recent
+errors how many passes in a row were, and the wait stands until a listing page
+is read after the refusal or a search that began after it succeeds. It holds the
+background pass only, never a search or a download. A pass gives way to a search and to a download from this source while
 either runs, and ends when the search that armed it falls out of its day. A
 search made within two minutes of the last one reads no listing page again,
 only the topics, where the tables are. A first

@@ -24,7 +24,7 @@ from .activity_log import log_activity, log_failure
 from defusedxml.ElementTree import iterparse
 
 from .atomic import atomic_write_json, load_json
-from .game_identity import Candidate, aliases, install_directory_title, match_breakdown, query_plan
+from .game_identity import STOPWORDS, Candidate, aliases, install_directory_title, match_breakdown, normalize_title, query_plan
 # `ProviderRateLimited` is raised by the transport as well as by the provider
 # parsers here, so it lives beside the transport and is re-exported for the
 # callers that have always imported it from this module.
@@ -1207,6 +1207,49 @@ def title_prefilter_tokens(game_aliases: list[str]) -> list[str]:
     return sorted(tokens)
 
 
+def title_prefilter(game_aliases: list[str]) -> Callable[[str], bool]:
+    """Whether a listed title is worth scoring for these aliases, as one cheap test per title.
+
+    Scoring every title of the listing costs seconds, so only the ones this
+    lets through are scored. It lets through a title holding the longest word
+    of an alias, which is `title_prefilter_tokens`, and that alone lost the
+    base game to a library name that carries more than the forum's title does:
+    for a game listed with its expansion's name the longest word is the
+    expansion's, and the topic titled with the base game's name alone was never
+    scored, though the scorer accepts it as contained in the alias. So a title
+    that shares two words with one alias is let through as well, which is the
+    least the scorer's containment rule asks for. Those words are read as the
+    scorer reads them, by `normalize_title` and without its stop words, so a
+    numeral the two sides write differently still counts as shared; this
+    decides only what is scored, never what matches.
+    """
+    tokens = title_prefilter_tokens(game_aliases)
+    if not tokens:
+        return lambda title: True
+    alias_words = [frozenset(normalize_title(alias).split()) - STOPWORDS for alias in game_aliases]
+    alias_words = [words for words in alias_words if len(words) >= 2]
+    # A title sharing two words with an alias holds at least one of them as
+    # written, apart from a numeral, so most titles are refused on this
+    # substring test and never normalized at all.
+    spelled = sorted({word for words in alias_words for word in words if not word.isdigit()})
+
+    def worth_scoring(title: str) -> bool:
+        folded = prefilter_folded(title)
+        if any(token in folded for token in tokens):
+            return True
+        lowered = title.casefold()
+        if not any(word in lowered for word in spelled):
+            return False
+        try:
+            words = frozenset(normalize_title(title).split())
+        except ValueError:
+            # Not text the scorer would take either.
+            return False
+        return any(len(words & alias) >= 2 for alias in alias_words)
+
+    return worth_scoring
+
+
 def playground_game_slug(url: str) -> str | None:
     """Return the game slug of one Playground cheat page URL."""
     match = PLAYGROUND_ENTRY_RE.match(urlsplit(url).path.rstrip("/"))
@@ -1809,6 +1852,7 @@ class CatalogService:
         # and how many passes in a row the provider has refused.
         self._fearless_pass_full = False
         self._fearless_pass_refusals = 0
+        self._resume_refusal_pacing()
         # When a search last read page zero, which a search right after it uses
         # rather than reading the same page again.
         self._fearless_front_searched_at = 0.0
@@ -2732,10 +2776,10 @@ class CatalogService:
         # forum, and its topic is read live like any other before it is offered.
         for topic_id, (title, _) in self._fearless_displaced.items():
             topics.setdefault(topic_id, fearless_topic_title(title))
-        tokens = title_prefilter_tokens(game_aliases)
+        worth_scoring = title_prefilter(game_aliases)
         ranked: list[tuple[float, str, str]] = []
         for topic_id, title in topics.items():
-            if tokens and not any(token in prefilter_folded(title) for token in tokens):
+            if not worth_scoring(title):
                 continue
             score = match_breakdown(game_aliases, Candidate(title, provider_trust=0.7)).confidence
             if score >= 0.55:
@@ -3223,6 +3267,63 @@ class CatalogService:
         )
         self._fearless_index_ran_at = time.monotonic()
         self._fearless_index_task = asyncio.create_task(self._build_fearless_index())
+
+    def _resume_refusal_pacing(self) -> None:
+        """Take up the wait a refused background pass left behind, which only the last process held.
+
+        The passes refused in a row and when the last one ran live in memory,
+        so a reload of the plugin forgot both: the scheduler started a pass
+        three minutes later against a provider that had just refused one, and
+        every reload during a challenge asked again. Nothing new is stored for
+        this. The provider record already says when background work was last
+        refused, and keeps that until a search that began afterwards succeeds;
+        the index says when a listing page was last read, and one read after
+        the refusal is the provider answering again. A refusal neither has
+        superseded still stands, and it is taken up as if this process had met
+        it: as many passes refused in a row as the recent errors show since the
+        last page was read, and the wait measured from the refusal.
+
+        Only the background pass is held. A search and a download ask whether
+        the provider's own cooldown allows them, never this.
+        """
+        snapshot = getattr(self.diagnostics, "snapshot", None)
+        if snapshot is None:
+            return
+        try:
+            state = snapshot()["providers"].get("fearless")
+            refused_at = state.get("background_refusal_at") if isinstance(state, dict) else None
+            if isinstance(refused_at, bool) or not isinstance(refused_at, (int, float)):
+                return
+            last_read = max(self._fearless_fetched.values(), default=0.0)
+            if last_read > refused_at:
+                return
+            # One pass can be refused more than once, a cooldown apart, and
+            # passes are at least the run interval apart: refusals closer
+            # together than half of it are counted as one pass.
+            passes = 0
+            counted_at: float | None = None
+            for entry in state.get("recent_errors") or ():
+                if entry.get("kind") != "background" or entry["at"] <= last_read:
+                    continue
+                if counted_at is None or counted_at - entry["at"] >= FEARLESS_INDEX_RUN_INTERVAL_SECONDS / 2:
+                    passes += 1
+                counted_at = entry["at"]
+        except Exception as exc:  # noqa: BLE001 - a record this cannot read holds no pass and fails no start
+            log_failure(
+                self.logger, "fearless.index_pacing_unread", exc,
+                expected=isinstance(exc, (OSError, ValueError)),
+            )
+            return
+        # A refusal recorded in this clock's future is a clock that moved, and
+        # is taken as just now: the wait it starts is bounded by the backoff.
+        age = max(0.0, time.time() - float(refused_at))
+        self._fearless_pass_refusals = max(passes, 1)
+        self._fearless_index_ran_at = time.monotonic() - age
+        log_activity(
+            self.logger, "info", "fearless.index_pacing_resumed",
+            refusals_in_a_row=self._fearless_pass_refusals, refused_age_s=round(age),
+            paced=self._index_pass_is_paced(),
+        )
 
     def _index_pass_is_paced(self) -> bool:
         """Whether the last pass is recent enough that another one has to wait.

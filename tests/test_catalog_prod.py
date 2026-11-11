@@ -1783,6 +1783,81 @@ async def test_fearless_background_index_cools_down_and_resumes_after_429(tmp_pa
     await service.close()
 
 
+def test_a_refused_background_pass_is_still_paced_after_a_reload(tmp_path):
+    """The refusals in a row and the wait they earned lived in memory, so every reload asked again."""
+    from ce_decky.providers import ProviderDiagnosticsStore
+
+    class Lines:
+        def __init__(self):
+            self.lines = []
+
+        def info(self, message):
+            self.lines.append(message)
+
+    def reloaded(store, logger=None):
+        return CatalogService(None, tmp_path / "results.json", store, logger)  # type: ignore[arg-type]
+
+    def refuse(store, minutes_ago, status=403):
+        store.record_failure(
+            "fearless", error="refused", http_status=status, background=True, preserve_cooldown=True,
+            retry_after="60" if status == 429 else None, now=time.time() - minutes_ago * 60,
+        )
+
+    # Nothing refused: a fresh process owes no wait.
+    store = ProviderDiagnosticsStore(tmp_path / "providers.json")
+    fresh = reloaded(store)
+    assert fresh._fearless_pass_refusals == 0 and not fresh._index_pass_is_paced()
+
+    # A challenge five minutes before the reload still holds the next pass,
+    # and says so in the log a report is read from.
+    refuse(store, 5)
+    logger = Lines()
+    held = reloaded(store, logger)
+    assert held._fearless_pass_refusals == 1 and held._index_pass_is_paced()
+    assert any("fearless.index_pacing_resumed" in line and "refusals_in_a_row=1" in line for line in logger.lines)
+    # It holds the pass and nothing else: a search and a download ask the
+    # provider's own cooldown, which a challenge never set.
+    assert store.can_attempt("fearless")
+
+    # Once the wait a single refusal earns has passed, the pass is owed again.
+    old = ProviderDiagnosticsStore(tmp_path / "old.json")
+    refuse(old, 31)
+    waited = reloaded(old)
+    assert waited._fearless_pass_refusals == 1 and not waited._index_pass_is_paced()
+
+    # Three passes refused in a row are three, which is a two-hour wait; the
+    # second refusal of one pass, a cooldown later, is not a fourth.
+    repeated = ProviderDiagnosticsStore(tmp_path / "repeated.json")
+    for minutes_ago in (200, 150, 41, 40):
+        refuse(repeated, minutes_ago, status=429)
+    backed_off = reloaded(repeated)
+    assert backed_off._fearless_pass_refusals == 3 and backed_off._index_pass_is_paced()
+
+    # A listing page read after the refusal is the provider answering again.
+    backed_off._fearless_pass_refusals, backed_off._fearless_index_ran_at = 0, None
+    backed_off._fearless_fetched = {0: time.time() - 60}
+    backed_off._resume_refusal_pacing()
+    assert backed_off._fearless_pass_refusals == 0 and not backed_off._index_pass_is_paced()
+    # Refusals older than the last page read are not part of the run since:
+    # one pass is left, refused forty minutes ago, and its half hour is over.
+    backed_off._fearless_fetched = {0: time.time() - 100 * 60}
+    backed_off._resume_refusal_pacing()
+    assert backed_off._fearless_pass_refusals == 1 and not backed_off._index_pass_is_paced()
+
+    # So is a search that began after it and succeeded, which clears the record.
+    store.record_search_success("fearless", results=1, latency_ms=1.0)
+    recovered = reloaded(store)
+    assert recovered._fearless_pass_refusals == 0 and not recovered._index_pass_is_paced()
+
+    # A refusal dated in this clock's future is a clock that moved: it is
+    # taken as just now, so the wait it starts is one interval and no more.
+    future = ProviderDiagnosticsStore(tmp_path / "future.json")
+    refuse(future, -600)
+    moved = reloaded(future)
+    assert moved._index_pass_is_paced() and moved._fearless_index_ran_at <= time.monotonic()
+    assert time.monotonic() - moved._fearless_index_ran_at < 60
+
+
 @pytest.mark.asyncio
 async def test_playground_anonymous_countdown_resolves_transient_direct_link():
     rows, _ = parse_playground_page(
@@ -4165,6 +4240,44 @@ def test_a_title_in_another_script_is_not_gated_out_by_an_alias_in_latin():
     assert any(token in prefilter_folded("Ведьмак 3: Дикая Охота") for token in title_prefilter_tokens(["ведьмак 3 дикая охота"]))
     # An alias with no word long enough to gate on gates nothing.
     assert title_prefilter_tokens(["ys", "ys origin"]) == []
+
+
+def test_a_base_game_topic_is_scored_for_a_name_that_carries_more_than_its_title(monkeypatch):
+    """The longest word of a name with a subtitle is the subtitle's, and gating on it alone lost the base game."""
+    from ce_decky.catalog import title_prefilter, title_prefilter_tokens
+    from ce_decky.game_identity import Candidate, aliases, match_breakdown
+
+    def accepted(names, title):
+        return match_breakdown(names, Candidate(title, provider_trust=0.7)).confidence >= 0.55
+
+    expansion = aliases("Crimson Tide Resynced: Afterglow")
+    worth = title_prefilter(expansion)
+    assert title_prefilter_tokens(expansion) == ["afterglow"]
+    for title in ("Crimson Tide Resynced", "Crimson Tide Resynced (Steam)", "Crimson Tide Resynced: Afterglow"):
+        assert worth(title) and accepted(expansion, title)
+    # One shared word is not the scorer's containment, and is not let through.
+    for title in ("Crimson Skies", "Tide of Iron", "Another Game Entirely", "Resyncedness"):
+        assert not worth(title) and not accepted(expansion, title)
+    # A numeral the two sides write differently is the same word to the scorer.
+    numbered = aliases("Vow III: Everlasting")
+    assert title_prefilter(numbered)("Vow 3") and accepted(numbered, "Vow 3")
+    # Either script of a name in two reaches the base game's topic in that script.
+    bilingual = title_prefilter(aliases("Crimson Tide Resynced: Afterglow / Багровый Прилив: Послесвечение"))
+    assert bilingual("Багровый Прилив") and bilingual("Crimson Tide Resynced") and not bilingual("Багровый Закат")
+    # Nothing to gate on gates nothing, and text the scorer refuses is refused here rather than raised.
+    assert title_prefilter(["ys"])("Anything At All")
+    assert not worth("Crimson Tide\x00 Resynced")
+
+    # Cheap over a listing: only a title that spells one of the alias's words
+    # is read as the scorer reads it, and only what passes is ever scored.
+    listing = [f"Unrelated Game {number}" for number in range(20_000)] + ["Crimson Tide Resynced", "Crimson Skies"]
+    read: list[str] = []
+    real = catalog_module.normalize_title
+    monkeypatch.setattr(catalog_module, "normalize_title", lambda text: read.append(text) or real(text))
+    worth = title_prefilter(expansion)
+    read.clear()
+    assert [title for title in listing if worth(title)] == ["Crimson Tide Resynced"]
+    assert read == ["Crimson Tide Resynced", "Crimson Skies"]
 
 
 @pytest.mark.asyncio
