@@ -4121,6 +4121,37 @@ async def test_a_topic_a_partial_refresh_pushes_onto_an_older_page_stays_searcha
     await reloaded.close()
 
 
+@pytest.mark.asyncio
+async def test_a_displaced_topic_that_aged_out_is_left_behind_alone_and_an_impossible_time_reads_as_no_cache(tmp_path, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(catalog_module, "time", clock)
+    network = _ListingNetwork({0: [("1", "A")], 50: [("2", "B")]})
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    for start in (0, 50):
+        await service._refresh_fearless_page(start)
+    now = clock.time()
+    service._fearless_displaced = {
+        "123": ("Example Game", now - 60.0),
+        "124": ("Another Game", now - catalog_module.FEARLESS_DISPLACED_MAX_AGE_SECONDS - 60.0),
+    }
+    await service._persist_fearless_index()
+    await service.close()
+    reloaded = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    assert set(reloaded._fearless_displaced) == {"123"}
+    assert reloaded._fearless_pages
+    await reloaded.close()
+
+    # An integer no clock ever gave: the cache is unreadable, and loading it
+    # must say so rather than raise out of the backend's own start.
+    path = (tmp_path / "results.json").with_name("fearless-index.json")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["displaced"] = {"123": ["Example Game", 10 ** 400]}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    unreadable = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    assert unreadable._fearless_pages == {} and unreadable._fearless_displaced == {}
+    await unreadable.close()
+
+
 def test_a_title_in_another_script_is_not_gated_out_by_an_alias_in_latin():
     from ce_decky.catalog import title_prefilter_tokens
 

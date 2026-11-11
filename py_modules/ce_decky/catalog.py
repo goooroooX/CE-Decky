@@ -3815,7 +3815,10 @@ class CatalogService:
             ):
                 searched = 0.0
             # Dropped whole rather than in part where anything is out of bounds:
-            # it only ever adds topics a page will list again.
+            # it only ever adds topics a page will list again. One that has
+            # aged out is in bounds and is left behind by itself, as it is when
+            # a page is refreshed: a device back from a month away otherwise
+            # lost every topic displaced the day before it was switched off.
             displaced: dict[str, tuple[str, float]] = {}
             raw_displaced = raw.get("displaced")
             if isinstance(raw_displaced, dict) and len(raw_displaced) <= MAX_FEARLESS_DISPLACED_TOPICS:
@@ -3828,11 +3831,12 @@ class CatalogService:
                         or not isinstance(item[0], str) or not item[0]
                         or len(item[0].encode("utf-8")) > MAX_FEARLESS_TOPIC_TITLE * 4
                         or isinstance(item[1], bool) or not isinstance(item[1], (int, float))
-                        or not now - FEARLESS_DISPLACED_MAX_AGE_SECONDS < float(item[1]) <= now + FEARLESS_INDEX_MAX_AGE_SECONDS
+                        or not 0 < float(item[1]) <= now + FEARLESS_INDEX_MAX_AGE_SECONDS
                     ):
                         displaced = {}
                         break
-                    displaced[topic_id] = (item[0], float(item[1]))
+                    if now - float(item[1]) < FEARLESS_DISPLACED_MAX_AGE_SECONDS:
+                        displaced[topic_id] = (item[0], float(item[1]))
             # The anchor is advisory too: without it the next refresh is the
             # ordinary walk of every due page, which then sets it again.
             head_activity = raw.get("head_activity")
@@ -3847,7 +3851,9 @@ class CatalogService:
             return (pages, total_pages, total_topics, fetched, page_step, float(searched), displaced,
                     None if head_activity is None else float(head_activity),
                     None if anchored is None else float(anchored))
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, OverflowError):
+            # `OverflowError` is an integer in the cache too large to be a
+            # time, which `float()` raises rather than returns.
             return self._no_fearless_index()
 
     async def _thecheatscript(self, game_aliases: list[str]) -> list[ArtifactRecord]:
