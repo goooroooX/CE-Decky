@@ -325,8 +325,23 @@ def test_a_hook_whose_jump_may_be_the_long_one_is_not_proved():
     # Named only in the listing, a 64-bit register still says which game this is.
     listed = LISTED.replace("alloc(newmem,$1000,INJECT)", "alloc(newmem,$1000)")
     assert machinery.verdict(listed) == "jump_may_be_long"
-    # A script naming none is for a 32-bit game, where the jump is always five.
+    # A script naming none says nothing about the game: a hook of a 64-bit
+    # one may be written with 32-bit registers alone, and it used to be taken
+    # for a 32-bit game's and proved.
     narrow = listed.replace("rbx", "ebx")
-    assert "rbx" in listed and proven(narrow)
+    assert "rbx" in listed and "rbx" not in narrow and machinery.verdict(narrow) == "jump_may_be_long"
+    # Asking for its memory near the patch proves the same script in either.
+    assert proven(LISTED.replace("rbx", "ebx"))
+    # An instruction Cheat Engine cannot assemble for a 64-bit game is what
+    # says the game is 32-bit, where the jump is always five.
+    x86 = narrow.replace("  push ebx\n", "  pushfd\n  push ebx\n").replace("  pop ebx\n", "  pop ebx\n  popfd\n")
+    assert x86 != narrow and proven(x86)
+    # Written only in a comment, or in the listing, it is not assembled.
+    assert machinery.verdict(narrow.replace("  push ebx\n", "  push ebx // pushfd\n")) == "jump_may_be_long"
+    assert machinery.verdict(narrow.replace("{ header }", "{ pushfd }")) == "jump_may_be_long"
+    assert machinery.verdict(narrow + "pushad\n") == "jump_may_be_long"
+    # Nor is one the script defined to mean something else.
+    assert machinery.verdict(x86.replace("alloc(pDiff,8)", "alloc(pDiff,8)\ndefine(pushfd,pushfq)\ndefine(popfd,popfq)")) \
+        == "jump_may_be_long"
     # Asked for as the long form, it is fourteen bytes wherever the hook is.
     assert machinery.verdict(CAPTURE.replace("objStats:\n  jmp newmem", "objStats:\n  jmp far newmem", 1)) == "patch_is_not_a_jump"

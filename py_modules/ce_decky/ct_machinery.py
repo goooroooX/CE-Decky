@@ -106,10 +106,13 @@ _LUA = re.compile(r"\{\$lua\}|\bluacall\b|\bsyntaxcheck\b", re.IGNORECASE)
 # copied there. A command such as `createthread(…)` is neither, and it runs
 # wherever in the script it is written.
 _ASSEMBLED_ONLY = re.compile(r"^(?:readmem\s*\(|[A-Za-z]\w*(?:\s|$))", re.IGNORECASE)
-# A register only a 64-bit program has, anywhere in the script, its listing
-# included: the one thing a script says about which kind of game it is for.
-_SIXTY_FOUR_BIT = re.compile(r"\b(?:r(?:[a-d]x|[sd]i|[sb]p|ip|(?:8|9|1[0-5])[dwb]?)|[xy]mm(?:[89]|1[0-5]))\b",
-                             re.IGNORECASE)
+# What Cheat Engine has no encoding for in a 64-bit game: each is one row of
+# its opcode table marked `invalidin64bit` (`Assemblerunit.pas` at `ec45d5f4`),
+# and a line it cannot assemble stops the script in its first pass, before
+# anything is written (`autoassembler.pas`). So a script assembling one of
+# these runs in a 32-bit game or not at all, which is the only thing a script
+# proves about which kind of game it is for. `popad` is not marked there.
+_THIRTY_TWO_BIT_ONLY = frozenset({"pushad", "pusha", "pushall", "pushfd", "popfd"})
 # `alloc(newmem,$1000,INJECT)`: memory asked for near an address.
 _NEAR_ALLOC = re.compile(r"^\s*(?:global)?alloc\s*\(\s*[A-Za-z_]\w*\s*,[^,)]+,\s*[^,)\s]", re.IGNORECASE)
 _FAMILY = re.compile(r"^(?:[re]?([abcd])[xlh]|[re]?(si|di|bp|sp)l?|(r(?:8|9|1[0-5]))[dwb]?)$", re.IGNORECASE)
@@ -509,9 +512,15 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     # the game than the script pads and replays. Where its memory lands is
     # Windows' choice, or Wine's, unless an `alloc` asks for it near an
     # address, and Cheat Engine places the script's other allocations with
-    # that one (`autoassembler.pas`). A 32-bit game has no such distance, and a
-    # script is taken for one only where it names no 64-bit register at all.
-    if _SIXTY_FOUR_BIT.search(script) and not any(_NEAR_ALLOC.match(line) for line in lines):
+    # that one (`autoassembler.pas`). A 32-bit game has no such distance, but
+    # the registers a script names do not say it is for one: a hook of a
+    # 64-bit game may be written with `eax` and `ecx` alone, and this used to
+    # take every script naming no 64-bit register for a 32-bit one. Only an
+    # instruction Cheat Engine cannot assemble for a 64-bit game says so, and
+    # not one the script gave a meaning of its own with `define`.
+    if not any(_NEAR_ALLOC.match(line) for line in lines) and not any(
+            line.split(None, 1)[0].lower() in _THIRTY_TWO_BIT_ONLY - names
+            for _, _, body in blocks for line in body):
         return "jump_may_be_long"
     return None
 
