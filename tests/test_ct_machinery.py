@@ -31,7 +31,7 @@ LISTED = """{ header }
 [ENABLE]
 aobscanmodule(INJECT,game.exe,8B 48 08 83 39 00)
 alloc(newmem,$1000)
-alloc(pDiff,4)
+alloc(pDiff,8)
 label(code)
 label(return)
 newmem:
@@ -112,7 +112,8 @@ def test_a_hook_that_changes_anything_is_a_cheat():
     assert not proven(inc.replace("mov ecx,[eax+08]", "setne al"))
     # Every name a `label` declares is the script's own.
     two = CAPTURE.replace("label(return)", "label(return spare)").replace("  mov [pStats],rcx\n", "  mov [spare],rcx\n")
-    assert proven(two)
+    assert not proven(two)
+    assert proven(two.replace("objStats:\n  jmp newmem", "spare:\n  dq 0\nobjStats:\n  jmp newmem", 1))
 
 
 GATED = """[ENABLE]
@@ -200,11 +201,12 @@ def test_what_the_corpus_showed_a_hook_looks_like_is_read_and_what_changes_the_g
     # Mono template names its patch there; its listing has no offset.
     mono = LISTED.replace("aobscanmodule(INJECT,game.exe,8B 48 08 83 39 00)\n", "").replace(
         "{ header }\n", "define(INJECT,Game.Stats.Read)\n").replace('"game.exe"+F99FA: ', "Game.Stats.Read: ")
-    assert proven(mono)
+    # Both are read as far as their replay, which nothing pins to this game's bytes.
+    assert machinery.verdict(mono) == "replay_unproved"
     # A method hooked by its own name and offset.
     named = CAPTURE.replace("objStats:\n  jmp newmem", "Game.Stats:Read+1c:\n  jmp newmem").replace(
         "readmem(objStats,6)\n  jmp", "readmem(Game.Stats:Read+1c,6)\n  jmp")
-    assert proven(named)
+    assert machinery.verdict(named) == "replay_unproved"
     # A wildcard over the patched bytes is a byte the author saw change: their listing is not this game's.
     assert not proven(LISTED.replace("8B 48 08 83 39 00)", "8B 48 ?? 83 39 00)"))
     # One past them pins nothing the hook replays.
@@ -218,3 +220,51 @@ def test_what_the_corpus_showed_a_hook_looks_like_is_read_and_what_changes_the_g
                                "  readmem(objStats,6)\n  jmp return\n").replace("label(return)", "label(return store)")
     assert proven(spanning)
     assert machinery.verdict(spanning.replace("  popfq\n", "")) == "unbalanced_stack"
+
+
+def test_only_instructions_whose_every_effect_is_named_write_only_the_scripts_own_data():
+    def hook(lines: str) -> str | None:
+        return machinery.verdict(CAPTURE.replace("  mov [pStats],rcx\n", lines))
+
+    # What the corpus's captures write: the whole symbol, or a part of it it declares.
+    assert hook("  mov dword ptr [pStats+4],ecx\n") is None
+    assert hook("  mov [pStats+4],ecx\n") is None
+    # Past what the symbol holds, or anywhere a register moves it.
+    assert hook("  mov [pStats+4],rcx\n") == "writes_game_memory"
+    # Memory that keeps what the last start left is still the script's own.
+    assert machinery.verdict(CAPTURE.replace("alloc(pStats,8)", "globalalloc(pStats,8)")) is None
+    assert machinery.verdict(CAPTURE.replace("alloc(pStats,8)", "globalalloc(pStats,4)")) == "writes_game_memory"
+    assert hook("  mov [pStats+rax],rcx\n") == "writes_game_memory"
+    assert hook("  mov [rax+pStats],rcx\n") == "writes_game_memory"
+    # The label after the patch is the game's code, whatever the script calls it.
+    assert hook("  mov [return],rcx\n") == "writes_game_memory"
+    # Its own code is not its data.
+    assert hook("  mov [newmem],rcx\n") == "writes_game_memory"
+    # Effects no operand names: rdx:rax, rax, the x87 stack.
+    assert hook("  div [pStats]\n") == "unread_instruction"
+    assert hook("  imul [pStats]\n") == "unread_instruction"
+    assert hook("  push rcx\n  cmpxchg [pStats],rcx\n  pop rcx\n") == "unread_instruction"
+    assert hook("  fld [pStats]\n") == "unread_instruction"
+    # A bit index in a register reaches past the operand, and a shift's count is no size.
+    assert hook("  push rax\n  bts [pStats],rax\n  pop rax\n") == "unread_instruction"
+    assert machinery.verdict(CAPTURE.replace("alloc(pStats,8)", "alloc(pStats,1)").replace(
+        "  mov [pStats],rcx\n", "  pushfq\n  shl [pStats],cl\n  popfq\n")) == "writes_game_memory"
+    assert hook("  pushfq\n  shl qword ptr [pStats],cl\n  popfq\n") is None
+    assert hook("  pushfq\n  push rax\n  imul rax,[pStats]\n  pop rax\n  popfq\n") is None
+
+
+def test_a_readmem_replay_runs_the_same_only_where_its_bytes_do_not_depend_on_where_they_run():
+    # `mov eax,[rip+0A38]` copied into the hook reads somewhere else.
+    assert machinery.verdict(CAPTURE.replace("8B 81 38 0A 00 00", "8B 05 38 0A 00 00")) == "replay_unproved"
+    # A relative call, and a pattern with a wildcard where the bytes are.
+    assert machinery.verdict(CAPTURE.replace("8B 81 38 0A 00 00", "E8 81 38 0A 00 00")) == "replay_unproved"
+    assert machinery.verdict(CAPTURE.replace("8B 81 38 0A 00 00", "8B 81 ?? 0A 00 00")) == "replay_unproved"
+    # A listing replay of an address no pattern pins.
+    unpinned = LISTED.replace("aobscanmodule(INJECT,game.exe,8B 48 08 83 39 00)", "define(INJECT,game.exe+F99FA)")
+    assert machinery.verdict(unpinned) == "replay_unproved"
+    assert machinery._position_independent("66 44 89 43 0A".split())
+    assert machinery._position_independent("48 8B 44 24 20 C7 40 08 01 00 00 00".split())
+    assert machinery._position_independent("0F B6 05 10 00 00 00".split()) is False
+    assert machinery._position_independent("8B 81 38".split()) is False
+    assert machinery._position_independent("EB 05".split()) is False
+    assert machinery._position_independent([]) is False

@@ -15,16 +15,21 @@ script's own Auto Assembler code and proves one thing about it. The shape is a
 hook. Every block is under a label the script allocated or declared, or is its
 one patch of the game, which holds only the jump into the hook and what pads
 it, with nothing written under the label after it. Along every branch of the
-hook, each instruction writes memory the script allocated itself, changes a
-register between its own push and pop of it, compares, or branches to a label
-of its own; calls are not followed, so a call is a change, and the stack is
-where the game left it on the way back. There is one way back, an unconditional
+hook, each instruction compares, branches to a label of its own, or is one
+whose only effects are the operands it names and the flags, writing only data
+the script holds itself, one symbol and a constant past it inside what that
+symbol declares, or a register between its own push and pop of it; calls are
+not followed, so a call is a change, and the stack is where the game left it on
+the way back. There is one way back, an unconditional
 jump, and what runs last before it is exactly the bytes the patch covered, once
-and in order: Cheat Engine's own `readmem` of the patched address and size, or
-what its template lists between `INJECTING HERE` and `DONE INJECTING` when that
-listing is as long as the patch and, where the script's own `aobscan` or
-`assert` pins those bytes, is those bytes. A wildcard there is a byte the author
-saw change, so the author's listing is not this game's. Flags the hook changes
+and in order: Cheat Engine's own `readmem` of the patched address and size,
+where the script's own `aobscan` or `assert` pins bytes that read as whole
+instructions with nothing relative to where they run, or what its template
+lists between `INJECTING HERE` and `DONE INJECTING` when that listing is as
+long as the patch and the script's own pattern pins exactly those bytes. A
+wildcard there is a byte the author saw change, so the author's listing is not
+this game's, and a patch nothing pins may hold code the author never listed.
+Flags the hook changes
 are kept between `pushf` and `popf`, set again by that code before it reads
 them, or set again by the game, per the listing, before it reads them.
 
@@ -75,6 +80,7 @@ _DIRECTIVE = re.compile(
     r"readmem|fullaccess|db|dw|dd|dq|dt|df|align)\b", re.IGNORECASE)
 _ALLOC = re.compile(r"^\s*(?:alloc|globalalloc)\s*\(\s*([A-Za-z_]\w*)", re.IGNORECASE)
 _SIZED_ALLOC = re.compile(r"^\s*alloc\s*\(\s*([A-Za-z_]\w*)\s*,\s*([^,)\s]+)", re.IGNORECASE)
+_SIZED_STORE = re.compile(r"^\s*(?:global)?alloc\s*\(\s*([A-Za-z_]\w*)\s*,\s*([^,)\s]+)", re.IGNORECASE)
 # `label(code return)` declares two names, and `label(code,return)` does too.
 _LABELS = re.compile(r"^\s*label\s*\(([^)]*)\)", re.IGNORECASE)
 _DEFINE = re.compile(r"^\s*define\s*\(\s*([A-Za-z_]\w*)", re.IGNORECASE)
@@ -101,6 +107,48 @@ _READS_FLAGS = frozenset({"adc", "sbb", "rcl", "rcr", "pushf", "pushfd", "pushfq
 _SAVED_FLAGS = (frozenset({"pushf", "popf"}), frozenset({"pushfd", "popfd"}), frozenset({"pushfq", "popfq"}))
 # Instructions that write their second operand as well as their first.
 _WRITES_BOTH = frozenset({"xchg", "xadd", "cmpxchg"})
+# What the hook may run besides a compare: instructions whose only effects are
+# the operands they name and the flags. Everything else, `div` and a one-operand
+# `imul` writing rdx:rax, `cmpxchg` writing rax, the x87 stack, string
+# instructions, `bts` with a register's bit index reaching past its operand, is
+# not read, so the script stays a cheat.
+_PLAIN = frozenset({
+    "mov", "movzx", "movsx", "movsxd", "lea", "add", "sub", "and", "or", "xor", "not", "neg", "inc", "dec", "adc",
+    "sbb", "shl", "shr", "sar", "sal", "rol", "ror", "rcl", "rcr", "xchg", "xadd", "movss",
+    "movsd", "movd", "movq", "movaps", "movups", "movapd", "movupd", "movdqa", "movdqu",
+})
+_READ_ONLY = frozenset({"cmp", "test", "bt", "nop"})
+# How wide a store is, by what names its size. A shift's or a rotate's count is
+# no size, so those take one only from `ptr`.
+_COUNTED = frozenset({"shl", "shr", "sar", "sal", "rol", "ror", "rcl", "rcr"})
+_STORE_WIDTH = {"byte": 1, "word": 2, "dword": 4, "qword": 8, "xmmword": 16, "ymmword": 32,
+                "movss": 4, "movd": 4, "movsd": 8, "movq": 8}
+_REGISTER_WIDTH = (
+    (re.compile(r"^(?:r[a-d]x|r[sd]i|r[sb]p|r(?:8|9|1[0-5]))$", re.IGNORECASE), 8),
+    (re.compile(r"^(?:e[a-d]x|e[sd]i|e[sb]p|r(?:8|9|1[0-5])d)$", re.IGNORECASE), 4),
+    (re.compile(r"^(?:[a-d]x|[sd]i|[sb]p|r(?:8|9|1[0-5])w)$", re.IGNORECASE), 2),
+    (re.compile(r"^(?:[a-d][lh]|[sd]il|[sb]pl|r(?:8|9|1[0-5])b)$", re.IGNORECASE), 1),
+    (re.compile(r"^xmm\d+$", re.IGNORECASE), 16),
+    (re.compile(r"^ymm\d+$", re.IGNORECASE), 32),
+)
+# A store into the script's own memory: one symbol, at most a constant past it.
+_OWN_ADDRESS = re.compile(r"^([A-Za-z_]\w*)(?:\s*\+\s*(\$?[0-9A-Fa-f]+|#\d+))?$")
+# One-byte opcodes the replay decoder reads, each taking a ModRM byte, and the
+# immediate after it: "z" is four bytes, or two under a 0x66 prefix. These are
+# the moves, arithmetic, compares and shifts a hooked instruction usually is;
+# a branch, a call and everything else is not position-independent to this.
+_MODRM_OPCODES: dict[int, int | str] = {
+    **{opcode: 0 for base in range(0, 0x40, 8) for opcode in range(base, base + 4)},
+    0x63: 0, 0x69: "z", 0x6B: 1, 0x80: 1, 0x81: "z", 0x83: 1, 0x84: 0, 0x85: 0, 0x86: 0, 0x87: 0,
+    0x88: 0, 0x89: 0, 0x8A: 0, 0x8B: 0, 0x8D: 0, 0xC0: 1, 0xC1: 1, 0xC6: 1, 0xC7: "z",
+    0xD0: 0, 0xD1: 0, 0xD2: 0, 0xD3: 0,
+}
+# Two-byte `0F xx` opcodes with a ModRM byte and no immediate: SSE moves,
+# arithmetic and conversions, `cmov`, `set`, `imul`, `movzx` and `movsx`.
+_MODRM_0F = frozenset({
+    0x10, 0x11, 0x14, 0x15, 0x28, 0x29, 0x2A, 0x2C, 0x2D, 0x2E, 0x2F, *range(0x40, 0x50), 0x51,
+    *range(0x54, 0x60), 0x6E, 0x6F, 0x7E, 0x7F, *range(0x90, 0xA0), 0xAF, 0xB6, 0xB7, 0xBE, 0xBF, 0xD6,
+})
 _DATA = re.compile(r"^(db|dw|dd|dq)\s+(.+)$", re.IGNORECASE)
 _WIDTH = {"db": 1, "dw": 2, "dd": 4, "dq": 8, "byte": 1, "word": 2, "dword": 4, "qword": 8}
 # `cmp byte ptr [flag],01`: a compare of one whole symbol with a constant.
@@ -302,16 +350,28 @@ def verdict(script: str, at_start: bool = False) -> str | None:
         if len(replay) != 1 or argument is None or argument.group(1).strip('"').casefold() != patched[0] or \
                 _size(argument.group(2)) != patch_size:
             return "skips_the_game_code"
+        # `readmem` copies the game's bytes as they are, so they run the same
+        # in the hook only where none of them is relative to where it runs: no
+        # RIP-relative operand and no relative branch. Only bytes the script's
+        # own pattern pins can be read for that.
+        if not _position_independent(_pinned_bytes(lines, patched[0], patch_size) or []):
+            return "replay_unproved"
     elif [_normal(line) for line in replay] != displaced or len(displaced_raw) != patch_size:
         return "skips_the_game_code"
+    elif any(re.search(r"\brip\b", line, re.IGNORECASE) for line in replay):
+        # Cheat Engine assembles a listed address where the hook is, but an
+        # operand relative to RIP it takes as written, which is somewhere else.
+        return "replay_unproved"
     else:
-        # The listing is the author's game. Where the script's own pattern
-        # pins those bytes, they are this game's too; a wildcard there is a
-        # byte the author saw change, and replaying the author's is a change.
-        pinned = _pinned_bytes(lines, patched[0], patch_size)
-        if pinned is not None and pinned != displaced_raw:
-            return "skips_the_game_code"
+        # The listing is the author's game. Only where the script's own
+        # pattern pins those bytes are they this game's too; a wildcard there
+        # is a byte the author saw change, and an address patched with
+        # nothing pinned may hold code the author never listed.
+        if _pinned_bytes(lines, patched[0], patch_size) != displaced_raw:
+            return "replay_unproved"
     listed = len(displaced_raw) == patch_size
+    storage = _storage(blocks, {match.group(1).casefold(): match.group(2) for line in lines
+                                if (match := _SIZED_STORE.match(line))}, returns)
     # Everything else the hook runs, a displaced instruction run a second time
     # included, walked along every path with what that path has pushed: a
     # register is the hook's to change only between its own push and pop, the
@@ -363,19 +423,19 @@ def verdict(script: str, at_start: bool = False) -> str | None:
                 continue
             if mnemonic in _SETS_FLAGS and "flags" not in stack:
                 unsaved_flags = True
-            if mnemonic in {"cmp", "test", "nop"}:
+            if mnemonic in _READ_ONLY:
                 continue
             if mnemonic == "call":
                 return "calls"
-            if not operands or mnemonic.startswith("readmem"):
+            if not operands or not (mnemonic in _PLAIN or mnemonic.startswith(("cmov", "set")) or
+                                    (mnemonic == "imul" and "," in operands)):
                 return "unread_instruction"
             targets = [operands.split(",", 1)[0].strip()]
             if mnemonic in _WRITES_BOTH and "," in operands:
                 targets.append(operands.split(",", 1)[1].strip())
             for operand in targets:
                 if "[" in operand:
-                    base = _WORD.search(operand.split("[", 1)[1])
-                    if base is None or base.group(0).casefold() not in own:
+                    if not _owned_store(mnemonic, operand, operands, storage, names):
                         return "writes_game_memory"
                 elif _family(operand) is None or _family(operand) not in stack:
                     return "changes_a_register"
@@ -397,6 +457,114 @@ def verdict(script: str, at_start: bool = False) -> str | None:
         if not (resets or (listed and _flags_unread(after))):
             return "flags_reach_the_game"
     return None
+
+
+def _storage(blocks: list, allocated: dict[str, str], returns: set[str]) -> dict[str, int]:
+    """How many bytes past each of the script's own symbols are its data, which the hook may write.
+
+    An `alloc` nothing is placed under is that many bytes; a label, or an
+    `alloc` that is, holds the `db`/`dw`/`dd`/`dq` lines that open it, and
+    what follows them is code. A label after the patch is in the game.
+    """
+    sizes: dict[str, int] = {}
+    placed = {name for name, _, _ in blocks}
+    for name, size in allocated.items():
+        # Read both ways, so an `alloc(x,10)` is the smaller of them.
+        readings = [value for value in (_size(size), _constant(size, 4)) if value is not None]
+        if name not in placed and readings:
+            sizes[name] = min(readings)
+    for name, at_game, body in blocks:
+        if at_game or name in returns:
+            continue
+        total = 0
+        for line in body:
+            match = _DATA.match(line)
+            if not match:
+                break
+            total += _WIDTH[match.group(1).lower()] * len([item for item in re.split(r"[\s,]+", match.group(2)) if item])
+        if total:
+            sizes[name] = total
+    return sizes
+
+
+def _owned_store(mnemonic: str, operand: str, operands: str, storage: dict[str, int], names: frozenset[str]) -> bool:
+    """Whether a store through `operand` lands inside data the script holds itself.
+
+    One symbol and a constant past it, never a register: `[newmem+rax]` is
+    anywhere. The store's width comes from a size it names, or the register
+    it stores, and is taken as eight bytes where nothing says.
+    """
+    address = _OWN_ADDRESS.match(operand.split("[", 1)[1].rsplit("]", 1)[0].strip())
+    if address is None or address.group(1).casefold() not in storage:
+        return False
+    offset = 0
+    if address.group(2):
+        if address.group(2).casefold() in names:
+            return False
+        offset = _constant(address.group(2), 8)
+        if offset is None:
+            return False
+    size = re.search(r"\b(byte|word|dword|qword|xmmword|ymmword)\s+ptr\b", operand, re.IGNORECASE)
+    width = _STORE_WIDTH[size.group(1).lower()] if size else _STORE_WIDTH.get(mnemonic, 1 if mnemonic.startswith("set") else 0)
+    if not width:
+        sources = [] if mnemonic in _COUNTED else [part.strip() for part in operands.split(",") if "[" not in part]
+        width = next((bytes_ for part in sources for pattern, bytes_ in _REGISTER_WIDTH if pattern.match(part)), 8)
+    return offset + width <= storage[address.group(1).casefold()]
+
+
+def _position_independent(code: list[str]) -> bool:
+    """Whether these bytes, copied elsewhere, are the same instructions doing the same thing.
+
+    It reads whole instructions from a small set of opcodes and refuses
+    anything else, an operand relative to RIP, and a last instruction the
+    bytes cut short.
+    """
+    try:
+        data = bytes(int(token, 16) for token in code)
+    except ValueError:
+        return False
+    at = 0
+    if not data:
+        return False
+    while at < len(data):
+        wide = rex_w = False
+        while at < len(data) and data[at] in (0x66, 0x67, 0xF2, 0xF3):
+            wide |= data[at] == 0x66
+            at += 1
+        if at < len(data) and data[at] & 0xF0 == 0x40:
+            rex_w = bool(data[at] & 8)
+            at += 1
+        if at >= len(data):
+            return False
+        opcode = data[at]
+        at += 1
+        if 0x50 <= opcode <= 0x5F or opcode == 0x90:
+            continue
+        if 0xB8 <= opcode <= 0xBF:
+            at += 8 if rex_w else 2 if wide else 4
+            continue
+        immediate: int | str = 0
+        if opcode == 0x0F:
+            if at >= len(data) or data[at] not in _MODRM_0F:
+                return False
+            at += 1
+        elif opcode in _MODRM_OPCODES:
+            immediate = _MODRM_OPCODES[opcode]
+        else:
+            return False
+        if at >= len(data):
+            return False
+        mod, rm = data[at] >> 6, data[at] & 7
+        at += 1
+        if mod != 3 and rm == 4:
+            if at >= len(data):
+                return False
+            at += 5 if mod == 0 and data[at] & 7 == 5 else 1
+        elif mod == 0 and rm == 5:
+            return False
+        at += (0, 1, 4, 0)[mod]
+        at += (2 if wide and not rex_w else 4) if immediate == "z" else int(immediate)
+    return at == len(data)
 
 
 def _pinned_bytes(lines: list[str], patched: str, size: int) -> list[str] | None:
