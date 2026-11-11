@@ -417,7 +417,17 @@ of them, and a search reads no further than that either. That read never sees a
 topic deleted, or one moved into or out of the forum with its old last post,
 which lands deep in the listing, so every page is still read at least once a week,
 and a front that does not reach the anchor within eight pages leaves that day
-to the ordinary walk of every due page. A first
+to the ordinary walk of every due page. The background pass reads at most 32 pages a pass, a
+second apart, and waits half an hour before the next; while the listing still
+has pages this device never read, a pass that read its whole slice without a
+refusal is followed on the next five-minute tick instead, so a first index
+takes about an hour rather than an afternoon. A pass that is refused stops,
+building the index at its first 429 and maintaining it at its second, and the
+pass after it waits twice as long each time that happens in a row, up to six
+hours. A pass gives way to a search and to a download from this source while
+either runs, and ends when the search that armed it falls out of its day. A
+search made within two minutes of the last one reads no listing page again,
+only the topics, where the tables are. A first
 search may therefore return fewer FearLess results while the index is still
 being built; **Search again** uses whatever additional pages are complete.
 

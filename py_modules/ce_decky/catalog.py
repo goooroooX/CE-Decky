@@ -248,6 +248,11 @@ FEARLESS_STALE_REFRESH_PAGES = 8
 # needing that wider front. Twice the per-page freshness below, so an index a
 # running background pass is merely part way through does not trigger it.
 FEARLESS_STALE_REFRESH_AFTER_SECONDS = 48 * 60 * 60
+# How recently page zero may have been read for a search to use the front as it
+# is rather than read it again. A second search a moment after the first, the
+# ordinary way to try another spelling, asked the forum for the same listing
+# page twice; what changes is in the topics, and those are still read live.
+FEARLESS_FRONT_FRESH_SECONDS = 2 * 60
 FEARLESS_INDEX_REQUEST_INTERVAL_SECONDS = 1.0
 # How many listing pages one background pass refreshes before stopping. Per-page
 # freshness comes due for most of the index at once, so a pass that walks
@@ -260,6 +265,18 @@ FEARLESS_INDEX_PAGES_PER_RUN = 32
 # How long after a pass starts before another may. Without this the pass that
 # stops short is restarted by the next search, which is every search.
 FEARLESS_INDEX_RUN_INTERVAL_SECONDS = 30 * 60
+# While the listing still has pages this device never read, a pass that read its
+# whole slice without a refusal is followed by the next one on the next tick
+# rather than half an hour later: at 32 pages a pass, a forum of 339 pages took
+# eleven passes, which the half hour turned into more than five hours before
+# Search could find what was on the last of them. The request rate inside a pass
+# is unchanged, so this averages about a page every ten seconds. Maintenance,
+# with every page read once, keeps the half hour.
+FEARLESS_INDEX_BOOTSTRAP_INTERVAL_SECONDS = 4 * 60
+# A pass the provider refused is followed by the next one later each time it
+# happens again in a row, up to this; one that reads its slice resets it. A
+# refusal every interval is the provider being asked again what it already said.
+FEARLESS_INDEX_BACKOFF_MAX_SECONDS = 6 * 60 * 60
 # How often the plugin looks at whether a pass is owed while nobody is using
 # it. Every pass used to be started by a search, so a device whose owner was
 # playing rather than searching indexed nothing at all: on this one the listing
@@ -1782,6 +1799,17 @@ class CatalogService:
         # supposed to give way to.
         self._fearless_index_ran_at: float | None = None
         self._last_search_at = 0.0
+        # Downloads from a provider in progress, which the crawl gives way to
+        # as it does to a search: someone is waiting for that one.
+        self._provider_transfers: dict[str, int] = {}
+        self._last_transfer_at = 0.0
+        # How the last background pass ended: whether it read its whole slice,
+        # and how many passes in a row the provider has refused.
+        self._fearless_pass_full = False
+        self._fearless_pass_refusals = 0
+        # When a search last read page zero, which a search right after it uses
+        # rather than reading the same page again.
+        self._fearless_front_searched_at = 0.0
         # When this process last established that its copy of Playground's site
         # index is current, whether by fetching one or by being told the copy it
         # has is. A 304 proves the copy is current and rewriting eleven
@@ -2639,7 +2667,11 @@ class CatalogService:
             and newest_page_age is not None
             and newest_page_age > FEARLESS_STALE_REFRESH_AFTER_SECONDS
         )
-        if provider_ready:
+        front_is_fresh = (
+            had_index and not index_went_unattended
+            and 0 <= time.time() - self._fearless_front_searched_at < FEARLESS_FRONT_FRESH_SECONDS
+        )
+        if provider_ready and not front_is_fresh:
             try:
                 # Page zero is the authority for the current page size. Read it
                 # before calculating any other leading offset, because a resize
@@ -2647,6 +2679,7 @@ class CatalogService:
                 self._note_search_stage("fearless", "reading the forum listing")
                 search_began = time.time()
                 await self._refresh_fearless_page(0)
+                self._fearless_front_searched_at = search_began
                 refresh_count = 1
                 if index_went_unattended:
                     refresh_count = FEARLESS_STALE_REFRESH_PAGES
@@ -3177,6 +3210,8 @@ class CatalogService:
             self.logger, "info", "fearless.index_started",
             indexed=len(self._fearless_pages), total=self._fearless_total_pages,
             pending=len(pending), pages_this_run=min(len(pending), FEARLESS_INDEX_PAGES_PER_RUN),
+            mode="bootstrap" if self._missing_fearless_page_count() else "maintenance",
+            refusals_in_a_row=self._fearless_pass_refusals,
         )
         self._fearless_index_ran_at = time.monotonic()
         self._fearless_index_task = asyncio.create_task(self._build_fearless_index())
@@ -3189,21 +3224,48 @@ class CatalogService:
         for the correction plus the interval, and one corrected forwards would
         let it start at once.
         """
-        return (
-            self._fearless_index_ran_at is not None
-            and time.monotonic() - self._fearless_index_ran_at < FEARLESS_INDEX_RUN_INTERVAL_SECONDS
-        )
+        if self._fearless_index_ran_at is None:
+            return False
+        elapsed = time.monotonic() - self._fearless_index_ran_at
+        if self._fearless_pass_refusals:
+            interval = min(FEARLESS_INDEX_RUN_INTERVAL_SECONDS * 2 ** (self._fearless_pass_refusals - 1),
+                           FEARLESS_INDEX_BACKOFF_MAX_SECONDS)
+        elif self._fearless_pass_full and self._missing_fearless_page_count():
+            interval = FEARLESS_INDEX_BOOTSTRAP_INTERVAL_SECONDS
+        else:
+            interval = FEARLESS_INDEX_RUN_INTERVAL_SECONDS
+        return elapsed < interval
 
     def _searches_are_quiet(self) -> bool:
         """Whether the provider's request budget is the crawl's to spend.
 
         A search has somebody watching a screen for it and this does not, so
         while one is running, or has only just finished, the crawl asks for
-        nothing.
+        nothing. A download from this provider is the same: a request the user
+        pressed for. One that has finished and waits on a choice of archive
+        member is not counted, because it asks the provider for nothing more.
         """
-        if self._search_tasks:
+        if self._search_tasks or self._provider_transfers.get("fearless"):
             return False
-        return time.monotonic() - self._last_search_at >= FEARLESS_INDEX_QUIET_SECONDS
+        quiet_since = max(self._last_search_at, self._last_transfer_at)
+        return time.monotonic() - quiet_since >= FEARLESS_INDEX_QUIET_SECONDS
+
+    @contextmanager
+    def provider_transfer(self, provider: str):
+        """Mark a download from `provider` in progress for as long as the block runs."""
+        self._provider_transfers[provider] = self._provider_transfers.get(provider, 0) + 1
+        try:
+            yield
+        finally:
+            remaining = self._provider_transfers.get(provider, 1) - 1
+            if remaining > 0:
+                self._provider_transfers[provider] = remaining
+            else:
+                self._provider_transfers.pop(provider, None)
+            # The quiet after it is this source's, which is the only one the
+            # crawl asks anything of.
+            if provider == "fearless":
+                self._last_transfer_at = time.monotonic()
 
     async def _wait_for_quiet_searches(self) -> bool:
         """Hold the crawl until no search is running. False if it should stop."""
@@ -3230,6 +3292,11 @@ class CatalogService:
         persisted = 0
         refreshed = 0
         rate_limits = 0
+        refused = False
+        # A pass building the index for the first time follows the last one
+        # within minutes, so it stops at the first refusal rather than sitting
+        # one out and asking again; the backoff after it is the pacing's.
+        limit = 1 if self._missing_fearless_page_count() else FEARLESS_INDEX_RATE_LIMITS_PER_RUN
         try:
             while True:
                 if refreshed >= FEARLESS_INDEX_PAGES_PER_RUN:
@@ -3237,6 +3304,14 @@ class CatalogService:
                     # what asked this provider for hundreds of pages at once.
                     break
                 if not await self._wait_for_quiet_searches():
+                    break
+                # What armed the pass is a search within the day, and a pass can
+                # outlive that window: it ends with it rather than at its slice.
+                if not self._index_is_armed():
+                    log_activity(
+                        self.logger, "info", "fearless.index_disarmed",
+                        indexed=len(self._fearless_pages), total=self._fearless_total_pages,
+                    )
                     break
                 # Checked every iteration, not only at the start. This crawl
                 # outlives the search that started it by minutes: it walks
@@ -3292,6 +3367,7 @@ class CatalogService:
                         # and the refusal is the provider's to show, recorded
                         # with no cooldown invented for it and none erased.
                         self._fearless_index_error = str(exc)[:2048]
+                        refused = True
                         if self.diagnostics is not None:
                             try:
                                 self.diagnostics.record_failure(
@@ -3310,12 +3386,13 @@ class CatalogService:
                         self._fearless_index_error = str(exc)[:2048]
                         cooldown = self._set_fearless_cooldown(exc, record=True, background=True)
                         rate_limits += 1
+                        refused = True
                         log_failure(
                             self.logger, "fearless.index_rate_limited", exc, expected=True,
                             indexed=len(self._fearless_pages), total=self._fearless_total_pages,
                             retry_seconds=cooldown, limits_this_run=rate_limits,
                         )
-                        if rate_limits >= FEARLESS_INDEX_RATE_LIMITS_PER_RUN:
+                        if rate_limits >= limit:
                             # Sitting out the cooldown and asking again for the
                             # same page kept this pass alive indefinitely, and
                             # every refusal it collected re-armed the cooldown
@@ -3324,7 +3401,7 @@ class CatalogService:
                         await asyncio.sleep(cooldown)
                 if give_up:
                     break
-                if rate_limits >= FEARLESS_INDEX_RATE_LIMITS_PER_RUN:
+                if rate_limits >= limit:
                     log_activity(
                         self.logger, "info", "fearless.index_backed_off",
                         indexed=len(self._fearless_pages), total=self._fearless_total_pages,
@@ -3359,6 +3436,13 @@ class CatalogService:
             # "is this rebuilding the index every time"; report it either way.
             self._fearless_last_refresh_at = time.time()
             self._fearless_last_refresh_pages = refreshed
+            # What the pacing decides the next pass from. A pass that gave way
+            # to searches and read nothing says nothing about the provider.
+            self._fearless_pass_full = refreshed >= FEARLESS_INDEX_PAGES_PER_RUN and not refused
+            if refused:
+                self._fearless_pass_refusals += 1
+            elif refreshed:
+                self._fearless_pass_refusals = 0
             if persisted or self._fearless_pages:
                 try:
                     await self._persist_fearless_index()

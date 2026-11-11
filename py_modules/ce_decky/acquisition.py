@@ -556,7 +556,10 @@ class AcquisitionManager:
         task behind it: the panel polled a row nothing would ever advance.
         """
         try:
-            await self._download(item)
+            # The index crawl gives way to this for as long as it runs: it is
+            # a request somebody pressed for, from the same provider budget.
+            with self.catalog.provider_transfer(item.record.result.provider):
+                await self._download(item)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the state machine must always terminate

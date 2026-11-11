@@ -1225,6 +1225,7 @@ async def test_fearless_index_builds_in_background_persists_and_refreshes_leadin
     # A later search refreshes both leading pages while reusing the complete
     # bounded index; it never touches the challenged search.php route.
     before = len(network.calls)
+    service._fearless_front_searched_at = 0.0  # not a search right after the last
     await service._fearless(["missing game"])
     refreshed = [url for url, _ in network.calls[before:] if "viewforum.php" in url]
     assert refreshed == [
@@ -1684,6 +1685,7 @@ async def test_fearless_index_refreshes_only_the_pages_that_aged_out(tmp_path, u
     # As if the interval between background passes had elapsed: what this is
     # about is which pages a pass reads, not how often one may start.
     service._fearless_index_ran_at = None
+    service._fearless_front_searched_at = 0.0  # not a search right after the last
     await service._fearless(["nothing matches this"])
     assert service._fearless_index_task is not None
     await service._fearless_index_task
@@ -1771,7 +1773,13 @@ async def test_fearless_background_index_cools_down_and_resumes_after_429(tmp_pa
     await service._fearless(["missing game"])
     assert service._fearless_index_task is not None
     await service._fearless_index_task
+    # Building the index for the first time, the pass ends at the refusal and
+    # the next one waits longer than it would have; that one resumes.
+    assert service._fearless_pass_refusals == 1 and service._index_pass_is_paced()
+    await asyncio.sleep(0.02)
+    await service._build_fearless_index()
     assert service.fearless_index_status()["status"] == "ok"
+    assert service._fearless_pass_refusals == 0
     await service.close()
 
 
@@ -2364,6 +2372,7 @@ async def test_a_listing_that_pages_differently_drops_the_index_it_no_longer_des
 
     resized = ResizedNetwork()
     service.network = resized
+    service._fearless_front_searched_at = 0.0  # not a search right after the last
     rows = await service._fearless(["fresh match"])
     assert service._fearless_page_step == 25
     assert sorted(service._fearless_pages) == [0, 25]
@@ -4320,6 +4329,7 @@ async def test_the_daily_background_pass_reads_only_the_front_it_needs(tmp_path,
         0: [("4", "D", forum + 9), ("1", "A", forum - 1)], 50: [("2", "B", forum - 2)], 100: [("3", "C", forum - 3)],
     }
     network.calls.clear()
+    service._searched_at = catalog_module.time.time()
     await service._build_fearless_index()
     assert network.calls == [network.calls[0]] and "start=" not in network.calls[0]
     assert service._pending_fearless_page_starts() == []
@@ -4361,4 +4371,81 @@ async def test_a_search_stops_reading_the_front_once_it_reaches_the_anchor(tmp_p
     assert [call for call in network.calls if "viewforum.php" in call] == [network.calls[0]]
     if service._fearless_index_task is not None:
         service._fearless_index_task.cancel()
+    await service.close()
+
+
+def test_the_crawl_gives_way_to_a_download_from_its_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog_module, "FEARLESS_INDEX_QUIET_SECONDS", 0.0)
+    service = CatalogService(None, tmp_path / "results.json")  # type: ignore[arg-type]
+    assert service._searches_are_quiet()
+    with service.provider_transfer("fearless"):
+        assert not service._searches_are_quiet()
+    # A download from another source asks nothing of this one, nor leaves a quiet after it.
+    monkeypatch.setattr(catalog_module, "FEARLESS_INDEX_QUIET_SECONDS", 60.0)
+    service._last_transfer_at = 0.0
+    with service.provider_transfer("playground"):
+        assert service._searches_are_quiet()
+    assert service._searches_are_quiet() and service._provider_transfers == {}
+
+
+def test_passes_follow_each_other_sooner_only_while_the_index_is_first_built(tmp_path):
+    service = CatalogService(None, tmp_path / "results.json")  # type: ignore[arg-type]
+    service._fearless_total_pages, service._fearless_page_step = 3, 50
+    service._fearless_pages = {0: [("1", "A")]}
+    service._fearless_fetched = {0: time.time()}
+    minutes = lambda count: time.monotonic() - count * 60  # noqa: E731
+    service._fearless_pass_full = True
+    service._fearless_index_ran_at = minutes(5)
+    assert not service._index_pass_is_paced()
+    # A short pass, or an index with every page read, keeps the half hour.
+    service._fearless_pass_full = False
+    assert service._index_pass_is_paced()
+    service._fearless_pass_full = True
+    service._fearless_pages = {0: [], 50: [], 100: []}
+    service._fearless_fetched = {0: time.time(), 50: time.time(), 100: time.time()}
+    assert service._index_pass_is_paced()
+    service._fearless_index_ran_at = minutes(31)
+    assert not service._index_pass_is_paced()
+    # Refused in a row: twice as long each time, and never longer than the cap.
+    service._fearless_pass_refusals = 3
+    service._fearless_index_ran_at = minutes(119)
+    assert service._index_pass_is_paced()
+    service._fearless_index_ran_at = minutes(121)
+    assert not service._index_pass_is_paced()
+    service._fearless_pass_refusals = 30
+    service._fearless_index_ran_at = minutes(6 * 60 + 1)
+    assert not service._index_pass_is_paced()
+
+
+@pytest.mark.asyncio
+async def test_a_pass_ends_when_the_search_that_armed_it_falls_out_of_its_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog_module, "FEARLESS_INDEX_QUIET_SECONDS", 0.0)
+    network = _ListingNetwork({0: [("1", "A")], 50: [("2", "B")]})
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    await service._refresh_fearless_page(0)
+    network.calls.clear()
+    service._searched_at = time.time() - catalog_module.FEARLESS_INDEX_ACTIVE_WINDOW_SECONDS - 60
+    await service._build_fearless_index()
+    assert network.calls == []
+    service._searched_at = time.time()
+    await service._build_fearless_index()
+    assert any("start=50" in call for call in network.calls)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_a_search_right_after_another_reads_no_listing_page_again(tmp_path):
+    network = _ListingNetwork({0: [("123", "Example Game")]})
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    await service._fearless(["example game"])
+    network.calls.clear()
+    rows = await service._fearless(["example game"])
+    # The topic is still read live, which is where its tables are.
+    assert rows and [call for call in network.calls if "viewforum.php" in call] == []
+    assert any("viewtopic.php" in call for call in network.calls)
+    # Older than that, the front is read again.
+    service._fearless_front_searched_at -= catalog_module.FEARLESS_FRONT_FRESH_SECONDS + 1
+    network.calls.clear()
+    await service._fearless(["example game"])
+    assert any("viewforum.php" in call for call in network.calls)
     await service.close()

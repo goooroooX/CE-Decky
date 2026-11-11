@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from hashlib import sha256
 from pathlib import Path
 import asyncio
@@ -62,6 +63,8 @@ async def test_blocked_archive_preserves_final_identity_without_damaged_mark(tmp
     manager.record_resolution = mappings.record
     started = await manager.start(record.result.provider, record.result.artifact_id)
     await manager.wait_ready(str(started["acquisition_id"]))
+    # The download told the catalog it was under way, so its crawl gave way.
+    assert manager.catalog.transfers == [record.result.provider]
     state = await manager.complete(str(started["acquisition_id"]), member_path="0.CT")
     assert state["state"] == "failed"
     assert state["resolved_table_sha256"] == digest
@@ -101,6 +104,10 @@ def test_multi_origin_same_sha_is_bounded_and_deduplicated(tmp_path: Path):
 
 class _Catalog:
     diagnostics = None
+    @contextlib.contextmanager
+    def provider_transfer(self, provider):
+        self.transfers = [*getattr(self, "transfers", []), provider]
+        yield
     def __init__(self, record):
         self.record = record
     def resolve(self, provider, artifact_id):
@@ -791,6 +798,10 @@ class _ExclusiveRequest:
 
 class _TwoRecordCatalog:
     diagnostics = None
+    @contextlib.contextmanager
+    def provider_transfer(self, provider):
+        self.transfers = [*getattr(self, "transfers", []), provider]
+        yield
 
     def __init__(self, records):
         self.records = {(row.result.provider, row.result.artifact_id): row for row in records}
