@@ -62,7 +62,25 @@ jobs:
           cache: pnpm
 
       - name: Install Lua for resident-bridge conformance
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
+        # The runner's package mirrors have stopped resolving for minutes at a
+        # time, which failed the whole gate before any test ran. Retried with
+        # growing pauses, and still a failure once every attempt has failed,
+        # because the bridge conformance suite skips rather than fails without
+        # Lua and a green run would then prove less than it says.
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get -o Acquire::Retries=3 update \
+              && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends lua5.4; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              echo "Lua install attempt $attempt failed; retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+            fi
+          done
+          echo "::error::lua5.4 could not be installed after 5 attempts"
+          exit 1
 
       - name: Install test and build dependencies
         run: |
