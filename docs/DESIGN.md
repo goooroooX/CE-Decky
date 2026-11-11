@@ -404,8 +404,10 @@ activity. Before scoring, a title has to hold the longest word of one of the
 game's names in whatever script that name is written, so a topic titled only in
 Russian is scored for a game that also has an English name, or share two words
 with one of those names as the scorer reads them, so a topic titled with a
-game's name alone is scored for a library name that adds an expansion's; a name
-with no word of three letters gates nothing. The listing moves under the index: one bump
+game's name alone is scored for a library name that adds an expansion's, or be
+exactly the initials of one of those names or have one of them as its own, so a
+topic titled with a game's abbreviation is scored for its full name and the
+reverse; a name with no word of three letters gates nothing. The listing moves under the index: one bump
 pushes every topic below it down a page, so a topic pushed off a page a refresh
 read lands on one still holding its older copy. Such a topic is kept beside the
 pages, bounded in number and age, until a page lists it again or every page has

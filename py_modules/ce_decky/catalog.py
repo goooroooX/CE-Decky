@@ -24,7 +24,10 @@ from .activity_log import log_activity, log_failure
 from defusedxml.ElementTree import iterparse
 
 from .atomic import atomic_write_json, load_json
-from .game_identity import STOPWORDS, Candidate, aliases, install_directory_title, match_breakdown, normalize_title, query_plan
+from .game_identity import (
+    STOPWORDS, Candidate, _acronym, aliases, compact, install_directory_title, match_breakdown, normalize_title,
+    query_plan,
+)
 # `ProviderRateLimited` is raised by the transport as well as by the provider
 # parsers here, so it lives beside the transport and is re-exported for the
 # callers that have always imported it from this module.
@@ -1207,6 +1210,14 @@ def title_prefilter_tokens(game_aliases: list[str]) -> list[str]:
     return sorted(tokens)
 
 
+# How long a name may be and still be read as the initials of a title: an
+# abbreviation is a handful of characters, and bounding it keeps the first
+# letters of every title from being read for a name that is plainly words.
+MAX_TITLE_ABBREVIATION = 8
+_LEADING_LETTERS = re.compile(r"[^\W\d_]*")
+_TITLE_WORD = re.compile(r"\w+")
+
+
 def title_prefilter(game_aliases: list[str]) -> Callable[[str], bool]:
     """Whether a listed title is worth scoring for these aliases, as one cheap test per title.
 
@@ -1222,6 +1233,13 @@ def title_prefilter(game_aliases: list[str]) -> Callable[[str], bool]:
     scorer reads them, by `normalize_title` and without its stop words, so a
     numeral the two sides write differently still counts as shared; this
     decides only what is scored, never what matches.
+
+    The scorer also takes one side written as the other's initials, a name of
+    several words for a topic titled with its abbreviation and the reverse,
+    and neither rule above lets that through: the two share no word. It is let
+    through where the abbreviation is exactly those initials, read by the
+    scorer's own `_acronym` and `compact`. Two names that merely have the same
+    initials are not, though the scorer would take them for each other.
     """
     tokens = title_prefilter_tokens(game_aliases)
     if not tokens:
@@ -1232,20 +1250,41 @@ def title_prefilter(game_aliases: list[str]) -> Callable[[str], bool]:
     # written, apart from a numeral, so most titles are refused on this
     # substring test and never normalized at all.
     spelled = sorted({word for words in alias_words for word in words if not word.isdigit()})
+    # The initials of each alias, which a title may be, and each alias short
+    # enough to be the initials of a title. Three characters at least, as the
+    # scorer asks, and the same substring test first: the letters an
+    # abbreviation opens with are in the title, or in its words' first letters.
+    initials = {value for alias in game_aliases if len(value := _acronym(normalize_title(alias))) >= 3}
+    abbreviations = {value for alias in game_aliases if 3 <= len(value := compact(alias)) <= MAX_TITLE_ABBREVIATION}
+    initial_stems = sorted({stem for value in initials if len(stem := _LEADING_LETTERS.match(value).group()) >= 2})
+    # A title that is an abbreviation is about as short as one: longer than
+    # the longest of these by more than its spaces and a numeral written in
+    # letters, it cannot be any of them, and two letters are in most titles.
+    abbreviated_length = max(map(len, initials), default=0) + MAX_TITLE_ABBREVIATION
+    abbreviation_stems = sorted(
+        {stem for value in abbreviations if len(stem := _LEADING_LETTERS.match(value).group()) >= 2})
 
     def worth_scoring(title: str) -> bool:
         folded = prefilter_folded(title)
         if any(token in folded for token in tokens):
             return True
         lowered = title.casefold()
-        if not any(word in lowered for word in spelled):
+        if not (
+            any(word in lowered for word in spelled)
+            or (len(lowered) <= abbreviated_length and any(stem in lowered for stem in initial_stems))
+            or (abbreviation_stems and any(
+                stem in "".join(word[0] for word in _TITLE_WORD.findall(lowered)) for stem in abbreviation_stems))
+        ):
             return False
         try:
-            words = frozenset(normalize_title(title).split())
+            normal = normalize_title(title)
         except ValueError:
             # Not text the scorer would take either.
             return False
-        return any(len(words & alias) >= 2 for alias in alias_words)
+        words = frozenset(normal.split())
+        if any(len(words & alias) >= 2 for alias in alias_words):
+            return True
+        return compact(normal) in initials or _acronym(normal) in abbreviations
 
     return worth_scoring
 

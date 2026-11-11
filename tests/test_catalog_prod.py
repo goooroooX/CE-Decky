@@ -4280,6 +4280,46 @@ def test_a_base_game_topic_is_scored_for_a_name_that_carries_more_than_its_title
     assert read == ["Crimson Tide Resynced", "Crimson Skies"]
 
 
+def test_a_topic_titled_with_a_games_initials_is_scored_and_the_reverse(monkeypatch):
+    """One side written as the other's initials shares no word with it, and the scorer takes it all the same."""
+    from ce_decky.catalog import title_prefilter
+    from ce_decky.game_identity import Candidate, aliases, match_breakdown
+
+    def accepted(names, title):
+        return match_breakdown(names, Candidate(title, provider_trust=0.7)).confidence >= 0.55
+
+    full = aliases("Crimson Tide Resynced V")
+    worth = title_prefilter(full)
+    # The numeral written either way, and the full title as before.
+    for title in ("CTR V", "CTR 5", "ctr5", "Crimson Tide Resynced V"):
+        assert worth(title) and accepted(full, title)
+    # Another number, the initials inside a longer title, and other initials are not this game.
+    for title in ("CTR 4", "CTR V Modding Tools And Notes", "CTX V", "Cold Total Ruin V"):
+        assert not worth(title)
+    # The reverse: a library that names the game by its initials finds the topic written out.
+    short = aliases("CTR V")
+    worth_short = title_prefilter(short)
+    for title in ("Crimson Tide Resynced 5", "The Crimson Tide Resynced V", "CTR V"):
+        assert worth_short(title) and accepted(short, title)
+    for title in ("Crimson Tide Resynced 4", "Cold Total", "Crimson Tide"):
+        assert not worth_short(title)
+    # A subtitle after the initials' game, and a name in two scripts, keep what they had.
+    assert title_prefilter(aliases("Crimson Tide Resynced: Afterglow"))("Crimson Tide Resynced")
+    bilingual = title_prefilter(aliases("Crimson Tide Resynced V / Багровый Прилив Пересинхрон V"))
+    assert bilingual("CTR 5") and bilingual("БПП 5") and bilingual("Багровый Прилив") and not bilingual("БПП 4")
+
+    # Still cheap over a listing: a title is read as the scorer reads it only
+    # when it is short enough to be the initials and opens as they do.
+    listing = [f"Unrelated Game {number} With A Long Title" for number in range(20_000)] + ["CTR 5", "CTRL", "Contrast Remix"]
+    read: list[str] = []
+    real = catalog_module.normalize_title
+    monkeypatch.setattr(catalog_module, "normalize_title", lambda text: read.append(text) or real(text))
+    worth = title_prefilter(full)
+    read.clear()
+    assert [title for title in listing if worth(title)] == ["CTR 5"]
+    assert read == ["CTR 5", "CTRL"]
+
+
 @pytest.mark.asyncio
 async def test_equally_matching_topics_are_read_in_the_listings_order(tmp_path, monkeypatch):
     # Sorted as text, "9999" came before "10000", whatever the forum put first.
