@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import asyncio
 import json
 import threading
@@ -4174,4 +4175,190 @@ async def test_a_fearless_refusal_is_counted_once_and_a_background_one_is_no_sea
     assert fearless["counters"]["searches"] == 1 and fearless["counters"]["errors"] == 2
     assert fearless["last_http_status"] == 403 and fearless["background_refusal_at"] is not None
     assert sum(1 for call in network.calls if "start=50" in call) == 1
+    await service.close()
+
+
+class _TimedListingNetwork(_ListingNetwork):
+    """A listing whose rows carry the last post the forum orders them by."""
+
+    def __init__(self, pages: dict[int, list[tuple[str, str, float]]]):
+        super().__init__({})
+        self.timed = pages
+
+    async def get(self, url, **kwargs):
+        if "viewforum.php" not in url:
+            return await super().get(url, **kwargs)
+        self.calls.append(url)
+        start = int(url.split("start=")[1]) if "start=" in url else 0
+        rows = self.timed[start]
+        body = _fearless_listing(
+            *[(topic_id, title) for topic_id, title, _ in rows], page=start // self.step + 1,
+            pages=len(self.timed), total=len(self.timed) * self.step, page_step=self.step,
+        )
+        for _, _, posted in rows:
+            stamp = datetime.fromtimestamp(posted, timezone.utc).isoformat()
+            body = body.replace("</dt></dl>", f'</dt><dd class="lastpost"><time datetime="{stamp}">x</time></dd></DL>', 1)
+        return _Response(200, body.replace("</DL>", "</dl>").encode())
+
+
+@pytest.mark.asyncio
+async def test_the_daily_refresh_reads_the_front_until_it_reaches_what_the_index_already_held(tmp_path, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(catalog_module, "time", clock)
+    day = 86_400
+    forum = 1_700_000_000.0
+    network = _TimedListingNetwork({
+        0: [("1", "A", forum - 1), ("2", "B", forum - 2)],
+        50: [("3", "C", forum - 3), ("4", "D", forum - 4)],
+        100: [("5", "E", forum - 5), ("6", "F", forum - 6)],
+    })
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    for start in (0, 50, 100):
+        await service._refresh_fearless_page(start)
+    # Every page read after page zero: the index holds all it held.
+    assert (service._fearless_head_activity, service._pending_fearless_page_starts()) == (forum - 1, [])
+    assert service._fearless_anchored_at is not None
+    assert service.fearless_index_status()["anchored_at"] == service._fearless_anchored_at
+
+    # A day on, one topic posted in. The front is read first, and a page that
+    # reaches the old anchor is the end of it: the rest only moved down.
+    clock.now += day + 60
+    assert service._pending_fearless_page_starts() == [0, 50, 100]
+    network.timed = {
+        0: [("7", "G", forum + 50), ("1", "A", forum - 1)],
+        50: [("2", "B", forum - 2), ("3", "C", forum - 3)],
+        100: [("4", "D", forum - 4), ("5", "E", forum - 5)],
+    }
+    await service._refresh_fearless_page(0)
+    assert service._pending_fearless_page_starts() == []
+    assert service._fearless_head_activity == forum + 50
+    assert set(service._fearless_displaced) == {"2"}
+
+    # A front that holds nothing older than the anchor is followed page by page.
+    clock.now += day + 60
+    network.timed = {
+        0: [("8", "H", forum + 90), ("9", "I", forum + 80)],
+        50: [("7", "G", forum + 50), ("1", "A", forum - 1)],
+        100: [("2", "B", forum - 2), ("3", "C", forum - 3)],
+    }
+    await service._refresh_fearless_page(0)
+    assert service._pending_fearless_page_starts()[0] == 50
+    await service._refresh_fearless_page(50)
+    assert service._pending_fearless_page_starts() == []
+
+    # Anchoring never sees a topic deleted, so every page is read in a week.
+    clock.now += 7 * day
+    network.timed[0] = [("10", "J", forum + 99), ("8", "H", forum + 90)]
+    await service._refresh_fearless_page(0)
+    assert service._pending_fearless_page_starts() == [50, 100]
+
+    # The anchor survives a reload.
+    await service._persist_fearless_index()
+    await service.close()
+    reloaded = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    assert reloaded._fearless_head_activity == forum + 99
+    await reloaded.close()
+
+
+def test_a_listing_page_says_when_its_topics_were_last_posted_in_only_newest_first():
+    page = _fearless_listing(("1", "A"), ("2", "B"))
+    timed = page.replace("</dt></dl>", '</dt><dd class="lastpost"><time datetime="2026-11-11T10:00:00+00:00">x</time></dd></dl>', 1)
+    timed = timed.replace("</dt></dl>", '</dt><dd class="lastpost"><time datetime="2026-11-10T10:00:00+00:00">x</time></dd></dl>', 1)
+    listing = parse_fearless_forum_page(timed)
+    assert (listing.newest_activity, listing.oldest_activity) == (
+        datetime(2026, 11, 11, 10, tzinfo=timezone.utc).timestamp(), datetime(2026, 11, 10, 10, tzinfo=timezone.utc).timestamp())
+    # Out of order, one row without a time, or none: nothing to anchor on.
+    swapped = timed.replace("2026-11-11T10", "2026-11-09T10")
+    assert parse_fearless_forum_page(swapped).newest_activity is None
+    partial = page.replace("</dt></dl>", '</dt><dd class="lastpost"><time datetime="2026-11-11T10:00:00+00:00">x</time></dd></dl>', 1)
+    assert parse_fearless_forum_page(partial).oldest_activity is None
+    assert parse_fearless_forum_page(page).newest_activity is None
+
+
+@pytest.mark.asyncio
+async def test_the_first_anchor_waits_for_every_page_to_be_read_after_page_zero(tmp_path, monkeypatch):
+    # A page read before page zero may be missing a topic posted in between,
+    # so the index does not yet hold everything up to page zero's newest post.
+    # A reload forgets which read of page zero came first, so that is the case.
+    clock = _Clock()
+    monkeypatch.setattr(catalog_module, "time", clock)
+    forum = 1_700_000_000.0
+    network = _TimedListingNetwork({
+        0: [("1", "A", forum - 1)], 50: [("2", "B", forum - 2)], 100: [("3", "C", forum - 3)],
+    })
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    await service._refresh_fearless_page(0)
+    await service._refresh_fearless_page(50)
+    await service._persist_fearless_index()
+    await service.close()
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    await service._refresh_fearless_page(100)
+    await service._refresh_fearless_page(0)
+    await service._refresh_fearless_page(50)
+    # Page 100 was read before page zero's first read since the reload.
+    assert service._fearless_head_activity is None
+    await service._refresh_fearless_page(100)
+    assert service._fearless_head_activity == forum - 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_the_daily_background_pass_reads_only_the_front_it_needs(tmp_path, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(catalog_module, "time", clock)
+    monkeypatch.setattr(catalog_module, "FEARLESS_INDEX_REQUEST_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(catalog_module, "FEARLESS_INDEX_QUIET_SECONDS", 0.0)
+    forum = 1_700_000_000.0
+    network = _TimedListingNetwork({
+        0: [("1", "A", forum - 1)], 50: [("2", "B", forum - 2)], 100: [("3", "C", forum - 3)],
+    })
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    for start in (0, 50, 100):
+        await service._refresh_fearless_page(start)
+    clock.now += 86_400 + 60
+    network.timed = {
+        0: [("4", "D", forum + 9), ("1", "A", forum - 1)], 50: [("2", "B", forum - 2)], 100: [("3", "C", forum - 3)],
+    }
+    network.calls.clear()
+    await service._build_fearless_index()
+    assert network.calls == [network.calls[0]] and "start=" not in network.calls[0]
+    assert service._pending_fearless_page_starts() == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_a_front_that_never_reaches_the_anchor_leaves_the_ordinary_walk(tmp_path, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(catalog_module, "time", clock)
+    monkeypatch.setattr(catalog_module, "FEARLESS_ANCHOR_MAX_PAGES", 1)
+    forum = 1_700_000_000.0
+    network = _TimedListingNetwork({0: [("1", "A", forum - 1)], 50: [("2", "B", forum - 2)]})
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    for start in (0, 50):
+        await service._refresh_fearless_page(start)
+    clock.now += 86_400 + 60
+    network.timed = {0: [("3", "C", forum + 9)], 50: [("4", "D", forum + 8)]}
+    await service._refresh_fearless_page(0)
+    # Given up for the day: every due page is read the ordinary way.
+    assert service._pending_fearless_page_starts() == [50]
+    assert service._fearless_head_activity == forum - 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_a_search_stops_reading_the_front_once_it_reaches_the_anchor(tmp_path, monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(catalog_module, "time", clock)
+    forum = 1_700_000_000.0
+    network = _TimedListingNetwork({
+        0: [("123", "Example Game", forum - 1)], 50: [("2", "B", forum - 2)], 100: [("3", "C", forum - 3)],
+    })
+    service = CatalogService(network, tmp_path / "results.json")  # type: ignore[arg-type]
+    for start in (0, 50, 100):
+        await service._refresh_fearless_page(start)
+    network.calls.clear()
+    await service._fearless(["example game"])
+    assert [call for call in network.calls if "viewforum.php" in call] == [network.calls[0]]
+    if service._fearless_index_task is not None:
+        service._fearless_index_task.cancel()
     await service.close()

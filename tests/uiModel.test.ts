@@ -285,6 +285,13 @@ describe("controller UI model", () => {
     expect(whole).toContain("the whole listing is indexed, 42 pages, holding 1200 tables.");
     expect(whole).toContain("Every page has been read, the oldest of them 3 hours ago.");
     expect(whole).toContain("2 pages are due to be read again.");
+    expect(whole).not.toContain("front was last checked");
+    // Pages read days ago are current when the front was checked since.
+    const anchored = fearlessIndexSentence(row({
+      status: "ok", indexed_pages: 42, total_pages: 42, indexed_topics: 1200,
+      stale_pages: 0, fully_refreshed_at: now / 1000 - 3 * 86_400, anchored_at: now / 1000 - 2 * 3600,
+    }), now);
+    expect(anchored).toContain("Its front was last checked for new posts 2 hours ago, which is where anything new appears.");
 
     // Two states the counts do not explain on their own.
     expect(fearlessIndexSentence(row({ indexed_pages: 4, stale_pages: 1, retry_after_seconds: 90 }), now))

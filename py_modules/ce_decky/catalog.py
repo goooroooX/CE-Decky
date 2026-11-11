@@ -314,6 +314,20 @@ FEARLESS_INDEX_MAX_AGE_SECONDS = 24 * 60 * 60
 # been read since it went, which is when it is really gone. Bounded by count and
 # by age, so a forum that deletes topics leaves nothing that grows.
 MAX_FEARLESS_DISPLACED_TOPICS = 2_000
+# The listing is sorted by last post, so every topic posted in since the index
+# was last whole is above every one that was not. Reading from the front until a
+# page reaches a last post no newer than the newest the front held then is
+# reading everything that changed: the rest only moved down, and what a refresh
+# pushes off the pages it read is kept with the displaced topics above. A day's
+# activity measured 2026-11-11 filled less than one page, so the daily refresh
+# that read every page is one or two pages. Bounded, because a front that does
+# not reach the anchor is a listing this cannot reason about, and then the
+# ordinary walk of every due page does it.
+FEARLESS_ANCHOR_MAX_PAGES = 8
+# How long a page may go unread however well anchored the index is: anchoring
+# sees what was posted in, never a topic deleted, or moved into or out of the
+# forum with the old last post that puts it deep in the listing.
+FEARLESS_FULL_SWEEP_SECONDS = 7 * 24 * 60 * 60
 FEARLESS_DISPLACED_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 FEARLESS_DEFAULT_COOLDOWN_SECONDS = 60
 # Playground groups every cheat page for a game under one taxonomy. Only the
@@ -854,6 +868,11 @@ class ForumListing(NamedTuple):
     # or the bounds. False with no independent step evidence, which is normal
     # when the current page is an active span and only page one remains linked.
     page_step_invalid: bool
+    # The newest and oldest last post among this page's topics, by the forum's
+    # own clock, which is what orders the listing. `None` unless every topic
+    # on the page states one and they run newest first.
+    newest_activity: float | None = None
+    oldest_activity: float | None = None
 
 
 def parse_fearless_forum_page(html: str) -> ForumListing:
@@ -938,6 +957,7 @@ def parse_fearless_forum_page(html: str) -> ForumListing:
         raise ValueError("FearLess forum topic count exceeds the configured limit")
 
     rows: list[tuple[str, str]] = []
+    activity: list[float | None] = []
     seen: set[str] = set()
     for item in soup.select("li.row"):
         classes = {str(value).casefold() for value in item.get("class", [])}
@@ -961,10 +981,29 @@ def parse_fearless_forum_page(html: str) -> ForumListing:
             continue
         seen.add(topic_id)
         rows.append((topic_id, title))
+        activity.append(_last_post_time(item))
+    rows, activity = rows[:MAX_FEARLESS_ROWS_PER_PAGE], activity[:MAX_FEARLESS_ROWS_PER_PAGE]
+    known = [value for value in activity if value is not None]
+    # Only a page in the order the anchor relies on says anything about it:
+    # newest first, as the forum sorts by last post.
+    complete = bool(known) and len(known) == len(activity) and all(
+        newer >= older for newer, older in zip(known, known[1:]))
     return ForumListing(
-        rows[:MAX_FEARLESS_ROWS_PER_PAGE], current_page, total_pages,
-        total_topics, page_step, invalid_relation,
+        rows, current_page, total_pages, total_topics, page_step, invalid_relation,
+        max(known) if complete else None, min(known) if complete else None,
     )
+
+
+def _last_post_time(item) -> float | None:
+    """When a listing row's topic was last posted in, from its `<time datetime>`."""
+    stamp = item.select_one("dd.lastpost time[datetime]")
+    if stamp is None:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(stamp.get("datetime", "")))
+    except ValueError:
+        return None
+    return moment.timestamp() if moment.tzinfo is not None else None
 
 
 def parse_phpbb_attachments(
@@ -1702,7 +1741,17 @@ class CatalogService:
             self._fearless_page_step,
             self._searched_at,
             self._fearless_displaced,
+            self._fearless_head_activity,
+            self._fearless_anchored_at,
         ) = self._load_fearless_index()
+        # A read of the front in progress: when its page zero was read, the
+        # newest last post it held, the next offset it owes and pages so far.
+        self._fearless_anchor_run: tuple[float, float, int, int] | None = None
+        self._fearless_anchor_gave_up_at = 0.0
+        # The first read of page zero while no anchor stands, and the newest
+        # last post it held: it becomes the anchor once every page has been
+        # read after it, because only then does the index hold all of it.
+        self._fearless_front_seen: tuple[float, float] | None = None
         # The marker has two homes and the newest of them is the answer. The
         # index cache carries it for the ordinary path, where a search that was
         # already writing pages records it for free; the small file beside it
@@ -1950,6 +1999,11 @@ class CatalogService:
         self._fearless_total_topics = None
         self._fearless_fetched = {}
         self._fearless_displaced = {}
+        self._fearless_head_activity = None
+        self._fearless_anchored_at = None
+        self._fearless_anchor_run = None
+        self._fearless_anchor_gave_up_at = 0.0
+        self._fearless_front_seen = None
         self._fearless_last_refresh_at = None
         self._fearless_last_refresh_pages = 0
         self._fearless_index_error = None
@@ -2591,6 +2645,7 @@ class CatalogService:
                 # before calculating any other leading offset, because a resize
                 # invalidates every offset cached under the former step.
                 self._note_search_stage("fearless", "reading the forum listing")
+                search_began = time.time()
                 await self._refresh_fearless_page(0)
                 refresh_count = 1
                 if index_went_unattended:
@@ -2604,6 +2659,10 @@ class CatalogService:
                     if step is None:
                         raise ValueError("FearLess forum listing declares no page size")
                     for index in range(1, refresh_count):
+                        # Everything posted in since the index was last whole
+                        # has been read: the pages after it only moved down.
+                        if self._fearless_anchored_at is not None and self._fearless_anchored_at >= search_began:
+                            break
                         await self._refresh_fearless_page(index * step)
                 # A one-page index owes no background pass, so persist the
                 # synchronous page here instead of leaving it memory-only.
@@ -2777,6 +2836,10 @@ class CatalogService:
                     self._fearless_pages = {}
                     self._fearless_fetched = {}
                     self._fearless_displaced = {}
+                    self._fearless_head_activity = None
+                    self._fearless_anchored_at = None
+                    self._fearless_anchor_run = None
+                    self._fearless_front_seen = None
                     if start:
                         raise ValueError("FearLess forum page size changed under the index")
                 step = listing_step
@@ -2814,6 +2877,62 @@ class CatalogService:
                 if offset in self._fearless_pages
             }
             self._carry_displaced_fearless_topics(previous_rows)
+            self._advance_fearless_anchor(start, listing)
+
+    def _advance_fearless_anchor(self, start: int, listing: ForumListing) -> None:
+        """Count a page read from the front, and anchor the index once the front reaches the last anchor.
+
+        A read starts at page zero and goes on only through the next offset;
+        any other page read ends it. An index with a page never read is not
+        anchored by its front, because what is missing is not behind it. With
+        no anchor yet, the first is the first page zero read since, once every
+        page has been read after it.
+        """
+        # When this page was read, which is what every other page's read is
+        # compared with, rather than a later moment that would always be newer.
+        now = self._fearless_fetched.get(start) or time.time()
+        step = self._fearless_page_step
+        if self._fearless_head_activity is None:
+            self._fearless_anchor_run = None
+            if start == 0 and self._fearless_front_seen is None and listing.newest_activity is not None:
+                self._fearless_front_seen = (now, listing.newest_activity)
+            seen = self._fearless_front_seen
+            if (
+                seen is not None and self._fearless_total_pages is not None
+                and not self._missing_fearless_page_count()
+                and len(self._fearless_fetched) >= self._fearless_total_pages
+                and min(self._fearless_fetched.values()) >= seen[0]
+            ):
+                self._fearless_anchored_at, self._fearless_head_activity = seen
+                self._fearless_front_seen = None
+                log_activity(self.logger, "info", "fearless.index_anchored", pages=len(self._fearless_fetched), first=True)
+            return
+        run = self._fearless_anchor_run
+        if start == 0:
+            run = None if listing.newest_activity is None else (now, listing.newest_activity, 0, 0)
+        elif run is None or step is None or start != run[2]:
+            run = None
+        if run is None or self._missing_fearless_page_count():
+            self._fearless_anchor_run = None
+            return
+        started, head, _, pages = run
+        pages += 1
+        if listing.oldest_activity is not None and listing.oldest_activity <= self._fearless_head_activity:
+            self._fearless_anchored_at = started
+            self._fearless_head_activity = head
+            self._fearless_anchor_run = None
+            log_activity(self.logger, "info", "fearless.index_anchored", pages=pages, first=False)
+            return
+        following = None if step is None else start + step
+        if (
+            following is None or pages >= FEARLESS_ANCHOR_MAX_PAGES
+            or self._fearless_total_pages is None or following >= self._fearless_total_pages * step
+        ):
+            self._fearless_anchor_run = None
+            self._fearless_anchor_gave_up_at = now
+            log_activity(self.logger, "info", "fearless.index_anchor_not_reached", pages=pages)
+            return
+        self._fearless_anchor_run = (started, head, following, pages)
 
     def _carry_displaced_fearless_topics(self, previous_rows: list[tuple[str, str]]) -> None:
         """Keep what the page just replaced listed and no page lists now; drop what a page lists again or is gone."""
@@ -2846,7 +2965,10 @@ class CatalogService:
         """
         if self._fearless_total_pages is None:
             return []
-        cutoff = time.time() - FEARLESS_INDEX_MAX_AGE_SECONDS
+        now = time.time()
+        cutoff = now - FEARLESS_INDEX_MAX_AGE_SECONDS
+        sweep = now - FEARLESS_FULL_SWEEP_SECONDS
+        anchored = self._fearless_anchored_at is not None and self._fearless_anchored_at > cutoff
         pending: list[int] = []
         if self._fearless_page_step is None:
             # The first page is the only offset that is a page boundary whatever
@@ -2854,8 +2976,18 @@ class CatalogService:
             return [] if self._fearless_fetched.get(0, 0.0) > cutoff and 0 in self._fearless_pages else [0]
         for page_number in range(self._fearless_total_pages):
             start = page_number * self._fearless_page_step
-            if start not in self._fearless_pages or self._fearless_fetched.get(start, 0.0) <= cutoff:
+            fetched = self._fearless_fetched.get(start, 0.0)
+            if start not in self._fearless_pages or fetched <= sweep or (fetched <= cutoff and not anchored):
                 pending.append(start)
+        # Owed only because a day has passed: the front is read first, page by
+        # page, and reaching the anchor takes the rest off this list.
+        if (
+            pending and not anchored and self._fearless_head_activity is not None
+            and self._fearless_anchor_gave_up_at <= cutoff and not self._missing_fearless_page_count()
+        ):
+            run = self._fearless_anchor_run
+            front = run[2] if run is not None else 0
+            pending = [front] + [start for start in pending if start != front]
         return pending
 
     def _missing_fearless_page_count(self) -> int:
@@ -3273,6 +3405,10 @@ class CatalogService:
             "retry_after_seconds": cooldown_remaining or None,
             "refresh_age_seconds": FEARLESS_INDEX_MAX_AGE_SECONDS,
             "fully_refreshed_at": oldest,
+            # When a read of the front last found everything posted in since
+            # the index was whole, which is what keeps it current between the
+            # weekly reads of every page.
+            "anchored_at": self._fearless_anchored_at if complete else None,
             # Everything the index still owes, read for the first time or again.
             "stale_pages": len(self._pending_fearless_page_starts()),
             # The part of that a search here cannot find anything on yet.
@@ -3470,11 +3606,16 @@ class CatalogService:
             "displaced": {
                 topic_id: [title, at] for topic_id, (title, at) in self._fearless_displaced.items()
             },
+            # Optional: the newest last post the front held when the index was
+            # last whole, by the forum's clock, and when that was by this one.
+            "head_activity": self._fearless_head_activity,
+            "anchored": self._fearless_anchored_at,
         }
 
     @staticmethod
     def _no_fearless_index() -> tuple[
         dict[int, list[tuple[str, str]]], None, None, dict[int, float], None, float, dict[str, tuple[str, float]],
+        None, None,
     ]:
         """What a cache that cannot be read leaves this process holding.
 
@@ -3484,13 +3625,13 @@ class CatalogService:
         load a cache the same two dictionaries. The first one to index anything
         fills them in for all of them.
         """
-        return {}, None, None, {}, None, 0.0, {}
+        return {}, None, None, {}, None, 0.0, {}, None, None
 
     def _load_fearless_index(
         self,
     ) -> tuple[
         dict[int, list[tuple[str, str]]], int | None, int | None, dict[int, float], int | None, float,
-        dict[str, tuple[str, float]],
+        dict[str, tuple[str, float]], float | None, float | None,
     ]:
         try:
             raw = load_json(
@@ -3600,7 +3741,20 @@ class CatalogService:
                         displaced = {}
                         break
                     displaced[topic_id] = (item[0], float(item[1]))
-            return pages, total_pages, total_topics, fetched, page_step, float(searched), displaced
+            # The anchor is advisory too: without it the next refresh is the
+            # ordinary walk of every due page, which then sets it again.
+            head_activity = raw.get("head_activity")
+            anchored = raw.get("anchored")
+            if (
+                isinstance(head_activity, bool) or not isinstance(head_activity, (int, float))
+                or not 0 < float(head_activity) <= time.time() + FEARLESS_INDEX_MAX_AGE_SECONDS
+                or isinstance(anchored, bool) or not isinstance(anchored, (int, float))
+                or not 0 < float(anchored) <= time.time() + FEARLESS_INDEX_MAX_AGE_SECONDS
+            ):
+                head_activity = anchored = None
+            return (pages, total_pages, total_topics, fetched, page_step, float(searched), displaced,
+                    None if head_activity is None else float(head_activity),
+                    None if anchored is None else float(anchored))
         except (OSError, ValueError, TypeError):
             return self._no_fearless_index()
 

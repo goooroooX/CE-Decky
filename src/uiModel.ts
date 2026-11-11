@@ -3301,6 +3301,12 @@ export function fearlessIndexSentence(
       ? `Every page has been read, the oldest of them ${coarseAge(nowMs - index.fully_refreshed_at * 1000)}.`
       : "Every page has been read, though not all of them within one pass.";
     parts.push(refreshed);
+    // Between the weekly reads of every page, what keeps the copy current is
+    // the front: the forum lists what was posted in first, so reading it until
+    // it reaches what the copy holds finds all of it.
+    if (typeof index.anchored_at === "number" && index.anchored_at > 0) {
+      parts.push(`Its front was last checked for new posts ${coarseAge(nowMs - index.anchored_at * 1000)}, which is where anything new appears.`);
+    }
     if (owed > 0) parts.push(`${owed} page${owed === 1 ? " is" : "s are"} due to be read again.`);
   } else {
     if (missing !== null && missing > 0) {

@@ -1314,6 +1314,12 @@ export interface FearlessIndexStatus {
   refresh_age_seconds: number;
   /** When the least recently fetched page was read, once every page is held. */
   fully_refreshed_at: number | null;
+  /**
+   * When a read of the listing's front last reached what the index already
+   * held, so that everything posted in since is in it. Absent from a backend
+   * before this field.
+   */
+  anchored_at?: number | null;
   /** Pages the next background pass owes: never fetched, or aged out. */
   stale_pages: number;
   /**

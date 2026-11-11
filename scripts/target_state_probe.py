@@ -63,6 +63,9 @@ MAX_REPORTED_PROFILES = 32
 # parsers, which a probe running under the system interpreter has no reason to
 # need. `tests/test_target_state_probe_providers.py` holds the two equal.
 PROVIDER_PAGE_FRESHNESS_SECONDS = 24 * 60 * 60
+# How long a page may go unread however the index is anchored, mirroring
+# `FEARLESS_FULL_SWEEP_SECONDS` there, and held equal by the same test.
+PROVIDER_PAGE_SWEEP_SECONDS = 7 * 24 * 60 * 60
 # One cache file contributes this much of itself to the report: the index is
 # hundreds of kilobytes and the question is its shape, never its contents.
 MAX_PROVIDER_CACHE_BYTES = 64 * 1024 * 1024
@@ -161,10 +164,17 @@ def _fearless_index_summary(
     marker, marker_rejected = searched_marker
     if marker is not None:
         searched = marker if searched is None else max(searched, marker)
-    # Due means the same thing it means to the crawl: never read, or read longer
-    # ago than a page stays fresh. A page with no timestamp is due by definition.
+    # Due means the same thing it means to the crawl: never read, read longer
+    # ago than the weekly sweep allows, or read longer ago than a page stays
+    # fresh while no read of the front has anchored the index within that day.
+    # A page with no timestamp is due by definition.
     cutoff = now - PROVIDER_PAGE_FRESHNESS_SECONDS
-    dated = sum(1 for value in stamps if value > cutoff)
+    anchored = raw.get("anchored")
+    anchored = (isinstance(anchored, (int, float)) and not isinstance(anchored, bool)
+                and cutoff < float(anchored) <= now + PROVIDER_PAGE_FRESHNESS_SECONDS
+                and isinstance(raw.get("head_activity"), (int, float)))
+    floor = now - PROVIDER_PAGE_SWEEP_SECONDS if anchored else cutoff
+    dated = sum(1 for value in stamps if value > floor)
     indexed = len(pages)
     return {
         "indexed_pages": indexed,
@@ -177,6 +187,7 @@ def _fearless_index_summary(
         # ones that have aged out of it.
         "pages_due": None if total_pages is None else max(0, total_pages - dated),
         "freshness_window_s": PROVIDER_PAGE_FRESHNESS_SECONDS,
+        "anchored": anchored,
         "searched_age_h": _age_hours(searched, now),
         # A moment the plugin refuses is not the same answer as no moment at
         # all: it is a cache this device cannot act on, and after a clock

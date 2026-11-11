@@ -408,7 +408,16 @@ pushes every topic below it down a page, so a topic pushed off a page a refresh
 read lands on one still holding its older copy. Such a topic is kept beside the
 pages, bounded in number and age, until a page lists it again or every page has
 been read since it went; it is searched like any other and its attachments are
-still read live. A first
+still read live. Because the listing is ordered by last post, everything posted
+in since the index was last whole sits above everything that was not: a page a
+day old is due again only until a read of the front reaches a topic no newer
+than the newest the front held then, which a day's activity on the forum put
+inside the first page, so the daily refresh is one or two pages rather than all
+of them, and a search reads no further than that either. That read never sees a
+topic deleted, or one moved into or out of the forum with its old last post,
+which lands deep in the listing, so every page is still read at least once a week,
+and a front that does not reach the anchor within eight pages leaves that day
+to the ordinary walk of every due page. A first
 search may therefore return fewer FearLess results while the index is still
 being built; **Search again** uses whatever additional pages are complete.
 

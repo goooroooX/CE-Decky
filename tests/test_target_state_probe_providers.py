@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from ce_decky.catalog import CatalogService, FEARLESS_INDEX_MAX_AGE_SECONDS, FEARLESS_SEARCH_MARKER_NAME
+from ce_decky.catalog import (
+    CatalogService, FEARLESS_FULL_SWEEP_SECONDS, FEARLESS_INDEX_MAX_AGE_SECONDS, FEARLESS_SEARCH_MARKER_NAME,
+)
 from scripts import target_state_probe
 
 
@@ -32,6 +34,27 @@ def test_the_reported_freshness_window_is_the_crawls_own():
     # HTML and XML parsers a probe under the system interpreter has no reason to
     # need. Repeated means it can drift, so it is held here instead.
     assert target_state_probe.PROVIDER_PAGE_FRESHNESS_SECONDS == FEARLESS_INDEX_MAX_AGE_SECONDS
+    assert target_state_probe.PROVIDER_PAGE_SWEEP_SECONDS == FEARLESS_FULL_SWEEP_SECONDS
+
+
+def test_pages_an_anchored_index_holds_are_due_only_once_the_weekly_sweep_is(tmp_path: Path):
+    # Anchored by a read of the front within the day, a page read two days ago
+    # owes nothing; one read past the sweep, and one never read, still do.
+    cache = tmp_path / "home" / ".cheat-engine-decky" / "cache"
+    cache.mkdir(parents=True)
+    now = time.time()
+    index = {
+        "schema": 1, "total_pages": 3, "page_step": 50, "pages": {"0": [], "50": [], "100": []},
+        "fetched": {"0": now - 600, "50": now - 2 * 86400, "100": now - (FEARLESS_FULL_SWEEP_SECONDS + 60)},
+        "searched": now - 600,
+    }
+    (cache / "fearless-index.json").write_text(json.dumps(index), encoding="utf-8")
+    listing = _probe(tmp_path)["provider_caches"]["files"]["fearless-index.json"]["listing"]
+    assert (listing["anchored"], listing["pages_due"]) == (False, 2)
+    index.update(head_activity=now - 3600, anchored=now - 600)
+    (cache / "fearless-index.json").write_text(json.dumps(index), encoding="utf-8")
+    listing = _probe(tmp_path)["provider_caches"]["files"]["fearless-index.json"]["listing"]
+    assert (listing["anchored"], listing["pages_due"]) == (True, 1)
 
 
 def test_the_reported_search_marker_is_the_file_the_plugin_writes():

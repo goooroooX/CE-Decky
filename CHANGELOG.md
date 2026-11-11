@@ -4,6 +4,7 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.35 — 2026-11-11
 
+- [Changed] The FearLess listing index keeps itself current by reading the front of the forum until it reaches what it already holds, usually one page a day rather than all of its more than three hundred, and reads every page once a week to notice topics that were removed. A search reads one listing page rather than two when nothing more has changed.
 - [Fixed] FearLess search no longer loses a game whose topic the forum had just moved onto a listing page this device had not read again since; such a topic stays searchable until a page lists it again. A topic titled only in another script, such as Russian, is now found for a game that also has an English name, and equally good matches are read in the forum's order of latest activity rather than by topic number.
 - [Fixed] A FearLess refusal met by the background index pass no longer counts as a search under Advanced, Table sources: a challenge there is recorded and ends that pass rather than going unrecorded, and a refusal met by a search with an index already in hand is counted once rather than twice.
 - [Changed] Opening the CE Decky panel while Cheat Engine is connected now reads the cheats' live state again, so a pinned value shows what the game holds now rather than what it held when the panel was last open. A cheat switched while that read is under way waits a moment for it rather than failing.
