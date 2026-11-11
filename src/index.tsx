@@ -89,7 +89,7 @@ import { forgetSearchOutcomes } from "./providerCatalog";
 import { commitSourceSelection, countsReadable, everySourceOn, sourceSwitched } from "./providerSelection";
 import { canAutoImportLocalMember, forgetAllRejectedArtifacts } from "./tableImport";
 import { isDeckyFilePickerCancellation } from "./deckyFilePicker";
-import { DIFFERENT_BUILD_EXPLANATION, type RefusedActivation, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
+import { DIFFERENT_BUILD_EXPLANATION, type RefusedActivation, EVERY_PATTERN_FOUND, MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryReadingInertScripts, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "./runtimeClient";
 import { aggregateTableHolders, tableHolderIds, tableOwnerNames } from "./tableHolders";
 import { PANEL_CATCH_UP_DELAY_MS, absentLiveTarget, autoloadSettleRemainingMs, absentUnderStoppedScripts, activeCheatsUnder, disableAllSummary, offWithoutSwitchKeys, rememberedScriptChoices, recordsWaitingForScripts, sitsInsideScript, defaultTargetProcess, withoutWineRuntimeProcesses, panelUpdateOffer, antiCheatBlockedReason, blockedTableLookups, controlNeedsValueInput, controlRowLabel, switchOffValues, switchValuesFor, switchesToHoldOff, switchesLeftOn, leftOnSentence, dirtyRunRefusal, dirtyRunNotice, type OwnedStopVerdict, gamesOnThisDevice, providerDisplayName, refusedStartupEnable, divergentLiveTarget, enclosingControlIds, launchOwnership, inactiveAncestorControls, isExactAttachedRuntime, isExactRuntimeSession, importedTableArtifacts, isValidProcessBasename, latestRuntimeResult, localTableArtifacts, ambiguousScanFinding, missingScanFinding, pinnedCheatRows, pinnedControlValue, declaredValue, settingsForStartedScripts, pinnedMissingCount, rememberedSelection, rememberedSelectionBudgetError, safeActionableControls, scriptListedControlIds, selfTestSummary, tableSourceLabel, unusedActiveScripts, withoutKnownLaunchers } from "./uiModel";
 import { HomePanel } from "./components/HomePanel";
@@ -1019,8 +1019,8 @@ function Content() {
       if (exactReady && nextInspection && snapshotIds.length <= MAX_LIVE_CONTROLS) {
         // A child its script has not created yet is an expected per-record
         // state, not a broken session: it must not fail the whole hydration.
-        const queried = await queryRuntimeControlsPartial(
-          canonical.appId, snapshotIds, undefined, panelAborterRef.current.signal,
+        const queried = await queryReadingInertScripts(
+          canonical.appId, safeActionableControls(nextInspection), snapshotIds, panelAborterRef.current.signal,
         );
         nextRuntime = queried.envelope;
         const sessionId = queried.envelope.prepared?.session_id;
@@ -1532,8 +1532,8 @@ function Content() {
   const captureLiveSnapshot = useCallback(async (
     appId: number, tableInspection: TableInspection,
   ): Promise<RuntimeEnvelope | null> => {
-    const recordIds = safeActionableControls(tableInspection)
-      .flatMap((control) => control.id === null ? [] : [control.id]);
+    const controls = safeActionableControls(tableInspection);
+    const recordIds = controls.flatMap((control) => control.id === null ? [] : [control.id]);
     if (recordIds.length > MAX_LIVE_CONTROLS) return null;
     try {
       // A record inside a script does not exist until that script has run, so
@@ -1541,8 +1541,8 @@ function Content() {
       // session. Requiring every record to answer meant a single unmaterialized
       // child threw away the whole snapshot: pinned controls disappeared and
       // Disable all went dead while the bridge was perfectly healthy.
-      const queried = await queryRuntimeControlsPartial(
-        appId, recordIds, undefined, panelAborterRef.current.signal,
+      const queried = await queryReadingInertScripts(
+        appId, controls, recordIds, panelAborterRef.current.signal,
       );
       recordLiveSnapshot([...queried.results, ...queried.unavailable], queried.envelope);
       return queried.envelope;
@@ -1555,6 +1555,27 @@ function Content() {
       return null;
     }
   }, [recordLiveSnapshot, dropLiveSnapshot]);
+
+  // The panel stays mounted while the quick access menu is closed, so a pinned
+  // value showed what the game held when it was last read, which could be long
+  // ago. Each time it comes back into view with an exact session, the live
+  // state is read again: queries only, in the background over what is already
+  // shown, never while a press is under way and never two at once. Not on
+  // mount, where hydration has just read it.
+  const shownRef = useRef(quickAccessVisible);
+  const readOnShowRef = useRef(false);
+  const showReadRef = useRef(false);
+  useEffect(() => {
+    if (quickAccessVisible && !shownRef.current) readOnShowRef.current = true;
+    shownRef.current = quickAccessVisible;
+  }, [quickAccessVisible]);
+  useEffect(() => {
+    if (!readOnShowRef.current || !quickAccessVisible || busy || !runtimeSessionReady || !selectedGame || !inspection) return;
+    readOnShowRef.current = false;
+    if (showReadRef.current) return;
+    showReadRef.current = true;
+    void captureLiveSnapshot(selectedGame.appId, inspection).finally(() => { showReadRef.current = false; });
+  }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot]);
 
   // The backend knows whether it installed this Cheat Engine itself, which it
   // answers from the installation's own location rather than by matching the

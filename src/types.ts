@@ -291,6 +291,13 @@ export interface TableControl {
    * Absent from an inspection made before this was recognised.
    */
   attach_only?: boolean;
+  /**
+   * A script that, switched on by itself, provably changes nothing the game
+   * runs until a record inside it is set: it records a pointer, or its own
+   * switches all start off. Machinery when it holds a record, so it is
+   * listed with the scripts. Absent from an inspection made before this was read.
+   */
+  inert_alone?: boolean;
 }
 
 export interface TableInspection {

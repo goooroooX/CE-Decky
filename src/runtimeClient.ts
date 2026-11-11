@@ -1,6 +1,7 @@
-import { logUiWarning } from "./supportLog";
+import { logUi, logUiWarning } from "./supportLog";
 import { confirmTableWorking, getRuntimeStatus, writeRuntimeCommands } from "./api";
-import type { RuntimeEnvelope, RuntimeResult } from "./types";
+import type { RuntimeEnvelope, RuntimeResult, TableControl } from "./types";
+import { inertScriptsToStart } from "./uiModel";
 import { describeError, leadWithCause } from "./errors";
 import { isPreCommitRefusal } from "./durableWrite";
 import { monotonicNow } from "./elapsed";
@@ -554,6 +555,70 @@ export async function queryRuntimeControlsPartial(
     results: queried.results.filter((result) => result.ok),
     unavailable: queried.results.filter((result) => !result.ok && result.error_code === "record_missing"),
   };
+}
+
+/**
+ * The inert scripts each session has already started or found running, by
+ * session ID. Module state on purpose: the panel unmounts whenever a modal
+ * opens, and a read from either has to know what the other already did.
+ */
+const inertScriptsSeen = new Map<string, Set<number>>();
+const MAX_SESSIONS_REMEMBERED = 8;
+
+/**
+ * `queryRuntimeControlsPartial`, with the scripts inside which nothing can be
+ * read switched on first where they are proved inert by themselves
+ * (`inertScriptsToStart`), and read again.
+ *
+ * Starting them is not an Apply: no table is confirmed working by it, nothing
+ * is remembered, and Auto-load never repeats it. A start that fails is logged
+ * and the first read is returned, because a value that cannot be shown is no
+ * reason to show nothing.
+ */
+export async function queryReadingInertScripts(
+  appId: number,
+  controls: readonly TableControl[],
+  recordIds: readonly number[],
+  signal?: AbortSignal,
+): Promise<RuntimeBatchResult & { unavailable: RuntimeResult[] }> {
+  const first = await queryRuntimeControlsPartial(appId, recordIds, undefined, signal);
+  const session = first.envelope.prepared?.session_id;
+  if (!session || first.envelope.status?.session_id !== session || !first.envelope.session_current) return first;
+  let seen = inertScriptsSeen.get(session);
+  if (!seen) {
+    if (inertScriptsSeen.size >= MAX_SESSIONS_REMEMBERED) inertScriptsSeen.delete(inertScriptsSeen.keys().next().value as string);
+    seen = new Set<number>();
+    inertScriptsSeen.set(session, seen);
+  }
+  const inert = new Set(controls.flatMap((control) => control.id !== null && control.inert_alone ? [control.id] : []));
+  for (const result of first.results) {
+    if (result.record_id !== null && inert.has(result.record_id) && result.active === true) seen.add(result.record_id);
+  }
+  const start = inertScriptsToStart(controls, first.results, seen);
+  if (start.length === 0) return first;
+  for (const recordId of start) seen.add(recordId);
+  try {
+    for (let index = 0; index < start.length; index += COMMAND_BATCH_SIZE) {
+      if (signal?.aborted) throw new RuntimeQueryAbortedError();
+      const batch = await sendRuntimeBatchAndWait(
+        appId,
+        start.slice(index, index + COMMAND_BATCH_SIZE).map((recordId) => ({ kind: "set_active", record_id: recordId, value: "1" })),
+        first.envelope,
+      );
+      const refused = batch.results.filter((result) => !result.ok || result.active !== true);
+      logUi("runtime.inert_scripts_started", {
+        app_id: appId,
+        session,
+        started: batch.results.length - refused.length,
+        refused: refused.map((result) => result.record_id),
+      });
+    }
+  } catch (cause) {
+    if (cause instanceof RuntimeQueryAbortedError) throw cause;
+    logUiWarning("runtime.inert_scripts_not_started", { app_id: appId, session, reason: describeError(cause) });
+    return first;
+  }
+  return queryRuntimeControlsPartial(appId, recordIds, first.envelope, signal);
 }
 
 /**

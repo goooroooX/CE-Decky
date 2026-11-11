@@ -11,6 +11,7 @@ import unicodedata
 
 from .atomic import read_regular_bytes
 from .ct_hooks import flags_safe_to_switch_off
+from .ct_machinery import inert_alone
 from .ct_scans import TableScan, read_scans
 from .table_markers import is_auto_assembler_marker, is_embedded_file, is_form_marker, is_lua_marker, local_tag
 from .table_store import MAX_CT_BYTES, MAX_XML_ELEMENTS, TableContentError, _FORBIDDEN_XML_MARKERS
@@ -164,6 +165,14 @@ class TableControl:
     declared_default: str | None = None
     # This record only attaches Cheat Engine to the game; it is not a cheat.
     attach_only: bool = False
+    # This script, switched on by itself, provably changes nothing the game
+    # runs until a record inside it writes the memory it allocates: a hook
+    # that records a pointer, or one whose own switches all start off.
+    # `ct_machinery` reads the script's code and answers in one direction
+    # only, so `false` is anything from a cheat to a script it could not
+    # follow. The panel puts a script this is true of, with records inside
+    # it, behind **Scripts**, and starts it whenever one of those records is.
+    inert_alone: bool = False
     # Whether writing this record's off value is something the table's own code
     # was read and found to survive.
     #
@@ -715,6 +724,7 @@ def _walk_entry(
             group_header=group_header,
             has_assembler_script=has_assembler,
             attach_only=_is_attach_only(assembler_text),
+            inert_alone=kind == "script" and inert_alone(assembler_text),
             dropdown_values=dropdown,
             dropdown_read_only=dropdown_read_only,
             switch_on_value=switch_on_value,

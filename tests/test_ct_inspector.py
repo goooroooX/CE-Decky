@@ -711,3 +711,23 @@ def test_the_nearest_script_wins_whatever_case_it_redeclares_a_symbol_in(tmp_pat
     shared = next(control for control in inspect_table(path, sha256(data).hexdigest()).controls if control.id == 3)
     # The inner script's own answers: its declaration and its unsafe hook.
     assert (shared.declared_default, shared.switch_off_is_safe) == ("0", False)
+
+
+def test_a_script_proved_inert_by_itself_says_so_and_a_cheat_does_not(tmp_path):
+    from tests.test_ct_machinery import CAPTURE, GATED
+
+    def script(record_id: int, name: str, code: str, inside: str = "") -> str:
+        nested = f"<CheatEntries>{inside}</CheatEntries>" if inside else ""
+        return (f"<CheatEntry><ID>{record_id}</ID><Description>{name}</Description>"
+                f"<VariableType>Auto Assembler Script</VariableType><AssemblerScript>{code}</AssemblerScript>{nested}</CheatEntry>")
+
+    value = "<CheatEntry><ID>9</ID><Description>Gold</Description><VariableType>4 Bytes</VariableType><Address>pStats</Address></CheatEntry>"
+    cheat = GATED.replace("je @f", "jne @f")
+    data = (f'<CheatTable CheatEngineTableVersion="45"><CheatEntries>{script(1, "Statistics", CAPTURE, value)}'
+            f'{script(2, "Items", GATED)}{script(3, "Max Items", cheat)}</CheatEntries></CheatTable>').encode()
+
+    controls = {control.id: control for control in _inspect(data, tmp_path).controls}
+
+    assert (controls[1].inert_alone, controls[2].inert_alone, controls[3].inert_alone) == (True, True, False)
+    assert controls[9].inert_alone is False
+    assert controls[1].as_dict()["inert_alone"] is True

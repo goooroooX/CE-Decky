@@ -7,7 +7,7 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../src/api", () => api);
 
-import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeOutcomeUnknownError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryRuntimeControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "../src/runtimeClient";
+import { MAX_LIVE_CONTROLS, RuntimeOperationError, RuntimeOutcomeUnknownError, RuntimeQueryAbortedError, applyRuntimeSelection, deactivateAllActiveControls, queryReadingInertScripts, queryRuntimeControls, queryRuntimeControlsPartial, sendRuntimeCommandAndWait } from "../src/runtimeClient";
 
 const prepared = {
   session_id: "session",
@@ -1089,6 +1089,47 @@ describe("nested MemoryRecord topology", () => {
       .mockResolvedValueOnce(envelope(3, answered));
     api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 });
     await expect(queryRuntimeControls(10, [1, 2])).rejects.toThrow(/MemoryRecord missing/);
+  });
+
+  it("starts a script proved inert by itself once a session, so the values inside it can be read", async () => {
+    // `Statistics` only records where its value lives: until it runs, Cheat
+    // Engine has no `Gold` to read. The read starts it with a bare command,
+    // which confirms nothing about the table, and reads again.
+    const controls = [
+      { id: 1, description: "Statistics", path: ["Statistics"], structure: ["0"], variable_type: null, kind: "script", group_header: false, has_assembler_script: true, inert_alone: true },
+      { id: 2, description: "Gold", path: ["Statistics", "Gold"], structure: ["0", "0"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false },
+    ] as any;
+    const off = [query(1, 1, false), query(2, 2, null, false)];
+    const started = [...off, { generation: 3, record_id: 1, active: true, value: null, ok: true, error: null, error_code: null }];
+    const read = [...started, query(4, 1, true), { ...query(5, 2, false), value: "120" }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(3, off))
+      .mockResolvedValueOnce(envelope(3, off))
+      .mockResolvedValueOnce(envelope(4, started))
+      .mockResolvedValueOnce(envelope(4, started))
+      .mockResolvedValueOnce(envelope(6, read));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 4 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 6 });
+
+    const answer = await queryReadingInertScripts(10, controls, [1, 2]);
+
+    expect(api.writeRuntimeCommands).toHaveBeenNthCalledWith(2, 10, [{ generation: 3, kind: "set_active", record_id: 1, value: "1" }]);
+    expect(answer.results.find((result) => result.record_id === 2)?.value).toBe("120");
+    expect(api.confirmTableWorking).not.toHaveBeenCalled();
+
+    // Switched off again by hand in the same session, it stays off: a read
+    // starts it once, and does not argue with the user after that.
+    api.getRuntimeStatus.mockReset();
+    api.writeRuntimeCommands.mockReset();
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(6, read))
+      .mockResolvedValueOnce(envelope(8, [...read, query(6, 1, false), query(7, 2, null, false)]));
+    api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: 2, next_generation: 8 });
+    await queryReadingInertScripts(10, controls, [1, 2]);
+    expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(1);
   });
 
   it("does not reinterpret target detachment as an unavailable nested record", async () => {

@@ -5674,12 +5674,19 @@ function enclosingControlIds(controls) {
 /**
  * Controls listed with the scripts rather than with the cheats.
  *
- * Two different things belong here for the same reason: neither is a choice a
+ * Three different things belong here for the same reason: none is a choice a
  * user makes. A script that holds other scripts is the machinery a table uses
  * to build its real cheats, and CE Decky switches it on by itself. An
  * attach-only record is the table author's own "attach to the game" button,
  * which changes nothing in the game and duplicates what CE Decky already did by
- * exact PID.
+ * exact PID. And a script holding records whose own code was read and proved
+ * to change nothing the game runs until one of those records is set
+ * (`inert_alone`): a hook that records a pointer the records read, or one
+ * whose switches all start off. The records are the cheats, and switching one
+ * on starts the script, as does any read while Cheat Engine runs
+ * (`inertScriptsToStart`), so the values inside it can be shown. A script that proof did not reach stays a cheat, which is
+ * the side to be wrong on: hiding a cheat takes away the one way to switch it
+ * on by itself.
  *
  * A table does not say which of its scripts are machinery, so this goes by
  * shape. Every record with others inside it used to be listed here, which hid
@@ -5713,9 +5720,46 @@ function scriptListedControlIds(controls) {
         // script that holds them.
         if (scripts.some((inner) => inner.id !== control.id && encloses(control.structure, inner.structure))) {
             ids.add(control.id);
+            continue;
         }
+        // Inert by itself and holding a record to start it for. One holding
+        // nothing, or only a header, is left a row: hidden, nothing would ever
+        // start it.
+        if (isInertHolder(control, controls))
+            ids.add(control.id);
     }
     return ids;
+}
+/** A script proved inert by itself that holds a record a user can act on. */
+function isInertHolder(control, controls) {
+    return control.id !== null && control.kind === "script" && control.inert_alone === true
+        && controls.some((inner) => inner.id !== control.id && inner.kind !== "group" && !inner.group_header
+            && encloses(control.structure, inner.structure));
+}
+/**
+ * The scripts a read switches on so that the records inside them can be read,
+ * shallowest first.
+ *
+ * Cheat Engine creates nothing inside a script, and reads nothing there, until
+ * the script runs, so a value under a hook that only records where it lives
+ * shows no **Current** until something starts it. Configure cheats puts that
+ * hook behind **Scripts**, where nobody starts it by hand, so a read does: it
+ * is a script whose own code proves it changes nothing the game runs until a
+ * record inside it is set (`inert_alone`), so starting it is no more a change
+ * than the read is. It is never a choice and never remembered as one.
+ *
+ * Once a session, by `seen`: the scripts a read has already started, or found
+ * running. One the user then switches off, or one Cheat Engine would not
+ * start, is not started again on every read after it.
+ */
+function inertScriptsToStart(controls, states, seen) {
+    const stateById = new Map(states.flatMap((state) => state.record_id === null ? [] : [[state.record_id, state]]));
+    return controls
+        .filter((control) => isInertHolder(control, controls)
+        && !seen.has(control.id) && stateById.get(control.id)?.ok === true
+        && stateById.get(control.id)?.active === false)
+        .sort((left, right) => left.structure.length - right.structure.length)
+        .map((control) => control.id);
 }
 /**
  * `N active`, with the scripts that are on said beside the number rather than
@@ -5914,8 +5958,11 @@ function offWithoutSwitchKeys(remembered, wentOff, controls) {
 function unusedActiveScripts(controls, activeById, change) {
     const enclosing = enclosingControlIds(controls);
     const offPlaces = controls.flatMap((control) => control.id !== null && change.switchedOff.has(control.id) ? [control.structure] : []);
+    // A script proved inert by itself is never residue: it changes nothing in
+    // the game, and releasing it is what took **Current** away from every value
+    // inside it the moment the last cheat there went off.
     const scripts = controls
-        .filter((control) => control.id !== null && control.kind === "script" && enclosing.has(control.id))
+        .filter((control) => control.id !== null && control.kind === "script" && enclosing.has(control.id) && control.inert_alone !== true)
         .filter((script) => offPlaces.some((place) => encloses(script.structure, place)))
         .sort((left, right) => right.structure.length - left.structure.length);
     const active = new Map(activeById);
@@ -8967,6 +9014,67 @@ async function queryRuntimeControlsPartial(appId, recordIds, expectedEnvelope, s
         results: queried.results.filter((result) => result.ok),
         unavailable: queried.results.filter((result) => !result.ok && result.error_code === "record_missing"),
     };
+}
+/**
+ * The inert scripts each session has already started or found running, by
+ * session ID. Module state on purpose: the panel unmounts whenever a modal
+ * opens, and a read from either has to know what the other already did.
+ */
+const inertScriptsSeen = new Map();
+const MAX_SESSIONS_REMEMBERED = 8;
+/**
+ * `queryRuntimeControlsPartial`, with the scripts inside which nothing can be
+ * read switched on first where they are proved inert by themselves
+ * (`inertScriptsToStart`), and read again.
+ *
+ * Starting them is not an Apply: no table is confirmed working by it, nothing
+ * is remembered, and Auto-load never repeats it. A start that fails is logged
+ * and the first read is returned, because a value that cannot be shown is no
+ * reason to show nothing.
+ */
+async function queryReadingInertScripts(appId, controls, recordIds, signal) {
+    const first = await queryRuntimeControlsPartial(appId, recordIds, undefined, signal);
+    const session = first.envelope.prepared?.session_id;
+    if (!session || first.envelope.status?.session_id !== session || !first.envelope.session_current)
+        return first;
+    let seen = inertScriptsSeen.get(session);
+    if (!seen) {
+        if (inertScriptsSeen.size >= MAX_SESSIONS_REMEMBERED)
+            inertScriptsSeen.delete(inertScriptsSeen.keys().next().value);
+        seen = new Set();
+        inertScriptsSeen.set(session, seen);
+    }
+    const inert = new Set(controls.flatMap((control) => control.id !== null && control.inert_alone ? [control.id] : []));
+    for (const result of first.results) {
+        if (result.record_id !== null && inert.has(result.record_id) && result.active === true)
+            seen.add(result.record_id);
+    }
+    const start = inertScriptsToStart(controls, first.results, seen);
+    if (start.length === 0)
+        return first;
+    for (const recordId of start)
+        seen.add(recordId);
+    try {
+        for (let index = 0; index < start.length; index += COMMAND_BATCH_SIZE) {
+            if (signal?.aborted)
+                throw new RuntimeQueryAbortedError();
+            const batch = await sendRuntimeBatchAndWait(appId, start.slice(index, index + COMMAND_BATCH_SIZE).map((recordId) => ({ kind: "set_active", record_id: recordId, value: "1" })), first.envelope);
+            const refused = batch.results.filter((result) => !result.ok || result.active !== true);
+            logUi("runtime.inert_scripts_started", {
+                app_id: appId,
+                session,
+                started: batch.results.length - refused.length,
+                refused: refused.map((result) => result.record_id),
+            });
+        }
+    }
+    catch (cause) {
+        if (cause instanceof RuntimeQueryAbortedError)
+            throw cause;
+        logUiWarning("runtime.inert_scripts_not_started", { app_id: appId, session, reason: describeError(cause) });
+        return first;
+    }
+    return queryRuntimeControlsPartial(appId, recordIds, first.envelope, signal);
 }
 /**
  * Whether this refusal says anything about the table itself.
@@ -12058,8 +12166,9 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
     const sections = SP_REACT.useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
     // What the Scripts toggle hides, which is not what Apply treats as a
     // dependency: a script holding only its settings is a dependency of them and
-    // is listed with the cheats, and an attach-only record is machinery although
-    // nothing is ever switched on through it.
+    // is listed with the cheats unless its own code proves it inert by itself,
+    // and an attach-only record is machinery although nothing is ever switched on
+    // through it.
     // A pinned record is a cheat at the user's word, whatever it encloses: a table
     // carries no mark that tells machinery from a script with its settings under
     // it. Read from the pins this dialog opened with, so a row does not vanish
@@ -12205,7 +12314,9 @@ function CheatSelectionModal({ appId, inspection, live, liveUnavailableReason = 
         // logic: selecting a child could no longer see a confirmed-off parent to
         // switch on first. Initialize every readable record and represent the rest
         // as blocked by their parent.
-        void queryRuntimeControlsPartial(appId, safeControls.flatMap((control) => control.id === null ? [] : [control.id]), undefined, aborter.signal)
+        // A script proved inert by itself is switched on first, so the values
+        // inside it, behind **Scripts** where nobody starts it, can be read.
+        void queryReadingInertScripts(appId, safeControls, safeControls.flatMap((control) => control.id === null ? [] : [control.id]), aborter.signal)
             .then(({ results, unavailable, envelope }) => {
             if (cancelled)
                 return;
@@ -15678,7 +15789,7 @@ function Content() {
             if (exactReady && nextInspection && snapshotIds.length <= MAX_LIVE_CONTROLS) {
                 // A child its script has not created yet is an expected per-record
                 // state, not a broken session: it must not fail the whole hydration.
-                const queried = await queryRuntimeControlsPartial(canonical.appId, snapshotIds, undefined, panelAborterRef.current.signal);
+                const queried = await queryReadingInertScripts(canonical.appId, safeActionableControls(nextInspection), snapshotIds, panelAborterRef.current.signal);
                 nextRuntime = queried.envelope;
                 const sessionId = queried.envelope.prepared?.session_id;
                 const tableSha256 = queried.envelope.prepared?.table_sha256;
@@ -16180,8 +16291,8 @@ function Content() {
      * query that has no bearing on it.
      */
     const captureLiveSnapshot = SP_REACT.useCallback(async (appId, tableInspection) => {
-        const recordIds = safeActionableControls(tableInspection)
-            .flatMap((control) => control.id === null ? [] : [control.id]);
+        const controls = safeActionableControls(tableInspection);
+        const recordIds = controls.flatMap((control) => control.id === null ? [] : [control.id]);
         if (recordIds.length > MAX_LIVE_CONTROLS)
             return null;
         try {
@@ -16190,7 +16301,7 @@ function Content() {
             // session. Requiring every record to answer meant a single unmaterialized
             // child threw away the whole snapshot: pinned controls disappeared and
             // Disable all went dead while the bridge was perfectly healthy.
-            const queried = await queryRuntimeControlsPartial(appId, recordIds, undefined, panelAborterRef.current.signal);
+            const queried = await queryReadingInertScripts(appId, controls, recordIds, panelAborterRef.current.signal);
             recordLiveSnapshot([...queried.results, ...queried.unavailable], queried.envelope);
             return queried.envelope;
         }
@@ -16204,6 +16315,29 @@ function Content() {
             return null;
         }
     }, [recordLiveSnapshot, dropLiveSnapshot]);
+    // The panel stays mounted while the quick access menu is closed, so a pinned
+    // value showed what the game held when it was last read, which could be long
+    // ago. Each time it comes back into view with an exact session, the live
+    // state is read again: queries only, in the background over what is already
+    // shown, never while a press is under way and never two at once. Not on
+    // mount, where hydration has just read it.
+    const shownRef = SP_REACT.useRef(quickAccessVisible);
+    const readOnShowRef = SP_REACT.useRef(false);
+    const showReadRef = SP_REACT.useRef(false);
+    SP_REACT.useEffect(() => {
+        if (quickAccessVisible && !shownRef.current)
+            readOnShowRef.current = true;
+        shownRef.current = quickAccessVisible;
+    }, [quickAccessVisible]);
+    SP_REACT.useEffect(() => {
+        if (!readOnShowRef.current || !quickAccessVisible || busy || !runtimeSessionReady || !selectedGame || !inspection)
+            return;
+        readOnShowRef.current = false;
+        if (showReadRef.current)
+            return;
+        showReadRef.current = true;
+        void captureLiveSnapshot(selectedGame.appId, inspection).finally(() => { showReadRef.current = false; });
+    }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot]);
     // The backend knows whether it installed this Cheat Engine itself, which it
     // answers from the installation's own location rather than by matching the
     // SHA the manifest currently pins.

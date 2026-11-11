@@ -2749,12 +2749,19 @@ export function enclosingControlIds(controls: readonly TableControl[]): Set<numb
 /**
  * Controls listed with the scripts rather than with the cheats.
  *
- * Two different things belong here for the same reason: neither is a choice a
+ * Three different things belong here for the same reason: none is a choice a
  * user makes. A script that holds other scripts is the machinery a table uses
  * to build its real cheats, and CE Decky switches it on by itself. An
  * attach-only record is the table author's own "attach to the game" button,
  * which changes nothing in the game and duplicates what CE Decky already did by
- * exact PID.
+ * exact PID. And a script holding records whose own code was read and proved
+ * to change nothing the game runs until one of those records is set
+ * (`inert_alone`): a hook that records a pointer the records read, or one
+ * whose switches all start off. The records are the cheats, and switching one
+ * on starts the script, as does any read while Cheat Engine runs
+ * (`inertScriptsToStart`), so the values inside it can be shown. A script that proof did not reach stays a cheat, which is
+ * the side to be wrong on: hiding a cheat takes away the one way to switch it
+ * on by itself.
  *
  * A table does not say which of its scripts are machinery, so this goes by
  * shape. Every record with others inside it used to be listed here, which hid
@@ -2786,9 +2793,51 @@ export function scriptListedControlIds(controls: readonly TableControl[]): Set<n
     // script that holds them.
     if (scripts.some((inner) => inner.id !== control.id && encloses(control.structure, inner.structure))) {
       ids.add(control.id);
+      continue;
     }
+    // Inert by itself and holding a record to start it for. One holding
+    // nothing, or only a header, is left a row: hidden, nothing would ever
+    // start it.
+    if (isInertHolder(control, controls)) ids.add(control.id);
   }
   return ids;
+}
+
+/** A script proved inert by itself that holds a record a user can act on. */
+function isInertHolder(control: TableControl, controls: readonly TableControl[]): boolean {
+  return control.id !== null && control.kind === "script" && control.inert_alone === true
+    && controls.some((inner) => inner.id !== control.id && inner.kind !== "group" && !inner.group_header
+      && encloses(control.structure, inner.structure));
+}
+
+/**
+ * The scripts a read switches on so that the records inside them can be read,
+ * shallowest first.
+ *
+ * Cheat Engine creates nothing inside a script, and reads nothing there, until
+ * the script runs, so a value under a hook that only records where it lives
+ * shows no **Current** until something starts it. Configure cheats puts that
+ * hook behind **Scripts**, where nobody starts it by hand, so a read does: it
+ * is a script whose own code proves it changes nothing the game runs until a
+ * record inside it is set (`inert_alone`), so starting it is no more a change
+ * than the read is. It is never a choice and never remembered as one.
+ *
+ * Once a session, by `seen`: the scripts a read has already started, or found
+ * running. One the user then switches off, or one Cheat Engine would not
+ * start, is not started again on every read after it.
+ */
+export function inertScriptsToStart(
+  controls: readonly TableControl[],
+  states: readonly RuntimeResult[],
+  seen: ReadonlySet<number>,
+): number[] {
+  const stateById = new Map(states.flatMap((state) => state.record_id === null ? [] : [[state.record_id, state] as const]));
+  return controls
+    .filter((control): control is TableControl & { id: number } => isInertHolder(control, controls)
+      && !seen.has(control.id as number) && stateById.get(control.id as number)?.ok === true
+      && stateById.get(control.id as number)?.active === false)
+    .sort((left, right) => left.structure.length - right.structure.length)
+    .map((control) => control.id);
 }
 
 /**
@@ -3018,9 +3067,12 @@ export function unusedActiveScripts(
   const enclosing = enclosingControlIds(controls);
   const offPlaces = controls.flatMap((control) =>
     control.id !== null && change.switchedOff.has(control.id) ? [control.structure] : []);
+  // A script proved inert by itself is never residue: it changes nothing in
+  // the game, and releasing it is what took **Current** away from every value
+  // inside it the moment the last cheat there went off.
   const scripts = controls
     .filter((control): control is TableControl & { id: number } =>
-      control.id !== null && control.kind === "script" && enclosing.has(control.id))
+      control.id !== null && control.kind === "script" && enclosing.has(control.id) && control.inert_alone !== true)
     .filter((script) => offPlaces.some((place) => encloses(script.structure, place)))
     .sort((left, right) => right.structure.length - left.structure.length);
   const active = new Map(activeById);

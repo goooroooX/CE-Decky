@@ -280,3 +280,12 @@ def test_dropdowns_counts_what_configure_cheats_draws_for_each_list(tmp_path: Pa
     assert answer["tables"] == 1 and answer["duplicate_copies"] == 1
     assert (answer["lists"], answer["read_only"], answer["switches"], answer["read_only_switches"]) == (4, 2, 2, 1)
     assert answer["accept_a_typed_value"] == 1 and answer["tables_with_a_read_only_list"] == 1
+
+
+def test_a_script_is_given_the_role_the_production_reader_proves():
+    from tests.test_ct_machinery import CAPTURE, GATED
+
+    assert survey.script_role(CAPTURE) == ("pointer_capture", None)
+    assert survey.script_role(GATED) == ("idle_at_start", None)
+    assert survey.script_role(GATED.replace("je @f", "jne @f")) == ("cheat", "skips_the_game_code")
+    assert survey.script_role(None) == ("cheat", None)

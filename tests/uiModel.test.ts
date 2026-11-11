@@ -81,6 +81,7 @@ import {
   rememberedSelection,
   enclosingControlIds,
   scriptListedControlIds,
+  inertScriptsToStart,
   unusedActiveScripts,
   activeCheatsUnder,
   offWithoutSwitchKeys,
@@ -1774,6 +1775,43 @@ describe("Executable-content review", () => {
     ];
 
     expect([...scriptListedControlIds(shapes)].sort((a, b) => a - b)).toEqual([20, 25, 26]);
+  });
+
+  it("lists a script proved inert by itself with the machinery only while it holds records", () => {
+    // `Statistics` records a pointer its values read, so starting a value is
+    // the whole of what it is for. `Infinite Health` holds its setting and was
+    // not proved inert, so it stays a cheat, and an inert script holding
+    // nothing, or only a header, would be a row nothing could ever start.
+    const inert = (id: number, path: string[]): TableControl => ({ ...script(id, path), inert_alone: true });
+    const shapes: TableControl[] = [
+      inert(30, ["Statistics"]),
+      leaf(31, ["Statistics", "Gold"]),
+      script(32, ["Infinite Health"]),
+      leaf(33, ["Infinite Health", "Health %"]),
+      inert(34, ["Empty Hook"]),
+      inert(35, ["Headed Hook"]),
+      { ...leaf(36, ["Headed Hook", "Section"]), kind: "group", group_header: true },
+    ];
+
+    expect([...scriptListedControlIds(shapes)]).toEqual([30]);
+    // Still a dependency: a cheat inside it switches it on.
+    expect([...enclosingControlIds(shapes)].sort((a, b) => a - b)).toEqual([30, 32, 35]);
+
+    // A read starts the one that is off and holds a record, shallowest first,
+    // and none it has started or seen running in this session already.
+    const nested = inert(37, ["Statistics", "Hook"]);
+    const withNested = [...shapes, nested, leaf(38, ["Statistics", "Hook", "Kills"])];
+    const states = [30, 32, 34, 35, 37].map((id) => ({ generation: id, record_id: id, active: false, value: null, ok: true, error: null }));
+    expect(inertScriptsToStart(withNested, states, new Set())).toEqual([30, 37]);
+    expect(inertScriptsToStart(withNested, states, new Set([30]))).toEqual([37]);
+    // One Cheat Engine has not created, or one already on, is not started.
+    expect(inertScriptsToStart(withNested, states.filter((state) => state.record_id !== 37), new Set())).toEqual([30]);
+    expect(inertScriptsToStart(withNested, states.map((state) => ({ ...state, active: true })), new Set())).toEqual([]);
+
+    // Never released as residue: it changes nothing, and releasing it took
+    // **Current** away from every value inside it.
+    const active = new Map<number, boolean | null>([[30, true], [31, false]]);
+    expect(unusedActiveScripts(shapes, active, { chosen: new Set(), switchedOff: new Set([31]) })).toEqual([]);
   });
 
   it("releases a whole chain of scripts once the last cheat under it is off", () => {

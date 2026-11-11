@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "py_modules"))
 
 from ce_decky.ct_inspector import inspect_table  # noqa: E402
+from ce_decky import ct_machinery as machinery  # noqa: E402
 from ce_decky import __version__ as product_version  # noqa: E402
 from ce_decky.profiles import ConfiguredValue, GameProfile, StartupPreference  # noqa: E402
 from ce_decky.session_protocol import effective_startup_plan  # noqa: E402
@@ -819,6 +820,50 @@ MAX_SHAPE_EXAMPLES = 6
 _SHAPES = ("outermost_values_only", "outermost_holds_scripts", "nested_values_only", "nested_holds_scripts")
 
 
+# What a script Configure cheats lists as a cheat is by itself, by the
+# production reader (`ct_machinery`): `pointer_capture` changes nothing whatever
+# its own memory holds, `idle_at_start` changes nothing until a record inside
+# it writes that memory, which is what `inert_alone` and the panel's **Scripts**
+# go by, and `cheat` is everything else, counted by the first reason the reader
+# gave so a corpus says what it is missing.
+MAX_ROLE_EXAMPLES = 12
+_ROLES = ("pointer_capture", "idle_at_start", "cheat")
+
+
+def _scripts_by_id(path: Path) -> dict[int, str]:
+    """Each script record's Auto Assembler text, by the record's ID."""
+    data = path.read_bytes()
+    if any(marker in data.upper() for marker in _FORBIDDEN_XML):
+        raise ValueError("that table declares a DTD or an entity, which this does not expand")
+    found: dict[int, str] = {}
+    for entry in ET.fromstring(data).iter():
+        if entry.tag.rsplit("}", 1)[-1] != "CheatEntry":
+            continue
+        record_id = script = None
+        for child in entry:
+            name = child.tag.rsplit("}", 1)[-1]
+            if name == "ID" and record_id is None:
+                try:
+                    record_id = int((child.text or "").strip())
+                except ValueError:
+                    record_id = None
+            elif name == "AssemblerScript" and script is None:
+                script = child.text or ""
+        if record_id is not None and script is not None:
+            found.setdefault(record_id, script)
+    return found
+
+
+def script_role(script: str | None) -> tuple[str, str | None]:
+    """One of `_ROLES`, and for a cheat the reader's first reason, or None when it has no script."""
+    if not script:
+        return "cheat", None
+    if machinery.verdict(script) is None:
+        return "pointer_capture", None
+    reason = machinery.verdict(script, at_start=True)
+    return ("idle_at_start", None) if reason is None else ("cheat", reason)
+
+
 def _listed_controls(found) -> list:
     """The controls Configure cheats lists, by most of `safeActionableControls`.
 
@@ -850,6 +895,7 @@ def scripts_one(table: Path) -> dict[str, object]:
     if len(data) > MAX_TABLE_BYTES:
         raise ValueError("that table is larger than one this reads")
     found = inspect_table(table, sha256(data).hexdigest())
+    texts = _scripts_by_id(table)
     listed = _listed_controls(found)
     prefixes = {
         tuple(control.structure[:depth])
@@ -869,7 +915,13 @@ def scripts_one(table: Path) -> dict[str, object]:
         holds_scripts = any(other.kind == "script" and inside(control, other) for other in listed if other is not control)
         held = sum(1 for other in listed if inside(control, other))
         shape = ("outermost" if outermost else "nested") + ("_holds_scripts" if holds_scripts else "_values_only")
-        shapes[shape].append({"name": " > ".join(control.path), "holds": held, "kind": control.kind})
+        row: dict[str, object] = {"name": " > ".join(control.path), "holds": held, "kind": control.kind}
+        if control.kind == "script" and not holds_scripts:
+            # What Configure cheats shows as a cheat today, and what it is.
+            row["role"], reason = script_role(texts.get(control.id))
+            if reason is not None:
+                row["reason"] = reason
+        shapes[shape].append(row)
     return {
         "table": table.name,
         "sha256": found.sha256,
@@ -897,6 +949,11 @@ def scripts_corpus(root: Path) -> dict[str, object]:
     kinds: dict[str, dict[str, int]] = {shape: {} for shape in _SHAPES}
     script_holders = 0
     examples: dict[str, list[str]] = {shape: [] for shape in _SHAPES}
+    roles = {role: 0 for role in _ROLES}
+    tables_with_role = {role: 0 for role in _ROLES}
+    role_examples: dict[str, list[str]] = {role: [] for role in _ROLES}
+    reasons: dict[str, int] = {}
+    reason_examples: dict[str, list[str]] = {}
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() != ".ct":
             continue
@@ -907,6 +964,24 @@ def scripts_corpus(root: Path) -> dict[str, object]:
             unreadable += 1
             continue
         listed += int(answer["listed"])
+        seen_roles: set[str] = set()
+        for rows in answer["shapes"].values():
+            for row in rows:
+                role = row.get("role")
+                if role is None:
+                    continue
+                roles[role] += 1
+                seen_roles.add(role)
+                example = f"{row['name']} (holds {row['holds']}) in {answer['sha256'][:8]}"
+                if len(role_examples[role]) < MAX_ROLE_EXAMPLES:
+                    role_examples[role].append(example)
+                reason = str(row.get("reason") or "no_script")
+                if role == "cheat":
+                    reasons[reason] = reasons.get(reason, 0) + 1
+                    if len(reason_examples.setdefault(reason, [])) < MAX_ROLE_EXAMPLES:
+                        reason_examples[reason].append(example)
+        for role in seen_roles:
+            tables_with_role[role] += 1
         for shape, rows in answer["shapes"].items():
             counts[shape] += len(rows)
             if rows:
@@ -931,6 +1006,11 @@ def scripts_corpus(root: Path) -> dict[str, object]:
         "kinds": kinds,
         "examples": examples,
         "hidden_by_rule": hidden_by,
+        "values_only_scripts_by_role": roles,
+        "tables_with_role": tables_with_role,
+        "role_examples": role_examples,
+        "cheat_reasons": dict(sorted(reasons.items(), key=lambda item: -item[1])),
+        "cheat_reason_examples": reason_examples,
         "enclosing_shown_by_rule": {rule: sum(counts.values()) - hidden for rule, hidden in hidden_by.items()},
     }
 
@@ -1165,7 +1245,9 @@ def main() -> int:
         for shape, rows in one["shapes"].items():
             print(f"  {shape}: {len(rows)}")
             for row in rows[:MAX_SHAPE_EXAMPLES]:
-                print(f"    {row['name']} ({row['kind']}, holds {row['holds']})")
+                role = f", {row['role']}" if "role" in row else ""
+                role += f" ({row['reason']})" if "reason" in row else ""
+                print(f"    {row['name']} ({row['kind']}, holds {row['holds']}{role})")
     scripts = answer.get("scripts_corpus")
     if isinstance(scripts, dict):
         print(f"tables {scripts['tables']} ({scripts['unreadable']} unreadable), listed {scripts['listed']}")
@@ -1176,6 +1258,15 @@ def main() -> int:
                 print(f"    {example}")
         for rule, hidden in scripts["hidden_by_rule"].items():
             print(f"  rule {rule}: hides {hidden}, shows {scripts['enclosing_shown_by_rule'][rule]} enclosing records")
+        for role in _ROLES:
+            print(f"  {role}: {scripts['values_only_scripts_by_role'][role]} scripts "
+                  f"in {scripts['tables_with_role'][role]} tables")
+            for example in scripts["role_examples"][role]:
+                print(f"    {example}")
+        for reason, count in scripts["cheat_reasons"].items():
+            print(f"  cheat because {reason}: {count}")
+            for example in scripts["cheat_reason_examples"][reason]:
+                print(f"    {example}")
     check = answer.get("check")
     if isinstance(check, dict):
         megabytes = int(check["executable_bytes"]) // (1024 * 1024)

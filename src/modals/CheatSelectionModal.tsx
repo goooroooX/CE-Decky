@@ -18,7 +18,7 @@ import { modalActionStyle } from "../components/ModalActions";
 import { CheatRow, cheatRowActionStyle, toggleBoxStyle } from "../components/CheatRow";
 import { ActionGroup, CONTENTS_ONLY, DensePanel, FilterField, PanelNote, PanelRow, RefusalBlock, SectionHeading, SideBySide, SmallButton, SwitchBox, useFittedRows, usePageHeight, useRowHeight } from "../components/PanelDensity";
 import { PagerFooter } from "../components/PagerFooter";
-import { applyRuntimeSelection, queryRuntimeControlsPartial, RuntimeQueryAbortedError, type RefusedActivation, type RuntimeDesiredState } from "../runtimeClient";
+import { applyRuntimeSelection, queryReadingInertScripts, queryRuntimeControlsPartial, RuntimeQueryAbortedError, type RefusedActivation, type RuntimeDesiredState } from "../runtimeClient";
 import {
   CONTROL_PAGE_SIZE,
   clampPage,
@@ -210,8 +210,9 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
   const sections = useMemo(() => controlSections(inspection, safeControls), [inspection, safeControls]);
   // What the Scripts toggle hides, which is not what Apply treats as a
   // dependency: a script holding only its settings is a dependency of them and
-  // is listed with the cheats, and an attach-only record is machinery although
-  // nothing is ever switched on through it.
+  // is listed with the cheats unless its own code proves it inert by itself,
+  // and an attach-only record is machinery although nothing is ever switched on
+  // through it.
   // A pinned record is a cheat at the user's word, whatever it encloses: a table
   // carries no mark that tells machinery from a script with its settings under
   // it. Read from the pins this dialog opened with, so a row does not vanish
@@ -370,10 +371,12 @@ export function CheatSelectionModal({ appId, inspection, live, liveUnavailableRe
     // logic: selecting a child could no longer see a confirmed-off parent to
     // switch on first. Initialize every readable record and represent the rest
     // as blocked by their parent.
-    void queryRuntimeControlsPartial(
+    // A script proved inert by itself is switched on first, so the values
+    // inside it, behind **Scripts** where nobody starts it, can be read.
+    void queryReadingInertScripts(
       appId,
+      safeControls,
       safeControls.flatMap((control) => control.id === null ? [] : [control.id]),
-      undefined,
       aborter.signal,
     )
       .then(({ results, unavailable, envelope }) => {

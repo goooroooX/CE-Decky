@@ -58,6 +58,10 @@ const quickAccess = vi.hoisted(() => ({ visible: true, listeners: new Set<() => 
 const runtimeClient = vi.hoisted(() => ({
   sendRuntimeCommandAndWait: vi.fn(), applyRuntimeSelection: vi.fn(), deactivateAllActiveControls: vi.fn(),
   queryRuntimeControls: vi.fn(), queryRuntimeControlsPartial: vi.fn(),
+  // The read that starts inert scripts first is the partial query here: these
+  // tests stage what that query answers, and a plain function survives a reset.
+  queryReadingInertScripts: (appId: number, _controls: unknown, recordIds: readonly number[], signal?: AbortSignal) =>
+    runtimeClient.queryRuntimeControlsPartial(appId, recordIds, undefined, signal),
   // The product limit is a real export the panel reads, not a mock knob.
   MAX_LIVE_CONTROLS: 512,
   RuntimeOperationError: class RuntimeOperationError extends Error {},
@@ -822,6 +826,18 @@ describe("Home panel and managed setup", () => {
     expect(screen.getByText(/Steam · game\.exe/)).toBeTruthy();
     expect(screen.getByText("1 active")).toBeTruthy();
     expect(screen.getByText("Health")).toBeTruthy();
+  });
+
+  it("reads the live state again each time the panel comes back into view", async () => {
+    // The panel stays mounted while the menu is closed, so a pinned value
+    // showed what the game held when it was last read.
+    renderContent();
+    expect(await screen.findByText("1 active")).toBeTruthy();
+    const before = runtimeClient.queryRuntimeControlsPartial.mock.calls.length;
+    await act(async () => { quickAccess.visible = false; quickAccess.listeners.forEach((notify) => notify()); });
+    expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before);
+    await act(async () => { quickAccess.visible = true; quickAccess.listeners.forEach((notify) => notify()); });
+    await waitFor(() => expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before + 1));
   });
 
   it("reads its own runtime lines in place and keeps a stop for the ones the backend wrote", async () => {
