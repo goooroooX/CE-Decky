@@ -14,8 +14,20 @@ switches can still change the game with all of them off. So this reads the
 script's own Auto Assembler code and proves one thing about it. The shape is a
 hook. Every block is under a label the script allocated or declared, or is its
 one patch of the game, which holds only the jump into the hook and what pads
-it, with nothing written under the label after it. Along every branch of the
-hook, each instruction compares, branches to a label of its own, or is one
+it, with nothing written under the label after it. That jump is a `jmp`: a
+`call` leaves its return address on the game's stack. It is counted as the
+five bytes of the near form, which in a 64-bit game holds only while the hook
+is within 2 GiB of the patch, so a script naming a 64-bit register has to ask
+for memory near an address with an `alloc`, or the jump may be the fourteen
+bytes of the long form over a patch padded for five. A script naming none is
+taken for a 32-bit game's; that is this proof's one assumption about a script
+it cannot read from the script, and a 64-bit hook written without a single
+64-bit register is the case it does not see. A line no branch of the
+hook runs is read as well, because Cheat Engine acts on it wherever it stands:
+it has to be an instruction or data assembled into the script's own memory, so
+a command such as `createthread(…)` past the jump back, or a label this does
+not recognise, which would put what follows it in the game, is a change.
+Along every branch of the hook, each instruction compares, branches to a label of its own, or is one
 whose only effects are the operands it names and the flags, writing only data
 the script holds itself, one symbol and a constant past it inside what that
 symbol declares, or a register between its own push and pop of it; calls are
@@ -41,8 +53,9 @@ compared with a constant then goes only the way that value sends it, unless
 the script writes that memory itself.
 
 **It answers in one direction only.** Anything this does not recognise, Lua, a
-jump it cannot place, a script past its bounds, is a change or may be one, and
-the script stays a cheat the user can see. `verdict` names the first reason,
+`{$…}` directive such as compiled C, a `/* */` comment, which is not taken out
+here and would be read as the script, a jump it cannot place, a script past
+its bounds, is a change or may be one, and the script stays a cheat the user can see. `verdict` names the first reason,
 which is what `scripts/ct_scan_survey.py --scripts` counts over a corpus.
 """
 from __future__ import annotations
@@ -88,6 +101,17 @@ _GAME_NAMES = re.compile(r"^\s*(?:aobscan\w*|define)\s*\(\s*([A-Za-z_]\w*)", re.
 _READMEM = re.compile(r"readmem\s*\(\s*([^,()]+?)\s*,\s*([^,()]+?)\s*\)$", re.IGNORECASE)
 _WORD = re.compile(r"[A-Za-z_]\w*")
 _LUA = re.compile(r"\{\$lua\}|\bluacall\b|\bsyntaxcheck\b", re.IGNORECASE)
+# What a line no branch of the hook runs may be: bytes assembled into the
+# script's own memory, an instruction or data by its mnemonic, or a `readmem`
+# copied there. A command such as `createthread(…)` is neither, and it runs
+# wherever in the script it is written.
+_ASSEMBLED_ONLY = re.compile(r"^(?:readmem\s*\(|[A-Za-z]\w*(?:\s|$))", re.IGNORECASE)
+# A register only a 64-bit program has, anywhere in the script, its listing
+# included: the one thing a script says about which kind of game it is for.
+_SIXTY_FOUR_BIT = re.compile(r"\b(?:r(?:[a-d]x|[sd]i|[sb]p|ip|(?:8|9|1[0-5])[dwb]?)|[xy]mm(?:[89]|1[0-5]))\b",
+                             re.IGNORECASE)
+# `alloc(newmem,$1000,INJECT)`: memory asked for near an address.
+_NEAR_ALLOC = re.compile(r"^\s*(?:global)?alloc\s*\(\s*[A-Za-z_]\w*\s*,[^,)]+,\s*[^,)\s]", re.IGNORECASE)
 _FAMILY = re.compile(r"^(?:[re]?([abcd])[xlh]|[re]?(si|di|bp|sp)l?|(r(?:8|9|1[0-5]))[dwb]?)$", re.IGNORECASE)
 # What changes the flags register, which the game's own next branch reads.
 _SETS_FLAGS = frozenset({
@@ -179,6 +203,11 @@ def verdict(script: str, at_start: bool = False) -> str | None:
         return "too_large"
     if _LUA.search(script):
         return "lua"
+    if "{$" in script:
+        # `{$c}` and `{$ccode}` hold C that Cheat Engine compiles, and every
+        # other `{$…}` changes how what follows is read. None is read here,
+        # and the comment rule below would take a braced C block for a comment.
+        return "compiler_directive"
     # The template's listing: what the jump displaced, and what the game runs
     # after it.
     displaced: list[str] = []
@@ -203,6 +232,11 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     lines = [line for line in lines if line]
     if any(len(line) > MAX_LINE_CHARS for line in lines):
         return "too_large"
+    if any("/*" in line or "*/" in line for line in lines):
+        # A block comment is not taken out here, so what it holds would be
+        # read as the script: a commented-out `aobscan` pinning bytes the
+        # real one leaves open.
+        return "block_comment"
     own = {match.group(1).casefold() for line in lines if (match := _ALLOC.match(line))}
     own |= {name.casefold() for line in lines if (match := _LABELS.match(line))
             for name in re.split(r"[\s,]+", match.group(1)) if name}
@@ -212,7 +246,10 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     # The script as blocks, each a label and the lines under it, in order.
     blocks: list[tuple[str, bool, list[str]]] = []
     for line in lines:
-        if _DIRECTIVE.match(line) and not line.lower().startswith(("readmem", "db", "dw", "dd", "dq")):
+        # What assembles bytes stays a line of its block, so that inside the
+        # patch it is the change to the game it is.
+        if _DIRECTIVE.match(line) and not line.lower().startswith(
+                ("readmem", "db", "dw", "dd", "dq", "dt", "df", "align")):
             continue
         label = _SCRIPT_LABEL.match(line)
         if label:
@@ -237,7 +274,9 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     # The one place in the game the script writes, and how many bytes of the
     # game's code that is: the replay has to be exactly those bytes, or an
     # instruction the jump covered is skipped, which is the commonest cheat
-    # there is. A `jmp` or `call` to the hook is five bytes.
+    # there is. A `jmp` to the hook is five bytes; a `call` there leaves its
+    # return address on the game's stack past a hook that jumps back, so it
+    # is not an entry this reads.
     patched = [name for name, at_game, _ in blocks if at_game]
     if len(patched) != 1:
         return "not_one_patch"
@@ -260,7 +299,8 @@ def verdict(script: str, at_start: bool = False) -> str | None:
             continue
         for line in body:
             mnemonic = line.split(None, 1)[0].lower()
-            if mnemonic in {"jmp", "call"} and _target(line) in own:
+            # `jmp far newmem` is the long form whatever the distance.
+            if mnemonic == "jmp" and len(line.split()) == 2 and _target(line) in own:
                 entries.append(_target(line))
                 patch_size += 5
             elif mnemonic == "nop":
@@ -324,6 +364,13 @@ def verdict(script: str, at_start: bool = False) -> str | None:
             if following is not None:
                 falls.add(index)
             index = following
+    # What no branch runs is assembled all the same, and a line is read by
+    # where the walk below meets it. One it never meets has to be bytes in the
+    # script's own memory: a command runs wherever it stands, and a label this
+    # did not recognise moves everything under it to an address in the game.
+    for index, (_, at_game, body) in enumerate(blocks):
+        if not at_game and any(not _ASSEMBLED_ONLY.match(line) or ":" in line for line in body[reached.get(index, 0):]):
+            return "unread_line"
     # One way back, unconditional, with the displaced code run in the same
     # block before it: a branch can only land on a label, so nothing reaches
     # that jump without passing through the replay.
@@ -456,6 +503,16 @@ def verdict(script: str, at_start: bool = False) -> str | None:
                 break
         if not (resets or (listed and _flags_unread(after))):
             return "flags_reach_the_game"
+    # In a 64-bit game that jump is five bytes only while the hook is within
+    # 2 GiB of it; further away Cheat Engine assembles fourteen, `FF 25` and
+    # the address (`Assemblerunit.pas` at `ec45d5f4`), over nine more bytes of
+    # the game than the script pads and replays. Where its memory lands is
+    # Windows' choice, or Wine's, unless an `alloc` asks for it near an
+    # address, and Cheat Engine places the script's other allocations with
+    # that one (`autoassembler.pas`). A 32-bit game has no such distance, and a
+    # script is taken for one only where it names no 64-bit register at all.
+    if _SIXTY_FOUR_BIT.search(script) and not any(_NEAR_ALLOC.match(line) for line in lines):
+        return "jump_may_be_long"
     return None
 
 

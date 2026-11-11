@@ -30,7 +30,7 @@ objStats:
 LISTED = """{ header }
 [ENABLE]
 aobscanmodule(INJECT,game.exe,8B 48 08 83 39 00)
-alloc(newmem,$1000)
+alloc(newmem,$1000,INJECT)
 alloc(pDiff,8)
 label(code)
 label(return)
@@ -268,3 +268,65 @@ def test_a_readmem_replay_runs_the_same_only_where_its_bytes_do_not_depend_on_wh
     assert machinery._position_independent("8B 81 38".split()) is False
     assert machinery._position_independent("EB 05".split()) is False
     assert machinery._position_independent([]) is False
+
+
+def test_a_line_no_branch_runs_is_still_read_as_what_cheat_engine_does_with_it():
+    after_the_way_back = "  jmp return\nobjStats:"
+    assert after_the_way_back in CAPTURE
+
+    def placed(lines: str) -> str:
+        return CAPTURE.replace(after_the_way_back, f"  jmp return\n{lines}\nobjStats:")
+
+    # A command runs wherever it is written, past the jump back included.
+    assert machinery.verdict(placed("createthread(newmem)")) == "unread_line"
+    assert machinery.verdict(placed("loadlibrary(other.dll)")) == "unread_line"
+    # A label this does not recognise puts what is under it in the game.
+    for label in ("game.exe+1234+10:", "[game.exe+1234]+10:", "game.exe+0x1234:"):
+        assert machinery.verdict(placed(f"{label}\n  db 90 90 90")) == "unread_line"
+    # In a block of the script's own that nothing jumps to, too.
+    unreached = placed("other:\ncreatethread(newmem)").replace("label(return)", "label(return other)")
+    assert machinery.verdict(unreached) == "unread_line"
+    # Bytes the script keeps for itself there are still only its own memory.
+    saved = placed("saved:\n  readmem(objStats,6)\n  db 00 00\n  align 10").replace("label(return)", "label(return saved)")
+    assert proven(saved)
+
+
+def test_whatever_assembles_bytes_inside_the_patch_is_a_change_to_the_game():
+    patch = "  jmp newmem\n  nop\n"
+    assert patch in CAPTURE
+    for line in ("dt 1.0", "df 1.0", "align 10"):
+        assert machinery.verdict(CAPTURE.replace(patch, f"{patch}  {line}\n")) == "patch_is_not_a_jump"
+        assert machinery.verdict(CAPTURE.replace("return:\n[DISABLE]", f"return:\n  {line}\n[DISABLE]")) == "patch_is_not_a_jump"
+    # Entered by a call and left by a jump, the hook leaves the call's return
+    # address on the game's stack.
+    assert machinery.verdict(CAPTURE.replace("objStats:\n  jmp newmem", "objStats:\n  call newmem", 1)) == "patch_is_not_a_jump"
+
+
+def test_text_this_does_not_take_out_as_cheat_engine_would_is_never_read_as_the_script():
+    wildcard = LISTED.replace("8B 48 08 83 39 00)", "8B 48 ?? 83 39 00)", 1)
+    assert machinery.verdict(wildcard) == "replay_unproved"
+    # A commented-out scan must not pin the bytes the real one leaves open.
+    exact = "aobscanmodule(INJECT,game.exe,8B 48 08 83 39 00)"
+    for comment in (f"/*\n{exact}\n*/", f"  nop /*\n{exact}\n  nop */"):
+        assert machinery.verdict(wildcard.replace("  jmp return\nINJECT:", f"  jmp return\n{comment}\nINJECT:")) == "block_comment"
+    # Braces are a comment to this reader and a C block to Cheat Engine.
+    compiled = CAPTURE.replace("  mov [pStats],rcx\n", "  mov [pStats],rcx\n{$ccode base=rcx}\n{ *(int*)(base+0x10) = 999; }\n{$asm}\n")
+    assert machinery.verdict(compiled) == "compiler_directive"
+
+
+def test_a_hook_whose_jump_may_be_the_long_one_is_not_proved():
+    # In a 64-bit game, memory nothing asked for near the patch may be more
+    # than 2 GiB from it, and the jump there is fourteen bytes over a patch
+    # padded and replayed for five.
+    far = CAPTURE.replace("alloc(newmem,$500,objStats)", "alloc(newmem,$500)")
+    assert far != CAPTURE and machinery.verdict(far) == "jump_may_be_long"
+    # Any allocation asked for near an address takes the others with it.
+    assert proven(far.replace("alloc(pStats,8)", "alloc(pStats,8,objStats)"))
+    # Named only in the listing, a 64-bit register still says which game this is.
+    listed = LISTED.replace("alloc(newmem,$1000,INJECT)", "alloc(newmem,$1000)")
+    assert machinery.verdict(listed) == "jump_may_be_long"
+    # A script naming none is for a 32-bit game, where the jump is always five.
+    narrow = listed.replace("rbx", "ebx")
+    assert "rbx" in listed and proven(narrow)
+    # Asked for as the long form, it is fourteen bytes wherever the hook is.
+    assert machinery.verdict(CAPTURE.replace("objStats:\n  jmp newmem", "objStats:\n  jmp far newmem", 1)) == "patch_is_not_a_jump"
