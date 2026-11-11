@@ -478,7 +478,10 @@ class PluginService:
         # `executable_digest`. A success recorded while that read was still
         # running leaves a ticket naming the exact row it wrote, and only that
         # row can be given the digest later; see `_settle_executable_digests`.
-        self.executable_digests = ExecutableDigests(logger)
+        # A digest that finishes settles the success waiting for it at once:
+        # left to the next status read, one finished after the last poll before
+        # a restart never reached the record.
+        self.executable_digests = ExecutableDigests(logger, on_settled=self._settle_executable_digests)
         self._executable_digest_tickets: OrderedDict[tuple[int, str], dict] = OrderedDict()
         # The last state each executable-compared record was published in, so
         # a change is logged once rather than on every status read.
@@ -1409,6 +1412,10 @@ class PluginService:
                 dropped, _ = self._executable_digest_tickets.popitem(last=False)
                 log_activity(self.logger, "info", "table_compatibility.executable_ticket_dropped",
                              app_id=dropped[0], table_sha=dropped[1][:12], reason="too many waiting")
+            # The read may have finished between the lookup that found it
+            # pending and this ticket, which is the one moment the worker's
+            # own settle cannot see it.
+            self._settle_executable_digests()
         comparison = row.get("comparison") if isinstance(row, dict) else None
         return {
             "comparison": comparison,
@@ -1419,9 +1426,9 @@ class PluginService:
     def _settle_executable_digests(self) -> None:
         """Give a success recorded while its digest was being read that digest.
 
-        Called from the runtime status read, which already records proof and
-        which the panel repeats while a game is selected, so a digest that
-        finishes reading reaches the record within one poll. Only the exact row
+        Called by the digest worker the moment a read has an answer, after a
+        ticket is left, and from the runtime status read, so a digest reaches
+        the record without waiting for another poll, which may never come. Only the exact row
         the ticket's success wrote can take it: a newer success for the same
         table and game, an invalidation, a failure recorded since, or a changed
         failure epoch each mean the row is no longer that success, and the

@@ -162,8 +162,11 @@ class ExecutableDigests:
     def __init__(self, logger, *, reader=sha256_regular_file, clock=time.monotonic,
                  proc_root: Path = Path("/proc"), max_file_bytes: int = MAX_FILE_BYTES,
                  deadline_s: float = DEADLINE_S, max_results: int = MAX_RESULTS,
-                 max_queued: int = MAX_QUEUED) -> None:
+                 max_queued: int = MAX_QUEUED, on_settled=None) -> None:
         self.logger = logger
+        # Called from the worker once a read has an answer, so what waits for
+        # one does not have to wait for somebody to ask again.
+        self._on_settled = on_settled
         self._reader = reader
         self._clock = clock
         self._proc_root = proc_root
@@ -222,8 +225,9 @@ class ExecutableDigests:
         """Refuse new work and stop the read in progress at its next chunk.
 
         A read blocked inside the kernel is not interrupted by this; it finishes
-        and its answer is discarded. Nothing this worker does is durable, so a
-        late answer has nowhere to go.
+        and its answer is discarded, and `on_settled` is not called for it. The
+        worker writes nothing itself; what `on_settled` writes is the caller's,
+        and one already running when this is called finishes its own write.
         """
         with self._lock:
             self._closed.set()
@@ -281,6 +285,12 @@ class ExecutableDigests:
             else:
                 log_activity(self.logger, "warning", "executable_digest.unavailable", executable=name,
                              size=identity[2], attempts=result.attempts, reason=result.reason)
+            if self._on_settled is not None and not self._closed.is_set():
+                try:
+                    self._on_settled()
+                except Exception as exc:  # noqa: BLE001 - the worker outlives what it reports to
+                    log_activity(self.logger, "warning", "executable_digest.settle_failed",
+                                 executable=name, reason=str(exc)[:160] or type(exc).__name__)
 
     # -- the running game ----------------------------------------------------
 

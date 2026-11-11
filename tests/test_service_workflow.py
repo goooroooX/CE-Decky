@@ -1019,7 +1019,7 @@ def test_working_evidence_requires_accepted_activation_and_later_readback(tmp_pa
         assert saved.focus_error == "Ex unavailable"
 
 
-def _versionless_proof(tmp_path, monkeypatch):
+def _versionless_proof(tmp_path, monkeypatch, before_ticket=False):
     """A confirmed cheat on a running game whose executable declares no version.
 
     The digest read is held open by a gate, so the success is recorded while it
@@ -1049,7 +1049,23 @@ def _versionless_proof(tmp_path, monkeypatch):
         gate.wait(5)
         return sha256_regular_file(path, **kwargs)
 
-    service.executable_digests = ExecutableDigests(service.logger, reader=gated)
+    # The service's own reader settles what waits for it; this one only gates the read.
+    assert service.executable_digests._on_settled == service._settle_executable_digests
+    service.executable_digests = ExecutableDigests(service.logger, reader=gated,
+                                                   on_settled=service._settle_executable_digests)
+    if before_ticket:
+        # The read finishes between the lookup that found it pending and the
+        # ticket the success leaves for it.
+        record = service.table_compatibility.record
+
+        def record_after_the_read(*args, **kwargs):
+            gate.set()
+            deadline = time.monotonic() + 5
+            while not service.executable_digests._results and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return record(*args, **kwargs)
+
+        monkeypatch.setattr(service.table_compatibility, "record", record_after_the_read)
     monkeypatch.setattr(service_module, "observe_game_executable_path", lambda app_id, process: str(exe))
     monkeypatch.setattr(service_module, "observe_game_executable_paths", lambda targets: {10: str(exe)})
     monkeypatch.setattr(service_module, "observe_game_executables", lambda targets: {10: (str(exe), (4242,))})
@@ -1088,10 +1104,11 @@ def test_a_versionless_executable_earns_a_match_by_its_bytes(tmp_path, monkeypat
 
     gate.set()
     _wait_for_digest_worker(service)
-    # A status read is a read: only the runtime poll gives the success its digest.
-    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] is None
-    service.get_runtime_status(10)
+    # The finished read settles the success itself: no poll may come after it
+    # before the plugin stops, and the record has to outlive that.
     expected = hashlib.sha256(exe.read_bytes()).hexdigest()
+    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] == expected
+    assert service._executable_digest_tickets == {}
     assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] == expected
     entry = service.get_status(10)["table_compatibility"]["entries"][0]
     assert (entry["state"], entry["pending"]) == ("matching", False)
@@ -1103,6 +1120,14 @@ def test_a_versionless_executable_earns_a_match_by_its_bytes(tmp_path, monkeypat
     _wait_for_digest_worker(service)
     entry = service.get_status(10)["table_compatibility"]["entries"][0]
     assert (entry["state"], entry["pending"]) == ("retest", False)
+
+
+def test_a_digest_finished_before_its_ticket_still_reaches_the_success(tmp_path, monkeypatch):
+    service, digest, exe, gate = _versionless_proof(tmp_path, monkeypatch, before_ticket=True)
+    _wait_for_digest_worker(service)
+    expected = hashlib.sha256(exe.read_bytes()).hexdigest()
+    assert service.table_compatibility.snapshot()["entries"][0]["executable_sha256"] == expected
+    assert service._executable_digest_tickets == {}
 
 
 def test_a_late_digest_never_lands_on_a_success_that_has_changed(tmp_path, monkeypatch):
