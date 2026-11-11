@@ -322,6 +322,14 @@ def test_a_hook_whose_jump_may_be_the_long_one_is_not_proved():
     assert far != CAPTURE and machinery.verdict(far) == "jump_may_be_long"
     # Any allocation asked for near an address takes the others with it.
     assert proven(far.replace("alloc(pStats,8)", "alloc(pStats,8,objStats)"))
+    # Near an address is near the patch only where that address is the patch:
+    # beside another module, or at a distance from the patch, proves nothing.
+    for elsewhere in ("kernel32.dll", '"other.dll"+1000', "objStats+7FFFFFFF", "pStats"):
+        assert machinery.verdict(CAPTURE.replace("alloc(newmem,$500,objStats)", f"alloc(newmem,$500,{elsewhere})")) \
+            == "jump_may_be_long"
+        assert machinery.verdict(far.replace("alloc(pStats,8)", f"alloc(pStats,8,{elsewhere})")) == "jump_may_be_long"
+    # The patched address spelled as its label is, quotes and case aside.
+    assert proven(CAPTURE.replace("alloc(newmem,$500,objStats)", 'alloc(newmem,$500, "OBJSTATS" )'))
     # Named only in the listing, a 64-bit register still says which game this is.
     listed = LISTED.replace("alloc(newmem,$1000,INJECT)", "alloc(newmem,$1000)")
     assert machinery.verdict(listed) == "jump_may_be_long"
@@ -336,6 +344,8 @@ def test_a_hook_whose_jump_may_be_the_long_one_is_not_proved():
     # says the game is 32-bit, where the jump is always five.
     x86 = narrow.replace("  push ebx\n", "  pushfd\n  push ebx\n").replace("  pop ebx\n", "  pop ebx\n  popfd\n")
     assert x86 != narrow and proven(x86)
+    # Where its memory is asked for does not matter to it.
+    assert proven(x86.replace("alloc(newmem,$1000)", "alloc(newmem,$1000,kernel32.dll)"))
     # Written only in a comment, or in the listing, it is not assembled.
     assert machinery.verdict(narrow.replace("  push ebx\n", "  push ebx // pushfd\n")) == "jump_may_be_long"
     assert machinery.verdict(narrow.replace("{ header }", "{ pushfd }")) == "jump_may_be_long"

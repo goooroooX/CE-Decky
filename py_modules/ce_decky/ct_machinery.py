@@ -113,8 +113,9 @@ _ASSEMBLED_ONLY = re.compile(r"^(?:readmem\s*\(|[A-Za-z]\w*(?:\s|$))", re.IGNORE
 # these runs in a 32-bit game or not at all, which is the only thing a script
 # proves about which kind of game it is for. `popad` is not marked there.
 _THIRTY_TWO_BIT_ONLY = frozenset({"pushad", "pusha", "pushall", "pushfd", "popfd"})
-# `alloc(newmem,$1000,INJECT)`: memory asked for near an address.
-_NEAR_ALLOC = re.compile(r"^\s*(?:global)?alloc\s*\(\s*[A-Za-z_]\w*\s*,[^,)]+,\s*[^,)\s]", re.IGNORECASE)
+# `alloc(newmem,$1000,INJECT)`: memory asked for near an address, which is
+# the third argument.
+_NEAR_ALLOC = re.compile(r"^\s*(?:global)?alloc\s*\(\s*[A-Za-z_]\w*\s*,[^,)]+,([^,)]+)\)", re.IGNORECASE)
 _FAMILY = re.compile(r"^(?:[re]?([abcd])[xlh]|[re]?(si|di|bp|sp)l?|(r(?:8|9|1[0-5]))[dwb]?)$", re.IGNORECASE)
 # What changes the flags register, which the game's own next branch reads.
 _SETS_FLAGS = frozenset({
@@ -518,7 +519,14 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     # take every script naming no 64-bit register for a 32-bit one. Only an
     # instruction Cheat Engine cannot assemble for a 64-bit game says so, and
     # not one the script gave a meaning of its own with `define`.
-    if not any(_NEAR_ALLOC.match(line) for line in lines) and not any(
+    #
+    # Near an address is near the patch only where that address is the patch:
+    # memory asked for beside another module is as far from this one as
+    # memory asked for nowhere, so the hint has to name the patched address
+    # exactly as its label does.
+    near = any((match := _NEAR_ALLOC.match(line)) and match.group(1).strip().strip('"').casefold() == patched[0]
+               for line in lines)
+    if not near and not any(
             line.split(None, 1)[0].lower() in _THIRTY_TWO_BIT_ONLY - names
             for _, _, body in blocks for line in body):
         return "jump_may_be_long"
