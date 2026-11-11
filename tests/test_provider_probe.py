@@ -81,3 +81,45 @@ def test_fearless_probe_uses_the_declared_stride_and_an_actual_topic():
         ("fearless-forum-page", "https://fearlessrevolution.com/viewforum.php?f=4&start=25"),
         ("fearless-topic", "https://fearlessrevolution.com/viewtopic.php?f=4&t=123"),
     ]
+
+
+class _PacedNetwork:
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.urls: list[str] = []
+
+    async def get(self, url, **kwargs):
+        assert kwargs["retries"] == 0
+        self.urls.append(url)
+        status = self.statuses.pop(0)
+        body = (
+            '<div class="pagination">150 topics <span class="sr-only">Page 1 of 3</span>'
+            '<ul><li class="active"><span>1</span></li><li><a href="./viewforum.php?f=4&amp;start=50">2</a></li>'
+            '<li><a href="./viewforum.php?f=4&amp;start=100">3</a></li></ul></div>'
+            '<li class="row"><a class="topictitle" href="./viewtopic.php?f=4&amp;t=1">A</a></li>'
+        ).encode()
+        headers = {"retry-after": "120"} if status == 429 else {}
+        return type("Response", (), {"status": status, "body": body, "headers": headers})()
+
+
+@pytest.mark.asyncio
+async def test_the_pacing_probe_waits_between_pages_and_stops_at_the_first_refusal():
+    waits: list[float] = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    network = _PacedNetwork([200, 200, 429])
+    report = await provider_probe.probe_fearless_pace(8, 3.0, network=network, sleep=sleep)
+    # The listing has three pages, so that is all it asks for.
+    assert report["pages_asked"] == 3 and waits == [3.0, 3.0]
+    assert [entry["status"] for entry in report["requests"]] == [200, 200, 429]
+    assert network.urls[1].endswith("&start=50") and network.urls[2].endswith("&start=100")
+    assert (report["read"], report["refused_at_page"], report["requests"][2]["retry_after"]) == (2, 2, "120")
+
+
+@pytest.mark.asyncio
+async def test_the_pacing_probe_is_bounded_to_a_sample():
+    for pages, interval in ((9, 2.0), (0, 2.0), (4, 0.5), (4, 61.0)):
+        with pytest.raises(ValueError):
+            await provider_probe.probe_fearless_pace(pages, interval, network=_PacedNetwork([]))

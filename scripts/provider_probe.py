@@ -224,16 +224,92 @@ async def probe_playground_api() -> int:
         await network.aclose()
 
 
+# The most listing pages one pacing measurement may read. The question it
+# answers is how a few requests at one interval are met, never how many the
+# forum will take: a sample larger than this is the crawl, not a measurement.
+MAX_PACE_PAGES = 8
+MIN_PACE_INTERVAL_S = 1.0
+MAX_PACE_INTERVAL_S = 60.0
+
+
+async def probe_fearless_pace(pages: int, interval: float, *, network=None, sleep=asyncio.sleep, clock=None) -> dict:
+    """Read the first `pages` FearLess listing pages `interval` seconds apart and say how each was met.
+
+    One request at a time through the production transport, with no retry,
+    and the first answer that is not a page ends it: a refusal is the finding,
+    and asking again after one is the thing being measured not to do.
+    """
+    import time
+
+    if not 1 <= pages <= MAX_PACE_PAGES:
+        raise ValueError(f"--pages must be 1 to {MAX_PACE_PAGES}")
+    if not MIN_PACE_INTERVAL_S <= interval <= MAX_PACE_INTERVAL_S:
+        raise ValueError(f"--interval must be {MIN_PACE_INTERVAL_S:g} to {MAX_PACE_INTERVAL_S:g} seconds")
+    clock = clock or time.monotonic
+    owned = network is None
+    if owned:
+        context, _ = build_verified_ssl_context()
+        network = NetworkClient(context, user_agent="CE-Decky-direct-probe/0.4")
+    requests: list[dict] = []
+    step: int | None = None
+    started = clock()
+    try:
+        for index in range(pages):
+            if index:
+                if step is None:
+                    break
+                await sleep(interval)
+            url = FEARLESS_FORUM_URL if index == 0 else f"{FEARLESS_FORUM_URL}&start={index * step}"
+            began = clock()
+            response = await network.get(
+                url, allowed_hosts=PROVIDER_HOSTS["fearless"], max_bytes=MAX_HTML_BYTES,
+                referer=FEARLESS_BASE_URL, retries=0,
+            )
+            entry = {
+                "page": index, "status": response.status,
+                "latency_ms": round((clock() - began) * 1000), "at_s": round(began - started, 3),
+                "retry_after": response.headers.get("retry-after"),
+            }
+            requests.append(entry)
+            if response.status != 200:
+                break
+            listing = parse_fearless_forum_page(decode_html(response.body))
+            entry["topics"] = len(listing.rows)
+            if index == 0:
+                step = listing.page_step
+                pages = min(pages, listing.total_pages)
+    finally:
+        if owned:
+            await network.aclose()
+    refused = [entry for entry in requests if entry["status"] != 200]
+    return {
+        "interval_s": interval, "pages_asked": pages, "requests": requests,
+        "read": len(requests) - len(refused), "refused_at_page": refused[0]["page"] if refused else None,
+        "elapsed_s": round(clock() - started, 3),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--routes", action="store_true", help="probe public provider route status without downloading tables")
     parser.add_argument("--playground-api", action="store_true", help="resolve one known Playground file through its anonymous public client protocol")
+    parser.add_argument("--fearless-pace", action="store_true",
+                        help="read the first --pages FearLess listing pages --interval seconds apart and report how each was met")
+    parser.add_argument("--pages", type=int, default=4, help=f"listing pages to read, at most {MAX_PACE_PAGES}")
+    parser.add_argument("--interval", type=float, default=2.0, help="seconds between requests")
     args = parser.parse_args(argv)
+    if args.fearless_pace:
+        try:
+            report = asyncio.run(probe_fearless_pace(args.pages, args.interval))
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(json.dumps(report, indent=2))
+        return 0 if report["refused_at_page"] is None else 1
     if args.playground_api:
         return asyncio.run(probe_playground_api())
     if args.routes:
         return asyncio.run(probe_routes())
-    parser.error("select --routes or --playground-api")
+    parser.error("select --routes, --playground-api or --fearless-pace")
 
 
 if __name__ == "__main__":
