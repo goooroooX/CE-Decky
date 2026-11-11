@@ -232,6 +232,12 @@ MIN_PACE_INTERVAL_S = 1.0
 MAX_PACE_INTERVAL_S = 60.0
 
 
+def _iso(moment: float | None) -> str | None:
+    from datetime import datetime, timezone
+
+    return None if moment is None else datetime.fromtimestamp(moment, timezone.utc).isoformat(timespec="seconds")
+
+
 async def probe_fearless_pace(pages: int, interval: float, *, network=None, sleep=asyncio.sleep, clock=None) -> dict:
     """Read the first `pages` FearLess listing pages `interval` seconds apart and say how each was met.
 
@@ -275,6 +281,10 @@ async def probe_fearless_pace(pages: int, interval: float, *, network=None, slee
                 break
             listing = parse_fearless_forum_page(decode_html(response.body))
             entry["topics"] = len(listing.rows)
+            # How much of the forum's activity one page holds, which is what
+            # bounds how far the index's anchored refresh has to read.
+            entry["newest_post"] = _iso(listing.newest_activity)
+            entry["oldest_post"] = _iso(listing.oldest_activity)
             if index == 0:
                 step = listing.page_step
                 pages = min(pages, listing.total_pages)

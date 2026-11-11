@@ -116,6 +116,8 @@ async def test_the_pacing_probe_waits_between_pages_and_stops_at_the_first_refus
     assert [entry["status"] for entry in report["requests"]] == [200, 200, 429]
     assert network.urls[1].endswith("&start=50") and network.urls[2].endswith("&start=100")
     assert (report["read"], report["refused_at_page"], report["requests"][2]["retry_after"]) == (2, 2, "120")
+    # A page with no last-post times says so rather than inventing a span.
+    assert report["requests"][0]["newest_post"] is None and report["requests"][0]["oldest_post"] is None
 
 
 @pytest.mark.asyncio
