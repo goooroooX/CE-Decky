@@ -2,7 +2,7 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
-## 0.9.35 — 2026-11-11
+## 0.9.35 — 2026-11-12
 
 - [Changed] A first FearLess index on this device is built in about an hour rather than more than five, by starting the next slice of the listing within minutes while the last one was read without a refusal. A refusal stops the pass and each refusal in a row doubles the wait before the next, up to six hours, and a reload of the plugin no longer forgets that wait and asks again; the pass also pauses while a table downloads from FearLess. A search repeated within two minutes reads only the matching topics rather than the listing again.
 - [Changed] The FearLess listing index keeps itself current by reading the front of the forum until it reaches what it already holds, usually one page a day rather than all of its more than three hundred, and reads every page once a week to notice topics that were removed. A search reads one listing page rather than two when nothing more has changed.
