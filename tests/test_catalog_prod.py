@@ -4303,6 +4303,20 @@ def test_a_topic_titled_with_a_games_initials_is_scored_and_the_reverse(monkeypa
         assert worth_short(title) and accepted(short, title)
     for title in ("Crimson Tide Resynced 4", "Cold Total", "Crimson Tide"):
         assert not worth_short(title)
+    # Initials that open with a number, as a name that opens with one has, both ways.
+    numbered = aliases("9 Vows of Iron")
+    worth_numbered = title_prefilter(numbered)
+    for title in ("9VOI", "9 VOI", "9 Vows of Iron"):
+        assert worth_numbered(title) and accepted(numbered, title)
+    for title in ("8VOI", "9VOX", "Void 9", "Nine Voices"):
+        assert not worth_numbered(title)
+    written_out = title_prefilter(aliases("9VOI"))
+    assert written_out("9 Vows of Iron") and accepted(aliases("9VOI"), "9 Vows of Iron")
+    assert not written_out("8 Vows of Iron") and not written_out("9 Vaults of Ice Online")
+    # The forum's platform mark after a name is no part of its initials, as it is none of the scorer's.
+    for title in ("9 Vows of Iron (Steam)", "9 Vows of Iron [Steam]"):
+        assert written_out(title) and accepted(aliases("9VOI"), title)
+    assert worth_numbered("9VOI (Steam)") and accepted(numbered, "9VOI (Steam)")
     # A subtitle after the initials' game, and a name in two scripts, keep what they had.
     assert title_prefilter(aliases("Crimson Tide Resynced: Afterglow"))("Crimson Tide Resynced")
     bilingual = title_prefilter(aliases("Crimson Tide Resynced V / Багровый Прилив Пересинхрон V"))

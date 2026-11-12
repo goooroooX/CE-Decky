@@ -1214,7 +1214,7 @@ def title_prefilter_tokens(game_aliases: list[str]) -> list[str]:
 # abbreviation is a handful of characters, and bounding it keeps the first
 # letters of every title from being read for a name that is plainly words.
 MAX_TITLE_ABBREVIATION = 8
-_LEADING_LETTERS = re.compile(r"[^\W\d_]*")
+_LETTER_RUN = re.compile(r"[^\W\d_]{2,}")
 _TITLE_WORD = re.compile(r"\w+")
 
 
@@ -1252,17 +1252,18 @@ def title_prefilter(game_aliases: list[str]) -> Callable[[str], bool]:
     spelled = sorted({word for words in alias_words for word in words if not word.isdigit()})
     # The initials of each alias, which a title may be, and each alias short
     # enough to be the initials of a title. Three characters at least, as the
-    # scorer asks, and the same substring test first: the letters an
-    # abbreviation opens with are in the title, or in its words' first letters.
+    # scorer asks, and the same substring test first: the longest run of
+    # letters in an abbreviation is in the title, or in its words' first
+    # letters. A run rather than the letters it opens with, because the
+    # initials of a name that opens with a number open with that number.
     initials = {value for alias in game_aliases if len(value := _acronym(normalize_title(alias))) >= 3}
     abbreviations = {value for alias in game_aliases if 3 <= len(value := compact(alias)) <= MAX_TITLE_ABBREVIATION}
-    initial_stems = sorted({stem for value in initials if len(stem := _LEADING_LETTERS.match(value).group()) >= 2})
+    initial_stems = sorted({max(runs, key=len) for value in initials if (runs := _LETTER_RUN.findall(value))})
     # A title that is an abbreviation is about as short as one: longer than
     # the longest of these by more than its spaces and a numeral written in
     # letters, it cannot be any of them, and two letters are in most titles.
     abbreviated_length = max(map(len, initials), default=0) + MAX_TITLE_ABBREVIATION
-    abbreviation_stems = sorted(
-        {stem for value in abbreviations if len(stem := _LEADING_LETTERS.match(value).group()) >= 2})
+    abbreviation_stems = sorted({max(runs, key=len) for value in abbreviations if (runs := _LETTER_RUN.findall(value))})
 
     def worth_scoring(title: str) -> bool:
         folded = prefilter_folded(title)
@@ -1277,14 +1278,15 @@ def title_prefilter(game_aliases: list[str]) -> Callable[[str], bool]:
         ):
             return False
         try:
-            normal = normalize_title(title)
+            words = frozenset(normalize_title(title).split())
+            if any(len(words & alias) >= 2 for alias in alias_words):
+                return True
+            # Each form of the title the scorer compares, so the forum's
+            # platform mark after a name is no part of its initials.
+            return any(compact(form) in initials or _acronym(form) in abbreviations for form in aliases(title))
         except ValueError:
             # Not text the scorer would take either.
             return False
-        words = frozenset(normal.split())
-        if any(len(words & alias) >= 2 for alias in alias_words):
-            return True
-        return compact(normal) in initials or _acronym(normal) in abbreviations
 
     return worth_scoring
 
