@@ -1177,18 +1177,50 @@ describe("nested MemoryRecord topology", () => {
       { id: 22, description: "Silver", path: ["Other", "Silver"], structure: ["1", "0"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false },
     ] as any;
     const still = [query(1, 21, false), query(2, 22, null, false)];
-    api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValueOnce(envelope(3, still)).mockResolvedValueOnce(envelope(3, still));
+    // The start's answer never arrived, and Cheat Engine ran it anyway: what
+    // comes back is read again, never the read from before the start, which
+    // showed a running script as off.
+    const ranAnyway = [...still, query(3, 21, true), { ...query(4, 22, false), value: "7" }];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(3, still))
+      .mockResolvedValueOnce(envelope(3, still))
+      .mockResolvedValueOnce(envelope(3, still))
+      .mockResolvedValueOnce(envelope(5, ranAnyway));
     api.writeRuntimeCommands
       .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 })
-      .mockRejectedValueOnce(new Error("bridge went away"));
-    await queryReadingInertScripts(10, failing, [21, 22]);
-    expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(2);
+      .mockRejectedValueOnce(new Error("bridge went away"))
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 5 });
+    const reread = await queryReadingInertScripts(10, failing, [21, 22]);
+    expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(3);
+    expect(api.writeRuntimeCommands).toHaveBeenNthCalledWith(2, 10, [{ generation: 3, kind: "set_active", record_id: 21, value: "1" }]);
+    expect(reread.results.find((result) => result.record_id === 21)?.active).toBe(true);
+    expect(reread.results.find((result) => result.record_id === 22)?.value).toBe("7");
     api.getRuntimeStatus.mockReset();
     api.writeRuntimeCommands.mockReset();
     api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValueOnce(envelope(3, still));
     api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 });
     await queryReadingInertScripts(10, failing, [21, 22]);
     expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a read that fails after a failed start rather than showing the state from before it", async () => {
+    const controls = [
+      { id: 31, description: "Statistics", path: ["Statistics"], structure: ["0"], variable_type: null, kind: "script", group_header: false, has_assembler_script: true, inert_alone: true },
+      { id: 32, description: "Gold", path: ["Statistics", "Gold"], structure: ["0", "0"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false },
+    ] as any;
+    const off = [query(1, 31, false), query(2, 32, null, false)];
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(3, off))
+      .mockResolvedValueOnce(envelope(3, off))
+      .mockResolvedValueOnce(envelope(3, off));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 })
+      .mockRejectedValueOnce(new Error("bridge went away"))
+      .mockRejectedValueOnce(new Error("bridge still away"));
+    // Cheat Engine may hold the script on, so "off" would be a claim nobody read.
+    await expect(queryReadingInertScripts(10, controls, [31, 32])).rejects.toThrow(/bridge still away/);
   });
 
   it("does not reinterpret target detachment as an unavailable nested record", async () => {

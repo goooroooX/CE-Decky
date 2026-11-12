@@ -9070,8 +9070,9 @@ const MAX_SESSIONS_REMEMBERED = 8;
  *
  * Starting them is not an Apply: no table is confirmed working by it, nothing
  * is remembered, and Auto-load never repeats it. A start that fails is logged
- * and the first read is returned, because a value that cannot be shown is no
- * reason to show nothing.
+ * and everything is read again all the same, because a value that cannot be
+ * shown is no reason to show nothing, and the read from before the start may
+ * no longer be what Cheat Engine holds.
  */
 async function queryReadingInertScripts(appId, controls, recordIds, signal) {
     const first = await queryRuntimeControlsPartial(appId, recordIds, undefined, signal);
@@ -9117,8 +9118,12 @@ async function queryReadingInertScripts(appId, controls, recordIds, signal) {
     catch (cause) {
         if (cause instanceof RuntimeQueryAbortedError)
             throw cause;
+        // A start that failed may have failed after its command went out, an
+        // acknowledgement that never came, so Cheat Engine may hold the script on.
+        // What the screen shows is read again rather than the read from before the
+        // start: that showed a running script as off. A read that fails too is
+        // the caller's to report, never answered with the older one.
         logUiWarning("runtime.inert_scripts_not_started", { app_id: appId, session, reason: describeError(cause) });
-        return first;
     }
     return queryRuntimeControlsPartial(appId, recordIds, first.envelope, signal);
 }
