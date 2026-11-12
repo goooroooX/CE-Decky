@@ -1582,19 +1582,27 @@ function Content() {
   const shownRef = useRef(quickAccessVisible);
   const readOnShowRef = useRef(false);
   const showReadRef = useRef(false);
+  const [showReadSettled, setShowReadSettled] = useState(0);
   useEffect(() => {
     if (quickAccessVisible && !shownRef.current) readOnShowRef.current = true;
     shownRef.current = quickAccessVisible;
   }, [quickAccessVisible]);
   useEffect(() => {
     if (!readOnShowRef.current || !quickAccessVisible || busy || !runtimeSessionReady || !selectedGame || !inspection) return;
-    readOnShowRef.current = false;
+    // A read still out began before the panel came back, so the request is
+    // kept rather than spent on it, and the read's own end runs this again:
+    // clearing it first left a panel reopened during a read showing what that
+    // older read brought back, with nothing owed after it.
     if (showReadRef.current) return;
+    readOnShowRef.current = false;
     showReadRef.current = true;
     const epoch = actionEpochRef.current;
     void captureLiveSnapshot(selectedGame.appId, inspection, () => actionEpochRef.current === epoch)
-      .finally(() => { showReadRef.current = false; });
-  }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot]);
+      .finally(() => {
+        showReadRef.current = false;
+        if (readOnShowRef.current) setShowReadSettled((count) => count + 1);
+      });
+  }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot, showReadSettled]);
 
   // The backend knows whether it installed this Cheat Engine itself, which it
   // answers from the installation's own location rather than by matching the

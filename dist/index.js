@@ -9093,13 +9093,18 @@ async function queryReadingInertScripts(appId, controls, recordIds, signal) {
     const start = inertScriptsToStart(controls, first.results, seen);
     if (start.length === 0)
         return first;
-    for (const recordId of start)
-        seen.add(recordId);
     try {
         for (let index = 0; index < start.length; index += COMMAND_BATCH_SIZE) {
             if (signal?.aborted)
                 throw new RuntimeQueryAbortedError();
-            const batch = await sendRuntimeBatchAndWait(appId, start.slice(index, index + COMMAND_BATCH_SIZE).map((recordId) => ({ kind: "set_active", record_id: recordId, value: "1" })), first.envelope);
+            // Tried once a session means sent once: a script is remembered as its
+            // batch goes out, whatever comes back. Remembering every one before the
+            // first was sent left a script the closing panel never reached marked
+            // as tried, and the values inside it unread until Cheat Engine restarted.
+            const sending = start.slice(index, index + COMMAND_BATCH_SIZE);
+            for (const recordId of sending)
+                seen.add(recordId);
+            const batch = await sendRuntimeBatchAndWait(appId, sending.map((recordId) => ({ kind: "set_active", record_id: recordId, value: "1" })), first.envelope);
             const refused = batch.results.filter((result) => !result.ok || result.active !== true);
             logUi("runtime.inert_scripts_started", {
                 app_id: appId,
@@ -16387,6 +16392,7 @@ function Content() {
     const shownRef = SP_REACT.useRef(quickAccessVisible);
     const readOnShowRef = SP_REACT.useRef(false);
     const showReadRef = SP_REACT.useRef(false);
+    const [showReadSettled, setShowReadSettled] = SP_REACT.useState(0);
     SP_REACT.useEffect(() => {
         if (quickAccessVisible && !shownRef.current)
             readOnShowRef.current = true;
@@ -16395,14 +16401,22 @@ function Content() {
     SP_REACT.useEffect(() => {
         if (!readOnShowRef.current || !quickAccessVisible || busy || !runtimeSessionReady || !selectedGame || !inspection)
             return;
-        readOnShowRef.current = false;
+        // A read still out began before the panel came back, so the request is
+        // kept rather than spent on it, and the read's own end runs this again:
+        // clearing it first left a panel reopened during a read showing what that
+        // older read brought back, with nothing owed after it.
         if (showReadRef.current)
             return;
+        readOnShowRef.current = false;
         showReadRef.current = true;
         const epoch = actionEpochRef.current;
         void captureLiveSnapshot(selectedGame.appId, inspection, () => actionEpochRef.current === epoch)
-            .finally(() => { showReadRef.current = false; });
-    }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot]);
+            .finally(() => {
+            showReadRef.current = false;
+            if (readOnShowRef.current)
+                setShowReadSettled((count) => count + 1);
+        });
+    }, [quickAccessVisible, busy, runtimeSessionReady, selectedGame, inspection, captureLiveSnapshot, showReadSettled]);
     // The backend knows whether it installed this Cheat Engine itself, which it
     // answers from the installation's own location rather than by matching the
     // SHA the manifest currently pins.

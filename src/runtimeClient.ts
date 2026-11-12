@@ -623,13 +623,18 @@ export async function queryReadingInertScripts(
   }
   const start = inertScriptsToStart(controls, first.results, seen);
   if (start.length === 0) return first;
-  for (const recordId of start) seen.add(recordId);
   try {
     for (let index = 0; index < start.length; index += COMMAND_BATCH_SIZE) {
       if (signal?.aborted) throw new RuntimeQueryAbortedError();
+      // Tried once a session means sent once: a script is remembered as its
+      // batch goes out, whatever comes back. Remembering every one before the
+      // first was sent left a script the closing panel never reached marked
+      // as tried, and the values inside it unread until Cheat Engine restarted.
+      const sending = start.slice(index, index + COMMAND_BATCH_SIZE);
+      for (const recordId of sending) seen.add(recordId);
       const batch = await sendRuntimeBatchAndWait(
         appId,
-        start.slice(index, index + COMMAND_BATCH_SIZE).map((recordId) => ({ kind: "set_active", record_id: recordId, value: "1" })),
+        sending.map((recordId) => ({ kind: "set_active", record_id: recordId, value: "1" })),
         first.envelope,
       );
       const refused = batch.results.filter((result) => !result.ok || result.active !== true);

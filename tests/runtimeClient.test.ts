@@ -1132,6 +1132,65 @@ describe("nested MemoryRecord topology", () => {
     expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(1);
   });
 
+  it("starts an inert script on the next read when the closing panel abandoned the read before it was sent", async () => {
+    // Tried once a session means sent once. Every script used to be remembered
+    // before the first was sent, so one the closing panel never reached stayed
+    // off, and its values unread, until Cheat Engine was started again.
+    const controls = [
+      { id: 11, description: "Statistics", path: ["Statistics"], structure: ["0"], variable_type: null, kind: "script", group_header: false, has_assembler_script: true, inert_alone: true },
+      { id: 12, description: "Gold", path: ["Statistics", "Gold"], structure: ["0", "0"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false },
+    ] as any;
+    const off = [query(1, 11, false), query(2, 12, null, false)];
+    const controller = new AbortController();
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockImplementationOnce(async () => { controller.abort(); return envelope(3, off); });
+    api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 });
+    await expect(queryReadingInertScripts(10, controls, [11, 12], controller.signal)).rejects.toBeInstanceOf(RuntimeQueryAbortedError);
+    // Only the read went out: nothing was switched on.
+    expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(1);
+
+    const started = [...off, { generation: 3, record_id: 11, active: true, value: null, ok: true, error: null, error_code: null }];
+    const read = [...started, query(4, 11, true), { ...query(5, 12, false), value: "120" }];
+    api.getRuntimeStatus.mockReset();
+    api.writeRuntimeCommands.mockReset();
+    api.getRuntimeStatus
+      .mockResolvedValueOnce(envelope(1))
+      .mockResolvedValueOnce(envelope(3, off))
+      .mockResolvedValueOnce(envelope(3, off))
+      .mockResolvedValueOnce(envelope(4, started))
+      .mockResolvedValueOnce(envelope(4, started))
+      .mockResolvedValueOnce(envelope(6, read));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 })
+      .mockResolvedValueOnce({ ok: true, count: 1, next_generation: 4 })
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 6 });
+    const answer = await queryReadingInertScripts(10, controls, [11, 12]);
+    expect(api.writeRuntimeCommands).toHaveBeenNthCalledWith(2, 10, [{ generation: 3, kind: "set_active", record_id: 11, value: "1" }]);
+    expect(answer.results.find((result) => result.record_id === 12)?.value).toBe("120");
+
+    // And once sent it is tried, whatever came back: a start that fails is not sent again.
+    api.getRuntimeStatus.mockReset();
+    api.writeRuntimeCommands.mockReset();
+    const failing = [
+      { id: 21, description: "Other", path: ["Other"], structure: ["1"], variable_type: null, kind: "script", group_header: false, has_assembler_script: true, inert_alone: true },
+      { id: 22, description: "Silver", path: ["Other", "Silver"], structure: ["1", "0"], variable_type: "4 Bytes", kind: "value", group_header: false, has_assembler_script: false },
+    ] as any;
+    const still = [query(1, 21, false), query(2, 22, null, false)];
+    api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValueOnce(envelope(3, still)).mockResolvedValueOnce(envelope(3, still));
+    api.writeRuntimeCommands
+      .mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 })
+      .mockRejectedValueOnce(new Error("bridge went away"));
+    await queryReadingInertScripts(10, failing, [21, 22]);
+    expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(2);
+    api.getRuntimeStatus.mockReset();
+    api.writeRuntimeCommands.mockReset();
+    api.getRuntimeStatus.mockResolvedValueOnce(envelope(1)).mockResolvedValueOnce(envelope(3, still));
+    api.writeRuntimeCommands.mockResolvedValueOnce({ ok: true, count: 2, next_generation: 3 });
+    await queryReadingInertScripts(10, failing, [21, 22]);
+    expect(api.writeRuntimeCommands).toHaveBeenCalledTimes(1);
+  });
+
   it("does not reinterpret target detachment as an unavailable nested record", async () => {
     const detached = [{
       generation: 1, record_id: 1, active: null, value: null, ok: false,

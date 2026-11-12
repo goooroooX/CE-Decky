@@ -840,6 +840,37 @@ describe("Home panel and managed setup", () => {
     await waitFor(() => expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before + 1));
   });
 
+  it("reads again after a read that was still out when the panel came back, and not when it only closed", async () => {
+    // The read still out began before the panel came back. Its request used
+    // to be spent on it, so nothing newer was read once it ended.
+    renderContent();
+    expect(await screen.findByText("1 active")).toBeTruthy();
+    const answer = { envelope: liveRuntime(), results: liveRuntime().status.results, unavailable: [] };
+    const releases: Array<() => void> = [];
+    runtimeClient.queryRuntimeControlsPartial
+      .mockImplementation(() => new Promise((resolve) => { releases.push(() => resolve(answer)); }));
+    const toggle = async (visible: boolean) => act(async () => {
+      quickAccess.visible = visible;
+      quickAccess.listeners.forEach((notify) => notify());
+    });
+    const before = runtimeClient.queryRuntimeControlsPartial.mock.calls.length;
+    await toggle(false);
+    await toggle(true);
+    await waitFor(() => expect(releases.length).toBe(1));
+    // Closed and reopened while that read is out: still one read at a time.
+    await toggle(false);
+    await toggle(true);
+    expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before + 1);
+    await act(async () => { releases[0](); });
+    await waitFor(() => expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before + 2));
+    // Closed while the second is out and left closed: nothing is owed after it.
+    await toggle(false);
+    await act(async () => { releases[1](); });
+    await act(async () => { await Promise.resolve(); });
+    expect(runtimeClient.queryRuntimeControlsPartial.mock.calls.length).toBe(before + 2);
+    runtimeClient.queryRuntimeControlsPartial.mockReset();
+  });
+
   it("drops a background read a press overtook instead of drawing it over the press's own result", async () => {
     // The read on show runs outside any press, so a press can start while it
     // is still out; what it then brings back is older than the press's readback.
