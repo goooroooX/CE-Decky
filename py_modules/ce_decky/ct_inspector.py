@@ -110,6 +110,20 @@ def _is_attach_statement(line: str) -> bool:
     return False
 
 
+def _activates_children(element: ET.Element) -> bool:
+    """Whether Cheat Engine switches on every record inside this one when it is switched on.
+
+    `moActivateChildrenAsWell` on the record's `<Options>`, or the older
+    `moBindActivation` that Cheat Engine reads as it, each set only by the exact
+    text `1` (`MemoryRecordUnit.pas` at `ec45d5f4`, where the options are loaded
+    and where `setActive` applies them). Starting such a script starts every
+    cheat inside it, so whatever its own code proves, it is never inert alone.
+    """
+    options = _first_child(element, "Options")
+    return options is not None and any(
+        options.get(name) == "1" for name in ("moActivateChildrenAsWell", "moBindActivation"))
+
+
 def _is_attach_only(text: str | None) -> bool:
     if not text or "[ENABLE]" not in text:
         return False
@@ -724,7 +738,7 @@ def _walk_entry(
             group_header=group_header,
             has_assembler_script=has_assembler,
             attach_only=_is_attach_only(assembler_text),
-            inert_alone=kind == "script" and inert_alone(assembler_text),
+            inert_alone=kind == "script" and not _activates_children(element) and inert_alone(assembler_text),
             dropdown_values=dropdown,
             dropdown_read_only=dropdown_read_only,
             switch_on_value=switch_on_value,

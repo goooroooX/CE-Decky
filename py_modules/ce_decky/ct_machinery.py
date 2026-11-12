@@ -289,18 +289,27 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     # whatever is written under it is assembled there.
     if any(not at_game and name not in own for name, at_game, _ in blocks):
         return "writes_another_symbol"
+    # Where each block is placed: an allocation's name moves Cheat Engine to
+    # that allocation, and any other label stays where the line before it
+    # ended, so a label is the script's own memory only after one of these.
+    allocations = {match.group(1).casefold() for line in lines if (match := _ALLOC.match(line))}
     entries: list[str] = []
     returns: set[str] = set()
     patch_size = 0
-    for index, (name, at_game, body) in enumerate(blocks):
+    after_patch = False
+    for name, at_game, body in blocks:
         if not at_game:
-            if index and blocks[index - 1][1]:
-                # What is written under it is assembled at the game's address
-                # after the jump, into the game's own code.
+            after_patch = after_patch and name not in allocations
+            if after_patch:
+                # Every label from the patch to the next allocation is the
+                # game's address after the jump, not only the first, and what
+                # is written under any of them is assembled into the game's own
+                # code.
                 if body:
                     return "patch_is_not_a_jump"
                 returns.add(name)
             continue
+        after_patch = True
         for line in body:
             mnemonic = line.split(None, 1)[0].lower()
             # `jmp far newmem` is the long form whatever the distance.
@@ -365,6 +374,11 @@ def verdict(script: str, at_start: bool = False) -> str | None:
                     following, end = None, position + 1
                     break
             reached[index] = end
+            if following is not None and following < len(blocks) and blocks[following][0] in allocations:
+                # The next block in the text is another allocation, somewhere
+                # else in memory: what runs past this one is whatever its own
+                # allocation holds there, zeroes Cheat Engine never assembled.
+                return "runs_off_its_memory"
             if following is not None:
                 falls.add(index)
             index = following
@@ -464,12 +478,12 @@ def verdict(script: str, at_start: bool = False) -> str | None:
                     return "unbalanced_stack"
                 continue
             if mnemonic == "push":
-                stack.append(_family(operands) or operands.casefold())
+                stack.append(_pushed(operands))
                 if len(stack) > MAX_STACK:
                     return "unbalanced_stack"
                 continue
             if mnemonic == "pop":
-                if not stack or stack.pop() != (_family(operands) or operands.casefold()):
+                if not stack or stack.pop() != _pushed(operands):
                     return "unbalanced_stack"
                 continue
             if mnemonic in _SETS_FLAGS and "flags" not in stack:
@@ -488,7 +502,7 @@ def verdict(script: str, at_start: bool = False) -> str | None:
                 if "[" in operand:
                     if not _owned_store(mnemonic, operand, operands, storage, names):
                         return "writes_game_memory"
-                elif _family(operand) is None or _family(operand) not in stack:
+                elif _family(operand) is None or _family(operand) not in {item.split("/", 1)[0] for item in stack}:
                     return "changes_a_register"
         if index in falls:
             states.append((index + 1, tuple(stack)))
@@ -571,6 +585,10 @@ def _owned_store(mnemonic: str, operand: str, operands: str, storage: dict[str, 
     anywhere. The store's width comes from a size it names, or the register
     it stores, and is taken as eight bytes where nothing says.
     """
+    if ":" in operand:
+        # `fs:[flag]` is that offset into the thread's own block, not the
+        # script's memory.
+        return False
     address = _OWN_ADDRESS.match(operand.split("[", 1)[1].rsplit("]", 1)[0].strip())
     if address is None or address.group(1).casefold() not in storage:
         return False
@@ -827,6 +845,20 @@ def _family(register: str) -> str | None:
     """`rbx`, `ebx`, `bx` and `bl` are one register to a push; None for anything else."""
     match = _FAMILY.match(register.strip())
     return next((group.lower() for group in match.groups() if group), None) if match else None
+
+
+def _pushed(operand: str) -> str:
+    """What a push leaves on the stack, as the pop that restores it has to name it.
+
+    A register by its family and its width: `push ax` and `pop rax` are one
+    register, but two bytes pushed and eight popped move the stack and leave
+    `rax` holding what was above it.
+    """
+    family = _family(operand)
+    if family is None:
+        return operand.casefold()
+    width = next((bytes_ for pattern, bytes_ in _REGISTER_WIDTH if pattern.match(operand.strip())), 0)
+    return f"{family}/{width}"
 
 
 def _normal(instruction: str) -> str:

@@ -731,3 +731,28 @@ def test_a_script_proved_inert_by_itself_says_so_and_a_cheat_does_not(tmp_path):
     assert (controls[1].inert_alone, controls[2].inert_alone, controls[3].inert_alone) == (True, True, False)
     assert controls[9].inert_alone is False
     assert controls[1].as_dict()["inert_alone"] is True
+
+
+def test_a_script_that_switches_on_everything_inside_it_is_never_inert_alone(tmp_path):
+    from tests.test_ct_machinery import CAPTURE
+
+    def table(options: str) -> bytes:
+        return (
+            '<CheatTable CheatEngineTableVersion="45"><CheatEntries><CheatEntry><ID>1</ID>'
+            f'<Description>Statistics</Description>{options}<VariableType>Auto Assembler Script</VariableType>'
+            f'<AssemblerScript>{CAPTURE}</AssemblerScript><CheatEntries><CheatEntry><ID>9</ID>'
+            '<Description>Gold</Description><VariableType>4 Bytes</VariableType><Address>pStats</Address>'
+            '</CheatEntry></CheatEntries></CheatEntry></CheatEntries></CheatTable>'
+        ).encode()
+
+    def inert(options: str, name: str) -> bool:
+        controls = {control.id: control for control in _inspect(table(options), tmp_path / name).controls}
+        return controls[1].inert_alone
+
+    assert inert("", "plain") is True
+    # Cheat Engine switches on every record inside such a script with it, and
+    # reads the older option as the same thing.
+    assert inert('<Options moActivateChildrenAsWell="1"/>', "children") is False
+    assert inert('<Options moBindActivation="1"/>', "bound") is False
+    # Set only by the exact text `1`, and no other option does it.
+    assert inert('<Options moActivateChildrenAsWell="0" moDeactivateChildrenAsWell="1" moHideChildren="1"/>', "other") is True

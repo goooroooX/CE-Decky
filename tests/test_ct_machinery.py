@@ -360,3 +360,45 @@ def test_a_hook_whose_jump_may_be_the_long_one_is_not_proved():
         == "jump_may_be_long"
     # Asked for as the long form, it is fourteen bytes wherever the hook is.
     assert machinery.verdict(CAPTURE.replace("objStats:\n  jmp newmem", "objStats:\n  jmp far newmem", 1)) == "patch_is_not_a_jump"
+
+
+def test_a_label_is_placed_where_cheat_engine_places_it():
+    # Every label from the patch to the next allocation is the game's address
+    # after the jump, not only the first: what is under any of them is
+    # assembled into the game's own code.
+    later = CAPTURE.replace("label(return)", "label(return later)").replace(
+        "return:\n[DISABLE]", "return:\nlater:\n  db 90\n[DISABLE]")
+    assert later != CAPTURE and machinery.verdict(later) == "patch_is_not_a_jump"
+    # Empty, it is only another name for the way back.
+    assert proven(CAPTURE.replace("label(return)", "label(return back)").replace(
+        "return:\n[DISABLE]", "return:\nback:\n[DISABLE]"))
+    # An allocation's name moves the script back into its own memory.
+    spare = CAPTURE.replace("alloc(pStats,8)", "alloc(pStats,8)\nalloc(spare,8)").replace(
+        "return:\n[DISABLE]", "return:\nspare:\n  dq 0\n[DISABLE]")
+    assert spare != CAPTURE and proven(spare)
+
+
+def test_a_hook_that_runs_past_its_own_allocation_is_not_followed_into_the_next():
+    # Two allocations are two places: what runs past the end of the first runs
+    # the zeroes it holds there, never the code the text lists next.
+    split = CAPTURE.replace("alloc(pStats,8)", "alloc(pStats,8)\nalloc(tail,$100,objStats)").replace(
+        "  mov [pStats],rcx\n", "  mov [pStats],rcx\ntail:\n")
+    assert split != CAPTURE and machinery.verdict(split) == "runs_off_its_memory"
+    # A label there is the same memory, run on into.
+    assert proven(CAPTURE.replace("label(return)", "label(return tail)").replace(
+        "  mov [pStats],rcx\n", "  mov [pStats],rcx\ntail:\n"))
+
+
+def test_a_store_or_a_saved_register_is_read_exactly_as_written():
+    def hook(lines: str) -> str | None:
+        return machinery.verdict(CAPTURE.replace("  mov [pStats],rcx\n", lines))
+
+    # A segment moves the address off the script's own memory. Written first,
+    # the line reads as a label; as the operand an exchange writes second, it
+    # is the store it is.
+    assert hook("  mov fs:[pStats],rcx\n") is not None
+    assert hook("  push rax\n  xchg rax,fs:[pStats]\n  pop rax\n") == "writes_game_memory"
+    assert hook("  push rax\n  xchg rax,[pStats]\n  pop rax\n") is None
+    # A register is restored by the pop of the width it was pushed at.
+    assert hook("  push rcx\n  mov rcx,1\n  mov [pStats],rcx\n  pop rcx\n") is None
+    assert hook("  push cx\n  mov rcx,1\n  pop rcx\n") == "unbalanced_stack"
