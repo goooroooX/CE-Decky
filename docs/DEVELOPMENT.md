@@ -240,14 +240,17 @@ python scripts/qa.py --profile release
 GitHub Actions is the authoritative complete Linux backend gate for pushed production, build, dependency, test, packaging, and release changes. Inspect it without leaving the terminal:
 
 ```bash
-gh run list --workflow ci.yml --branch <branch> --limit 1 --json headSha,status,conclusion,databaseId
-gh run view <run-id> --log-failed
+PATH="$HOME/.local/bin:$PATH" gh run list --workflow ci.yml --branch <branch> --limit 1 --json headSha,status,conclusion,databaseId
+PATH="$HOME/.local/bin:$PATH" gh run view <run-id> --log-failed
 ```
 
-On SteamOS `gh`, like Node, is installed into `~/.local/bin`, which a
-non-login shell does not have on PATH: prefix these with
-`PATH="$HOME/.local/bin:$PATH"`. `qa.py` adds that directory to its own PATH,
-and `qa.py --check-env` names where it found `node` and `gh`.
+Every `gh` command in this document carries that `PATH` prefix, and it is
+part of the command rather than a note about it: on SteamOS `gh`, like Node, is
+installed into `~/.local/bin`, which the non-login shell an agent runs in does
+not have on PATH, so the bare command answers `gh: command not found` on the
+very device that has it. The prefix is harmless where `gh` is already on PATH.
+`qa.py` adds that directory to its own PATH, and `qa.py --check-env` names
+where it found `node` and `gh`.
 
 The first is what proves a green run belongs to the exact head, which is the
 only thing `AGENTS.md` treats as ready: a plain `gh run list` prints no commit,
@@ -258,7 +261,7 @@ was red; a push otherwise ends the work without waiting. When they have asked
 for the wait, one command does it rather than a series of them:
 
 ```bash
-until gh run list --workflow ci.yml --branch <branch> --limit 5 --json headSha,status,conclusion \
+until PATH="$HOME/.local/bin:$PATH" gh run list --workflow ci.yml --branch <branch> --limit 5 --json headSha,status,conclusion \
   -q '.[] | select(.headSha == "<exact-head>" and .status == "completed") | .conclusion' \
   | grep .; do sleep 20; done
 ```
@@ -737,10 +740,10 @@ git tag -a v<version> -m "CE Decky <version>" <exact-head> && git push origin v<
 Then wait for the release workflow on that head, the same way as for CI, and read what it published:
 
 ```bash
-until gh run list --workflow release.yml --limit 5 --json headSha,status,conclusion \
+until PATH="$HOME/.local/bin:$PATH" gh run list --workflow release.yml --limit 5 --json headSha,status,conclusion \
   -q '.[] | select(.headSha == "<exact-head>" and .status == "completed") | .conclusion' \
   | grep .; do sleep 20; done
-gh release view v<version> --json tagName,isPrerelease,assets
+PATH="$HOME/.local/bin:$PATH" gh release view v<version> --json tagName,isPrerelease,assets
 ```
 
 A stable version is published with `isPrerelease` false and carries `CE-Decky-v<version>.zip` and `SHA256SUMS`.
