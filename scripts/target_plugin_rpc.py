@@ -49,14 +49,15 @@ from target_plugin_install import (  # noqa: E402
 )
 
 def request_id() -> int:
-    """A different id for every call, because a reply is not private to its socket.
+    """A different id for every call, because Decky answers an id it has seen from a cache.
 
-    Decky delivers a plugin method's result to clients other than the one that
-    asked, so a fixed id cannot tell this call's answer from the replay of an
-    earlier one carrying the same id. Two identical calls a few seconds apart
-    were observed on this project's device to return one answer twice: the
-    backend's own log showed one call, and the helper printed a reply for two.
-    An id drawn per call makes that indistinguishable case impossible.
+    Decky keeps each reply by its call id until the client acknowledges it,
+    which this helper never does, and answers a call carrying an id it still
+    holds from that copy without running it. Two identical calls a few seconds
+    apart were observed on this project's device to return one answer twice:
+    the backend's own log showed one call, and the helper printed a reply for
+    two. An id drawn per call makes that indistinguishable case impossible.
+    `docs/FIELD_NOTES.md` carries the source it was read from.
     """
     return secrets.randbelow(1_000_000) + 1000
 
