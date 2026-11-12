@@ -524,8 +524,11 @@ def verdict(script: str, at_start: bool = False) -> str | None:
     # memory asked for beside another module is as far from this one as
     # memory asked for nowhere, so the hint has to name the patched address
     # exactly as its label does.
-    near = any((match := _NEAR_ALLOC.match(line)) and match.group(1).strip().strip('"').casefold() == patched[0]
-               for line in lines)
+    # And every hint in the script has to: allocations that name no address
+    # are placed with the one that does, but two that name different ones
+    # are placed apart, and the hook may be the one sent elsewhere.
+    hints = [match.group(1).strip().strip('"').casefold() for line in lines if (match := _NEAR_ALLOC.match(line))]
+    near = bool(hints) and all(hint == patched[0] for hint in hints)
     if not near and not any(
             line.split(None, 1)[0].lower() in _THIRTY_TWO_BIT_ONLY - names
             for _, _, body in blocks for line in body):

@@ -328,6 +328,11 @@ def test_a_hook_whose_jump_may_be_the_long_one_is_not_proved():
         assert machinery.verdict(CAPTURE.replace("alloc(newmem,$500,objStats)", f"alloc(newmem,$500,{elsewhere})")) \
             == "jump_may_be_long"
         assert machinery.verdict(far.replace("alloc(pStats,8)", f"alloc(pStats,8,{elsewhere})")) == "jump_may_be_long"
+        # The hook sent elsewhere is not brought back by data kept near the patch.
+        assert machinery.verdict(CAPTURE.replace("alloc(newmem,$500,objStats)", f"alloc(newmem,$500,{elsewhere})")
+                                 .replace("alloc(pStats,8)", "alloc(pStats,8,objStats)")) == "jump_may_be_long"
+    # Every allocation near the patch, or the hook near it and the data left to follow, is.
+    assert proven(CAPTURE.replace("alloc(pStats,8)", "alloc(pStats,8,objStats)"))
     # The patched address spelled as its label is, quotes and case aside.
     assert proven(CAPTURE.replace("alloc(newmem,$500,objStats)", 'alloc(newmem,$500, "OBJSTATS" )'))
     # Named only in the listing, a 64-bit register still says which game this is.
