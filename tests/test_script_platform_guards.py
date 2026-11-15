@@ -98,6 +98,8 @@ REQUIREMENTS = {
     # through `/proc` before each signal.
     "target_loader_death_probe.py": {},
     "target_plugin_log.py": {"needs_procfs": False},
+    # Reads the system journal through journalctl and nothing in `/proc`.
+    "target_device_timeline.py": {"needs_procfs": False},
     "target_plugin_install.py": {},
     # Talks to Decky over its own socket and reads no process table of its
     # own; what it needs is the device and a live Decky on it.
