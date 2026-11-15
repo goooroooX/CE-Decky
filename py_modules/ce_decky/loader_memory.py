@@ -38,7 +38,8 @@ LOADER_TITLE_PREFIX = "Decky Loader "
 # Growth over the reading taken before the request that marks an incident. A
 # healthy loader on the device holds about a hundred MiB and a replacement
 # changes it by roughly one plugin's footprint, while the runaway this guards
-# against reached twelve GiB within five minutes; two GiB sits far from both.
+# against was at nearly twelve GiB five minutes after the install before it;
+# two GiB sits far from both.
 RUNAWAY_GROWTH_KIB = 2 * 1024 * 1024
 
 _VMRSS = re.compile(r"^VmRSS:\s+(\d+) kB", re.MULTILINE)
