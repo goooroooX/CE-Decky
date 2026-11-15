@@ -298,3 +298,25 @@ def test_an_unobserved_loader_gates_nothing(tmp_path: Path, loader, monkeypatch)
     archive, digest = _archive(tmp_path)
     result = update_runner.run(_args(tmp_path, archive, digest))
     assert result["ok"] is True and loader["restarts"] == 1
+
+
+def test_the_double_check_after_a_failure_asks_nothing_of_a_loader_that_ran_away(tmp_path: Path, loader, monkeypatch):
+    # The reply is lost, and by the time the inventory would be asked again the
+    # loader has grown: the four extra connections are not made.
+    monkeypatch.setattr(update_runner, "LoaderMemoryGuard", _Guard(OK, RUNAWAY))
+    connects: list[int] = []
+    monkeypatch.setattr(
+        update_runner.DeckyWebSocket, "connect",
+        classmethod(lambda *_a, **_k: connects.append(1) or _Socket()),
+    )
+
+    def broken(*_args):
+        raise RuntimeError("the reply could not be read")
+
+    monkeypatch.setattr(update_runner, "install_and_confirm", broken)
+    archive, digest = _archive(tmp_path)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is False and result["error"] == "the reply could not be read"
+    assert connects == [1]
+    assert result["archive_kept_at"] == str(tmp_path / "home" / "CE-Decky-v0.9.28.zip")
+    assert [event["event"] for event in _events(tmp_path)].count("update_runner.loader_incident") == 1

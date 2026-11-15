@@ -297,7 +297,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         # fall over reading the answer. Ask the inventory once more before
         # reporting a failure, because reporting one for an install that landed
         # sends the user to install by hand what they already have.
-        if requested and _await_installed_version(args.decky_url, args.version, log, attempts=4):
+        # The guard still applies: this is four more connections, and a loader
+        # that has exited or run away since is asked none of them. Caught here
+        # rather than let out, because escaping this handler writes no result.
+        overtaken = False
+        if requested:
+            try:
+                overtaken = _await_installed_version(args.decky_url, args.version, log, attempts=4, guard=guard)
+            except LoaderIncident as incident:
+                log("update_runner.loader_incident", **incident.reading.as_fields())
+        if overtaken:
             log("update_runner.failure_overtaken_by_install", detail=str(exc)[:200])
             result["ok"] = True
             result["error"] = None
