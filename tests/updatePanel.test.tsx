@@ -153,6 +153,18 @@ describe("the update confirmation", () => {
     expect(screen.getByText(/checked against the checksum the release itself publishes/)).toBeTruthy();
   });
 
+  it("warns on a Decky known to go wrong replacing a plugin, and only there", () => {
+    const view = render(<UpdateModal {...modal({ loaderDefect: true })} />);
+    const row = screen.getByTestId("update-restart-warning");
+    expect(row.textContent).toMatch(/known fault/);
+    expect(row.textContent).toMatch(/restart it\./);
+    // Still a warning: the press is there and enabled.
+    expect((screen.getByText("Update").closest("button") as HTMLButtonElement).disabled).toBe(false);
+    view.unmount();
+    render(<UpdateModal {...modal()} />);
+    expect(screen.getByTestId("update-restart-warning").textContent).not.toMatch(/known fault/);
+  });
+
   const NOTES = "Lets more games start Cheat Engine.\n\n## Fixes\n\n- A cheat no longer switches itself on.\n- **Load table & start CE** works with `proton-cachyos`.";
 
   it("shows what the release changes before the press, the reason first", () => {

@@ -4449,6 +4449,7 @@ function Content() {
     logUi("update.confirmation_opened", {
       to_version: target, adopted: Boolean(adopt),
       notes: Boolean(described?.release_notes), notes_cut: described?.release_notes_truncated === true,
+      loader_defect: status.update?.loader_replace_defect === true,
     });
     showContextModal((close) => (
       <UpdateModal
@@ -4457,6 +4458,7 @@ function Content() {
         notes={described?.release_notes ?? null}
         notesTruncated={described?.release_notes_truncated === true}
         pageUrl={described?.page_url}
+        loaderDefect={status.update?.loader_replace_defect === true}
         adopted={adopt ?? null}
         onStart={(targetVersion) => startPluginUpdate(targetVersion)}
         onPoll={(operationId) => pollPluginUpdate(operationId)}

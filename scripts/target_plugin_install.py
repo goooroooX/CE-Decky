@@ -50,6 +50,7 @@ from ce_decky.decky_control import (  # noqa: E402
     request_frontend_reload as _request_frontend_reload,
     rpc_error as _rpc_error,
 )
+from ce_decky.loader_memory import LoaderMemoryGuard  # noqa: E402
 
 # Where a mirror of this checkout sits on a device reached across the network.
 # `docs/REMOTE_TARGET.md` describes the arrangement and leaves the path to the
@@ -1146,19 +1147,52 @@ def _validate_loader_readback(ws: Any, version: str, plugin_root: Path) -> dict[
     }
 
 
+class LoaderIncidentError(RuntimeError):
+    """Decky's loader exited or ran away during the install; stop asking it."""
+
+
+def _check_loader(
+    guard: LoaderMemoryGuard, readings: list[dict[str, object]], phase: str, *, quiet: bool = False,
+) -> None:
+    """Read the loader before the next request of it, and stop on an incident.
+
+    `ce_decky.loader_memory` carries why: Decky's own replacement of a plugin
+    has been followed on the device by a loader that grew to gigabytes and took
+    the session with it. An install that sees that start does not go on to ask
+    the same loader for a readback and a webhelper restart. `quiet` keeps the
+    readback's polls out of the report unless one of them is the incident.
+    """
+    reading = guard.read()
+    if not quiet or reading.incident:
+        readings.append({"phase": phase, **reading.as_fields()})
+    if reading.incident:
+        raise LoaderIncidentError(
+            f"{reading.describe()} while CE Decky was being installed (phase {phase});"
+            " nothing more was asked of it. This is an incident:"
+            " capture it with scripts/target_incident_capture.py before recovering anything, do not"
+            " retry the install, and read the loader's memory with scripts/target_memory_watch.py"
+        )
+
+
 def _wait_for_loader_readback(
     decky_url: str, version: str, plugin_root: Path, timeout: float,
+    check_loader=None,
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
+        if check_loader is not None:
+            check_loader()
         try:
             token = _auth_token(decky_url, min(timeout, 5.0))
             with DeckyWebSocket.connect(decky_url, token, min(timeout, 5.0)) as ws:
                 return _validate_loader_readback(ws, version, plugin_root)
         except (OSError, RuntimeError) as exc:
             last_error = exc
-            time.sleep(0.25)
+            # Not a quarter second: each try is a fresh token and websocket to a
+            # loader that is replacing this plugin, and the reasoning in
+            # `ce_decky.update_runner.READBACK_POLL_SECONDS` holds here too.
+            time.sleep(1.0)
     raise RuntimeError(f"Decky loader/backend readback did not stabilize: {last_error}")
 
 
@@ -1242,6 +1276,10 @@ def install_package(
     # Taken before the first mutation, so it describes the machine this install
     # arrived on rather than the one it left behind.
     running_before = _running_apps()
+    # The loader's own size before anything is asked of it, which every later
+    # reading is compared with.
+    guard = LoaderMemoryGuard()
+    loader_readings: list[dict[str, object]] = []
     report = inspect_package(artifact, expect_version=expect_version)
     artifact = Path(str(report["artifact"]))
     if not report["ok"]:
@@ -1258,6 +1296,7 @@ def install_package(
     if not plugin_root.parent.is_dir() or plugin_root.parent.is_symlink():
         raise RuntimeError("exact Decky plugins parent is missing or symlinked")
     deploy_failure: Exception | None = None
+    _check_loader(guard, loader_readings, "before_install")
     try:
         token = _auth_token(decky_url, timeout)
         with DeckyWebSocket.connect(decky_url, token, timeout) as ws:
@@ -1284,9 +1323,17 @@ def install_package(
     # readback. Explicit RPC/validation errors remain failures.
     installed: dict[str, object] | None = None
     readback: dict[str, object] | None = None
+    # Raised past every handler below on purpose: an incident is not a readback
+    # that failed, and nothing after it may ask for the webhelper restart.
+    _check_loader(guard, loader_readings, "after_install")
     try:
         installed = _wait_for_installed_tree(artifact, plugin_root, timeout)
-        readback = _wait_for_loader_readback(decky_url, str(report["version"]), plugin_root, timeout)
+        readback = _wait_for_loader_readback(
+            decky_url, str(report["version"]), plugin_root, timeout,
+            check_loader=lambda: _check_loader(guard, loader_readings, "readback", quiet=True),
+        )
+    except LoaderIncidentError:
+        raise
     except Exception as readback_error:
         if deploy_failure is None:
             deploy_failure = readback_error
@@ -1315,6 +1362,7 @@ def install_package(
     # webhelper goes, and Decky's second load of the plugin tells that frontend
     # to import it too, so a boundary taken any earlier would count the outgoing
     # panel's row as the incoming one's.
+    _check_loader(guard, loader_readings, "before_reload")
     before_webhelper = _steam_webhelper_pids()
     # What the next install measures its spacing from, taken here rather than
     # when this record is written: what Decky counts is the replacement, and
@@ -1375,9 +1423,11 @@ def install_package(
             " and what is missing is the row, which one more webhelper reload rebuilds",
             file=sys.stderr,
         )
+    loader_readings.append({"phase": "after_reload", **guard.read().as_fields()})
     return {
         "schema": 2,
         "ok": True,
+        "loader_memory": loader_readings,
         "running_apps": _running_app_report(running_before, _running_apps()),
         "artifact": str(artifact),
         "package_sha256": expected_sha,
@@ -1436,6 +1486,14 @@ def _summary(result: dict[str, object]) -> str:
         )
     elif cardinality != "one":
         parts.append("panel import unobserved")
+    # The loader's growth across the install, every time, because the incident
+    # this guards against starts as a number nobody looked at.
+    readings = [reading for reading in result.get("loader_memory") or [] if reading.get("loader_growth_kib") is not None]
+    if readings:
+        growth = max(0, *(int(reading["loader_growth_kib"]) for reading in readings)) // 1024
+        parts.append(f"loader +{growth}M at most")
+    elif result.get("loader_memory") is not None:
+        parts.append("loader memory unobserved")
     waited = reload_counts.get("spacing_waited_s") or 0
     if waited:
         parts.append(f"waited {waited}s for the webhelper window")

@@ -40,6 +40,7 @@ from .decky_control import (
     next_request_id,
     request_frontend_reload,
 )
+from .loader_memory import LoaderMemoryGuard, LoaderReading
 
 # What one install may cost before it is reported as not having finished.
 INSTALL_TIMEOUT_SECONDS = 180.0
@@ -47,7 +48,11 @@ INSTALL_TIMEOUT_SECONDS = 180.0
 # a replaced plugin more than once, so this is a wait on a settled answer
 # rather than on the first one.
 READBACK_TIMEOUT_SECONDS = 90.0
-READBACK_POLL_SECONDS = 0.5
+# Every poll is a fresh token and a fresh websocket to a loader that is in the
+# middle of replacing this plugin, so the interval is what bounds how much this
+# adds to it: about forty-five connections over the whole wait rather than the
+# hundred and eighty a half-second interval made.
+READBACK_POLL_SECONDS = 2.0
 CONNECT_TIMEOUT_SECONDS = 10.0
 # The longest this will hold before installing, to keep Steam's webhelper from
 # being replaced twice inside Decky's own tolerance. Three replacements in a
@@ -87,6 +92,27 @@ class _Log:
             self.path = None
 
 
+class LoaderIncident(Exception):
+    """Decky's loader exited or ran away; nothing more is asked of it."""
+
+    def __init__(self, reading: LoaderReading) -> None:
+        super().__init__(reading.describe())
+        self.reading = reading
+
+
+def _check_loader(guard: LoaderMemoryGuard, log: _Log, phase: str, *, quiet: bool = False) -> None:
+    """Read the loader before asking it for anything, and stop on an incident.
+
+    `quiet` is for the readback polls, which would otherwise write one line per
+    poll; an incident is written whichever way this is asked.
+    """
+    reading = guard.read()
+    if not quiet or reading.incident:
+        log("update_runner.loader_memory", phase=phase, **reading.as_fields())
+    if reading.incident:
+        raise LoaderIncident(reading)
+
+
 def _digest(path: Path) -> str:
     digest = sha256()
     with path.open("rb") as handle:
@@ -95,8 +121,14 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _await_installed_version(decky_url: str, version: str, log: _Log, *, attempts: int = 0) -> bool:
-    """Whether Decky's own inventory settles on this version. Never raises.
+def _await_installed_version(
+    decky_url: str, version: str, log: _Log, *, attempts: int = 0, guard: LoaderMemoryGuard | None = None,
+) -> bool:
+    """Whether Decky's own inventory settles on this version.
+
+    Raises nothing but `LoaderIncident`, and that only when `guard` is given:
+    every poll reads the loader first, and one that has exited or run away is
+    not asked again.
 
     `attempts` bounds the ask by tries rather than by the wait above, for the
     one caller that is already on its way out: a failure being double checked
@@ -107,6 +139,8 @@ def _await_installed_version(decky_url: str, version: str, log: _Log, *, attempt
     last: str | None = None
     while time.monotonic() < deadline and (attempts <= 0 or tried < attempts):
         tried += 1
+        if guard is not None:
+            _check_loader(guard, log, "readback", quiet=True)
         try:
             token = auth_token(decky_url, CONNECT_TIMEOUT_SECONDS)
             with DeckyWebSocket.connect(decky_url, token, CONNECT_TIMEOUT_SECONDS) as ws:
@@ -191,6 +225,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     # reported as one thing.
     requested = False
     try:
+        # Read once here, before anything is asked of the loader, so every later
+        # reading has the loader's own size before this install to compare with.
+        # Inside the handler, because a runner that dies here writes no result.
+        guard = LoaderMemoryGuard()
         if not archive.is_file() or archive.is_symlink():
             raise RuntimeError("the staged update archive is missing")
         observed = _digest(archive)
@@ -205,6 +243,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         if archive.as_uri()[len("file://"):] != str(archive):
             raise RuntimeError(f"this path cannot be handed to Decky as a file URI: {archive}")
         _wait_out_spacing(args.not_before, log)
+        _check_loader(guard, log, "before_install")
         token = auth_token(args.decky_url, CONNECT_TIMEOUT_SECONDS)
         started = time.monotonic()
         requested = True
@@ -217,9 +256,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             # plugin that opened it. The inventory below is what says whether
             # the install happened, and it is the only thing that can.
             log("update_runner.install_socket_closed", waited_ms=int((time.monotonic() - started) * 1000))
-        if not _await_installed_version(args.decky_url, args.version, log):
+        _check_loader(guard, log, "after_install")
+        if not _await_installed_version(args.decky_url, args.version, log, guard=guard):
             raise RuntimeError("Decky did not report this plugin at the new version")
         result["ok"] = True
+        # The restart is one more request of the loader, and the one that
+        # replaces Steam's webhelper: it is not made of a loader that is failing.
+        _check_loader(guard, log, "before_restart")
         try:
             token = auth_token(args.decky_url, CONNECT_TIMEOUT_SECONDS)
             with DeckyWebSocket.connect(args.decky_url, token, CONNECT_TIMEOUT_SECONDS) as ws:
@@ -232,7 +275,22 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             result["restart_requested"] = True
         except (OSError, RuntimeError) as exc:
             log("update_runner.restart_failed", detail=str(exc)[:200])
+        log("update_runner.loader_memory", phase="after_restart", **guard.read().as_fields())
         archive.unlink(missing_ok=True)
+    except LoaderIncident as incident:
+        # Nothing more is asked of the loader: not the inventory once more, not
+        # the restart. An install that had already settled stays a success,
+        # because the new version is what is on disk; one that had not keeps its
+        # verified archive for a manual install, like any other failure.
+        log("update_runner.loader_incident", **incident.reading.as_fields())
+        if result["ok"]:
+            archive.unlink(missing_ok=True)
+        else:
+            result["error"] = (
+                f"{incident} while CE Decky was being updated, so CE Decky stopped asking it anything."
+                " If the device slows down or stops responding, restart it."
+            )[:400]
+            result["archive_kept_at"] = _preserve_for_manual_install(archive, keep, log, verified=verified)
     except Exception as exc:  # noqa: BLE001 - every outcome is reported, never raised at a dead parent
         # A failure after Decky was asked is not proof that nothing was
         # installed: the request can be accepted and this process can still

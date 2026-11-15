@@ -195,3 +195,17 @@ def test_an_offer_carries_its_notes():
 def test_the_release_workflow_writes_the_marker_the_notes_are_read_to():
     workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml").read_text()
     assert NOTES_END_MARKER in workflow
+
+
+@pytest.mark.parametrize(
+    ("decky_version", "known"),
+    [
+        ("v3.3.1", True), ("v3.2.8", True), ("3.3.0", True), ("v3.3.1-pre1", True),
+        ("v3.3.2", False), ("v3.4.0-pre1", False), ("v4.0.0", False),
+        (None, True), ("", True), ("unknown", True), ("v3.3", True),
+    ],
+)
+def test_the_decky_replacement_warning_covers_every_release_read_for_it(decky_version, known):
+    from ce_decky.plugin_update import decky_replace_defect_known
+
+    assert decky_replace_defect_known(decky_version) is known

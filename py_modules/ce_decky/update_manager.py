@@ -58,6 +58,7 @@ from .plugin_update import (
     ReleaseOffer,
     UpdateError,
     UpdateStateStore,
+    decky_replace_defect_known,
     checked_now,
     digest_from_sums,
     parse_release,
@@ -277,6 +278,9 @@ class PluginUpdateManager:
             # still be installed by hand.
             "recovery": self._recovery_view(),
             "install_supported": self._interpreter is not None,
+            # Whether the confirmation warns that this Decky's own replacement
+            # of a plugin is known to go wrong; `plugin_update.py` keeps the list.
+            "loader_replace_defect": decky_replace_defect_known(os.environ.get("DECKY_VERSION")),
             "checking": self._checking,
             "operation": dict(self._operation) if self._operation is not None else None,
         }

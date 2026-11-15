@@ -4,6 +4,8 @@ Versions are listed newest first. Entries are concise summaries of notable outco
 
 ## 0.9.36 — 2026-11-15
 
+- [Fixed] An update during which Decky's loader exits or grows by gigabytes no longer goes on asking that loader for anything: CE Decky stops, keeps the verified release for a manual install if it had not finished, and says the device may need a restart; it also reconnects to Decky a quarter as often while waiting for the new version
+- [Changed] The update confirmation warns, on Decky releases known to go wrong while replacing a plugin, that Decky can occasionally be left using more and more memory afterwards and that a device which then slows down wants a restart; the update itself stays available
 - [Fixed] When Decky's loader dies, CE Decky's backend now stops its self-test Cheat Engine and exits within about a second instead of running on as an orphan that grows until the system runs out of memory; an attached Cheat Engine keeps running for the next backend, as it does across a plugin update
 
 ## 0.9.35 — 2026-11-12

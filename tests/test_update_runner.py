@@ -6,6 +6,22 @@ import pytest
 
 from ce_decky import update_runner
 from ce_decky.decky_control import DeckyWebSocketClosed
+from ce_decky.loader_memory import LoaderReading
+
+
+class _Guard:
+    """The loader as a script of readings; the last one repeats."""
+
+    def __init__(self, *readings: LoaderReading) -> None:
+        self.readings = list(readings) or [LoaderReading("ok", 1781, 120_000, 120_000)]
+        self.reads = 0
+
+    def __call__(self):
+        return self
+
+    def read(self) -> LoaderReading:
+        self.reads += 1
+        return self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
 
 
 class _Socket:
@@ -62,6 +78,8 @@ def loader(monkeypatch):
     monkeypatch.setattr(update_runner, "request_frontend_reload", reload)
     monkeypatch.setattr(update_runner, "READBACK_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(update_runner, "READBACK_POLL_SECONDS", 0.01)
+    # Never the real /proc: the device running this suite has a live loader.
+    monkeypatch.setattr(update_runner, "LoaderMemoryGuard", _Guard())
     return calls
 
 
@@ -221,3 +239,62 @@ def test_a_failure_before_the_install_was_asked_for_stays_a_failure(tmp_path: Pa
     assert result["ok"] is False
     assert "not answering" in str(result["error"])
     assert result["archive_kept_at"] == str(tmp_path / "home" / "CE-Decky-v0.9.28.zip")
+
+
+OK = LoaderReading("ok", 1781, 120_000, 120_000)
+RUNAWAY = LoaderReading("runaway", 1781, 120_000 + 3 * 1024 * 1024, 120_000)
+EXITED = LoaderReading("exited", 1781, None, 120_000)
+
+
+def _events(tmp_path: Path) -> list[dict]:
+    return [json.loads(line) for line in (tmp_path / "logs" / "update.log").read_text().splitlines()]
+
+
+def test_a_loader_that_runs_away_before_the_install_settles_is_asked_nothing_more(tmp_path: Path, loader, monkeypatch):
+    # Before the install, after it, then the first readback poll finds it grown.
+    guard = _Guard(OK, OK, RUNAWAY)
+    monkeypatch.setattr(update_runner, "LoaderMemoryGuard", guard)
+    connects: list[int] = []
+    monkeypatch.setattr(
+        update_runner.DeckyWebSocket, "connect",
+        classmethod(lambda *_a, **_k: connects.append(1) or _Socket()),
+    )
+    archive, digest = _archive(tmp_path)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is False
+    assert "grew by 3.0 GiB of memory while CE Decky was being updated" in result["error"]
+    assert "restart it" in result["error"]
+    # One connection for the install itself, none for the inventory, none to
+    # double check the failure, and no restart.
+    assert connects == [1] and loader["restarts"] == 0
+    assert result["archive_kept_at"] == str(tmp_path / "home" / "CE-Decky-v0.9.28.zip")
+    incident = [event for event in _events(tmp_path) if event["event"] == "update_runner.loader_incident"]
+    assert incident and incident[0]["loader_state"] == "runaway" and incident[0]["loader_growth_kib"] == 3 * 1024 * 1024
+
+
+def test_a_loader_that_exits_after_the_install_settled_keeps_the_success_and_skips_the_restart(tmp_path: Path, loader, monkeypatch):
+    # Before, after the install, the readback poll, then gone before the restart.
+    monkeypatch.setattr(update_runner, "LoaderMemoryGuard", _Guard(OK, OK, OK, EXITED))
+    archive, digest = _archive(tmp_path)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is True and result["error"] is None
+    assert result["restart_requested"] is False and loader["restarts"] == 0
+    assert not archive.exists() and result["archive_kept_at"] is None
+    phases = [event.get("phase") for event in _events(tmp_path) if event["event"] == "update_runner.loader_memory"]
+    assert phases == ["before_install", "after_install", "before_restart"]
+
+
+def test_every_ordinary_install_records_the_loader_before_and_after(tmp_path: Path, loader):
+    archive, digest = _archive(tmp_path)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is True
+    readings = [event for event in _events(tmp_path) if event["event"] == "update_runner.loader_memory"]
+    assert [event["phase"] for event in readings] == ["before_install", "after_install", "before_restart", "after_restart"]
+    assert readings[0]["loader_rss_kib"] == 120_000 and readings[0]["loader_growth_kib"] == 0
+
+
+def test_an_unobserved_loader_gates_nothing(tmp_path: Path, loader, monkeypatch):
+    monkeypatch.setattr(update_runner, "LoaderMemoryGuard", _Guard(LoaderReading("unobserved", None, None, None)))
+    archive, digest = _archive(tmp_path)
+    result = update_runner.run(_args(tmp_path, archive, digest))
+    assert result["ok"] is True and loader["restarts"] == 1

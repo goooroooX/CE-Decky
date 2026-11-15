@@ -1646,3 +1646,66 @@ def test_a_summary_run_still_carries_what_the_far_end_warned_about(monkeypatch, 
     ssh = _FakeSSH(_helper_digest(), stdout="installed 0.9.26\n", stderr="install record not written")
     answer = _remote_install(monkeypatch, tmp_path, ssh)
     assert answer.splitlines() == ["installed 0.9.26", "install record not written"]
+
+
+class _ScriptedGuard:
+    def __init__(self, *readings) -> None:
+        self.readings = list(readings)
+
+    def read(self):
+        return self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+
+
+def test_a_loader_incident_stops_the_install_and_says_what_to_do_next() -> None:
+    from ce_decky.loader_memory import LoaderReading
+
+    readings: list[dict[str, object]] = []
+    guard = _ScriptedGuard(
+        LoaderReading("ok", 1781, 120_000, 120_000),
+        LoaderReading("runaway", 1781, 120_000 + 2 * 1024 * 1024, 120_000),
+    )
+    target_plugin_install._check_loader(guard, readings, "before_install")
+    with pytest.raises(target_plugin_install.LoaderIncidentError) as raised:
+        target_plugin_install._check_loader(guard, readings, "after_install")
+    assert "grew by 2.0 GiB" in str(raised.value) and "phase after_install" in str(raised.value)
+    assert "target_incident_capture.py" in str(raised.value) and "do not" in str(raised.value)
+    assert [reading["phase"] for reading in readings] == ["before_install", "after_install"]
+    assert readings[1]["loader_state"] == "runaway"
+
+
+def test_the_readback_reads_the_loader_before_every_try_and_an_incident_ends_it(monkeypatch) -> None:
+    asked: list[str] = []
+
+    def check() -> None:
+        asked.append("check")
+        if asked.count("check") == 2:
+            raise target_plugin_install.LoaderIncidentError("loader exited")
+
+    def token(*_args, **_kwargs):
+        asked.append("token")
+        raise OSError("not yet")
+
+    monkeypatch.setattr(target_plugin_install, "_auth_token", token)
+    monkeypatch.setattr(target_plugin_install.time, "sleep", lambda _s: None)
+    with pytest.raises(target_plugin_install.LoaderIncidentError):
+        target_plugin_install._wait_for_loader_readback(
+            "http://127.0.0.1:1337", "0.9.36", Path("/x/plugins/CE-Decky"), 30.0, check_loader=check,
+        )
+    assert asked == ["check", "token", "check"]
+
+
+def test_the_summary_names_the_loader_growth_or_that_it_was_not_observed() -> None:
+    base = {
+        "version": "0.9.36", "package_sha256": "a" * 64, "installed": {"checked_files": 316},
+        "frontend_reload": {"observed": True, "before_count": 9, "after_count": 7},
+        "running_apps": target_plugin_install._running_app_report(_apps([]), _apps([])),
+    }
+    grown = target_plugin_install._summary({**base, "loader_memory": [
+        {"phase": "before_install", "loader_growth_kib": 0},
+        {"phase": "after_reload", "loader_growth_kib": 40 * 1024},
+    ]})
+    assert "loader +40M at most" in grown
+    shrunk = target_plugin_install._summary({**base, "loader_memory": [{"phase": "after_reload", "loader_growth_kib": -5 * 1024}]})
+    assert "loader +0M at most" in shrunk
+    blind = target_plugin_install._summary({**base, "loader_memory": [{"phase": "before_install", "loader_growth_kib": None}]})
+    assert "loader memory unobserved" in blind

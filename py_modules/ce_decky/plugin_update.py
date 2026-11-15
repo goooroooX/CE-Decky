@@ -58,6 +58,16 @@ MAX_UPDATE_STATE_BYTES = 16 * 1024
 # reviewed notes are a screen long; the bound keeps the record inside its own,
 # whatever a release body carries.
 MAX_NOTES_BYTES = 4 * 1024
+# The newest Decky release known to carry the two defects in replacing an
+# installed plugin that `docs/FIELD_NOTES.md` records (upstream issues 982 and
+# 983): the plugin is loaded, stopped and loaded again in one install, and a
+# plugin socket at EOF is read in a loop that never suspends. v3.2.8 and
+# v3.3.1 were read for them and both have both; the releases between are taken
+# to as well. Raised when the daily Decky watch meets a newer release that
+# still does; a release above it is assumed fixed only because nothing has been
+# read about it yet, which is why the watch is where this is kept current.
+DECKY_REPLACE_DEFECT_THROUGH = (3, 3, 1)
+_DECKY_VERSION_RE = re.compile(r"^v?(\d{1,4})\.(\d{1,4})\.(\d{1,6})(?:-[0-9A-Za-z.-]{1,32})?$")
 # Where the reviewed notes end in a release body. The release workflow writes
 # it between `docs/release-notes/v<version>.md` and the commit list GitHub
 # generates under it, which is not written for a user deciding to update.
@@ -134,6 +144,20 @@ class Version:
 
     def __le__(self, other: "Version") -> bool:
         return self._key() <= other._key()
+
+
+def decky_replace_defect_known(decky_version: str | None) -> bool:
+    """Whether the running Decky is one that carries the replacement defects.
+
+    For a warning on the update confirmation and nothing else: it gates no
+    install. A version that cannot be read is treated as affected, because the
+    warning costs one sentence and a missing one costs a user the reason their
+    device slowed down after an update.
+    """
+    match = _DECKY_VERSION_RE.fullmatch(decky_version or "")
+    if match is None:
+        return True
+    return tuple(int(part) for part in match.groups()) <= DECKY_REPLACE_DEFECT_THROUGH
 
 
 def parse_version(value: Any) -> Version:

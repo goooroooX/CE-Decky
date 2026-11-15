@@ -1600,3 +1600,10 @@ def test_a_wait_for_a_game_asks_seldom_and_installs_on_the_first_answer_that_non
     assert asyncio.run(scenario())["state"] == "installing"
     assert pauses == [pause, pause] and len(asked) == 3
     assert len(spawned) == 1
+
+
+@pytest.mark.parametrize(("decky_version", "warned"), [("v3.3.1", True), ("v3.4.0", False)])
+def test_the_snapshot_says_whether_this_decky_replaces_plugins_badly(tmp_path: Path, monkeypatch, decky_version, warned):
+    monkeypatch.setenv("DECKY_VERSION", decky_version)
+    manager = _manager(tmp_path, FakeNetwork())
+    assert manager.snapshot()["loader_replace_defect"] is warned

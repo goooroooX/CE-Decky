@@ -648,6 +648,12 @@ export interface PluginUpdateState {
   recovery: PluginUpdateRecovery | null;
   /** Whether this device has an interpreter the detached installer can run. */
   install_supported: boolean;
+  /**
+   * Whether the running Decky is a release known to go wrong while replacing
+   * an installed plugin, which the confirmation warns about. Optional because
+   * a backend older than 0.9.36 never sends it.
+   */
+  loader_replace_defect?: boolean;
   checking: boolean;
   operation: PluginUpdateOperation | null;
 }

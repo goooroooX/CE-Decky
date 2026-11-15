@@ -29,6 +29,12 @@ const POLL_ATTEMPTS = 180;
  * way out comes back, and it says what it is and is not doing.
  */
 const RESTART_GRACE_MS = 45_000;
+/**
+ * What the confirmation adds on a Decky known to go wrong while replacing a
+ * plugin. In the row that already says what the install costs, because a row
+ * of its own would push the press below a handheld's screen.
+ */
+const LOADER_DEFECT_NOTE = " This Decky version has a known fault that can occasionally leave it using more and more memory after replacing any plugin; if the device slows down or stops responding afterwards, restart it.";
 
 interface Props {
   currentVersion: string;
@@ -58,6 +64,12 @@ interface Props {
   notes?: string | null;
   /** Whether the record cut them, so the window can say where the rest is. */
   notesTruncated?: boolean;
+  /**
+   * Whether this Decky is a release known to go wrong while replacing a plugin.
+   * A warning only: the update is the user's to make, and it is the same
+   * install Decky's own store performs.
+   */
+  loaderDefect?: boolean;
   /** The releases page, named where the notes were cut. */
   pageUrl?: string;
 }
@@ -163,7 +175,7 @@ function NoteLines({ lines, truncated, pageUrl, stops = false }: {
  * question is being stopped and this panel is about to be replaced with it.
  */
 export function UpdateModal(
-  { currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose, notes = null, notesTruncated = false, pageUrl }: Props,
+  { currentVersion, targetVersion, adopted = null, onStart, onPoll, onCancelUpdate, onClose, notes = null, notesTruncated = false, pageUrl, loaderDefect = false }: Props,
 ) {
   useUiSurface("UpdateModal");
   // The notes are what the press is being asked about, so they are shown until
@@ -366,7 +378,7 @@ export function UpdateModal(
                 status
                 testId="update-restart-warning"
                 label="Steam's interface restarts"
-                description="The Decky panel closes for a few seconds while Decky installs it. Downloading can be stopped; once installing begins it cannot be cancelled, because this panel is part of what is being replaced."
+                description={`The Decky panel closes for a few seconds while Decky installs it. Downloading can be stopped; once installing begins it cannot be cancelled, because this panel is part of what is being replaced.${loaderDefect ? LOADER_DEFECT_NOTE : ""}`}
               />
             </PanelSectionRow>
             {operation && (
