@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 
@@ -10,6 +11,7 @@ from . import poll_counters
 from . import __version__
 from . import runtime_compat
 from .activity_log import configure_dependency_logging, log_activity, log_failure
+from .loader_watch import LoaderWatch
 from .operations import OperationRegistry
 from .paths import PluginPaths
 from .guarded_service import GuardedPluginService
@@ -55,10 +57,63 @@ def _loop_identity() -> str:
     return f"{id(loop) % 1000000:06d}{'-running' if loop.is_running() else '-stopped'}"
 
 
+def _exit_process() -> None:
+    """End this process now, after handing what was logged to its file and stream.
+
+    `os._exit` rather than `sys.exit`, because the caller is a thread and the
+    thread that would have to unwind is the event loop that is spinning.
+    """
+    for handler in [*getattr(decky.logger, "handlers", []), *logging.getLogger().handlers]:
+        try:
+            handler.flush()
+        except Exception:  # noqa: BLE001 - nothing may stop the exit
+            pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    os._exit(0)
+
+
 class Plugin:
     def __init__(self) -> None:
         self.operations = OperationRegistry(decky.logger)
         self.service: GuardedPluginService | None = None
+        self._loader_watch: LoaderWatch | None = None
+
+    def _leave_without_loader(self, observed: dict[str, object]) -> None:
+        """What this process does once the loader that owns it is gone.
+
+        Runs on the watch thread. `begin_close` is the part of an unload that
+        must happen and is bounded by construction: it stops a self-test Cheat
+        Engine this plugin owns and writes one small marker. An attached Cheat
+        Engine is left running exactly as a plugin update leaves it, for the
+        next backend to resume supervising.
+        """
+        try:
+            log_activity(decky.logger, "warning", "backend.loader_lost", **observed)
+            if self.service is not None:
+                try:
+                    self.service.begin_close()
+                except Exception as exc:  # noqa: BLE001 - the exit must still happen
+                    log_failure(decky.logger, "backend.begin_close_failed", exc, expected=False)
+            log_activity(decky.logger, "warning", "backend.loader_lost_exiting")
+        finally:
+            _exit_process()
+
+    def _arm_loader_watch(self) -> None:
+        try:
+            watch = LoaderWatch(self._leave_without_loader)
+            armed = watch.arm()
+        except Exception as exc:  # noqa: BLE001 - never block load on the watch
+            log_failure(decky.logger, "backend.loader_watch_failed", exc, expected=False)
+            return
+        if armed.get("armed"):
+            self._loader_watch = watch
+            log_activity(decky.logger, "info", "backend.loader_watch_armed", **armed)
+        else:
+            log_activity(decky.logger, "warning", "backend.loader_watch_unarmed", **armed)
 
     async def _main(self) -> None:
         configure_dependency_logging()
@@ -71,6 +126,9 @@ class Plugin:
             python=sys.version.split()[0], decky=os.environ.get("DECKY_VERSION", "unknown"),
             pathlib_types_fallback=runtime_compat.PATHLIB_TYPES_FALLBACK_USED,
         )
+        # Before anything that can block, so a load that hangs is still a
+        # process that leaves when the loader does.
+        self._arm_loader_watch()
         try:
             paths = PluginPaths.from_environment()
             self.service = GuardedPluginService(paths, decky.logger)
@@ -101,6 +159,10 @@ class Plugin:
 
     async def _unload(self) -> None:
         log_activity(decky.logger, "info", "backend.unload_started", loop=_loop_identity())
+        # An unload is Decky ending this process while it lives; the watch is
+        # for the case where nothing is left to do that.
+        if self._loader_watch is not None:
+            self._loader_watch.stop()
         # Stop accepting RPC work and drain tracked worker-thread mutations before
         # closing service-owned acquisition/network resources. Cancelling an
         # asyncio.to_thread awaiter does not stop its underlying mutation, so the

@@ -174,3 +174,66 @@ def test_unload_does_what_it_must_before_its_first_await(monkeypatch):
     assert order[0] == "begin_close"
     assert "await" in order and order.index("begin_close") < order.index("await")
     assert order.index("begin_close") < order.index("operations_close")
+
+
+def test_load_arms_the_loader_watch_and_unload_stops_it(monkeypatch, caplog):
+    module = _plugin_module(monkeypatch)
+    plugin = module.Plugin()
+    created: list[object] = []
+
+    class Watch:
+        def __init__(self, on_lost):
+            self.on_lost = on_lost
+            self.stopped = False
+            created.append(self)
+
+        def arm(self):
+            return {"armed": True, "parent_pid": 2256, "grandparent_pid": 1781}
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(module, "LoaderWatch", Watch)
+    with caplog.at_level(logging.INFO, logger="fake-decky"):
+        plugin._arm_loader_watch()
+    assert "event=backend.loader_watch_armed" in caplog.text and "grandparent_pid=1781" in caplog.text
+    assert created and created[0].on_lost == plugin._leave_without_loader
+    asyncio.run(plugin._unload())
+    assert created[0].stopped is True
+
+
+def test_an_unarmed_watch_is_logged_with_its_reason_and_stops_nothing(monkeypatch, caplog):
+    module = _plugin_module(monkeypatch)
+    plugin = module.Plugin()
+
+    class Watch:
+        def __init__(self, on_lost):
+            pass
+
+        def arm(self):
+            return {"armed": False, "reason": "grandparent_unreadable", "parent_pid": 2256}
+
+    monkeypatch.setattr(module, "LoaderWatch", Watch)
+    with caplog.at_level(logging.INFO, logger="fake-decky"):
+        plugin._arm_loader_watch()
+    assert "event=backend.loader_watch_unarmed" in caplog.text and "reason=grandparent_unreadable" in caplog.text
+    assert plugin._loader_watch is None
+
+
+def test_a_lost_loader_runs_the_unload_prologue_and_then_exits(monkeypatch, caplog):
+    module = _plugin_module(monkeypatch)
+    plugin = module.Plugin()
+    order: list[str] = []
+
+    class Service:
+        def begin_close(self) -> None:
+            order.append("begin_close")
+            raise RuntimeError("a prologue that fails must not stop the exit")
+
+    plugin.service = Service()  # type: ignore[assignment]
+    monkeypatch.setattr(module, "_exit_process", lambda: order.append("exit"))
+    with caplog.at_level(logging.INFO, logger="fake-decky"):
+        plugin._leave_without_loader({"parent_pid": 2256, "grandparent_pid": 1781, "now_parent_pid": 1})
+    assert order == ["begin_close", "exit"]
+    lost = caplog.text.index("event=backend.loader_lost ")
+    assert lost < caplog.text.index("event=backend.begin_close_failed") < caplog.text.index("event=backend.loader_lost_exiting")

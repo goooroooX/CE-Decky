@@ -2,6 +2,10 @@
 
 Versions are listed newest first. Entries are concise summaries of notable outcomes; the version-session rules and allowed labels are defined in `AGENTS.md`.
 
+## 0.9.36 — 2026-11-15
+
+- [Fixed] When Decky's loader dies, CE Decky's backend now stops its self-test Cheat Engine and exits within about a second instead of running on as an orphan that grows until the system runs out of memory; an attached Cheat Engine keeps running for the next backend, as it does across a plugin update
+
 ## 0.9.35 — 2026-11-12
 
 - [Changed] A first FearLess index on this device is built in about an hour rather than more than five, by starting the next slice of the listing within minutes while the last one was read without a refusal. A refusal stops the pass and each refusal in a row doubles the wait before the next, up to six hours, and a reload of the plugin no longer forgets that wait and asks again; the pass also pauses while a table downloads from FearLess. A search repeated within two minutes reads only the matching topics rather than the listing again.
