@@ -754,6 +754,7 @@ def _verify_ci_source_snapshot() -> None:
 UNDOCUMENTED_HELPERS = {
     "browser_probe.py": "started only by browser_harness.py, which is the documented entrypoint",
     "decky_compat_payload.py": "started only by decky_compat_probe.py inside a disposable runtime",
+    "target_loader_death_harness.py": "imported only by target_loader_death_probe.py inside Decky's own runtime",
     "frontend_source_digest.py": "run by package_plugin.py, whose own command is documented",
     "steam_user.py": "a module the provider surveys import; it has no command of its own",
     "test_ts_core.mjs": "a stage runner qa.py invokes; it has no command of its own",

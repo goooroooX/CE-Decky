@@ -94,6 +94,9 @@ REQUIREMENTS = {
     # the whole of what it needs beyond the `steam` client it hands a URI to.
     "target_game_launch.py": {},
     "target_memory_watch.py": {},
+    # Starts Decky's own runtime and kills only the processes it started, read
+    # through `/proc` before each signal.
+    "target_loader_death_probe.py": {},
     "target_plugin_log.py": {"needs_procfs": False},
     "target_plugin_install.py": {},
     # Talks to Decky over its own socket and reads no process table of its

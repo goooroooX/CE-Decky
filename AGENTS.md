@@ -192,6 +192,7 @@ The rows are the questions, because that is what an agent is holding when it nee
 | Something went wrong on the device: capture all of it before anything is recovered, support bundle included, without the UI | `scripts/target_incident_capture.py '<symptom>'` |
 | The Steam UI is wedged, the capture is taken and the maintainer has no controls: bring it back | `scripts/target_webhelper_recover.py --incident <capture dir>`, `--dry-run` first to see what it would end |
 | What is holding this device's memory while Decky and its plugins look hung | `scripts/target_memory_watch.py` |
+| Does this exact package leave when Decky's loader dies under it, rather than run on as an orphan | `scripts/target_loader_death_probe.py`; a private loader from the device's own runtime, never the live one |
 | What does one session cost, and how long do the primitives it repeats take | `scripts/target_session_cost_probe.py`, `scripts/target_primitive_bench.py` |
 | Do a real table's controls stay reachable in the QAM, without executing anything the table carries | `scripts/table_ui_probe.py` |
 | What does a table switch on by itself, and which of those may be switched off | `scripts/ct_scan_survey.py --table <table> --flags`; it reads the records' own answers through the production inspector and names every flag the hook reader refused, which is where a count about a table's flags comes from rather than from a line written by hand |

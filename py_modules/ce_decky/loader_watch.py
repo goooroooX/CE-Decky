@@ -43,6 +43,12 @@ from typing import Callable
 
 # How often the thread asks. One `getppid` a second costs nothing, and the
 # orphan this exists to end grows for as long as it is left running.
+#
+# Review note (2026-11-15, the maintainer's decision on a proposal raised after
+# `scripts/target_loader_death_probe.py` measured the orphan growing by up to
+# about 100 MiB in the time it took to leave): not polled faster. A loader dying is
+# not the ordinary case, and a check that never finds anything in it is not
+# made more often for the sake of the one that does.
 POLL_S = 1.0
 
 PROC_ROOT = Path("/proc")
